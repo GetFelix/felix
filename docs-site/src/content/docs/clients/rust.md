@@ -1329,7 +1329,29 @@ assert!(matches!(
 
 `CommitError::EventCount` refuses a commit without exactly one event, and
 `CommitError::Unsupported` a broker that did not advertise
-`FEATURE_ATOMIC_COMMIT`. What atomic does and does not cover is in
+`FEATURE_ATOMIC_COMMIT`.
+
+`commit_if` and `publish_if` write only at an expected offset, the shard's
+next, for a single writer that must not append after it has been replaced:
+
+```rust
+use felix_client::ConditionalWrite;
+
+let mut next = 0;
+match cluster
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], next)
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    ConditionalWrite::Refused { tail } => { /* lost the stream; it is at `tail` */ }
+}
+```
+
+A refusal is an answer, not an error, and writes nothing. Both need
+`FEATURE_PUBLISH_CONDITIONAL`, and fail without sending anything against a
+broker that did not advertise it. `ClusterClient` follows the leader; neither
+is forwarded between brokers. Do not resend one whose answer was lost: read
+the shard at the expected offset instead. What atomic does and does not cover is in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Clusters

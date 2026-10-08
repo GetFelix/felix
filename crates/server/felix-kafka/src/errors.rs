@@ -48,6 +48,9 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::GroupClaimLapsed { .. }
         | BrokerError::MalformedCommit(_)
         | BrokerError::CommitNeedsDurableStream
+        | BrokerError::OffsetMismatch { .. }
+        | BrokerError::ExpectedOffsetNeedsDurableStream
+        | BrokerError::EmptyConditionalPublish
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_) => ResponseError::UnknownServerError,
     }

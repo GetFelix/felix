@@ -42,8 +42,13 @@ pub(crate) async fn run_commit(
         Some(Message::AuthOk {
             server_features: Some(features),
             ..
-        }) if felix_wire::supports_feature(features, felix_wire::FEATURE_ATOMIC_COMMIT) => {}
-        other => bail!("auth_ok did not advertise FEATURE_ATOMIC_COMMIT: {other:?}"),
+        }) if felix_wire::supports_feature(
+            features,
+            felix_wire::FEATURE_ATOMIC_COMMIT | felix_wire::FEATURE_PUBLISH_CONDITIONAL,
+        ) => {}
+        other => bail!(
+            "auth_ok did not advertise FEATURE_ATOMIC_COMMIT and FEATURE_PUBLISH_CONDITIONAL: {other:?}"
+        ),
     }
 
     // commit.returns_the_offset
@@ -60,6 +65,7 @@ pub(crate) async fn run_commit(
                 value: Bytes::from_static(b"placed"),
             }],
             request_id: 1,
+            expected_offset: None,
         },
     )
     .await?;
@@ -94,8 +100,89 @@ pub(crate) async fn run_commit(
         }) if value == "placed" && version == offset && as_of >= offset => {}
         other => bail!("state_get did not return the commit's value at offset {offset}: {other:?}"),
     }
+    conditional_writes(&mut send, &mut recv, &mut scratch, auth, offset).await?;
     send.finish()?;
     Ok(())
+}
+
+/// A write at the shard's next offset lands; one expecting an offset already
+/// taken is refused with the tail, and writes nothing.
+async fn conditional_writes(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    scratch: &mut quic::FrameScratch,
+    auth: &AuthFixture,
+    committed: u64,
+) -> Result<()> {
+    let tail = committed + 1;
+    // commit.expected_offset_refuses_a_stale_write
+    quic::write_message(
+        send,
+        Message::Commit {
+            tenant_id: auth.tenant_id.clone(),
+            namespace: "default".to_string(),
+            stream: COMMIT_STREAM.to_string(),
+            entity_key: Bytes::from_static(b"order-1"),
+            event: Bytes::from_static(b"stale"),
+            changes: Vec::new(),
+            request_id: 3,
+            expected_offset: Some(committed),
+        },
+    )
+    .await?;
+    match quic::read_message_limited(recv, MAX_TEST_FRAME_BYTES, scratch).await? {
+        Some(Message::PublishRefused {
+            request_id: 3,
+            reason: felix_wire::PublishRefusalReason::OffsetMismatch { tail: at },
+            ..
+        }) if at == tail => {}
+        other => bail!("a commit at a taken offset was not refused with tail {tail}: {other:?}"),
+    }
+
+    // publish_if.lands_at_the_expected_offset
+    quic::write_message(
+        send,
+        Message::PublishIf {
+            tenant_id: auth.tenant_id.clone(),
+            namespace: "default".to_string(),
+            stream: COMMIT_STREAM.to_string(),
+            payloads: vec![b"next".to_vec()],
+            key: Some(Bytes::from_static(b"order-1")),
+            expected_offset: tail,
+            request_id: 4,
+        },
+    )
+    .await?;
+    match quic::read_message_limited(recv, MAX_TEST_FRAME_BYTES, scratch).await? {
+        Some(Message::PublishOk {
+            request_id: 4,
+            offset: Some(at),
+        }) if at == tail => {}
+        other => bail!("publish_if at the tail {tail} was not written there: {other:?}"),
+    }
+
+    // publish_if.refused_with_the_tail
+    quic::write_message(
+        send,
+        Message::PublishIf {
+            tenant_id: auth.tenant_id.clone(),
+            namespace: "default".to_string(),
+            stream: COMMIT_STREAM.to_string(),
+            payloads: vec![b"late".to_vec()],
+            key: Some(Bytes::from_static(b"order-1")),
+            expected_offset: tail,
+            request_id: 5,
+        },
+    )
+    .await?;
+    match quic::read_message_limited(recv, MAX_TEST_FRAME_BYTES, scratch).await? {
+        Some(Message::PublishRefused {
+            request_id: 5,
+            reason: felix_wire::PublishRefusalReason::OffsetMismatch { tail: at },
+            ..
+        }) if at == tail + 1 => Ok(()),
+        other => bail!("a second publish_if at {tail} was not refused: {other:?}"),
+    }
 }
 
 /// commit.negotiated: a peer that offers nothing gets the plain `ok` it
