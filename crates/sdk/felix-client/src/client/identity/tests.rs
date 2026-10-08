@@ -110,6 +110,7 @@ async fn answer(
             Message::AuthOk {
                 server_flags: felix_wire::KNOWN_FLAGS,
                 server_features: Some(0),
+                server_features_hi: None,
                 listener_ports: None,
                 publish_window: None,
             },
