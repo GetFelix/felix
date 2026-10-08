@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791448588253,
+  "lastUpdate": 1791450613009,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24908,6 +24908,58 @@ window.BENCHMARK_DATA = {
             "range": "14774.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1214980.59\nmean: 1209361.90\nstdev: 14774.97\ncv: 1.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1996a2294de0ebbdf4ee33dc2c23c97b5aa22e22",
+          "message": "feat(client): act for many users over one client's connections (#969) (#1050)\n\n* feat(client): act for many users over one client's connections (#969)\n\nClient::with_identity returns a client that shares the parent's\nconnections and authenticates every stream it opens with another\nprincipal's token. The broker already authenticates and authorizes per\nstream, so each user's publish, subscribe, cache and group requests are\nchecked against that user's grants alone. No wire change.\n\nCloses #969\n\n* test(client): set server_features_hi in the identity stub",
+          "timestamp": "2026-10-08T02:05:03-07:00",
+          "tree_id": "bd759dce15a9fae09ba59e54b9ea712fcac07558",
+          "url": "https://github.com/GetFelix/felix/commit/1996a2294de0ebbdf4ee33dc2c23c97b5aa22e22"
+        },
+        "date": 1791450612292,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 679292.33,
+            "range": "21540.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 679292.33\nmean: 675410.80\nstdev: 21540.58\ncv: 3.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 679292.33,
+            "range": "21540.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 679292.33\nmean: 675410.80\nstdev: 21540.58\ncv: 3.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160476.63,
+            "range": "1808.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160476.63\nmean: 161192.08\nstdev: 1808.40\ncv: 1.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1604766.29,
+            "range": "18084.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1604766.29\nmean: 1611920.79\nstdev: 18084.03\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
