@@ -74,6 +74,10 @@ cosign verify ghcr.io/getfelix/felix-broker:0.6.0-preview.2 \
 | Postgres | Outside the chart | Whatever you run it on | The control plane only |
 | Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`, `/replication/halted`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
 
+The `8080` metrics ports have no authentication. They expose names of tenants,
+streams and brokers, so keep them reachable from Prometheus and operators only,
+never from clients or the internet.
+
 What depends on what, in the order it matters during an incident:
 
 - **Brokers depend on the control plane to start**, not to keep serving. A
@@ -487,8 +491,13 @@ restore-point` on restore. See [Backup and restore](/deployment/backup-and-resto
 | PVC `Pending` | No default StorageClass, or the named one does not exist in this zone. |
 | Peer mTLS pods stuck in `ContainerCreating` | cert-manager-csi-driver is not installed, or the Issuer cannot sign. `kubectl describe pod` shows the CSI error. |
 
+For a shard that is not serving, a lagging or halted follower, or a client
+that is refused, [Diagnosing a cluster](/deployment/diagnosing/) goes symptom
+by symptom.
+
 ## Next Steps
 
+- **Diagnose problems**: [Diagnosing a cluster](/deployment/diagnosing/)
 - **Monitor deployment**: [Observability Guide](/features/observability/)
 - **Control-plane HA**: [what the database must provide](/deployment/control-plane-ha/)
 - **Graceful shutdown**: [what the probes and drain do](/deployment/graceful-shutdown/)

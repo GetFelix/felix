@@ -25,9 +25,11 @@ use super::{
 };
 use crate::halted::HaltedReplica;
 use crate::peer::PeerRequester;
+use crate::promotion::Outcome;
 use crate::promotion::PromotionGate;
 use crate::quorum::QuorumMarks;
 use crate::reporter::Reporter;
+use crate::status::{FenceStatus, ShardStatus, ShardStatusBoard, follower_status};
 use crate::{FollowerCursor, MoveThrottle, Rebuilds};
 
 /// Everything a pass borrows from the driver task, for as long as it runs.
@@ -38,6 +40,7 @@ pub(super) struct Context<'a, R> {
     pub(super) fence: &'a dyn WriteFence,
     pub(super) gate: &'a dyn PromotionGate,
     pub(super) marks: &'a QuorumMarks,
+    pub(super) status: &'a ShardStatusBoard,
     pub(super) reporter: Option<&'a Reporter>,
     pub(super) rebuilds: &'a Rebuilds,
     pub(super) throttle: &'a MoveThrottle,
@@ -60,11 +63,24 @@ pub(super) enum Event<'a> {
     Retry,
     /// A shard's pass ended; the scan it started under.
     Passed(u64, Box<ShardPass<'a>>),
-    /// A promoted shard's fence attempt ended: the generation it was for,
-    /// and whether the shard is open now.
-    Fenced((ShardKey, u64, bool)),
+    /// A promoted shard's fence attempt ended.
+    Fenced(FenceAttempt),
     /// An exchange a pass handed back has ended.
     Answered(Answered),
+}
+
+/// One fence attempt for a shard promoted here, ended.
+pub(super) struct FenceAttempt {
+    key: ShardKey,
+    generation: u64,
+    /// The shard is open now.
+    opened: bool,
+    /// The other replicas in the route the attempt fenced.
+    replicas: Vec<String>,
+    /// Who took it, when the attempt stopped short. `None` once a majority
+    /// did: the attempt stops listening then.
+    took: Option<Vec<String>>,
+    why: Option<String>,
 }
 
 /// An exchange handed back by a pass, ended.
@@ -138,7 +154,7 @@ pub(super) struct Shards<'a, R> {
     pub(super) passes: FuturesUnordered<PassFuture<'a>>,
     /// Fence attempts for shards promoted here, which ship nothing until
     /// one succeeds.
-    pub(super) fences: FuturesUnordered<BoxFuture<'a, (ShardKey, u64, bool)>>,
+    pub(super) fences: FuturesUnordered<BoxFuture<'a, FenceAttempt>>,
     pub(super) exchanges: FuturesUnordered<BoxFuture<'a, Answered>>,
 }
 
@@ -191,9 +207,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // Dropping the mark ends any publish still waiting on it, rather than
         // leaving it to run out its timeout for an answer that can no longer
         // come.
-        self.cx
-            .marks
-            .retain(&live.iter().map(watch_key).collect::<Vec<_>>());
+        let led_keys: Vec<crate::ShardKey> = live.iter().map(watch_key).collect();
+        self.cx.marks.retain(&led_keys);
+        let led_keys: HashSet<&crate::ShardKey> = led_keys.iter().collect();
+        self.cx.status.retain(|key| led_keys.contains(key));
 
         // Slots in use are whatever the cursors still say is rebuilding. A
         // cursor discarded on a generation change or a lost shard took its
@@ -295,18 +312,32 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.running = Some(Arc::new(tokio::sync::Notify::new()));
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
+            let local = cx.router.local_node_id();
+            let replicas: Vec<String> = route
+                .replicas
+                .iter()
+                .filter(|replica| replica.node_id != local)
+                .map(|replica| replica.node_id.clone())
+                .collect();
             self.fences.push(Box::pin(async move {
-                let (key, generation, outcome) = fence_one(
-                    cx.requester,
-                    cx.broker,
-                    cx.router.local_node_id(),
-                    key,
-                    route,
-                    cx.marks,
-                )
-                .await;
+                let (key, generation, outcome) =
+                    fence_one(cx.requester, cx.broker, local, key, route, cx.marks).await;
+                let (took, why) = match &outcome {
+                    Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),
+                    Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
+                };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
-                (key, generation, opened)
+                let why = why.or_else(|| {
+                    (!opened).then(|| "the fence was taken but the shard stayed closed".into())
+                });
+                FenceAttempt {
+                    key,
+                    generation,
+                    opened,
+                    replicas,
+                    took,
+                    why,
+                }
             }));
             return;
         }
@@ -319,6 +350,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             &mut self.counters,
         ) else {
             state.last = Some(LastPass::idle(self.scan));
+            self.cx.status.put(
+                watch_key(key),
+                ShardStatus {
+                    generation: route.generation,
+                    tail: None,
+                    followers: Vec::new(),
+                    fence: None,
+                    drain_pending: false,
+                    behind: false,
+                },
+            );
             return;
         };
         let next_wanted = Arc::new(tokio::sync::Notify::new());
@@ -390,11 +432,31 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             aux,
             halted,
             lag,
+            tail,
             copying,
             drain_pending,
             behind,
             ..
         } = pass;
+        let followers = cursors
+            .followers
+            .iter()
+            .map(|cursor| {
+                let learner = cursors.learner.as_deref() == Some(cursor.node_id.as_str());
+                follower_status(cursor, tail, learner)
+            })
+            .collect();
+        self.cx.status.put(
+            watch_key(&key),
+            ShardStatus {
+                generation,
+                tail,
+                followers,
+                fence: None,
+                drain_pending,
+                behind,
+            },
+        );
         self.streams.insert(key.clone(), cursors);
         self.group.insert(key.clone(), aux.group);
         self.dead_letters.insert(key.clone(), aux.dead_letters);
@@ -438,7 +500,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
 
     /// A promoted shard's fence attempt ended. Open, it ships on its next
     /// pass; not yet, it is tried again after [`fence_backoff`].
-    pub(super) fn fenced(&mut self, (key, generation, opened): (ShardKey, u64, bool)) {
+    pub(super) fn fenced(&mut self, attempt: FenceAttempt) {
+        let FenceAttempt {
+            key,
+            generation,
+            opened,
+            replicas,
+            took,
+            why,
+        } = attempt;
         let scan = self.scan;
         let Some(state) = self.states.get_mut(&key) else {
             return;
@@ -454,6 +524,31 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         state.fence_after =
             (!opened).then(|| tokio::time::Instant::now() + fence_backoff(failures));
         state.last = Some(LastPass::idle(scan));
+        // Open, the shard's next pass replaces this with its cursors.
+        let fence = (!opened).then(|| {
+            let took = took.unwrap_or_default();
+            FenceStatus {
+                pending: replicas
+                    .into_iter()
+                    .filter(|node| !took.contains(node))
+                    .collect(),
+                took,
+                attempts: failures,
+                retry_at: state.fence_after,
+                why,
+            }
+        });
+        self.cx.status.put(
+            watch_key(&key),
+            ShardStatus {
+                generation,
+                tail: None,
+                followers: Vec::new(),
+                fence,
+                drain_pending: false,
+                behind: false,
+            },
+        );
         if opened || std::mem::take(&mut state.again) {
             self.start(&key);
         }

@@ -232,6 +232,21 @@ impl IdempotentProducer {
             .context("the producer's task failed before it finished")
     }
 
+    /// [`Self::close`], giving up after `timeout`. The producer's task is then
+    /// stopped where it is: nothing more is sent or re-sent, and a batch it
+    /// had already sent may or may not land.
+    pub async fn close_within(self, timeout: std::time::Duration) -> Result<()> {
+        drop(self.requests);
+        let mut driver = self.driver;
+        match tokio::time::timeout(timeout, &mut driver).await {
+            Ok(joined) => joined.context("the producer's task failed before it finished"),
+            Err(_) => {
+                driver.abort();
+                anyhow::bail!("the producer had not finished after {timeout:?}, so it was stopped")
+            }
+        }
+    }
+
     /// Hand a call to the driver and wait for its answer: the offsets of the
     /// batches it sent, in order.
     async fn submit(
@@ -656,17 +671,8 @@ impl Driver {
         batches: &[Vec<Vec<u8>>],
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        // Under a ClusterClient every publish names its shard, so each shard
-        // can have its own stream. A plain Client's do not, so its producer
-        // stays on the pool with the rest of that client's publishes.
-        let publisher = match &self.source {
-            Source::Cluster(_) => client.shard_publisher(),
-            Source::Single(_) => match client.publisher().await {
-                Ok(publisher) => publisher,
-                Err(err) => return (Vec::new(), Err(err)),
-            },
-        };
-        publisher
+        let publisher = client.publisher_handle();
+        let (acked, result) = publisher
             .publish_idempotent_pipelined(
                 &key.0,
                 &key.1,
@@ -677,7 +683,15 @@ impl Driver {
                 self.producer_id,
                 first,
             )
-            .await
+            .await;
+        publisher.forget_width_if_gone(
+            &key.0,
+            &key.1,
+            &key.2,
+            routing_key.map(|key| key.as_ref()),
+            &result,
+        );
+        (acked, result)
     }
 
     /// The shard a batch's sequence belongs to: 0 without a key, else the one

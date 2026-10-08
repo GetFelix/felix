@@ -737,6 +737,7 @@ async fn handle_stream_drain_timeout_sleep_branch() -> Result<()> {
             }
         });
         let publish_ctx = PublishContext {
+            shard_status: None,
             ingress: None,
             client_endpoints: None,
             peers: None,

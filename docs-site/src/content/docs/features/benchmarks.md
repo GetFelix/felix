@@ -253,7 +253,7 @@ These settings came out of profiling the QUIC path and are wired into
 Broker-side levers (see [Configuration](/reference/configuration/)):
 `pub_inflight_bytes` (ingress byte budget), `pub_ingress_wait` (lossless
 backpressure vs. shed-on-overload), subscriber queue policies
-(`block` / `drop_new` / `drop_old`) and depths, and `core_shards`
+(`block` / `drop_new`; `drop_old` behaves as `drop_new`) and depths, and `core_shards`
 (`FELIX_CORE_SHARDS`).
 
 `core_shards` gives each stream's publish worker and lane feeders a dedicated

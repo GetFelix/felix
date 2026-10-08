@@ -56,6 +56,7 @@ fn driver(
         Published {
             marks: Arc::clone(marks),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         // Reaching the tick would mean nothing else woke the driver.
@@ -271,6 +272,7 @@ async fn a_promoted_shard_ships_nothing_before_its_fence() {
     let gate = Arc::new(Awaiting {
         generation: Mutex::new(Some(4)),
     });
+    let status = Arc::new(crate::status::ShardStatusBoard::new());
     let driver = spawn(
         Arc::clone(&followers),
         Arc::clone(&broker),
@@ -280,6 +282,7 @@ async fn a_promoted_shard_ships_nothing_before_its_fence() {
         Published {
             marks: Arc::clone(&marks),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::clone(&status),
         },
         None,
         Duration::from_secs(300),
@@ -304,6 +307,13 @@ async fn a_promoted_shard_ships_nothing_before_its_fence() {
         None,
         "a mark moved before the fence",
     );
+    // What an operator inspecting the shard reads while it waits.
+    let fencing = status.get(&watch_key(&key())).expect("on the board");
+    let fence = fencing.fence.expect("fencing");
+    assert!(fence.took.is_empty(), "{fence:?}");
+    assert_eq!(fence.pending, ["broker-b", "broker-c"]);
+    assert!(fence.attempts >= 1, "{fence:?}");
+    assert!(fencing.followers.is_empty());
 
     followers.fence_ready.store(true, Ordering::SeqCst);
     let opened = tokio::time::timeout(Duration::from_secs(5), async {
@@ -314,6 +324,10 @@ async fn a_promoted_shard_ships_nothing_before_its_fence() {
     .await;
     assert!(opened.is_ok(), "the shard never shipped once fenced");
     assert!(gate.awaiting(&watch_key(&key())).is_none());
+    let shipping = status.get(&watch_key(&key())).expect("on the board");
+    assert_eq!(shipping.fence, None);
+    assert_eq!(shipping.generation, 4);
+    assert_eq!(shipping.followers.len(), 2, "{shipping:?}");
     driver.stop().await;
 }
 
@@ -358,6 +372,7 @@ async fn a_shard_kept_closed_after_its_fence_backs_off() {
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         Duration::from_secs(300),

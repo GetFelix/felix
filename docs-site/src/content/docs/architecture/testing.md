@@ -199,7 +199,8 @@ and discrete time, with clocks that may drift. TLC explores every interleaving
 within the configured bounds.
 
 - `FelixShard.tla` models the lease, replication to a majority, promotion, the
-  promotion fence, planned moves and cancelled moves. Its invariants include
+  promotion fence, planned moves and cancelled moves, fenced or not, and
+  replicas electing themselves under ballots. Its invariants include
   that no two brokers serve the shard at once, that whoever serves holds every
   acknowledged record, that two brokers never disagree on an acknowledged
   record, and that no log holds a re-sent write twice.
@@ -225,6 +226,13 @@ the spec too, or carry a `Spec-Unaffected:` line in a commit message or the PR
 description saying why not. `task tla:pairing` runs that check locally, and
 `scripts/check_spec_evidence.py`, part of `task docs:evidence`, checks that
 every test the spec cites still exists.
+
+The exhaustive configurations stop at a move or two and a promotion or two.
+A nightly job (`tla-walk.yml`, `task tla:walk`) runs TLC in simulation mode
+over `FelixShardWalk*.cfg`, which lift those bounds and sample behaviours a
+few hundred steps long that grow the set, replace followers, move the shard
+and fail over many times. That is sampling, not proof. Each walk has a
+negative twin that must find its violation within the same budget.
 
 Detail, with every configuration and its state count:
 [`docs/formal/README.md`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md).

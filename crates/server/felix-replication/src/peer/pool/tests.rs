@@ -113,6 +113,7 @@ fn a_counter_fence_needs_the_cache_fence() {
     };
     let fetch = |log| {
         InternalMessage::ReplicateFetch(ReplicateFetch {
+            timed: false,
             correlation_id: 0,
             shard: shard.clone(),
             log,

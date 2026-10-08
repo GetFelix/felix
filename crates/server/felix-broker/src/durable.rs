@@ -124,6 +124,24 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// One stream shard's log if this broker has it open, without opening it.
+    pub fn opened_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_shard(&key)?;
+        Some(StreamLog { log })
+    }
+
     /// Close one stream shard's log, for a shard this broker no longer holds.
     ///
     /// Every [`StreamLog`] already handed out for it fails from here on; the
@@ -213,15 +231,46 @@ impl StreamLog {
     }
 
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
+    /// `expected`. `Err` with the log's tail, and nothing written or claimed,
+    /// otherwise. The check is made where the offsets are assigned, so it is
+    /// atomic with the claim.
+    // One parameter per part of a record, as `begin_append_marked` has.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_append_if(
+        &self,
+        expected: Offset,
+        payloads: &[Bytes],
+        marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let records = records(payloads, marks, publishers, timestamp_micros)?;
+        self.log
+            .append_claimed_at(expected, &records, order)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// [`Self::begin_append_marked`], only if the batch starts at exactly
     /// `first_offset`. `None`, and nothing written, otherwise.
+    ///
+    /// `times` is each record's time, as the leader that appended it stored
+    /// it, or empty to stamp every record with this broker's clock.
     pub async fn begin_append_marked_at(
         &self,
         first_offset: Offset,
         payloads: &[Bytes],
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
+        times: &[u64],
     ) -> Result<Option<PendingAppend>> {
-        let records = records(payloads, marks, publishers, append_time_now())?;
+        let mut records = records(payloads, marks, publishers, append_time_now())?;
+        if times.len() == records.len() {
+            for (record, time) in records.iter_mut().zip(times) {
+                record.timestamp_micros = *time;
+            }
+        }
         self.log
             .append_pending_at(first_offset, &records)
             .await
@@ -419,6 +468,16 @@ impl StreamLog {
         self.log.is_poisoned().then(|| self.durable_offset())
     }
 
+    /// How far below `tail` a reader may go and see only records that will
+    /// stay. Under `FsyncMode::OnCommit` a publish completes only once its
+    /// record is synced, so a record written but not synced is not one yet.
+    pub fn readable_end(&self, tail: Offset) -> Offset {
+        match self.log.config().fsync_mode {
+            FsyncMode::OnCommit => tail.min(self.durable_offset()),
+            FsyncMode::None | FsyncMode::Periodic { .. } => tail,
+        }
+    }
+
     /// Offset the next published record will take.
     pub async fn tail_offset(&self) -> Result<Offset> {
         self.log.tail_offset().await.map_err(BrokerError::from)
@@ -504,14 +563,20 @@ impl StreamLog {
         self.log.accepted_generation()
     }
 
-    /// Accept a leader at `generation`; a raised one is on disk on return.
+    /// The leader that generation was accepted from, if one was named.
+    pub fn accepted_leader(&self) -> Option<std::sync::Arc<str>> {
+        self.log.accepted_leader()
+    }
+
+    /// Accept `leader` at `generation`; a raised one is on disk on return.
     /// See `DiskLog::accept_generation`.
     pub async fn accept_generation(
         &self,
         generation: u64,
+        leader: Option<&str>,
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
-            .accept_generation(generation)
+            .accept_generation(generation, leader)
             .await
             .map_err(BrokerError::from)
     }

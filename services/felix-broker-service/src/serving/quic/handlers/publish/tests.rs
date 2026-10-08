@@ -4,6 +4,7 @@
 mod ack;
 mod ack_on_enqueue;
 mod admission;
+mod commit_ack;
 mod control_batch;
 mod control_binary;
 mod control_message;
@@ -28,7 +29,7 @@ use felix_authz::PermissionMatcher;
 use felix_broker::Broker;
 use felix_storage::EphemeralCache;
 use felix_wire::{Frame, Message};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::sync::{mpsc, watch};
 
 use super::ingress::enqueue_publish;
@@ -64,6 +65,7 @@ fn make_publish_context(buffer: usize) -> (PublishContext, TestReceiver, TestSen
 /// A context with no cluster and no budgets, feeding `scheduler`.
 pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
     PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

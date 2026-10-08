@@ -72,7 +72,9 @@ pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
 pub use cache::{
     CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
 };
-pub use client::{Client, GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
+pub use client::{
+    Client, ConditionalWrite, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, StreamPage,
+};
 pub use cluster::{
     ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,
@@ -96,5 +98,7 @@ pub use tls::{
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
-    PublishRefusalReason, RetryClass, ShardKind, ShardOwner, StartPosition,
+    GroupRecord, InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica,
+    PublishRefusalReason, RetryClass, ShardInspection, ShardKind, ShardOwner, StartPosition,
+    StreamRecord,
 };

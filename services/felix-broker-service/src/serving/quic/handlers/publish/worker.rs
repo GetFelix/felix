@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_broker::Broker;
 use parking_lot::Mutex;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::task::TaskTracker;
 
 use super::scheduler::{LaneGuard, PublishScheduler};
@@ -51,6 +51,7 @@ pub(crate) fn build_tracked_publish_context(
         lease,
         marks,
         client_endpoints,
+        shard_status,
     } = cluster;
     let quorum_timeout = std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1));
     // Process-wide, not per connection: executors bound how many publishes
@@ -115,6 +116,7 @@ pub(crate) fn build_tracked_publish_context(
         lease_headroom: lease_headroom(config),
         client_endpoints,
         marks,
+        shard_status,
         quorum_timeout,
         scheduler,
         wait_timeout: Duration::from_millis(config.publish_queue_wait_timeout_ms),
@@ -625,7 +627,7 @@ impl ClaimGroup {
 
 /// One publish in a [`ClaimGroup`].
 struct GroupMember {
-    response: Option<oneshot::Sender<super::PublishResult>>,
+    response: Option<super::PublishReply>,
     acked_on_enqueue: bool,
     records: usize,
 }
@@ -708,8 +710,8 @@ fn first_offset(outcome: &felix_broker::PublishOutcome) -> Option<u64> {
 ///
 /// An executor that died unsupervised would take its share of the broker's
 /// publish throughput with it while `/ready` stayed green. The job it was
-/// running is lost -- its waiter sees the response dropped, and its lane guard
-/// frees the lane -- but the rest of the queue is served.
+/// running is lost -- its client is answered with an error, and its lane
+/// guard frees the lane -- but the rest of the queue is served.
 async fn supervise<F, Fut>(executor: usize, runtime: Option<tokio::runtime::Handle>, make_worker: F)
 where
     F: Fn() -> Fut,
@@ -746,14 +748,14 @@ const PUBLISH_WORKER_RESTARTS_TOTAL: &str = "felix_broker_publish_worker_restart
 /// the client holds an ack for a record that was not written. This is the only
 /// place that is visible, so it is counted and logged rather than dropped.
 fn settle(
-    response: Option<oneshot::Sender<super::PublishResult>>,
+    response: Option<super::PublishReply>,
     acked_on_enqueue: bool,
     shard: Option<&ShardKey>,
     result: super::PublishResult,
 ) {
     match (response, result) {
         (Some(response), result) => {
-            let _ = response.send(result);
+            response.send(result);
         }
         (None, Err(err)) if acked_on_enqueue => {
             // `fenced`: the broker lost the shard or its lease first, so nothing

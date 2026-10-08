@@ -40,6 +40,7 @@ async fn control_loop_rejects_auth_failed() -> Result<()> {
         // answers with a plain `Ok`.
         client_flags: None,
         client_features: None,
+        client_features_hi: None,
     })))];
     let (result, messages) = run_control_loop_with_frames(
         broker,
@@ -222,6 +223,7 @@ async fn control_loop_subscribe_forbidden_sends_error() -> Result<()> {
             stream: "updates".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let (result, messages) = run_control_loop_with_frames(
@@ -252,6 +254,7 @@ async fn control_loop_subscribe_tenant_mismatch_sends_error() -> Result<()> {
             stream: "updates".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let (result, messages) = run_control_loop_with_frames(
@@ -311,6 +314,7 @@ async fn control_loop_rejects_subscribe_without_auth() -> Result<()> {
         stream: "updates".to_string(),
         subscription_id: Some(1),
         shard: None,
+        queue_capacity: None,
     })))];
     let (result, messages) = run_control_loop_with_frames(
         broker,
@@ -381,5 +385,73 @@ async fn control_loop_cache_put_rejects_tenant_mismatch() -> Result<()> {
         message,
         Outgoing::Message(Message::Error { message, .. }) if message.contains("tenant mismatch")
     )));
+    Ok(())
+}
+
+/// The `AuthOk` a client gets for `client_features` and `client_features_hi`.
+async fn auth_ok_for(client_features: u32, client_features_hi: Option<u32>) -> Result<Message> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let auth = auth_fixture("t1", default_perms());
+    let frames = vec![Ok(Some(frame_from_message(Message::Auth {
+        tenant_id: auth.tenant_id.clone(),
+        token: auth.token.clone(),
+        client_flags: Some(felix_wire::KNOWN_FLAGS),
+        client_features: Some(client_features),
+        client_features_hi,
+    })))];
+    let (_, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    messages
+        .into_iter()
+        .find_map(|message| match message {
+            Outgoing::Message(message @ Message::AuthOk { .. }) => Some(message),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("no auth_ok"))
+}
+
+/// A client that does not set the marker gets the `auth_ok` it always got:
+/// no marker, no `server_features_hi`. One that does learns the extended
+/// features, inspection among them.
+#[tokio::test]
+async fn only_an_extended_offer_hears_the_extended_word() -> Result<()> {
+    let plain = auth_ok_for(felix_wire::KNOWN_FEATURES, None).await?;
+    let Message::AuthOk {
+        server_features,
+        server_features_hi,
+        ..
+    } = plain
+    else {
+        unreachable!()
+    };
+    assert_eq!(server_features_hi, None);
+    assert!(!felix_wire::supports_feature(
+        server_features.unwrap_or(0),
+        felix_wire::FEATURE_EXTENDED
+    ));
+
+    let extended = auth_ok_for(
+        felix_wire::KNOWN_FEATURES | felix_wire::FEATURE_EXTENDED,
+        Some(felix_wire::KNOWN_FEATURES_HI),
+    )
+    .await?;
+    let Message::AuthOk {
+        server_features,
+        server_features_hi,
+        ..
+    } = extended
+    else {
+        unreachable!()
+    };
+    let hi = felix_wire::peer_features_hi(server_features.unwrap_or(0), server_features_hi);
+    assert!(felix_wire::supports_feature(
+        hi,
+        felix_wire::FEATURE_INSPECT
+    ));
     Ok(())
 }

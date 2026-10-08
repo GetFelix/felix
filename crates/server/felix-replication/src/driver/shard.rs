@@ -128,6 +128,9 @@ pub(super) struct ShardPass<'a> {
     pub(super) report: Option<ShardReport>,
     pub(super) halted: Vec<HaltedReplica>,
     pub(super) lag: Option<u64>,
+    /// The leader's tail as the pass last read it. `None` when the log could
+    /// not be read.
+    pub(super) tail: Option<u64>,
     /// A destination still copying was cut off at [`COPY_SLICE`] with more to
     /// send.
     pub(super) copying: bool,
@@ -152,6 +155,7 @@ impl ShardPass<'_> {
             report: None,
             halted: Vec::new(),
             lag: None,
+            tail: None,
             copying: false,
             drain_pending: false,
             behind: false,
@@ -773,6 +777,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         report: report_out,
         halted,
         lag,
+        tail: Some(tail),
         copying,
         drain_pending: route.draining && !drained,
         behind,

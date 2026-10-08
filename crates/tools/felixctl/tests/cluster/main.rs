@@ -11,6 +11,8 @@ mod bench;
 mod contexts;
 mod control_plane;
 mod data_plane;
+mod inspect;
+mod rbac;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -147,13 +149,18 @@ impl Env {
 }
 
 /// `args` followed by each `--flag value` pair in `flags` that `args` does not
-/// set itself. clap refuses a flag given twice, so a test overriding one
-/// connection flag must not also get the default.
+/// set itself, by its long or short name. clap refuses a flag given twice,
+/// so a test overriding one connection flag must not also get the default.
 fn with_flags(args: &[&str], flags: Vec<String>) -> Vec<String> {
     let mut all: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
     let mut flags = flags.into_iter();
     while let (Some(name), Some(value)) = (flags.next(), flags.next()) {
-        if !args.contains(&name.as_str()) {
+        let short = match name.as_str() {
+            "--namespace" => Some("-n"),
+            _ => None,
+        };
+        let set = args.contains(&name.as_str()) || short.is_some_and(|short| args.contains(&short));
+        if !set {
             all.push(name);
             all.push(value);
         }
@@ -179,6 +186,13 @@ fn an_explicit_flag_replaces_the_default() {
             "--tenant",
             "t1"
         ]
+    );
+    assert_eq!(
+        with_flags(
+            &["stream", "ls", "-n", "scratch"],
+            ["--namespace", "default"].map(String::from).to_vec()
+        ),
+        ["stream", "ls", "-n", "scratch"]
     );
     assert_eq!(
         with_flags(&["tenant", "ls"], defaults),

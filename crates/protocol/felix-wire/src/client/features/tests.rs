@@ -289,6 +289,29 @@ fn group_claim_control_is_a_new_feature_bit_and_disturbs_nothing() {
     ));
 }
 
+#[test]
+fn stream_read_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_STREAM_READ;
+    assert_eq!(crate::FEATURE_STREAM_READ & others, 0);
+    // Serving subscriptions and record times does not imply serving reads.
+    assert!(!crate::supports_feature(
+        crate::FEATURE_RECORD_TIMESTAMPS | crate::FEATURE_SUBSCRIPTION_LAGGED,
+        crate::FEATURE_STREAM_READ
+    ));
+    assert!(!crate::supports_feature(0, crate::FEATURE_STREAM_READ));
+}
+
+#[test]
+fn subscribe_queue_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_SUBSCRIBE_QUEUE;
+    assert_eq!(crate::FEATURE_SUBSCRIBE_QUEUE & others, 0);
+    assert_eq!(crate::FEATURE_SUBSCRIBE_QUEUE, 0x4000_0000);
+    assert!(!crate::supports_feature(
+        crate::FEATURE_SUBSCRIPTION_LAGGED,
+        crate::FEATURE_SUBSCRIBE_QUEUE
+    ));
+}
+
 /// **Every feature bit is its own.** The per-bit tests above mask a bit out of
 /// `KNOWN_FEATURES`, which two constants sharing a value pass. This lists them
 /// all, so a new bit given a value already in use fails here.
@@ -347,6 +370,12 @@ fn every_feature_bit_is_distinct_and_known() {
             "FEATURE_GROUP_CLAIM_CONTROL",
             crate::FEATURE_GROUP_CLAIM_CONTROL,
         ),
+        (
+            "FEATURE_PUBLISH_CONDITIONAL",
+            crate::FEATURE_PUBLISH_CONDITIONAL,
+        ),
+        ("FEATURE_STREAM_READ", crate::FEATURE_STREAM_READ),
+        ("FEATURE_SUBSCRIBE_QUEUE", crate::FEATURE_SUBSCRIBE_QUEUE),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {
@@ -358,5 +387,70 @@ fn every_feature_bit_is_distinct_and_known() {
         seen,
         crate::KNOWN_FEATURES,
         "KNOWN_FEATURES and this list disagree"
+    );
+}
+
+/// The marker takes the last bit of the first word and is never offered by
+/// accident: it is set only alongside an extended word.
+#[test]
+fn the_extended_marker_is_the_last_bit_and_not_a_known_feature() {
+    assert_eq!(crate::FEATURE_EXTENDED, 0x8000_0000);
+    assert_eq!(crate::KNOWN_FEATURES & crate::FEATURE_EXTENDED, 0);
+    assert_eq!(
+        crate::offer_features(crate::KNOWN_FEATURES, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
+    assert_eq!(
+        crate::offer_features(crate::FEATURE_TOPOLOGY, 4),
+        (crate::FEATURE_TOPOLOGY | crate::FEATURE_EXTENDED, Some(4))
+    );
+}
+
+/// Inspection is the first extended bit, so it rides the second word and
+/// only reaches a peer that set the marker.
+#[test]
+fn inspect_is_the_first_extended_bit() {
+    assert_eq!(crate::FEATURE_INSPECT, 0x0000_0001);
+    assert_eq!(crate::KNOWN_FEATURES_HI, crate::FEATURE_INSPECT);
+    assert_eq!(
+        crate::offer_features(crate::KNOWN_FEATURES, crate::KNOWN_FEATURES_HI),
+        (
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
+            Some(crate::FEATURE_INSPECT)
+        )
+    );
+    // Not the low word's topology bit, which shares the value.
+    assert!(!crate::supports_feature(
+        crate::peer_features_hi(crate::FEATURE_TOPOLOGY, None),
+        crate::FEATURE_INSPECT
+    ));
+}
+
+/// A word the peer sent without the marker is not counted, and a broker
+/// answering a client that did not set it sends no extended word at all.
+#[test]
+fn an_extended_word_without_the_marker_is_ignored() {
+    assert_eq!(
+        crate::peer_features_hi(crate::KNOWN_FEATURES, Some(crate::FEATURE_INSPECT)),
+        0
+    );
+    assert_eq!(
+        crate::answer_features(
+            crate::KNOWN_FEATURES,
+            crate::FEATURE_INSPECT,
+            crate::KNOWN_FEATURES
+        ),
+        (crate::KNOWN_FEATURES, None)
+    );
+    assert_eq!(
+        crate::answer_features(
+            crate::KNOWN_FEATURES,
+            crate::FEATURE_INSPECT,
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED
+        ),
+        (
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
+            Some(crate::FEATURE_INSPECT)
+        )
     );
 }

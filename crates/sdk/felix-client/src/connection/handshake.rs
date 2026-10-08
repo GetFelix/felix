@@ -40,6 +40,16 @@ impl Credentials {
         }
     }
 
+    /// The same offers, authenticating as a different principal.
+    pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
+        Self {
+            tenant_id,
+            tokens,
+            features: self.features,
+            flags: self.flags,
+        }
+    }
+
     /// Also ask for each record's append time. See
     /// [`felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS`].
     pub(crate) fn with_timestamps(mut self, timestamps: bool) -> Self {
@@ -136,6 +146,7 @@ impl Credentials {
                 token,
                 client_flags: None,
                 client_features: None,
+                client_features_hi: None,
             },
         )
         .await
@@ -152,6 +163,8 @@ pub(crate) struct Negotiated {
     pub(crate) server_flags: u16,
     /// Feature bits: which optional requests the broker implements.
     pub(crate) server_features: u32,
+    /// The extended feature word, counted only behind the marker bit.
+    pub(crate) server_features_hi: u32,
     /// Every port the broker's client-facing listeners are bound to, when it
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
@@ -186,6 +199,8 @@ async fn authenticate_stream(
     features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
+    let (features, features_hi) =
+        felix_wire::offer_features(features, felix_wire::KNOWN_FEATURES_HI);
     write_message(
         send,
         Message::Auth {
@@ -193,6 +208,7 @@ async fn authenticate_stream(
             token: token.to_string(),
             client_flags: Some(flags),
             client_features: Some(features),
+            client_features_hi: features_hi,
         },
     )
     .await
@@ -202,6 +218,7 @@ async fn authenticate_stream(
         Some(Message::AuthOk {
             server_flags,
             server_features,
+            server_features_hi,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {
@@ -210,6 +227,10 @@ async fn authenticate_stream(
             // an unrecognised message type is fatal to the broker's control
             // loop, so a client that guessed would cost itself the connection.
             server_features: server_features.unwrap_or(0),
+            server_features_hi: felix_wire::peer_features_hi(
+                server_features.unwrap_or(0),
+                server_features_hi,
+            ),
             listener_ports: listener_ports.unwrap_or_default(),
             // Only meaningful with the feature bit; a window without it would
             // be a broker promising an order it never agreed to.
@@ -226,6 +247,7 @@ async fn authenticate_stream(
         Some(Message::Ok) => Ok(Negotiated {
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
+            server_features_hi: 0,
             listener_ports: Vec::new(),
             publish_window: 0,
         }),

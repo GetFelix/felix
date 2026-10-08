@@ -18,6 +18,158 @@ for what the current release guarantees.
   `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
   `HOMEBREW_TAP_TOKEN` secret; dry runs keep it as an artifact and nightlies
   skip it.
+- `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
+  A broker advertising `FEATURE_INSPECT`, the first bit of the extended
+  feature word (`server_features_hi` `0x1`), answers `shard_inspect` with
+  `shard_inspect_info`: its own view of one shard, with its phase and
+  generation, whether it serves and why not (`opening`, `fencing`, `failed`
+  with the open error, `draining`, `lease_lapsed`, `not_assigned_here`,
+  `behind_generation`), which replicas took a promoted leader's fence and
+  how many attempts it has made, its lease, tail and commit mark, and as
+  leader each follower's next offset, lag and state. It needs
+  `node.view:cluster:*` and may name any tenant. The answer is read from
+  snapshots the lifecycle and the replication driver publish (the new
+  `felix_replication::status::ShardStatusBoard`), so it takes neither's lock
+  and opens no log. felixctl asks the leader and every replica and prints a
+  table, or one JSON line per shard with `--json`; a broker that cannot be
+  reached is listed as unreachable. felix-client adds
+  `Client::inspect_shard` and `Client::supports_inspect`. A new docs page,
+  Diagnosing a cluster, goes through shard, replication, subscriber, auth
+  and startup problems by symptom.
+- `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
+  SDKs (part of #618). It builds `libfelix` as a shared and a static library
+  with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
+  and covers connect, publish and a polled subscribe (`felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe`,
+  `felix_subscription_next_event`). Handles are opaque with a free function
+  each, every call returns a status code whose classes match the other SDKs,
+  the message for a failure is per thread (`felix_last_error_message`), panics
+  never cross the boundary, and each client owns its Tokio runtime. A test
+  fails while the header is stale, and CI runs a C program against the
+  conformance fixture. Not published to crates.io.
+- Replicas keep a ballot with each accepted generation (part of #1009): the
+  leader they accepted it from, by the node id its `Hello` gave. At that
+  generation a replica refuses a fence, a batch, a bootstrap, a rebuild or a
+  tail fetch from any other node with `FencedEpoch`, and a broker will not
+  lead a generation it already accepted from another node. The ballot is a new
+  `ballot` file in the shard directory, fsynced before anything from that
+  leader is answered and read back on open; builds without ballots ignore it,
+  so rolling back still opens the shard. A new internal capability, `BALLOTS`
+  (`1 << 6`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
+  turns ballots off with it. Nothing changes while the control plane names
+  every leader, since it never names two at one generation; this is the
+  safety layer replica elections will need. The TLA+ model gains `Ballots`,
+  `Elections` and `OneLeaderPerGeneration`, with `FelixShardElect.cfg` and
+  two configurations that must fail: `FelixShardElectNoBallot.cfg` (two
+  leaders at one generation) and `FelixShardElectStaleSet.cfg` (a replica
+  standing on a set it has left). Breaking for callers of felix-storage's
+  `DiskLog::accept_generation` and felix-broker's
+  `StreamLog::accept_generation`, which take the leader, of felix-replication's
+  `ReplicaHandler` entry points, which take the sender, and for code matching
+  `GenerationCheck`, which gains `Promised` and is no longer `Copy`.
+- `felixctl group` and `felixctl counter` (#1005). `group create|describe|seek|rm`
+  manage a consumer group on every shard of a stream, or on `--shard`.
+  `group poll` claims records and prints each with its claim,
+  `SHARD:OFFSET:ATTEMPTS`, which `group ack`, `nack` (with `--delay-ms`),
+  `extend` and `dead-letters add` take. `group dead-letters ls|redrive|discard`
+  work the dead-letter list. `group rm`, `dead-letters discard` and a `seek`
+  that moves a cursor back over finished records ask `[y/N]` at a terminal and
+  need `--yes` elsewhere. `counter get|add` read and add to counters. All go
+  through `ClusterClient`. felix-client now re-exports `GroupRecord`, which
+  `group_extend` takes.
+- Nightly TLC simulation of long random walks over replica-set changes
+  (#934). `FelixShardWalkSpares`, `FelixShardWalkMoves` and
+  `FelixShardWalkHandoff` lift the bounds the exhaustive configurations
+  stop at (time to 40, six writes, six moves) and sample traces up to 300
+  steps; each has a negative twin that must find its violation within the
+  budget. `scripts/check_tla.sh --simulate` (`task tla:walk`) runs them,
+  and `tla-walk.yml` runs them nightly and uploads TLC's trace on a
+  failure. `Tick` in `FelixShard.tla` enumerates clocks over the drift
+  window only, with the same states.
+- felixctl writes to the control plane (part of #1005). `tenant`, `namespace`,
+  `stream` and `cache` gain `create` and `rm`; `stream set` changes
+  consistency, delivery, durability and retention, keeping a retention bound
+  not given, and `cache set` the display name; each prints what changed.
+  `node drain` and `node deregister`, `shard move NAME SHARD --to NODE` (with
+  `--dry-run` and `--cache`) and `shard move cancel`, and `placement pause`,
+  `resume` and `abandon` drive placement. Deletes, drains and deregistrations
+  ask on a terminal and need `--yes` anywhere else, stopping with status 2
+  without it; `placement abandon` never asks and always needs `--yes`.
+- `felixctl rbac policy ls|add|rm` and `felixctl rbac grouping ls|add|rm` list,
+  grant and revoke the current tenant's RBAC policies and role assignments
+  through the control plane (#1005). `policy add` checks the object against
+  the RBAC grammar first, including cache key and key-prefix objects and their
+  `cache.read`/`cache.write`-only rule, and stops with status 2 and the reason;
+  action names and delegation scope are left to the control plane, whose
+  refusal is printed with status 4. `rm` asks on a terminal and needs `--yes`
+  elsewhere, and exits 5 when the rule does not exist. `felix-cluster` adds
+  `Credentials::rbac_admin_token`.
+- A subscriber can choose its own broker-side queue capacity on a broker
+  advertising `FEATURE_SUBSCRIBE_QUEUE` (`0x4000_0000`) (#1019). `subscribe`
+  takes an optional `queue_capacity`, counted in published batches; the broker
+  clamps it to `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (new, default 4096)
+  and echoes the grant as `queue_capacity` on `subscribed`. A subscribe
+  without it, and the answer, are byte-identical to before. The overflow policy
+  stays the stream's: a subscriber that could choose `Block` could stall every
+  publisher on its shard. felix-client adds
+  `ClientConfig::broker_sub_queue_capacity` and `Subscription::queue_capacity`;
+  felix-broker adds `Broker::subscribe_sized` and
+  `Broker::subscribe_from_sized`. `ClientConfig` gains a public field, so code
+  building it with a struct literal must set it.
+- One Rust `Client` can act for many users over the same connections (#969).
+  `Client::with_identity(tenant_id, token_provider)` and
+  `Client::with_identity_token` return a client that shares the parent's
+  connections and authenticates every stream it opens with the user's token,
+  so the broker checks each user's publish, subscribe, cache and group
+  requests against that user's grants alone. It opens one publish and one
+  cache stream and no connections. One user's token expiring or being revoked
+  stops only that user's streams. No wire change: the broker already
+  authenticates per stream. A refused publish or cache request still ends the
+  stream it came on, so a gateway should build a new identity after one.
+  `ClusterClient` does not offer it yet.
+- A write can be made only at the offset its writer expects, on a broker
+  advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
+  `publish_if` appends a batch only if it would start at `expected_offset`, the
+  shard's next; `commit` takes the same optional `expected_offset` as a
+  compare-and-set on the whole shard. The check is made where the log assigns
+  offsets, under the same lock, so of two writers at one offset exactly one is
+  written. A refusal is `publish_refused` with the new `offset_mismatch` reason
+  and the shard's tail; it writes nothing, consumes no offset and holds up no
+  later publish. The tail counts a new leader's generation-start record, so a
+  writer's expected offset goes stale on failover. Served by the shard's
+  leader only: a non-leader answers `not_leader`. An in-memory stream refuses
+  it. A commit without `expected_offset` is byte-identical to before.
+  `publish_if` is charged against the tenant's publish quota and the ingress
+  byte budgets like any acked publish, and refused over quota the same way.
+  felix-client adds `publish_if` and `commit_if` on `Client` and
+  `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
+  `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,
+  `publish_batch_at` and `commit_to_handle_at`. Per-key version
+  preconditions are #1051.
+- A second feature word for when the `u32` feature set runs out (#1055).
+  `FEATURE_EXTENDED` (`0x8000_0000`) in `client_features` or
+  `server_features` says the peer sends and reads `client_features_hi` /
+  `server_features_hi`. A peer sends the marker and the word only when it
+  knows a feature there, and a broker answers with its word only to a client
+  that set the marker, so every existing frame is unchanged. No feature uses
+  the word yet. felix-wire adds `FEATURE_EXTENDED`, `KNOWN_FEATURES_HI`,
+  `offer_features`, `answer_features` and `peer_features_hi`. Breaking for
+  code that builds `Message::Auth` or `Message::AuthOk`: both have a new
+  field.
+- A client can read a bounded range of a durable stream and stop (#1018). A
+  broker advertising `FEATURE_STREAM_READ` (`0x2000_0000`) answers
+  `stream_read` (shard, `from`, optional `end`, `max_records`, `max_bytes`)
+  with `stream_records`: one page of committed records and the `next_offset`
+  to continue from, which steps over generation-start records. No subscriber
+  is registered and the read never waits. A page stops at the committed mark
+  on a `Quorum` shard and, under `FsyncMode::OnCommit`, at the durable offset,
+  and is capped at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of
+  payload. A `from` below retention or past the tail gets
+  `subscribe_cursor_error`. Needs `stream.subscribe`; only the shard's leader
+  answers. In felix-client, `Client::read` and `ClusterClient::read` return a
+  `StreamPage`; felix-broker has `Broker::read_range`. Frames to clients that
+  do not send the request are unchanged. An `end` on `Subscribe` is tracked
+  in #1053.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
@@ -82,9 +234,9 @@ for what the current release guarantees.
   offers the feature gets `timestamp_micros` on group records. Nobody else's
   frames change, and no storage format changes. In felix-client, set
   `ClientConfig::timestamps` and read `Event::timestamp_micros`; call
-  `Client::offset_for_time` and subscribe at the answer. Times are the leading
-  broker's clock: a follower stamps the records it replicates with its own, so
-  after a failover they shift by the replication delay. Breaking for callers of
+  `Client::offset_for_time` and subscribe at the answer. Times are the clock of
+  the broker that led when the record was written, and replicas keep them
+  (#1045). Breaking for callers of
   felix-broker's `StreamLog::begin_append`, `begin_append_marked` and
   `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
   `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
@@ -158,6 +310,90 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- `felix_replication::promotion::Outcome::Pending` is a struct variant
+  carrying `why` and `took`, the replicas that took the fence in that
+  attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`
+  takes the error. `felix_wire::KNOWN_FEATURES_HI` is now `FEATURE_INSPECT`,
+  so felix-client sets `FEATURE_EXTENDED` and sends `client_features_hi` in
+  its `auth`; an older broker ignores the field.
+- Every change of a shard's leader is fenced, not only a promotion (part of
+  #1009). A move's cut-over, a failover that names a move's destination, a
+  cancelled move's hand-back, and a generation of a shard its leader serves
+  that skips one (a promotion elsewhere that the broker only saw coalesced
+  away) now wait in `fencing` until a majority of the replica set takes the
+  new generation, and take the answer furthest ahead, before they serve. The
+  generation right after one the leader serves (a move's staging or a
+  follower replacement step) still opens at once: nobody led in between. Each was a generation the control
+  plane picked from its own view, opened at once; a leader it did not know
+  about, from a second planner or a later replica election, could keep
+  writing beside it. A write that reaches the broker while it fences is held,
+  within `FELIX_SHARD_MOVE_HOLD_MS`, rather than refused. The lease fallback
+  is unchanged: when a replica does not offer the fence the shard opens on
+  the lease as before. `felix_broker_promotions_opened_total{path}` now counts
+  every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
+  `FelixShardElectHandoff.cfg` (passes; an hour, so nightly),
+  `FelixShardElectHandoffLeaders.cfg` (the same without a write, per PR) and
+  `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
+  leader at an elected generation). The CI model check now runs on seven jobs, filled
+  by each configuration's measured time, to stay under the hour.
+- A publish acknowledged on commit is answered by the task that sees it
+  commit (#926). The commit task, or the executor for an in-memory write, puts
+  the ack straight onto the control stream's writer queue, instead of
+  completing a oneshot that a per-stream ack-waiter task awaited under a
+  per-publish timer. The ack timeout is now one deadline sweep per control
+  stream, and the writer sends every answer already queued in one write. An
+  ack is still never sent before the publish is durable under the stream's
+  fsync mode, a pipelining client still gets answers in request order, and a
+  failed, dropped or timed-out publish still gets its error. Not yet measured;
+  numbers come from an Azure `nats-latency.sh` run. The test-only subscriber
+  `event_writer` is removed; its byte-cap test moved onto the lane feeder.
+  `felix_broker_ack_waiter_queue_full_total` is gone with the waiter queue.
+- A plain `Client` spreads one stream's shards over its connections, as a
+  `ClusterClient` already did (#724). Its publishers learn a stream's width
+  from the broker on the first keyed publish to it (`StreamShards`, one round
+  trip, kept for the client's life) and put each shard on a publish stream of
+  its own, placed on the least-loaded connection, so one client's hot
+  multi-shard stream no longer rides one connection and one listener. Order is
+  kept per shard: every publish a client makes to one shard still goes through
+  one writer and one QUIC stream. Unkeyed publishes are shard 0, so a stream
+  published without keys, or a single-shard stream, stays on one stream for
+  total order. A stream whose width cannot be learned keeps all its keyed
+  publishes on shard 0's stream. The writer for a key always comes from the
+  width the client keeps, never from a caller's own shard, so plain
+  publishes, a `ClusterClient` and an idempotent producer through one client
+  share a key's writer even if they disagree about the width. The kept width
+  is dropped when a publish is refused with `not_found`, so a stream deleted
+  and created with another width is routed by its new width. A
+  `ClusterClient` now asks each broker it publishes keyed records through for
+  the stream's width once. Unkeyed publishes through a plain
+  `Client` move from a pooled stream to shard 0's own, which costs one stream
+  open per stream on the first publish. `FELIX_PUB_SHARD_STREAMS` now applies
+  to plain clients too; `0` restores the old routing.
+- A follower stores the leader's append time with each record it replicates,
+  instead of stamping it with its own clock, so after a failover the new
+  leader reports the same record times, and `offset_for_time` gives the same
+  answer, as before (#1045). Brokers offer the new `RECORD_TIMES` peer
+  capability (`1 << 5`); a leader sends a follower that offered it
+  `ReplicateTimedRecords` (internal kind 36), a labelled batch with one time
+  per record, and a promoted leader taking a replica's tail asks with
+  `ReplicateTimedFetch` (kind 37). An older follower is sent what it reads,
+  and a newer follower receiving from an older leader uses its own clock, as
+  before. Breaking for callers of felix-broker's
+  `StreamLog::begin_append_marked_at` and `replication::apply`, which take the
+  records' times (empty for this broker's clock), and of felix-wire's
+  `ReplicateRecords` and `ReplicateFetch`, which gain `times` and `timed`.
+- Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
+  `expected_offset` field, and `PublishRefusalReason` and
+  `felix_broker::BrokerError` have new variants, so struct literals and
+  exhaustive matches need updating.
+- A durable stream no longer reserves a whole 256 MiB segment of disk per
+  shard when it is created (#1016). The active segment reserves 1 MiB (or a
+  sixteenth of the segment size, if smaller) and doubles the reservation each
+  time its records pass half of it, up to the segment size. Each extension runs
+  on a blocking thread after the append that earned it and is best effort: a
+  failure is logged, counted in `felix_storage_segment_reserve_failed_total`,
+  and never fails an append. Reserving still leaves the file size alone, so
+  recovery is unchanged. `SegmentWriter::reopen` takes a reservation limit.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only
@@ -183,6 +419,15 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
+  so a promoted shard waiting for its fence was counted in no phase.
+- A broker accepts a token carrying `node.view` or `node.manage`. Neither was
+  an action it knew, so an operator token that also served the control plane
+  failed to authenticate there.
+- The docs no longer list `DropOld` as a working overflow policy (#1019). It is
+  accepted at the broker, writer-lane and client stages but behaves as
+  `DropNew` at each: the arriving batch is dropped, not the oldest. The status
+  table, configuration reference and client docs now say so.
 - JSON numbers survive a decode and re-encode exactly. serde_json's default
   float parser could land a long literal one ulp off, so an extension body the
   broker passed on carried a different number. Nightly fuzzing found it.
@@ -193,6 +438,13 @@ for what the current release guarantees.
   doubt with nobody waiting is re-sent by the producer, under its sequence,
   before the next batch on that shard. Dropping the producer lets what it was
   handed finish; `IdempotentProducer::close` waits for it. (#977)
+- The history campaign could report a record delivered past the end of the
+  final log (`lost-delivery`). Since #977 a dropped producer still sends what
+  it was handed, so an append recorded as unknown could land after the final
+  read. A stopping client now closes its producer and finishes its publishes
+  before the final read is taken. `IdempotentProducer::close_within(timeout)`
+  is new: `close`, but the producer's task is stopped at the timeout, so
+  nothing it held is sent later. (#1075)
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.

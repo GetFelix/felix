@@ -207,6 +207,7 @@ After bootstrap, admin actions require explicit Felix permissions:
 - Tenant catalog (create, list, delete): `tenant.manage:cluster:*`
 - Metadata feeds brokers seed from (`snapshot`, `changes`): `node.view:cluster:*`
 - Cluster membership reads: `node.view:cluster:*`
+- A broker's view of a shard (`shard_inspect`, `felixctl inspect`): `node.view:cluster:*`, presented to the broker. Only that exact grant counts; a wildcard such as `node.view:*` does not reach the cluster
 - Cluster membership writes: `node.manage:node:{node_id}` or `node.manage:cluster:*`
 
 The credential is checked before existence, so nothing about what exists can
@@ -230,6 +231,10 @@ Write-time protections:
 - policy/assignment writes are rejected if target scope is broader than caller scope
 
 This blocks privilege escalation when delegating namespace or stream admins.
+
+`felixctl rbac` lists, adds and removes policies and groupings over the same
+API, and checks an object against this grammar before sending it. See
+[felixctl](/getting-started/felixctl/#rbac).
 
 #### Cluster scope
 
@@ -466,6 +471,13 @@ sequenceDiagram
     B->>B: Match action+resource against perms
     B-->>C: Allow or reject operation
 ```
+
+A token is bound to a QUIC stream, not a connection: each stream sends its own
+`Auth` and every request on it is checked against that token. So one client can
+carry several users. The Rust client's `Client::with_identity` opens streams
+under another user's token over the same connections, and the broker still
+checks each user's requests against that user's grants alone. See
+[Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Not built
 

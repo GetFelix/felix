@@ -9,6 +9,7 @@ mod encoding;
 mod routing;
 mod shard_streams;
 mod stub_broker;
+mod widths;
 mod writer;
 mod writer_failures;
 

@@ -14,6 +14,7 @@ about reciprocity, not about who is allowed to make money.
 | `crates/protocol/felix-wire/` | Apache-2.0 | The wire protocol. Anyone should be able to implement a Felix client or server in any language without friction. |
 | `crates/sdk/felix-client/` | Apache-2.0 | The Rust client SDK. Embeddable in your own products without restriction. |
 | `crates/sdk/felix-python/`, `crates/sdk/felix-typescript/` | Apache-2.0 | The Python and Node.js bindings over the Rust client. |
+| `crates/sdk/felix-capi/` | Apache-2.0 | The C ABI over the Rust client, which the Go and C# SDKs will bind to. Not published to crates.io. |
 | `crates/protocol/felix-transport/` | Apache-2.0 | Generic QUIC transport plumbing, not Felix-specific server logic. |
 | `crates/server/felix-common/` | Apache-2.0 | Membership shapes, the env-var registry, and process lifecycle shared by the services. |
 | `crates/server/felix-broker/`, `felix-storage`, `felix-authz`, `felix-router`, `felix-kafka`, `felix-replication` | AGPL-3.0-only | Server-side core logic. |

@@ -53,8 +53,10 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
     drop(out_ack_rx);
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -72,9 +74,7 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -250,8 +250,10 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         .expect("fill channel");
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -269,9 +271,7 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         Arc::clone(&ack_timeout_state),
         cancel_tx.clone(),
         cancel_rx.clone(),
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx.clone(),
-        Duration::from_millis(10),
+        commit_acks.clone(),
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -302,9 +302,7 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -371,8 +369,10 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -390,9 +390,7 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -468,8 +466,10 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -487,9 +487,7 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -538,8 +536,10 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -557,9 +557,7 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -610,8 +608,10 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -629,9 +629,7 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -866,6 +864,7 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
             token: auth.token.clone(),
             client_flags: Some(0),
             client_features: Some(felix_wire::FEATURE_CACHE_CONDITIONAL),
+            client_features_hi: None,
         }))),
         put_if(1),
         put_if(2),

@@ -301,13 +301,23 @@ hundredfold, and the same frozen).
 
 When the fence applies:
 
-- Only on a promotion. A move's destination takes over from a leader that
-  drained into it, and a cancelled move hands the shard back to the leader
-  that had it; neither is fenced, and the model does not fence them either.
-  A hand-back is the generation right after the draining one. A broker that
-  drained a shard and is given it back at any later generation is promoted
-  and fenced: the move may have finished and its destination led in between
-  (`a_promotion_after_a_finished_move_away_is_fenced`).
+- On every change of leader, not only a promotion: whenever a broker starts
+  leading a shard at a generation it was not serving it at, the shard opens
+  in `fencing` (`begin_open` in `shards/lifecycle.rs`). That covers a
+  promotion, a fresh placement, a move's cut-over, a failover that names a
+  move's destination, a cancelled move's hand-back, and a generation of a
+  shard the broker serves that skips one, which a promotion of someone else
+  that this broker saw only coalesced away gives it. Each of these is a
+  generation the control plane picked from its own view, and the fence is
+  what keeps out a leader it did not know about, while the catch-up takes
+  what that leader acknowledged. Two opens are not fenced: the old leader's
+  end of a move, which reopens the log to ship it, not to serve, and the
+  generation right after one the broker is serving, which a move's staging or
+  a follower replacement step gives it. Every assignment write raises the
+  generation by one, so nobody led in between, and fencing it would close a
+  serving shard at each step; a leader cut off from a majority of the new set
+  would then stop reporting, and placement waits on that report to finish the
+  step. See [Every change of leader](#every-change-of-leader).
 - For stream shards and cache shards. A cache shard fences its cache log, which
   holds the shard's one promise per replica, then its counter log, and takes
   the furthest ahead of each by the same order
@@ -323,12 +333,15 @@ When the fence applies:
   them too. Otherwise the shard opens at once
   on the lease, exactly as before (`a_mixed_fleet_fails_over_on_the_lease`),
   and a peer that did not offer them is never sent either message.
-  `felix_broker_promotions_opened_total{path}` says which path each promotion
-  took.
+  `felix_broker_promotions_opened_total{path}` says which path each new
+  leadership took, promoted or not.
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
-it retries every 200 ms. It could not have acknowledged a `Quorum` write
+it retries every 200 ms. Every other change of leader pays a round trip to a
+majority before it serves; a write that reaches the broker meanwhile waits
+for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
+being refused. It could not have acknowledged a `Quorum` write
 without that majority anyway, but a `Leader` write it would have.
 
 **What this does not change on its own.** Until the fleet finalizes
@@ -340,6 +353,103 @@ report and the lease, under the real margins. Once `majority_ack` is
 finalized, see [Acknowledging by the followers](#acknowledging-by-the-followers).
 A `Leader` stream acknowledges on the leader's own commit, which no follower
 sees, so its deposed leader is kept out by the lease alone either way.
+
+### Ballots
+
+A replica remembers whom it accepted a generation from, not only the
+generation. The control plane issues each generation once, so today two nodes
+never claim one, and a replica could treat a fence at its accepted generation
+as the leader confirming it still leads. That stops holding once anything other
+than the control plane picks a generation: two control-plane instances working
+from a stale read, or replicas electing a leader without it, which is what
+issue #1009 builds toward. Two candidates at one generation could then each
+fence a majority, and followers would take batches from both.
+
+So the promise is a ballot, `(generation, leader)`. At the generation it
+accepted, a replica answers a fence, a batch, a bootstrap, a rebuild or a tail
+fetch only from the leader it accepted it from, and refuses any other node with
+`FencedEpoch`. A newer generation is a new ballot, whoever asks. The leader is
+the node id the peer gave in its `Hello`, which mTLS checks against its
+certificate. The shard's cursor, dead-letter and counter logs check the
+shard's own log's ballot as they check its generation. A broker leading a
+generation takes the ballot for itself first, and refuses to lead a
+generation it already accepted from another node.
+
+The ballot is on disk before the replica answers: `DiskLog::accept_generation`
+writes the shard's `ballot` file, fsynced and renamed into place with the
+directory synced, then raises the generation in `replica`, and only then
+returns. A crash between the two leaves a ballot ahead of `replica`, and the
+open takes the higher generation from it; nothing was answered at that
+generation yet, and taking it only refuses more. A ballot behind `replica`, or
+none, names no leader, and the first leader to ask at the accepted generation
+is written down as it. That is the state after an upgrade, and with
+`FELIX_INTERNAL_FENCE=false`, which keeps no ballots. The file sits beside
+`replica` rather than inside it so that a build without ballots still opens
+the shard.
+
+It is negotiated like the fence. A broker that keeps ballots offers the
+`BALLOTS` capability (`docs/internal-protocol.md`, "Capabilities"), and only
+with the fence. Nothing reads the offer yet: a broker without it answers as
+before, and a later change that lets replicas elect will need every replica to
+offer it.
+
+The model has it as `Ballots` and `Elections` in `docs/formal/FelixShard.tla`
+(`docs/formal/README.md`, "Ballots: one leader per generation").
+`FelixShardElect.cfg` lets replicas elect themselves and passes with ballots;
+`FelixShardElectNoBallot.cfg` finds two leaders opening at one generation
+without them. `FelixShardElectStaleSet.cfg` shows what ballots do not cover: a
+replica that left the set can still stand on the old one, which self-election
+will have to refuse first.
+
+Evidence: `a_second_leader_at_an_accepted_generation_is_refused`,
+`a_ballot_survives_a_crash_before_anything_is_acknowledged` and
+`a_ballot_written_before_a_crash_is_taken_at_open` (storage);
+`a_fence_from_a_second_leader_at_the_same_generation_is_refused`,
+`a_ballot_is_on_disk_before_the_fence_is_answered` and
+`the_ballot_names_the_peer_that_said_hello` (replica);
+`a_generation_promised_to_another_node_is_not_led` (the leader's side).
+
+### Every change of leader
+
+Ballots keep one leader per generation only if every leader asks for the
+ballot. Before this, a move's cut-over and a cancel's hand-back opened at
+once at the generation the control plane named, as did a generation of a
+shard the leader served that skipped one. With only the control plane picking
+generations that was safe. With a second source of generations, a candidate
+electing itself or a planner working from an old read, it is not: the
+control plane can name the destination at a generation a candidate already
+took, and the destination opens there too. `FelixShardElectHandoffUnfenced.cfg`
+finds exactly that (`OneLeaderPerGeneration`).
+
+So every leadership a broker takes goes through the fence, the same one a
+promotion does. The new leader persists its own ballot first, which it cannot
+do at a generation it already promised to another node, then fences a
+majority of its set and takes the answer furthest ahead. A majority that
+promised another leader that generation refuses it, and it stays closed. The
+lease fallback is unchanged: when some replica does not offer the fence, the
+shard opens on the lease, as before, and
+`felix_broker_promotions_opened_total{path}` counts every new leadership, not
+only promotions.
+
+The cost is the promotion's cost on more paths. A new leader that cannot
+reach a majority retries the fence on every replication pass and does not
+serve or report until it gets one; it does not give up or step down. The
+shard is unavailable until the leader reaches a majority, or dies and
+placement promotes from the last report, which waits for a broker holding
+the log if that report names no follower that does. A move's destination cut
+off from its followers at the cut-over is now in that position, where before
+it served unfenced. `FelixShardElectHandoff.cfg` checks the cut-over and the
+hand-back fenced, with replicas electing themselves (`FenceEveryChange` in the
+model); it runs nightly, and `FelixShardElectHandoffLeaders.cfg`, without the
+write, runs on every pull request.
+
+Evidence, each a leader from before the change sending a batch after it to a
+replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
+`after_a_failover_to_the_destination_the_old_leader_is_refused`,
+`after_a_hand_back_an_older_leader_is_refused` and
+`after_a_new_generation_of_a_served_shard_the_leader_between_is_refused`
+(`services/felix-broker-service/src/shards/lifecycle/tests/every_change.rs`);
+`a_write_to_a_shard_still_fencing_waits_for_the_fence` (the write hold).
 
 ### The generation-start record
 
@@ -1002,6 +1112,14 @@ generation, from where the batch appended. That fallback is the overclaim
 above, so a cluster is only as safe as its oldest broker until every one
 offers the capability.
 
+Each record's append time travels the same way, as a time per record on a
+labelled batch, to a follower that offered `RECORD_TIMES`, and a fence's tail
+fetch asks for them too. The follower stores the leader's times rather than
+its own clock's, so a promoted replica reports the times readers already saw
+and answers `offset_for_time` the same. Nothing about safety rests on them:
+they are not compared, and a follower that did not get them stamps the records
+itself, which only shifts those records' times by the replication delay.
+
 Correct labels are not the whole of it. A promoted leader's quorum mark counts
 the records it inherited as it counts its own, so it can acknowledge one on a
 majority that a later leader's fence then replaces with a newer generation's
@@ -1170,9 +1288,11 @@ the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 `a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
-returns. With `majority_ack` finalized the promotion is fenced instead, and
-`a_move_cut_short_by_kills_leaves_no_replica_halted` checks that the brokers
-holding the unacknowledged tail halt and rejoin.
+returns. With `majority_ack` finalized the cut-over is fenced with no lease
+fallback, so the destination, cut off from every follower, never serves or
+reports, and `a_move_cut_short_by_kills_leaves_no_replica_halted` checks that
+the shard waits the same way and that every replica rejoins with nothing
+halted once the destination and the old leader return.
 
 The last report is the one promotion reads, so a leader that stops on purpose
 has to make it a good one. A stopping broker stops taking forwarded writes,
@@ -1846,9 +1966,10 @@ than the report said, because the report is the only input either reads.
 On a durable `Quorum` stream that is not enough: the leader acknowledges on
 its followers' answers without waiting for the report, so the last report
 can predate a record the followers hold. A promoted follower fences a
-majority and takes that record, but a move's destination opens the shard as
-its cut-over, without the fence, so failover on such a stream never
-promotes the destination.
+majority and takes that record, but a move's destination on a broker from
+before every change of leader was fenced opens the shard as its cut-over,
+without the fence, so failover on such a stream never promotes the
+destination.
 
 > `a_move_switches_over_in_well_under_a_second`: with every broker on the
 > default sync interval and placement on a slow timer, the destination accepts

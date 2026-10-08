@@ -559,6 +559,18 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY="512"
 export FELIX_SUB_QUEUE_CAPACITY="512"
 ```
 
+### `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+
+**Description**: The largest broker-side queue capacity a subscriber may ask for with `queue_capacity` on subscribe. A larger request is granted this value, and `subscribed` reports what was granted. Bounds how much one reader can hold in broker memory.
+
+**Type**: Positive integer (count of published batches)
+
+**Default**: `4096`
+
+```bash
+export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
+```
+
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
 
 **Description**: Max concurrent subscriptions a single QUIC connection may hold. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). This bounds how many subscriptions a connection can open in total, protecting broker memory from a connection that opens unbounded subscriptions.
@@ -630,7 +642,7 @@ export FELIX_SUB_QUEUE_BOUND="64"
 
 ### `FELIX_SUB_QUEUE_MODE`
 
-**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue). `drop_old` behaves as `drop_new`.
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -925,7 +937,7 @@ export FELIX_CLIENT_SUB_QUEUE_CAPACITY="256"
 
 ### `FELIX_CLIENT_SUB_QUEUE_POLICY`
 
-**Description**: Client-side backpressure policy for subscription pipeline queues. Applies to live records only: history replayed from an earlier offset (below the subscription's `live_offset`) always waits for room and is never dropped.
+**Description**: Client-side backpressure policy for subscription pipeline queues. `drop_old` behaves as `drop_new`: the arriving event is dropped. Applies to live records only: history replayed from an earlier offset (below the subscription's `live_offset`) always waits for room and is never dropped.
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -967,11 +979,12 @@ export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 
 ### `FELIX_PUB_SHARD_STREAMS`
 
-**Description**: Most publish streams a `ClusterClient` opens per broker for
-one shard each, beside the pooled ones (client). Each of its publishes goes on
-its shard's own stream, so a stalled shard holds up only itself. Shards past
-the cap share the pool. `0` turns them off. A plain `Client` does not use
-them.
+**Description**: Most publish streams a client opens per broker for one shard
+each, beside the pooled ones (client). Each publish goes on its shard's own
+stream, so a stalled shard holds up only itself and one stream's shards
+spread over the client's connections. Shards past the cap share the pool.
+`0` turns them off, which puts every publish to a stream on one pooled
+stream.
 
 **Type**: Non-negative integer (count)
 
@@ -1866,8 +1879,9 @@ export FELIX_DURABLE_MAX_RECORDS_PER_READ="5000"
 
 ### `FELIX_DURABLE_PREALLOCATE`
 
-**Description**: Reserve a segment's blocks when it is created, keeping block
-allocation off the append path.
+**Description**: Reserve a segment's blocks ahead of its writes, keeping block
+allocation off the append path. A new segment reserves 1 MiB and doubles the
+reservation as it fills, up to `FELIX_DURABLE_SEGMENT_BYTES`.
 
 **Type**: Boolean
 
@@ -2055,7 +2069,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_MAX_INFLIGHT` | `1024` | Outstanding requests allowed per peer. |
 | `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` | `5000` | Bounds one forwarded request. |
 | `FELIX_INTERNAL_HANDSHAKE_TIMEOUT_MS` | `2000` | Bounds dialling a peer that is gone. |
-| `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences nothing when promoted, and a shard it replicates opens on the lease alone wherever it is promoted. It also stops the broker reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
+| `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences no shard it takes, by promotion, cut-over or hand-back, and a shard it replicates opens on the lease alone wherever it is taken. It also stops the broker keeping ballots ("Ballots" in the same document), so it checks only the generation of what a leader sends it, and stops it reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
 | `FELIX_INTERNAL_IDLE_TIMEOUT_MS` | `60000` | Idle timeout on a peer connection. |
 | `FELIX_INTERNAL_RECONNECT_BASE_MS` | `50` | First reconnect backoff after losing a peer. |
 | `FELIX_INTERNAL_RECONNECT_MAX_MS` | `5000` | Backoff ceiling. |

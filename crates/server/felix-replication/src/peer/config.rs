@@ -135,9 +135,9 @@ pub struct PeerTransportConfig {
     /// most likely to be wrong, so it is worth a hook.
     pub partition_file: Option<std::path::PathBuf>,
     /// `FELIX_INTERNAL_FENCE`: whether this broker offers the promotion fence
-    /// to its peers and answers it. On by default. Off, it is spoken to as a
-    /// broker that predates the fence, and every shard it replicates keeps the
-    /// lease alone.
+    /// to its peers and answers it, and keeps ballots. On by default. Off, it
+    /// is spoken to as a broker that predates the fence, and every shard it
+    /// replicates keeps the lease alone.
     pub fence: bool,
 }
 
@@ -229,12 +229,15 @@ impl PeerTransportConfig {
     /// What this broker offers its peers in the handshake.
     pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
         use felix_wire::internal::PeerCapabilities;
-        let labels = PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::FORWARD_OFFSETS);
+        let labels = PeerCapabilities::GENERATION_LABELS
+            .union(PeerCapabilities::FORWARD_OFFSETS)
+            .union(PeerCapabilities::RECORD_TIMES);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)
                 .union(PeerCapabilities::TAIL_FETCH)
                 .union(PeerCapabilities::CACHE_FENCE)
+                .union(PeerCapabilities::BALLOTS)
         } else {
             labels
         }

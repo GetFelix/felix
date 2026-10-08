@@ -10,11 +10,14 @@
 mod cache;
 mod cache_watch;
 mod commit;
+pub use commit::ConditionalWrite;
 mod connect;
 mod discovery;
 mod groups;
+mod identity;
 
 pub use groups::{GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
+pub use subscribe::StreamPage;
 mod publish;
 mod subscribe;
 
@@ -26,8 +29,10 @@ use felix_transport::QuicConnection;
 
 use crate::cache::CacheWorker;
 use crate::config::ClientRuntimeConfig;
-use crate::connection::NodeConnections;
-use crate::publish::{PublishAdmission, PublishSharding, PublishWorker, ShardStreams};
+use crate::connection::{Credentials, NodeConnections};
+use crate::publish::{
+    PublishAdmission, PublishSharding, PublishWorker, ShardStreams, StreamWidths,
+};
 
 /// A client of one broker, over multiplexed QUIC connections.
 ///
@@ -56,12 +61,15 @@ pub struct Client {
     publish_stream_hasher: ahash::RandomState,
     // Opened on demand, one per shard published to, beside the pool.
     publish_shard_streams: Arc<ShardStreams>,
+    // Learned once per stream, so every publisher from this client puts a
+    // key on the same shard's stream.
+    publish_widths: Arc<StreamWidths>,
 
     // Per-stream cache workers: each owns exactly one bi-directional QUIC stream and
     // serializes cache round-trips (encode -> write -> read -> decode).
     cache_workers: Vec<CacheWorker>,
 
-    cache_request_counter: AtomicU64,
+    cache_request_counter: Arc<AtomicU64>,
     cache_worker_rr: AtomicUsize,
 
     // In-flight work per connection slot, for the gauges. A cache count is
@@ -70,9 +78,15 @@ pub struct Client {
     cache_conn_counts: Arc<Vec<AtomicUsize>>,
     event_conn_counts: Arc<Vec<AtomicUsize>>,
     auth_tenant_id: String,
+    // What every stream this client opens authenticates as. A client from
+    // `with_identity` shares its parent's connections but not these.
+    credentials: Arc<Credentials>,
     runtime_config: ClientRuntimeConfig,
+    worker_settings: connect::WorkerSettings,
     /// Optional requests this broker said it implements.
     server_features: u32,
+    /// The same, from the extended feature word.
+    server_features_hi: u32,
 }
 
 #[cfg(test)]

@@ -142,6 +142,8 @@ Other workflows:
 - `pages.yml`: builds and deploys this docs site.
 - `history.yml`: the nightly history-checker campaign.
 - `fuzz-nightly.yml`: the long fuzz campaign.
+- `tla-walk.yml`: TLC's simulation mode over long random walks of replica-set
+  changes, one job per family, nightly (`task tla:walk`).
 - `power-loss-nightly.yml`: the storage power-loss suite across 110 seeds per
   scenario from a random base, where pull requests run eight plus the pinned ones.
 - `soak.yml`: a weekly soak and resource-leak run.

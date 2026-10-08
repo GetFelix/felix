@@ -77,7 +77,21 @@ pub enum Outcome {
     Lease { lacking: String },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
-    Pending(String),
+    Pending {
+        why: String,
+        /// The replicas that took the fence in this attempt, on the log it
+        /// stopped at. What an operator reads to see who is missing.
+        took: Vec<String>,
+    },
+}
+
+impl Outcome {
+    fn pending(why: impl Into<String>, took: Vec<String>) -> Self {
+        Outcome::Pending {
+            why: why.into(),
+            took,
+        }
+    }
 }
 
 /// Fence `route`'s replicas for the shard this broker was just promoted to
@@ -144,7 +158,7 @@ pub async fn fence_shard<R: PeerRequester>(
         else {
             match kind {
                 LogKind::Stream => {
-                    return Outcome::Pending("this broker has no log for the shard".to_string());
+                    return Outcome::pending("this broker has no log for the shard", Vec::new());
                 }
                 // A cache kept in memory replicates nothing, so there is no
                 // log to fence and none a pass could acknowledge on.
@@ -196,6 +210,9 @@ async fn fence_log<R: PeerRequester>(
     let voters = replicas.len() + 1;
     let needed = voters / 2 + 1;
     let mut answered: Vec<(String, std::net::SocketAddr, FenceOk)> = Vec::new();
+    let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
+        answered.iter().map(|(node, _, _)| node.clone()).collect()
+    };
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         asks.push(ask_fence(
@@ -214,10 +231,10 @@ async fn fence_log<R: PeerRequester>(
             Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
-                return Err(Outcome::Pending(format!(
-                    "{node_id} has accepted a newer generation: {}",
-                    err.detail
-                )));
+                return Err(Outcome::pending(
+                    format!("{node_id} has accepted a newer generation: {}", err.detail),
+                    took(&answered),
+                ));
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
                 return Err(Outcome::Lease { lacking: node_id });
@@ -241,19 +258,24 @@ async fn fence_log<R: PeerRequester>(
     }
     drop(asks);
     if answered.len() + 1 < needed {
-        return Err(Outcome::Pending(format!(
-            "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
-            answered.len(),
-            replicas.len(),
-            needed - 1
-        )));
+        return Err(Outcome::pending(
+            format!(
+                "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
+                answered.len(),
+                replicas.len(),
+                needed - 1
+            ),
+            took(&answered),
+        ));
     }
 
     // The tail that wins, by the order promotion by log order uses (`Ahead`).
-    let own_end = log
-        .tail_offset()
-        .await
-        .map_err(|err| Outcome::Pending(format!("could not read the shard's tail: {err}")))?;
+    let own_end = log.tail_offset().await.map_err(|err| {
+        Outcome::pending(
+            format!("could not read the shard's tail: {err}"),
+            took(&answered),
+        )
+    })?;
     let own = (last_generation(&log.generations(), own_end), own_end);
     let ahead = answered
         .iter()
@@ -269,7 +291,7 @@ async fn fence_log<R: PeerRequester>(
     };
     catch_up(requester, broker, log, kind, key, shard, from)
         .await
-        .map_err(Outcome::Pending)?;
+        .map_err(|why| Outcome::pending(why, took(&answered)))?;
     Ok(Some(node_id.clone()))
 }
 
@@ -372,9 +394,13 @@ async fn catch_up<R: PeerRequester>(
     let compared_from = next;
     // Taken with the generations that wrote them, so this broker's fence
     // answers and the followers it ships to do not see them as newer.
-    let labelled = requester
-        .recorded_capabilities(from)
-        .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    let offered = requester.recorded_capabilities(from);
+    let labelled =
+        offered.is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    // And with the times its leader stored, so this broker reports them once
+    // it serves.
+    let timed =
+        labelled && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES));
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
@@ -384,6 +410,7 @@ async fn catch_up<R: PeerRequester>(
             from_offset: next,
             max_bytes: FETCH_BYTES,
             labelled,
+            timed,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
@@ -412,6 +439,7 @@ async fn catch_up<R: PeerRequester>(
             &batch.payloads,
             &batch.marks,
             &batch.publishers,
+            batch.times.as_deref().unwrap_or_default(),
         )
         .await
         .map_err(|err| err.to_string())?;

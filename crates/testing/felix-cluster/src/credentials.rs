@@ -102,6 +102,20 @@ impl Credentials {
         )
     }
 
+    /// Reads and writes the tenant's RBAC policies and role assignments.
+    pub fn rbac_admin_token(&self) -> String {
+        let tenant_id = &self.tenant_id;
+        self.mint(
+            "p:harness-rbac-admin",
+            vec![
+                format!("rbac.view:tenant:{tenant_id}"),
+                format!("rbac.policy.manage:tenant:{tenant_id}"),
+                format!("rbac.assignment.manage:tenant:{tenant_id}"),
+            ],
+            CONTROLPLANE_AUDIENCE,
+        )
+    }
+
     /// Changes any node's membership, and reads it. Draining a broker is a
     /// write, which [`Self::admin_token`] cannot do.
     pub fn operator_token(&self) -> String {
@@ -112,6 +126,16 @@ impl Credentials {
                 "node.view:cluster:*".to_string(),
             ],
             CONTROLPLANE_AUDIENCE,
+        )
+    }
+
+    /// Presented to brokers by an operator inspecting what they hold
+    /// (`shard_inspect`). Cluster scope, and nothing a tenant could grant.
+    pub fn inspector_token(&self) -> String {
+        self.mint(
+            "p:harness-inspector",
+            vec!["node.view:cluster:*".to_string()],
+            BROKER_AUDIENCE,
         )
     }
 

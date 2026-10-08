@@ -16,6 +16,8 @@ fn action_string_roundtrip() {
         Action::CacheWrite,
         Action::GroupConsume,
         Action::GroupManage,
+        Action::NodeView,
+        Action::NodeManage,
     ];
 
     for action in actions {

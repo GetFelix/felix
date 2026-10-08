@@ -1,5 +1,6 @@
-//! Read-only control-plane commands over its REST API: `tenant`,
-//! `namespace`, `stream`, `cache ls|info`, `node` and `shard`.
+//! The control plane's REST API, and the read-only commands over it:
+//! `tenant`, `namespace`, `stream`, `cache ls|info`, `node` and `shard`
+//! listings and lookups. The writes are in `manage` and `rbac`.
 //!
 //! Resources are handled as JSON values rather than typed copies of the
 //! control plane's models, so a field the control plane adds shows up in
@@ -13,6 +14,7 @@ use serde_json::Value;
 use crate::cli::{NamespaceCommand, NodeCommand, ShardCommand, StreamCommand, TenantCommand};
 use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
+use crate::manage;
 use crate::output::{Output, cell, fields, table};
 
 /// Page size asked for when listing; the CLI follows `next_cursor` either way.
@@ -57,6 +59,14 @@ pub(crate) const SHARD_COLUMNS: &[Column] = &[
     ("STATE", "/state"),
 ];
 
+/// A successful answer.
+pub(crate) struct Answer {
+    /// 201: the request made something new, rather than finding it there.
+    pub(crate) created: bool,
+    /// The JSON body; `None` for a 204.
+    pub(crate) body: Option<Value>,
+}
+
 /// The control plane's HTTP API, authenticated as the context says.
 pub(crate) struct Api {
     http: reqwest::Client,
@@ -90,20 +100,61 @@ impl Api {
 
     /// GET one resource.
     pub(crate) async fn get(&self, path: &str, query: &[(&str, &str)]) -> anyhow::Result<Value> {
+        let answer = self.send(reqwest::Method::GET, path, query, None).await?;
+        Ok(answer.body.unwrap_or(Value::Null))
+    }
+
+    /// POST `body` (or nothing) to `path`.
+    pub(crate) async fn post(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> anyhow::Result<Answer> {
+        self.send(reqwest::Method::POST, path, query, body).await
+    }
+
+    /// PATCH `path` with `body`.
+    pub(crate) async fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Answer> {
+        self.send(reqwest::Method::PATCH, path, &[], Some(body))
+            .await
+    }
+
+    /// DELETE `path`.
+    pub(crate) async fn delete(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> anyhow::Result<Answer> {
+        self.send(reqwest::Method::DELETE, path, query, None).await
+    }
+
+    /// Send one request. A non-2xx answer is an error: 404 is
+    /// [`Exit::NotFound`], anything else [`Exit::Server`].
+    pub(crate) async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> anyhow::Result<Answer> {
         let url = format!("{}{path}", self.base);
-        let mut request = self.http.get(&url).query(query);
+        let mut request = self.http.request(method.clone(), &url).query(query);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
+        }
+        if let Some(body) = body {
+            request = request.json(body);
         }
         let response = request.send().await.mark(
             Exit::Connection,
             format!("reach the control plane at {}", self.base),
         )?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .mark(Exit::Connection, format!("read the answer to GET {path}"))?;
+        let text = response.text().await.mark(
+            Exit::Connection,
+            format!("read the answer to {method} {path}"),
+        )?;
         if !status.is_success() {
             let exit = if status == reqwest::StatusCode::NOT_FOUND {
                 Exit::NotFound
@@ -112,10 +163,21 @@ impl Api {
             };
             return Err(fail(
                 exit,
-                format!("GET {path}: {status}: {}", error_message(&body)),
+                format!("{method} {path}: {status}: {}", error_message(&text)),
             ));
         }
-        serde_json::from_str(&body).mark(Exit::Server, format!("GET {path} answered non-JSON"))
+        let body = if text.trim().is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&text)
+                    .mark(Exit::Server, format!("{method} {path} answered non-JSON"))?,
+            )
+        };
+        Ok(Answer {
+            created: status == reqwest::StatusCode::CREATED,
+            body,
+        })
     }
 
     /// GET every page of a listing, following `next_cursor`.
@@ -149,14 +211,24 @@ pub(crate) async fn tenant(
     out: &Output,
 ) -> anyhow::Result<()> {
     let api = Api::new(settings)?;
-    let tenants = api.list("/v1/tenants", &[]).await?;
     match command {
-        TenantCommand::Ls => print_list(out, "tenants", TENANT_COLUMNS, tenants),
+        TenantCommand::Ls => {
+            let tenants = api.list("/v1/tenants", &[]).await?;
+            print_list(out, "tenants", TENANT_COLUMNS, tenants)
+        }
         // There is no GET for one tenant, so it is found in the listing.
         TenantCommand::Info { tenant } => {
+            let tenants = api.list("/v1/tenants", &[]).await?;
             let found = find(tenants, "/tenant_id", tenant)
                 .ok_or_else(|| fail(Exit::NotFound, format!("no tenant {tenant:?}")))?;
             print_one(out, &found)
+        }
+        TenantCommand::Create {
+            tenant,
+            display_name,
+        } => manage::create_tenant(&api, tenant, display_name.as_deref(), out).await,
+        TenantCommand::Rm { tenant, confirm } => {
+            manage::remove_tenant(&api, tenant, *confirm, out).await
         }
     }
 }
@@ -167,6 +239,25 @@ pub(crate) async fn namespace(
     out: &Output,
 ) -> anyhow::Result<()> {
     let api = Api::new(settings)?;
+    match command {
+        NamespaceCommand::Create {
+            namespace,
+            display_name,
+        } => {
+            return manage::create_namespace(
+                &api,
+                settings,
+                namespace,
+                display_name.as_deref(),
+                out,
+            )
+            .await;
+        }
+        NamespaceCommand::Rm { namespace, confirm } => {
+            return manage::remove_namespace(&api, settings, namespace, *confirm, out).await;
+        }
+        NamespaceCommand::Ls | NamespaceCommand::Info { .. } => {}
+    }
     let tenant = settings.tenant()?;
     let namespaces = api
         .list(&format!("/v1/tenants/{}/namespaces", segment(tenant)), &[])
@@ -181,6 +272,9 @@ pub(crate) async fn namespace(
                 )
             })?;
             print_one(out, &found)
+        }
+        NamespaceCommand::Create { .. } | NamespaceCommand::Rm { .. } => {
+            unreachable!("handled above")
         }
     }
 }
@@ -202,6 +296,11 @@ pub(crate) async fn stream(
                 .get(&format!("{base}/streams/{}", segment(stream)), &[])
                 .await?;
             print_one(out, &found)
+        }
+        StreamCommand::Create(args) => manage::create_stream(&api, settings, args, out).await,
+        StreamCommand::Set(args) => manage::set_stream(&api, settings, args, out).await,
+        StreamCommand::Rm { stream, confirm } => {
+            manage::remove_stream(&api, settings, stream, *confirm, out).await
         }
     }
 }
@@ -246,6 +345,12 @@ pub(crate) async fn node(
                 .await?;
             print_one(out, &found)
         }
+        NodeCommand::Drain { node, confirm } => {
+            manage::node_lifecycle(&api, node, "drain", *confirm, out).await
+        }
+        NodeCommand::Deregister { node, confirm } => {
+            manage::node_lifecycle(&api, node, "deregister", *confirm, out).await
+        }
     }
 }
 
@@ -254,8 +359,11 @@ pub(crate) async fn shard(
     settings: &Settings,
     out: &Output,
 ) -> anyhow::Result<()> {
-    let ShardCommand::Ls { leader, name } = command;
     let api = Api::new(settings)?;
+    let (leader, name) = match command {
+        ShardCommand::Ls { leader, name } => (leader, name),
+        ShardCommand::Move(args) => return manage::shard_move(&api, settings, args, out).await,
+    };
     let assignments = assignments(&api, leader.as_deref()).await?;
     let assignments = assignments
         .into_iter()
@@ -318,7 +426,7 @@ fn print_list(
     out.text(&table(&headers, rows(columns, &items)))
 }
 
-fn print_one(out: &Output, value: &Value) -> anyhow::Result<()> {
+pub(crate) fn print_one(out: &Output, value: &Value) -> anyhow::Result<()> {
     if out.json {
         out.json_value(value)
     } else {
@@ -332,7 +440,7 @@ fn find(items: Vec<Value>, pointer: &str, wanted: &str) -> Option<Value> {
         .find(|item| item.pointer(pointer).and_then(Value::as_str) == Some(wanted))
 }
 
-fn namespace_path(settings: &Settings) -> anyhow::Result<String> {
+pub(crate) fn namespace_path(settings: &Settings) -> anyhow::Result<String> {
     Ok(format!(
         "/v1/tenants/{}/namespaces/{}",
         segment(settings.tenant()?),

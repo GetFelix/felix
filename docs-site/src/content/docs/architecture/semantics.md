@@ -153,8 +153,9 @@ in a second.
 **With `majority_ack` finalized** (it needs `generation_start` too), a `Quorum`
 stream acknowledges a write once a majority of its replicas has answered that
 it holds it at the leader's generation. Neither the report nor the lease is on
-the path, and a promoted leader fences a majority and takes the furthest log
-before it serves. A leader cut off from the control plane keeps acknowledging
+the path, and every new leader, promoted or taking over at a move's
+cut-over or hand-back, fences a majority and takes the furthest log before it
+serves. A leader cut off from the control plane keeps acknowledging
 what its followers hold. `Leader` streams and caches keep the report and the
 lease.
 
@@ -714,7 +715,8 @@ and clients see less of it than of one:
 
 - **Publishes are held, not refused.** Between the fence and the cut-over
   nobody serves the shard; a publish arriving then waits and is forwarded to
-  the new owner. Only a switch-over longer than `FELIX_SHARD_MOVE_HOLD_MS`
+  the new owner, which also holds it while it fences its replicas, usually a
+  round trip. Only a switch-over longer than `FELIX_SHARD_MOVE_HOLD_MS`
   (2 s) refuses one, as `shard_unavailable` with reason `moving`, unwritten.
 - **Cache and counter operations are held and forwarded** the same way.
   Consumer-group operations are held and then redirected to the new owner,
@@ -796,7 +798,8 @@ assert!(fast_count >= expected_count);
 | **Consumer groups** | At-least-once, bounded redelivery, dead letters | Shard assignment across a group's consumers |
 | **Message ordering** | Per shard | Configurable cross-shard |
 | **Subscriber isolation** | Yes | None |
-| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads` | Conditional put, multi-key transactions |
+| **Single-writer fencing** | `publish_if`, and `commit` with `expected_offset`: written only at the shard's next offset, atomic with the claim | Per-key version preconditions on a commit; writer epochs |
+| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads`; conditional put and delete by version | Multi-key transactions |
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | None |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | None |
