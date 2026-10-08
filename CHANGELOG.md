@@ -30,6 +30,17 @@ for what the current release guarantees.
   `Client::inspect_shard` and `Client::supports_inspect`. A new docs page,
   Diagnosing a cluster, goes through shard, replication, subscriber, auth
   and startup problems by symptom.
+- `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
+  SDKs (part of #618). It builds `libfelix` as a shared and a static library
+  with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
+  and covers connect, publish and a polled subscribe (`felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe`,
+  `felix_subscription_next_event`). Handles are opaque with a free function
+  each, every call returns a status code whose classes match the other SDKs,
+  the message for a failure is per thread (`felix_last_error_message`), panics
+  never cross the boundary, and each client owns its Tokio runtime. A test
+  fails while the header is stale, and CI runs a C program against the
+  conformance fixture. Not published to crates.io.
 - Replicas keep a ballot with each accepted generation (part of #1009): the
   leader they accepted it from, by the node id its `Hello` gave. At that
   generation a replica refuses a fence, a batch, a bootstrap, a rebuild or a
