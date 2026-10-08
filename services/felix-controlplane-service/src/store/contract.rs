@@ -10,5 +10,6 @@ pub(crate) mod placement;
 pub(crate) mod rbac;
 pub(crate) mod refresh_tokens;
 mod replica_reports;
+pub(crate) mod resources;
 pub(crate) mod shards;
 pub(crate) mod signing_keys;

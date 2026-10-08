@@ -71,6 +71,14 @@ async fn satisfies_the_signing_key_contract() {
     crate::store::contract::signing_keys::run_signing_key_contract(store).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_resources_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::resources::run_resources_contract(store.clone()).await;
+    crate::store::contract::resources::run_resources_race_contract(store, 20).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_rbac_contract() {
     let dir = tempfile::tempdir().expect("tempdir");

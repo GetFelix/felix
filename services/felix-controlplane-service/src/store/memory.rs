@@ -38,6 +38,7 @@ mod namespaces;
 mod nodes;
 mod pages;
 mod refresh_tokens;
+mod resources;
 mod shards;
 mod streams;
 mod tenants;
@@ -374,6 +375,10 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         caches::cache_changes(self, since).await
+    }
+
+    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+        resources::create_resources(self, streams, caches).await
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {

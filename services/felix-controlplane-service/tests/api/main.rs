@@ -10,4 +10,5 @@ mod node_heartbeat;
 mod node_write_auth;
 mod pagination;
 mod resource_auth;
+mod resources;
 mod smoke;

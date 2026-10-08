@@ -85,8 +85,9 @@ pub(crate) async fn list_caches(
     request_body = CacheCreateRequest,
     responses(
         (status = 201, description = "Cache created", body = Cache),
+        (status = 200, description = "Cache already exists with this configuration; nothing changed", body = Cache),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Cache already exists", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Cache already exists with a different configuration", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_cache(
@@ -98,7 +99,26 @@ pub(crate) async fn create_cache(
     require_cache_manage(&state, &tenant_id, &headers, &namespace, &body.cache).await?;
     validate_identifier("cache", &body.cache).map_err(|err| api_validation_error(&err))?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
-    let cache = Cache {
+    let cache = new_cache(tenant_id, namespace, body);
+    match state.store.create_cache(cache.clone()).await {
+        Ok(created) => Ok((StatusCode::CREATED, Json(created))),
+        Err(StoreError::Conflict(_)) => match state.store.get_cache(&cache_key(&cache)).await {
+            Ok(existing) if existing == cache => Ok((StatusCode::OK, Json(existing))),
+            Ok(_) | Err(StoreError::NotFound(_)) => Err(api_conflict(
+                "conflict",
+                "cache already exists with a different configuration",
+            )),
+            Err(err) => Err(api_internal("failed to fetch cache", &err)),
+        },
+        Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
+        Err(err) => Err(api_internal("failed to create cache", &err)),
+    }
+}
+
+/// The cache a request creates. Counts below one are raised to one, so a
+/// retry compares against what was stored rather than what was sent.
+pub(crate) fn new_cache(tenant_id: String, namespace: String, body: CacheCreateRequest) -> Cache {
+    Cache {
         tenant_id,
         namespace,
         cache: body.cache,
@@ -106,12 +126,14 @@ pub(crate) async fn create_cache(
         shards: body.shards.max(1),
         replication_factor: body.replication_factor.max(1),
         consistency: body.consistency,
-    };
-    match state.store.create_cache(cache.clone()).await {
-        Ok(created) => Ok((StatusCode::CREATED, Json(created))),
-        Err(StoreError::Conflict(_)) => Err(api_conflict("conflict", "cache already exists")),
-        Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
-        Err(err) => Err(api_internal("failed to create cache", &err)),
+    }
+}
+
+pub(crate) fn cache_key(cache: &Cache) -> CacheKey {
+    CacheKey {
+        tenant_id: cache.tenant_id.clone(),
+        namespace: cache.namespace.clone(),
+        cache: cache.cache.clone(),
     }
 }
 
@@ -216,7 +238,7 @@ pub(crate) async fn delete_cache(
     }
 }
 
-fn cache_object(tenant_id: &str, namespace: &str, cache: &str) -> ParsedObject {
+pub(crate) fn cache_object(tenant_id: &str, namespace: &str, cache: &str) -> ParsedObject {
     ParsedObject::Cache {
         tenant_id: tenant_id.to_string(),
         namespace: Segment::Exact(namespace.to_string()),

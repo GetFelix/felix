@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 4;
+pub const METADATA_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -313,6 +313,13 @@ pub enum MetaCommand {
     FinalizeFleetFeature {
         feature: String,
     },
+    /// Streams and caches created together: one entry, so every member
+    /// applies all of them or, on a conflict or a missing namespace, none.
+    /// Level 5.
+    CreateResources {
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    },
 }
 
 impl MetaCommand {
@@ -341,6 +348,7 @@ impl MetaCommand {
                 3
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
+            Self::CreateResources { .. } => 5,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }

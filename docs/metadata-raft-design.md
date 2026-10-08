@@ -488,6 +488,13 @@ refused, so until every member is at level 2 brokers register with
 broker reports its features again when it next registers. The enabled set is
 part of the snapshot (`fleet_enabled`, omitted while empty).
 
+Level 5 is `create_resources`, the batch create behind
+`POST /v1/tenants/{t}/namespaces/{ns}/resources` (see
+[Creating streams and caches together](control-plane.md#creating-streams-and-caches-together)).
+It is one entry so the batch applies whole or not at all. Until every member is
+at level 5 that endpoint answers `503`, and single creates go through
+`create_stream` and `create_cache` as before.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the

@@ -18,15 +18,15 @@ use crate::common::{
     Credentials, json_request, json_request_as, read_json, request_as, seed_credentials,
 };
 
-struct Harness {
-    app: axum::routing::RouterIntoService<Body, ()>,
-    store: Arc<InMemoryStore>,
-    credentials: Credentials,
+pub(crate) struct Harness {
+    pub(crate) app: axum::routing::RouterIntoService<Body, ()>,
+    pub(crate) store: Arc<InMemoryStore>,
+    pub(crate) credentials: Credentials,
 }
 
 /// A control plane with tenant `t1`, holding namespaces `payments` and
 /// `billing`, bound to the test keys.
-async fn harness() -> Harness {
+pub(crate) async fn harness() -> Harness {
     let store = Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
         change_retention_max_rows: Some(
@@ -83,7 +83,7 @@ async fn harness() -> Harness {
     }
 }
 
-fn stream_body(name: &str) -> serde_json::Value {
+pub(crate) fn stream_body(name: &str) -> serde_json::Value {
     serde_json::json!({
         "stream": name,
         "kind": "Stream",

@@ -102,6 +102,18 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>>;
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>>;
 
+    /// Create every stream and cache in one write: all of them, or none.
+    ///
+    /// `NotFound` when an item's namespace does not exist, and `Conflict` when
+    /// one already exists or the batch names it twice. Either way nothing is
+    /// written.
+    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()>;
+    /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
+    /// part-way through an upgrade answers no.
+    async fn create_resources_ready(&self) -> bool {
+        true
+    }
+
     /// Register a node, or revive the record a restarting node already has.
     ///
     /// `node_id` identifies a broker across restarts, so registering an id that
