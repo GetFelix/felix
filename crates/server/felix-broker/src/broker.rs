@@ -11,6 +11,7 @@ mod commit;
 mod keys;
 mod metadata;
 mod publish;
+mod read;
 mod registry;
 mod shard_logs;
 mod shards;
@@ -23,6 +24,7 @@ pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,
     SequenceReuse,
 };
+pub use read::ReadPage;
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};

@@ -410,6 +410,33 @@ search over append times, so if the leader's clock stepped back the answer is
 close to the right record rather than exactly it. See
 [OffsetForTime](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#offsetfortime).
 
+#### Reading a range without subscribing
+
+A subscription has no end: replay runs on into live delivery. To read a slice
+of a durable stream and stop, send `stream_read`:
+
+```json
+{ "type": "stream_read", "tenant_id": "acme", "namespace": "prod",
+  "stream": "events", "shard": 0, "from": 48210, "end": 48300,
+  "max_records": 50, "request_id": 10 }
+```
+
+```json
+{ "type": "stream_records",
+  "records": [{ "offset": 48210, "payload": "eyJ...", "timestamp_micros": 1767225600000000 }],
+  "next_offset": 48260, "request_id": 10 }
+```
+
+Read the next page from `next_offset`. The range is done once it reaches
+`end`. Leave `end` out to read up to what is committed. The broker caps a page
+at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of payload, and
+returns only committed records without waiting for more, so a page can come
+back short or empty. A `from` below what retention kept, or past the tail, gets
+a `subscribe_cursor_error`. No subscriber is registered. It needs
+`stream.subscribe`, only the shard's leader answers, and the broker must
+advertise `FEATURE_STREAM_READ`. See
+[StreamRead](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#streamread).
+
 **Event stream lifecycle**:
 
 ```mermaid

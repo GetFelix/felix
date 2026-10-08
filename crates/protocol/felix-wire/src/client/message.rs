@@ -9,7 +9,7 @@ mod fields;
 
 pub use fields::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, PublishRefusalReason,
-    ShardKind, ShardOwner, StartPosition, StateChange,
+    ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
 };
 
 use bytes::Bytes;
@@ -1042,6 +1042,44 @@ pub enum Message {
         request_id: u64,
     },
 
+    // Bounded reads.
+    /// One page of a durable stream shard's committed records, from `from` and
+    /// stopping before `end`. Answered with `stream_records`. Registers no
+    /// subscriber, so the read never runs on into live delivery.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_STREAM_READ`.
+    StreamRead {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        /// The first offset to read.
+        from: u64,
+        /// Stop before this offset. Left out, the page may run to the
+        /// committed tail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<u64>,
+        /// Most records to return. `0` takes the broker's cap, and the broker
+        /// caps any larger value.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        max_records: u32,
+        /// Most payload bytes to return, likewise. A single larger record is
+        /// still returned, alone.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        max_bytes: u64,
+        request_id: u64,
+    },
+    /// The answer to `stream_read`, in offset order. Empty when nothing
+    /// committed lies in the range yet, which is an answer and not an error.
+    StreamRecords {
+        records: Vec<StreamRecord>,
+        /// Where the next page starts. Not always the last offset plus one:
+        /// offsets that hold no record are passed over. At or past `end`
+        /// when the range is done.
+        next_offset: u64,
+        request_id: u64,
+    },
+
     // Last, because serde requires its catch-all to be.
     /// A `type` this build does not know. Never sent, and never produced by
     /// anything but decoding.
@@ -1150,6 +1188,12 @@ fn is_false(value: &bool) -> bool {
 /// For `skip_serializing_if`, like [`is_false`].
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// [`is_zero`] for a `u32`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
