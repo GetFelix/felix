@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791501473488,
+  "lastUpdate": 1791503973674,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25740,6 +25740,58 @@ window.BENCHMARK_DATA = {
             "range": "4181.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805449.26\nmean: 804675.07\nstdev: 4181.60\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa0da16c55672d6bf43b457f869e66036ed2a021",
+          "message": "feat(felixctl): inspect subscribers (#1077) (#1084)\n\n* feat(felixctl): inspect subscribers (#1077)\n\nA broker advertising FEATURE_INSPECT now also answers subscriptions_list\nwith one page of the subscriptions it serves: stream and shard, the\nconnection, client address and principal, overflow policy, queue depth and\ncapacity, records dropped, and position against the shard's tail. It needs\nnode.view:cluster:*, pages by (shard, subscriber id), defaults to 100 and\ncaps at 1000.\n\nThe broker answers from each shard's fanout snapshot. Each subscriber gets\na SubscriberStats: the fanout adds to its drop count on the drop path, the\nreceiver stores its position once per batch taken, and the serving layer\nattaches the connection and principal after subscribing.\n\nfelixctl inspect subs asks every broker, or one with --node, and prints a\ntable or one JSON line per broker. Diagnosing a cluster covers a\nsubscriber missing records and one falling behind.\n\nPart of #1077.\n\n* chore: note the TLA+ model is unaffected\n\nSpec-Unaffected: inspect subs adds a read-only request and a per-subscriber drop counter; nothing about the lease, quorum mark, reports, promotion or handoff changes.",
+          "timestamp": "2026-10-08T16:52:48-07:00",
+          "tree_id": "ca63acd6f1b4c7e7a914dc1a1d078a6d2cd73ac2",
+          "url": "https://github.com/GetFelix/felix/commit/fa0da16c55672d6bf43b457f869e66036ed2a021"
+        },
+        "date": 1791503972941,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341169.65,
+            "range": "7159.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341169.65\nmean: 340671.41\nstdev: 7159.74\ncv: 2.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341169.65,
+            "range": "7159.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341169.65\nmean: 340671.41\nstdev: 7159.74\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79451.2,
+            "range": "801.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79451.20\nmean: 79547.30\nstdev: 801.53\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794511.99,
+            "range": "8015.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794511.99\nmean: 795473.01\nstdev: 8015.29\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
