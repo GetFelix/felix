@@ -6,6 +6,8 @@
 //! leader may answer it; a replication batch is a request to *store* one
 //! already ordered, and only a follower should. Keeping them apart is what
 //! stops either check standing in for the other.
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage};
 
@@ -31,63 +33,76 @@ impl BrokerPeerHandler {
 #[async_trait]
 impl PeerRequestHandler for BrokerPeerHandler {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        self.handle_from(None, request).await
+    }
+
+    async fn handle_from(
+        &self,
+        peer: Option<Arc<str>>,
+        request: InternalMessage,
+    ) -> InternalMessage {
+        // The replica's ballot names a leader by this; forwarding does not
+        // care who asked.
+        let sender = peer.as_deref();
         match request {
             InternalMessage::ForwardPublish(publish) => self.forwarding.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.forwarding.apply_cache_op(op).await,
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => {
                 self.replica
-                    .apply(batch, felix_broker::LogKind::Stream)
+                    .apply(sender, batch, felix_broker::LogKind::Stream)
                     .await
             }
             InternalMessage::ReplicateCacheRecords(batch) => {
                 self.replica
-                    .apply(batch, felix_broker::LogKind::Cache)
+                    .apply(sender, batch, felix_broker::LogKind::Cache)
                     .await
             }
             InternalMessage::ReplicateGroupRecords(batch) => {
                 self.replica
-                    .apply(batch, felix_broker::LogKind::GroupCursors)
+                    .apply(sender, batch, felix_broker::LogKind::GroupCursors)
                     .await
             }
             InternalMessage::ReplicateDeadLetterRecords(batch) => {
                 self.replica
-                    .apply(batch, felix_broker::LogKind::GroupDeadLetters)
+                    .apply(sender, batch, felix_broker::LogKind::GroupDeadLetters)
                     .await
             }
             InternalMessage::ReplicateCounterRecords(batch) => {
                 self.replica
-                    .apply(batch, felix_broker::LogKind::Counters)
+                    .apply(sender, batch, felix_broker::LogKind::Counters)
                     .await
             }
             InternalMessage::ReplicateBootstrap(request) => {
                 self.replica
-                    .bootstrap(request, felix_broker::LogKind::Stream)
+                    .bootstrap(sender, request, felix_broker::LogKind::Stream)
                     .await
             }
             InternalMessage::ReplicateCacheBootstrap(request) => {
                 self.replica
-                    .bootstrap(request, felix_broker::LogKind::Cache)
+                    .bootstrap(sender, request, felix_broker::LogKind::Cache)
                     .await
             }
             InternalMessage::ReplicateGroupBootstrap(request) => {
                 self.replica
-                    .bootstrap(request, felix_broker::LogKind::GroupCursors)
+                    .bootstrap(sender, request, felix_broker::LogKind::GroupCursors)
                     .await
             }
             InternalMessage::ReplicateDeadLetterBootstrap(request) => {
                 self.replica
-                    .bootstrap(request, felix_broker::LogKind::GroupDeadLetters)
+                    .bootstrap(sender, request, felix_broker::LogKind::GroupDeadLetters)
                     .await
             }
             InternalMessage::ReplicateCounterBootstrap(request) => {
                 self.replica
-                    .bootstrap(request, felix_broker::LogKind::Counters)
+                    .bootstrap(sender, request, felix_broker::LogKind::Counters)
                     .await
             }
-            InternalMessage::ReplicateRebuild(request) => self.replica.rebuild(request).await,
-            InternalMessage::Fence(request) => self.replica.fence(request).await,
-            InternalMessage::ReplicateFetch(request) => self.replica.fetch(request).await,
+            InternalMessage::ReplicateRebuild(request) => {
+                self.replica.rebuild(sender, request).await
+            }
+            InternalMessage::Fence(request) => self.replica.fence(sender, request).await,
+            InternalMessage::ReplicateFetch(request) => self.replica.fetch(sender, request).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => InternalMessage::ForwardPublishError(ForwardPublishError {

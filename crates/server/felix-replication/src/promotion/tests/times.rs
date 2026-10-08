@@ -41,7 +41,7 @@ impl PeerRequester for Follower<'_> {
         match message {
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => {
-                Ok(self.handler.apply(batch, LogKind::Stream).await)
+                Ok(self.handler.apply(None, batch, LogKind::Stream).await)
             }
             other => panic!("the leader sent {:?}", other.kind()),
         }
@@ -182,7 +182,7 @@ async fn a_batch_from_a_leader_without_times_takes_the_followers_clock() {
     }]);
     let before = felix_broker::append_time_now();
 
-    let answer = handler.apply(labelled, LogKind::Stream).await;
+    let answer = handler.apply(None, labelled, LogKind::Stream).await;
 
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
@@ -215,7 +215,7 @@ async fn a_tail_taken_from_a_replica_keeps_its_times() {
         Arc::clone(&replicas.get("broker-b").broker),
         router_for("broker-b", 4),
     );
-    let answer = handler.apply(shipped, LogKind::Stream).await;
+    let answer = handler.apply(None, shipped, LogKind::Stream).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"

@@ -422,15 +422,16 @@ jobs:
   # whether it must pass or which invariant it must violate, so the trace
   # that shows a check is load-bearing stays a trace.
   formal:
-    name: TLA+ model (${{ matrix.shard }}/6)
+    name: TLA+ model (${{ matrix.shard }}/7)
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || '60') }}
-    # Six shards, filled by each configuration's measured time
-    # (scripts/check_tla.sh), keep every job near half an hour.
+    # Seven shards, filled by each configuration's measured time
+    # (scripts/check_tla.sh), keep every job near forty minutes, well under
+    # the hour.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -455,7 +456,7 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/6
+          TLA_SHARD: ${{ matrix.shard }}/7
           TLA_CONFIGS: ${{ inputs.tla_configs }}
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS

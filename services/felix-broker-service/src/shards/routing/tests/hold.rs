@@ -283,3 +283,23 @@ async fn a_shard_that_is_not_moving_is_dispatched_at_once() {
     a.ingress.settle(&key(0), 1).await;
     assert!(started.elapsed() < Duration::from_millis(100));
 }
+
+/// A write that reaches the broker that just took the shard, while it is
+/// still fencing its replicas, waits for the fence instead of failing the
+/// cut-over it arrived at.
+#[tokio::test]
+async fn a_write_to_a_shard_still_fencing_waits_for_the_fence() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    a.lifecycle.fence_promotions();
+    a.apply(assignment(0, "broker-a", 3));
+    assert_eq!(a.ingress.fence().awaiting_promotion(&key(0)), Some(3));
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(!write.is_finished(), "a write to a fencing shard is held");
+
+    assert!(a.lifecycle.fenced(&key(0), 3));
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 3 });
+    assert!(fenced, "a local write enters the fence");
+}

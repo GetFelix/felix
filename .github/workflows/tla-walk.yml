@@ -8,6 +8,11 @@ name: TLA+ walks
 # its violation within the budget, the same expectation model as ci.yml.
 # A pull request that changes the walks runs them too. See
 # docs/formal/README.md, "Long random walks".
+#
+# The same nightly run also checks, exhaustively, the configurations too big
+# for the per-push `formal` job's hour (the `exhaustive` job below), so they
+# run somewhere other than by hand. See docs/formal/README.md, "Which
+# configurations run where".
 
 on:
   schedule:
@@ -89,3 +94,37 @@ jobs:
           name: tla-walk-${{ matrix.family }}
           path: target/tla/walk/
           retention-days: 14
+
+  # Exhaustive checks of the configurations the per-push job cannot fit, each
+  # in its own job: the longest measured is an hour on a four-core runner.
+  # Not on pull requests: hours of runner time for a change to the walks.
+  exhaustive:
+    name: Check ${{ matrix.config }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - FelixShardElectHandoff
+          - FelixShardFencedAckTwoPromotions
+          - FelixShardFencedAckSeatLonger
+          - FelixShardFencedAckMove
+          - FelixShardFencedAckStagedMove
+          - FelixShardFencedAckMoveCancel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Not registered in check_tla.sh, so each must pass.
+      - name: Model-check
+        env:
+          CONFIG: ${{ matrix.config }}
+        run: scripts/check_tla.sh "$CONFIG"

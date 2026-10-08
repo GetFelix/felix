@@ -435,7 +435,7 @@ async fn replica_state_survives_compaction() {
         let cache = cache(dir.path()).await;
         overwritten(&cache, 200).await;
         let log = cache.shard_log(T, NS, C, 0).await.expect("log");
-        log.accept_generation(7).await.expect("accept");
+        log.accept_generation(7, None).await.expect("accept");
         cache
             .shard(T, NS, C, 0)
             .expect("shard")
