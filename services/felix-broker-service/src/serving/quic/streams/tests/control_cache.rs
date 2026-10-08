@@ -781,6 +781,7 @@ async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Resu
             request_id,
             consumer: Some(consumer),
             reclaim: true,
+            visibility_ms: 0,
         })))
     };
     let frames = vec![

@@ -100,20 +100,20 @@ async fn a_group_reads_only_below_the_commit_point() {
 
     let first = fx
         .reader
-        .poll_below(&key(), &fx.log, 1, 10, now, None)
+        .poll_below(&key(), &fx.log, 1, 10, now, None, None)
         .await
         .expect("poll");
     assert_eq!(payloads(&first), vec!["a"]);
     let nothing = fx
         .reader
-        .poll_below(&key(), &fx.log, 1, 10, now, None)
+        .poll_below(&key(), &fx.log, 1, 10, now, None, None)
         .await
         .expect("poll");
     assert!(nothing.is_empty(), "handed out past the commit point");
 
     let rest = fx
         .reader
-        .poll_below(&key(), &fx.log, 3, 10, now, None)
+        .poll_below(&key(), &fx.log, 3, 10, now, None, None)
         .await
         .expect("poll");
     assert_eq!(payloads(&rest), vec!["b", "c"]);
@@ -968,3 +968,4 @@ async fn a_group_hands_out_each_records_publisher() {
 }
 
 mod admin;
+mod claim_control;

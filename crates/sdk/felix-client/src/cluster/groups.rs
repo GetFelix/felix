@@ -147,6 +147,104 @@ impl ClusterClient {
         .await
     }
 
+    /// [`Client::group_poll_with`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_poll_with(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        max_records: u32,
+        options: &crate::GroupPollOptions,
+    ) -> Result<Vec<felix_wire::GroupRecord>> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_poll_with(
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                        max_records,
+                        options,
+                    )
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_nack_after`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_nack_after(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+        delay: Duration,
+    ) -> Result<()> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_nack_after(tenant_id, namespace, stream, shard, group, offset, delay)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_extend`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_extend(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: &felix_wire::GroupRecord,
+        extend: Duration,
+    ) -> Result<Duration> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_extend(tenant_id, namespace, stream, shard, group, record, extend)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_dead_letter`], on whichever broker leads the shard.
+    pub async fn group_dead_letter(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+    ) -> Result<()> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_dead_letter(tenant_id, namespace, stream, shard, group, offset)
+                    .await
+            },
+        )
+        .await
+    }
+
     /// [`Client::group_dead_letters`], on whichever broker leads the shard.
     pub async fn group_dead_letters(
         &self,

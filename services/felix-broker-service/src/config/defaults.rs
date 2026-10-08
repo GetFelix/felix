@@ -51,6 +51,10 @@ pub(super) const DEFAULT_GROUP_MAX_ATTEMPTS: u32 = 5;
 /// that a client notices a broker that has stopped answering.
 pub(super) const DEFAULT_GROUP_MAX_WAIT_MS: u64 = 30_000;
 
+/// Twelve hours. Room for a consumer retrying a slow downstream with long
+/// backoff, without a claim or a delayed nack outliving a working day.
+pub(super) const DEFAULT_GROUP_MAX_VISIBILITY_MS: u64 = 12 * 60 * 60 * 1000;
+
 /// Ten thousand. Ten full polls, so several consumers each holding a poll's
 /// worth never meet it; one that keeps polling without answering does.
 pub(super) const DEFAULT_GROUP_MAX_IN_FLIGHT: usize = 10_000;

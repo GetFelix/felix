@@ -242,6 +242,11 @@ impl ClientError {
             | E::SequenceReused { .. }
             | E::GroupOffsetNotHandedOut { .. }
             | E::CommitNeedsDurableStream => Self::invalid(message),
+            // Retrying cannot bring the claim back; the record is owed to the
+            // group and reaches whoever polls next.
+            E::GroupClaimLapsed { .. } => {
+                Self::new(ErrorCode::StaleClaim, message).with_retry(RetryClass::Fatal)
+            }
             E::MalformedCommit(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
             // A broker configured without the storage the stream needs will

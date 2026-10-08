@@ -13,6 +13,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -103,48 +104,99 @@ impl ShardedGroup {
 
     /// Finish a record, on the shard it was claimed from.
     pub async fn ack(&self, record: &ShardedGroupRecord) -> Result<()> {
-        self.settle(record, true).await
+        let shard = self.shard_of(record)?;
+        let offset = record.record.offset;
+        self.on_shard(shard, |client| async move {
+            client
+                .group_ack(
+                    &self.tenant_id,
+                    &self.namespace,
+                    &self.stream,
+                    shard,
+                    &self.group,
+                    offset,
+                )
+                .await
+        })
+        .await
     }
 
     /// Hand a record back to be redelivered at once, on the shard it was
     /// claimed from.
     pub async fn nack(&self, record: &ShardedGroupRecord) -> Result<()> {
-        self.settle(record, false).await
+        self.nack_after(record, Duration::ZERO).await
     }
 
-    async fn settle(&self, record: &ShardedGroupRecord, finished: bool) -> Result<()> {
-        let (shard, offset) = (record.shard, record.record.offset);
+    /// Hand a record back to be redelivered once `delay` has passed. See
+    /// [`Client::group_nack_after`].
+    pub async fn nack_after(&self, record: &ShardedGroupRecord, delay: Duration) -> Result<()> {
+        let shard = self.shard_of(record)?;
+        let offset = record.record.offset;
+        self.on_shard(shard, |client| async move {
+            client
+                .group_nack_after(
+                    &self.tenant_id,
+                    &self.namespace,
+                    &self.stream,
+                    shard,
+                    &self.group,
+                    offset,
+                    delay,
+                )
+                .await
+        })
+        .await
+    }
+
+    /// Keep the claim on a record standing for `extend` from now. See
+    /// [`Client::group_extend`].
+    pub async fn extend(&self, record: &ShardedGroupRecord, extend: Duration) -> Result<Duration> {
+        let shard = self.shard_of(record)?;
+        let record = &record.record;
+        self.on_shard(shard, |client| async move {
+            client
+                .group_extend(
+                    &self.tenant_id,
+                    &self.namespace,
+                    &self.stream,
+                    shard,
+                    &self.group,
+                    record,
+                    extend,
+                )
+                .await
+        })
+        .await
+    }
+
+    /// Give up on a record, listing it as a dead letter. See
+    /// [`Client::group_dead_letter`].
+    pub async fn dead_letter(&self, record: &ShardedGroupRecord) -> Result<()> {
+        let shard = self.shard_of(record)?;
+        let offset = record.record.offset;
+        self.on_shard(shard, |client| async move {
+            client
+                .group_dead_letter(
+                    &self.tenant_id,
+                    &self.namespace,
+                    &self.stream,
+                    shard,
+                    &self.group,
+                    offset,
+                )
+                .await
+        })
+        .await
+    }
+
+    fn shard_of(&self, record: &ShardedGroupRecord) -> Result<u32> {
+        let shard = record.shard;
         anyhow::ensure!(
             shard < self.shards,
             "shard {shard} is not one of this group's {} shards",
             self.shards
         );
-        self.on_shard(shard, |client| async move {
-            if finished {
-                client
-                    .group_ack(
-                        &self.tenant_id,
-                        &self.namespace,
-                        &self.stream,
-                        shard,
-                        &self.group,
-                        offset,
-                    )
-                    .await
-            } else {
-                client
-                    .group_nack(
-                        &self.tenant_id,
-                        &self.namespace,
-                        &self.stream,
-                        shard,
-                        &self.group,
-                        offset,
-                    )
-                    .await
-            }
-        })
-        .await
+        Ok(shard)
     }
 
     /// Run `op` against the broker that leads `shard`, following redirects.

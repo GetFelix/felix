@@ -158,6 +158,12 @@ pub struct BrokerConfig {
     /// shorter wait gets one. It exists so a client cannot hold a broker stream
     /// open indefinitely.
     pub group_max_wait_ms: u64,
+    /// Longest a consumer may ask a claim to stand, whether for a poll's
+    /// `visibility_ms` or a `group_extend`, and longest it may delay a nack.
+    ///
+    /// Never below `group_visibility_timeout_ms`. A claim and a delayed nack
+    /// are the leader's memory, so a failover hands the record out sooner.
+    pub group_max_visibility_ms: u64,
     /// Most records one consumer group may have handed out and unsettled at
     /// once, per shard. A poll past it answers empty until acknowledgements or
     /// lapsed claims free room, so one consumer that polls and never answers
@@ -404,6 +410,7 @@ impl Default for BrokerConfig {
             group_visibility_timeout_ms: DEFAULT_GROUP_VISIBILITY_TIMEOUT_MS,
             group_max_attempts: DEFAULT_GROUP_MAX_ATTEMPTS,
             group_max_wait_ms: DEFAULT_GROUP_MAX_WAIT_MS,
+            group_max_visibility_ms: DEFAULT_GROUP_MAX_VISIBILITY_MS,
             group_max_in_flight: DEFAULT_GROUP_MAX_IN_FLIGHT,
             disable_timings: DEFAULT_DISABLE_TIMINGS,
             control_stream_drain_timeout_ms: DEFAULT_CONTROL_STREAM_DRAIN_TIMEOUT_MS,
