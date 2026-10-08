@@ -12,6 +12,16 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A second feature word for when the `u32` feature set runs out (#1055).
+  `FEATURE_EXTENDED` (`0x8000_0000`) in `client_features` or
+  `server_features` says the peer sends and reads `client_features_hi` /
+  `server_features_hi`. A peer sends the marker and the word only when it
+  knows a feature there, and a broker answers with its word only to a client
+  that set the marker, so every existing frame is unchanged. No feature uses
+  the word yet. felix-wire adds `FEATURE_EXTENDED`, `KNOWN_FEATURES_HI`,
+  `offer_features`, `answer_features` and `peer_features_hi`. Breaking for
+  code that builds `Message::Auth` or `Message::AuthOk`: both have a new
+  field.
 - A client can read a bounded range of a durable stream and stop (#1018). A
   broker advertising `FEATURE_STREAM_READ` (`0x2000_0000`) answers
   `stream_read` (shard, `from`, optional `end`, `max_records`, `max_bytes`)

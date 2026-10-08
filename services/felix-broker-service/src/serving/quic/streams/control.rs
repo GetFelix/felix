@@ -321,6 +321,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 token,
                 client_flags,
                 client_features,
+                // Nothing reads the extended word until a feature lives there.
+                client_features_hi: _,
             } => {
                 session::authenticate(
                     &cx,

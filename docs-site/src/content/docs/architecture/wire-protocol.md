@@ -831,6 +831,14 @@ advertised its bit.
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing |
 
+`0x8000_0000` is `FEATURE_EXTENDED`, not a feature: it says a second feature
+word follows, as `client_features_hi` on `auth` or `server_features_hi` on
+`auth_ok`. A peer sends one only when it knows a feature in that word, and a
+broker sends one only to a client that set the bit, so a peer that knows none
+exchanges the frames it always did. It is a separate field rather than a wider
+number because an older broker decodes `client_features` as a `u32` and would
+fail the whole `auth` on anything larger. No feature uses the second word yet.
+
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
 

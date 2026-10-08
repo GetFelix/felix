@@ -34,6 +34,7 @@ pub(crate) async fn run_commit(
             token: auth.token.clone(),
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(felix_wire::FEATURE_REDIRECT),
+            client_features_hi: None,
         },
     )
     .await?;
@@ -111,6 +112,7 @@ async fn old_peer_sees_a_plain_ok(
             token: auth.token.clone(),
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
