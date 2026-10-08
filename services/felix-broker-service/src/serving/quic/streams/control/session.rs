@@ -145,6 +145,7 @@ pub(super) async fn authenticate(
                                         | felix_wire::FEATURE_GROUP_SKIPPED
                                         | felix_wire::FEATURE_GROUP_PUBLISHER
                                         | felix_wire::FEATURE_GROUP_ADMIN
+                                        | felix_wire::FEATURE_GROUP_CLAIM_CONTROL
                                 }
                                 None => 0,
                             }

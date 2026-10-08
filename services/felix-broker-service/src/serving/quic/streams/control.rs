@@ -585,6 +585,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 request_id,
                 consumer,
                 reclaim,
+                visibility_ms,
             } => {
                 group::group_poll(
                     &cx,
@@ -599,6 +600,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     request_id,
                     consumer,
                     reclaim,
+                    visibility_ms,
                 )
                 .await?
             }
@@ -611,15 +613,18 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 offset,
                 request_id,
             } => {
-                group::group_ack(
+                group::group_settle(
                     &cx,
                     &mut session,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    shard,
-                    group,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
                     offset,
+                    crate::serving::group_ops::Settle::Ack,
                     request_id,
                 )
                 .await?
@@ -632,16 +637,75 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 group,
                 offset,
                 request_id,
+                delay_ms,
             } => {
-                group::group_nack(
+                group::group_settle(
                     &cx,
                     &mut session,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    shard,
-                    group,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
                     offset,
+                    crate::serving::group_ops::Settle::Nack(std::time::Duration::from_millis(
+                        delay_ms,
+                    )),
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDeadLetter {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                offset,
+                request_id,
+            } => {
+                group::group_settle(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    offset,
+                    crate::serving::group_ops::Settle::DeadLetter,
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupExtend {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                offset,
+                attempts,
+                extend_ms,
+                request_id,
+            } => {
+                group::group_extend(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    offset,
+                    attempts,
+                    extend_ms,
                     request_id,
                 )
                 .await?
@@ -934,6 +998,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::GroupPosition { .. }
             | Message::GroupInfo { .. }
             | Message::GroupDeleted { .. }
+            | Message::GroupExtended { .. }
             | Message::CacheValue { .. }
             | Message::CacheOk { .. }
             | Message::CacheConditionResult { .. }

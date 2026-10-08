@@ -868,3 +868,5 @@ fn a_run_of_skipped_offsets_is_counted_and_dropped_once_passed() {
         "the record after the run is settled"
     );
 }
+
+mod claim_control;

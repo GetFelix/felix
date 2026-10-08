@@ -98,6 +98,11 @@ pub enum BrokerError {
     /// acknowledged or handed back.
     #[error("offset {offset} was not handed out by this group (next is {next})")]
     GroupOffsetNotHandedOut { offset: u64, next: u64 },
+    /// A consumer asked to extend a group claim that no longer stands: it
+    /// lapsed, the record was handed out again, or the group's state was
+    /// rebuilt since. The record is owed to the group, not to this consumer.
+    #[error("the claim on offset {offset} no longer stands")]
+    GroupClaimLapsed { offset: u64 },
     /// The shard's log was reset (this broker became a follower, or its log
     /// was rebuilt) while the publish waited for its turn. Nothing reached
     /// the ring or a subscriber, but the records were written to the old log,

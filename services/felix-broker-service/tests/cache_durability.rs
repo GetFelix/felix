@@ -1147,3 +1147,102 @@ async fn a_conditional_put_and_its_version_survive_a_restart() -> Result<()> {
     restarted.stop().await;
     Ok(())
 }
+
+/// A consumer extends a claim it is still working on, backs off a retry,
+/// and gives up on a record itself, each through the broker.
+#[tokio::test]
+async fn a_consumer_extends_delays_and_dead_letters_its_claims() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    assert!(client.supports_group_claim_control());
+    let publisher = client.publisher().await?;
+    for payload in [&b"slow"[..], b"retry", b"poison"] {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                QUEUE,
+                payload.to_vec(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+    }
+    let short = felix_client::GroupPollOptions {
+        visibility: Some(Duration::from_millis(300)),
+        ..Default::default()
+    };
+    let claimed = client
+        .group_poll_with("t1", "default", QUEUE, 0, "workers", 10, &short)
+        .await?;
+    assert_eq!(claimed.len(), 3);
+    let (slow, retry, poison) = (&claimed[0], &claimed[1], &claimed[2]);
+
+    let stands = client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            slow,
+            Duration::from_secs(60),
+        )
+        .await?;
+    assert_eq!(stands, Duration::from_secs(60));
+    client
+        .group_nack_after(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry.offset,
+            Duration::from_millis(600),
+        )
+        .await?;
+    client
+        .group_dead_letter("t1", "default", QUEUE, 0, "workers", poison.offset)
+        .await?;
+
+    // Past the poll's own visibility: the extended claim stands and the
+    // nacked record is still waiting out its delay.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        client
+            .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+            .await?
+            .is_empty()
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let again = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].offset, retry.offset);
+    assert_eq!(again[0].attempts, 2);
+
+    assert_eq!(
+        client
+            .group_dead_letters("t1", "default", QUEUE, 0, "workers")
+            .await?,
+        vec![poison.offset]
+    );
+    // The first delivery of the retried record no longer holds it.
+    let stale = client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect_err("extended a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+
+    running.stop().await;
+    Ok(())
+}

@@ -290,7 +290,7 @@ move says would skip the dropped records.
 { "type": "group_poll", "tenant_id": "<string>", "namespace": "<string>",
   "stream": "<string>", "shard": <number>, "group": "<string>",
   "max_records": <number>, "wait_ms": <number>, "request_id": <number>,
-  "consumer": "<string>"?, "reclaim": <bool>? }
+  "consumer": "<string>"?, "reclaim": <bool>?, "visibility_ms": <number>? }
 ```
 
 `consumer` names the member polling, stable across its restarts, and the broker
@@ -336,6 +336,13 @@ read about 4 MiB of payload, whatever `max_records` asks for. A group also has
 at most `FELIX_GROUP_MAX_IN_FLIGHT` records handed out and unsettled on a shard;
 a poll at that cap is answered empty (after its wait) until acknowledgements,
 hand-backs or lapsed claims free room.
+
+`visibility_ms` is how long this poll's claims stand before the records are
+owed to the group again. Omitted or `0` is the broker's
+`FELIX_GROUP_VISIBILITY_TIMEOUT_MS`, and the broker caps it at
+`FELIX_GROUP_MAX_VISIBILITY_MS`. Only a broker that advertised
+`FEATURE_GROUP_CLAIM_CONTROL` honours it. An older one ignores the field and
+claims for its own timeout, so a client sends it only after checking the bit.
 
 ### GroupRecords (server -> client)
 ```
@@ -454,6 +461,65 @@ first saw, since a claim made before it could be any of those. An offset
 written after that and not yet handed out is refused with `stale_claim`
 (`retry`): nothing was applied and the record will be delivered. An offset below the group's position is a harmless
 duplicate and answered `ok`.
+
+`group_nack` takes an optional `delay_ms`: the record is owed again only that
+many milliseconds from now, rather than at once, so a consumer can back off a
+retry without holding the record itself. Until then it keeps its place in
+flight, counted against `FELIX_GROUP_MAX_IN_FLIGHT`, and nobody holds it, so it
+cannot be extended. The redelivery counts as the next attempt as usual. The
+broker caps the delay at `FELIX_GROUP_MAX_VISIBILITY_MS`. Omitted or `0` is at
+once, so the frame is the one a nack always was. Only a broker that advertised
+`FEATURE_GROUP_CLAIM_CONTROL` honours it; an older one ignores the field and
+redelivers at once, so a client sends it only after checking the bit.
+
+### GroupExtend / GroupExtended
+```
+{ "type": "group_extend", "tenant_id": "...", "namespace": "...", "stream": "...",
+  "shard": <number>, "group": "<string>", "offset": <number>,
+  "attempts": <number>, "extend_ms": <number>, "request_id": <number> }
+{ "type": "group_extended", "visible_ms": <number>, "request_id": <number> }
+```
+
+Keeps a claim standing for `extend_ms` from when the broker takes the request,
+for a consumer still working on the record. Sent only to a broker that
+advertised `FEATURE_GROUP_CLAIM_CONTROL`. The broker caps `extend_ms` at
+`FELIX_GROUP_MAX_VISIBILITY_MS`, and `visible_ms` in the answer is what it
+granted. `extend_ms` of `0` is refused with `invalid_request`.
+
+`attempts` is the count the record was delivered with, and names that one
+delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
+bring the claim back) once that claim no longer stands: it lapsed, the record
+was handed out again, which counted another attempt, or a seek, failover or
+eviction rebuilt the group's in-flight state. Without the check, a consumer
+that lost a record could extend the claim of whoever holds it now, and keep it
+from the group should that consumer die. A record nacked with a delay is not a
+claim and cannot be extended either.
+
+An extension is the leader's memory, like every claim. A failover redelivers the
+record from the group's durable position, sooner than the extension said. A
+group's in-flight state is not evicted while a claim stands, however long.
+
+### GroupDeadLetter
+```
+{ "type": "group_dead_letter", "tenant_id": "...", "namespace": "...",
+  "stream": "...", "shard": <number>, "group": "<string>", "offset": <number>,
+  "request_id": <number> }
+```
+
+Gives up on one record for the consumer: the broker lists it as a dead letter of
+the group, then finishes it, the same order it uses when a record runs out of
+attempts, so a crash between the two leaves it listed and owed rather than
+finished without a trace. `group_redrive` puts it back, and `group_discard`
+drops it. Answered with `cache_ok`. Sent only to a broker that advertised
+`FEATURE_GROUP_CLAIM_CONTROL`.
+
+Like an ack, it is taken for any record the group has in play, whoever holds
+the claim. A record already finished is refused with `invalid_request` and not
+listed. An offset never handed out, or one from before a seek that the group
+now owes, is refused as for an ack.
+
+`group_extend`, `group_dead_letter` and a delayed `group_nack` need
+`group.consume`, like an ack.
 
 ### CacheDelete
 ```
@@ -1443,6 +1509,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
+| `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1469,7 +1536,7 @@ Note which features depend on what. `FEATURE_TOPOLOGY` and `FEATURE_REDIRECT`
 describe a cluster, so a standalone broker advertises neither.
 `FEATURE_CACHE_DELETE` works the same on one node as on twenty, and is
 advertised by both, as are `FEATURE_STREAM_SHARDS` and `FEATURE_CACHE_SHARDS`;
-a standalone broker has one shard per stream and per cache and can say so. `FEATURE_CONSUMER_GROUP`, `FEATURE_GROUP_DEAD_LETTERS` and `FEATURE_GROUP_ADMIN` depend on durable
+a standalone broker has one shard per stream and per cache and can say so. `FEATURE_CONSUMER_GROUP`, `FEATURE_GROUP_DEAD_LETTERS`, `FEATURE_GROUP_ADMIN` and `FEATURE_GROUP_CLAIM_CONTROL` depend on durable
 storage rather than on clustering: without it a group's position is lost on
 every restart, so a broker with none offers none of them. `FEATURE_CACHE_WATCH`
 depends on the cache being log-backed, for the same shape of reason: a watch's
@@ -1585,7 +1652,8 @@ peer that sends no code, is in `docs/multi-node-client.md` under "Retries".
 A subscribe for a shard the broker does not own is answered with `not_leader`,
 naming the broker that does. So is every consumer-group request (`group_poll`,
 `group_ack`, `group_nack`, `group_dead_letters`, `group_discard`,
-`group_redrive`, `group_seek`, `group_describe` and `group_delete`), since only
+`group_redrive`, `group_seek`, `group_describe`, `group_delete`,
+`group_extend` and `group_dead_letter`), since only
 the shard's leader holds its groups. Each group
 request has a stream of its own, so the answer needs no `request_id`: it answers
 the one request on that stream.

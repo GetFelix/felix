@@ -33,6 +33,21 @@ pub struct GroupMember {
     pub reclaim: bool,
 }
 
+/// How a poll takes records. See [`Client::group_poll_with`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupPollOptions {
+    /// The member polling, or `None` for one that does not name itself. See
+    /// [`Client::group_poll_as`].
+    pub member: Option<GroupMember>,
+    /// How long the broker may wait for work. It caps the wait.
+    pub wait: std::time::Duration,
+    /// How long this poll's claims stand before the records are owed to the
+    /// group again. `None` is the broker's visibility timeout. The broker caps
+    /// it (`FELIX_GROUP_MAX_VISIBILITY_MS`). Refused by a broker that cannot
+    /// honour it, which would claim for its own timeout instead.
+    pub visibility: Option<std::time::Duration>,
+}
+
 /// Where [`Client::group_seek`] or [`Client::group_create`] left a group on
 /// one shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,8 +177,44 @@ impl Client {
         max_records: u32,
         wait: std::time::Duration,
     ) -> Result<Vec<felix_wire::GroupRecord>> {
+        let options = GroupPollOptions {
+            member: member.cloned(),
+            wait,
+            visibility: None,
+        };
+        self.group_poll_with(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            max_records,
+            &options,
+        )
+        .await
+    }
+
+    /// Take up to `max_records` for a consumer group on one shard, as
+    /// `options` says: as a named member, waiting for work, or with claims
+    /// that stand longer or shorter than the broker's visibility timeout.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_poll_with(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        max_records: u32,
+        options: &GroupPollOptions,
+    ) -> Result<Vec<felix_wire::GroupRecord>> {
         self.require_groups()?;
+        let member = options.member.as_ref();
         require_member_support(self.server_features, member)?;
+        if options.visibility.is_some() {
+            self.require_claim_control()?;
+        }
+        let wait = options.wait;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::GroupPoll {
             tenant_id: tenant_id.to_string(),
@@ -176,6 +227,10 @@ impl Client {
             request_id,
             consumer: member.map(|member| member.consumer.clone()),
             reclaim: member.is_some_and(|member| member.reclaim),
+            // At least a millisecond: zero on the wire is the broker's own.
+            visibility_ms: options
+                .visibility
+                .map_or(0, |visibility| (visibility.as_millis() as u64).max(1)),
         };
         match self.group_round_trip(message, request_id).await? {
             Message::GroupRecords { records, .. } => Ok(records),
@@ -195,8 +250,16 @@ impl Client {
         group: &str,
         offset: u64,
     ) -> Result<()> {
-        self.settle_group(tenant_id, namespace, stream, shard, group, offset, true)
-            .await
+        self.settle_group(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            offset,
+            Settle::Ack,
+        )
+        .await
     }
 
     /// Hand one record back without finishing it. It is redelivered at once
@@ -210,8 +273,130 @@ impl Client {
         group: &str,
         offset: u64,
     ) -> Result<()> {
-        self.settle_group(tenant_id, namespace, stream, shard, group, offset, false)
-            .await
+        self.settle_group(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            offset,
+            Settle::Nack(std::time::Duration::ZERO),
+        )
+        .await
+    }
+
+    /// Hand one record back, to be redelivered once `delay` has passed rather
+    /// than at once. For a consumer that backs off before retrying.
+    ///
+    /// Until then the record holds a place under the group's in-flight cap.
+    /// The broker caps the delay (`FELIX_GROUP_MAX_VISIBILITY_MS`), and the
+    /// delay is the leader's memory: a failover redelivers the record sooner.
+    /// A zero delay is [`Client::group_nack`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_nack_after(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+        delay: std::time::Duration,
+    ) -> Result<()> {
+        if !delay.is_zero() {
+            self.require_claim_control()?;
+        }
+        self.settle_group(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            offset,
+            Settle::Nack(delay),
+        )
+        .await
+    }
+
+    /// Give up on one record: list it as a dead letter of the group and
+    /// finish it, as the group does once a record runs out of attempts.
+    /// [`Client::group_redrive`] puts it back.
+    ///
+    /// Refused for a record already finished, which is not listed.
+    pub async fn group_dead_letter(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+    ) -> Result<()> {
+        self.require_claim_control()?;
+        self.settle_group(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            offset,
+            Settle::DeadLetter,
+        )
+        .await
+    }
+
+    /// Keep the claim on `record` standing for `extend` from now, for a
+    /// consumer still working on it. Returns how long it now stands, which is
+    /// less than asked when the broker capped it
+    /// (`FELIX_GROUP_MAX_VISIBILITY_MS`).
+    ///
+    /// Refused with `stale_claim` once the claim has lapsed or the record has
+    /// been handed out again, even to this consumer: the record is then the
+    /// group's, and finishing it is no longer this delivery's to do. An
+    /// extension is the leader's memory, so a failover hands the record out
+    /// again sooner.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_extend(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: &felix_wire::GroupRecord,
+        extend: std::time::Duration,
+    ) -> Result<std::time::Duration> {
+        self.require_claim_control()?;
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::GroupExtend {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            group: group.to_string(),
+            offset: record.offset,
+            attempts: record.attempts,
+            extend_ms: (extend.as_millis() as u64).max(1),
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::GroupExtended { visible_ms, .. } => {
+                Ok(std::time::Duration::from_millis(visible_ms))
+            }
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to a group extend: {other:?}"
+            )),
+        }
+    }
+
+    /// Whether the broker serves [`Client::group_extend`],
+    /// [`Client::group_nack_after`], [`Client::group_dead_letter`] and
+    /// [`GroupPollOptions::visibility`].
+    pub fn supports_group_claim_control(&self) -> bool {
+        felix_wire::supports_feature(
+            self.server_features,
+            felix_wire::FEATURE_GROUP_CLAIM_CONTROL,
+        )
     }
 
     /// Offsets this group gave up on, lowest first.
@@ -500,13 +685,13 @@ impl Client {
         shard: u32,
         group: &str,
         offset: u64,
-        finish: bool,
+        action: Settle,
     ) -> Result<()> {
         self.require_groups()?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
-        let build = |tenant_id: String, namespace: String, stream: String, group: String| {
-            if finish {
-                Message::GroupAck {
+        let build =
+            |tenant_id: String, namespace: String, stream: String, group: String| match action {
+                Settle::Ack => Message::GroupAck {
                     tenant_id,
                     namespace,
                     stream,
@@ -514,9 +699,8 @@ impl Client {
                     group,
                     offset,
                     request_id,
-                }
-            } else {
-                Message::GroupNack {
+                },
+                Settle::Nack(delay) => Message::GroupNack {
                     tenant_id,
                     namespace,
                     stream,
@@ -524,9 +708,23 @@ impl Client {
                     group,
                     offset,
                     request_id,
-                }
-            }
-        };
+                    // At least a millisecond: zero on the wire is at once.
+                    delay_ms: if delay.is_zero() {
+                        0
+                    } else {
+                        (delay.as_millis() as u64).max(1)
+                    },
+                },
+                Settle::DeadLetter => Message::GroupDeadLetter {
+                    tenant_id,
+                    namespace,
+                    stream,
+                    shard,
+                    group,
+                    offset,
+                    request_id,
+                },
+            };
         let message = build(
             tenant_id.to_string(),
             namespace.to_string(),
@@ -605,6 +803,10 @@ impl Client {
         Err(anyhow::anyhow!("this broker does not serve dead letters",))
     }
 
+    fn require_claim_control(&self) -> Result<()> {
+        require_claim_control(self.server_features)
+    }
+
     fn require_group_admin(&self) -> Result<()> {
         if self.supports_group_admin() {
             return Ok(());
@@ -615,6 +817,14 @@ impl Client {
     }
 }
 
+/// What a consumer does with a record it was handed.
+#[derive(Debug, Clone, Copy)]
+enum Settle {
+    Ack,
+    Nack(std::time::Duration),
+    DeadLetter,
+}
+
 /// The request id a group answer echoes, when it carries one.
 fn group_response_id(message: &Message) -> Option<u64> {
     match message {
@@ -623,6 +833,7 @@ fn group_response_id(message: &Message) -> Option<u64> {
         | Message::GroupPosition { request_id, .. }
         | Message::GroupInfo { request_id, .. }
         | Message::GroupDeleted { request_id, .. }
+        | Message::GroupExtended { request_id, .. }
         | Message::ProducerInitOk { request_id, .. }
         | Message::CommitOk { request_id, .. }
         | Message::StateValue { request_id, .. }
@@ -641,6 +852,18 @@ fn require_member_support(server_features: u32, member: Option<&GroupMember>) ->
         anyhow::bail!("this broker does not record which member holds a group's records");
     }
     Ok(())
+}
+
+/// Refuse claim control to a broker without `FEATURE_GROUP_CLAIM_CONTROL`.
+/// Checked for the new fields too, not only the new requests: an older broker
+/// ignores `delay_ms` and `visibility_ms` and says nothing.
+fn require_claim_control(server_features: u32) -> Result<()> {
+    if felix_wire::supports_feature(server_features, felix_wire::FEATURE_GROUP_CLAIM_CONTROL) {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "this broker cannot extend a claim, delay a nack, dead-letter a record, or claim for a chosen time",
+    ))
 }
 
 #[cfg(test)]

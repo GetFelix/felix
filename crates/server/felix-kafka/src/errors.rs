@@ -45,6 +45,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         BrokerError::CapacityTooLarge
         | BrokerError::DurabilityChangeRequiresRecreate { .. }
         | BrokerError::GroupOffsetNotHandedOut { .. }
+        | BrokerError::GroupClaimLapsed { .. }
         | BrokerError::MalformedCommit(_)
         | BrokerError::CommitNeedsDurableStream
         | BrokerError::StateViewBusy

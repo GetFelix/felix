@@ -156,6 +156,12 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_GROUP_MAX_WAIT_MS);
+        let group_max_visibility_ms = std::env::var("FELIX_GROUP_MAX_VISIBILITY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_GROUP_MAX_VISIBILITY_MS)
+            .max(group_visibility_timeout_ms);
         let group_max_in_flight = std::env::var("FELIX_GROUP_MAX_IN_FLIGHT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -375,6 +381,7 @@ impl BrokerConfig {
             group_visibility_timeout_ms,
             group_max_attempts,
             group_max_wait_ms,
+            group_max_visibility_ms,
             group_max_in_flight,
             disable_timings,
             control_stream_drain_timeout_ms,

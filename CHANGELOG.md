@@ -12,6 +12,27 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A consumer can manage its own claims on a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
+  claim standing while the work goes on, answered with `group_extended`; it
+  names the delivery by `offset` and `attempts`, so once the claim lapses and
+  the record goes out again it is refused with `stale_claim`. `delay_ms` on
+  `group_nack` makes the record owed only after a delay, holding a place under
+  the in-flight cap until then. `group_dead_letter` lists a record as a dead
+  letter and finishes it, written to the dead-letter log first as when the
+  broker gives up, so `group_redrive` works on it. `visibility_ms` on
+  `group_poll` sets how long that poll's claims stand. All need
+  `group.consume`. Durations are capped by the new
+  `FELIX_GROUP_MAX_VISIBILITY_MS` (12 hours, never below the visibility
+  timeout). Both new fields are left out at zero, so nacks and polls that do
+  not use them are byte-identical to before. A group's in-flight state is no
+  longer evicted while a claim stands. felix-client adds `group_poll_with` and
+  `GroupPollOptions`, `group_extend`, `group_nack_after`, `group_dead_letter`
+  and `supports_group_claim_control` on `Client` and `ClusterClient`, and
+  `extend`, `nack_after` and `dead_letter` on `ShardedGroup`. Breaking for
+  callers of felix-broker's `GroupReader::poll_below`, which takes the claims'
+  visibility, and for code matching felix-wire's `GroupPoll` and `GroupNack`,
+  which gain fields.
 - Streams and caches can be created together, all or none (#967).
   `POST /v1/tenants/{t}/namespaces/{ns}/resources` takes up to 256 stream and
   cache create bodies and writes the new ones in one Postgres transaction or

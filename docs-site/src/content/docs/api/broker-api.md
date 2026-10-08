@@ -812,6 +812,32 @@ nack for a claim made before it: anything below the log tail it first saw.
 An offset written after that and not yet handed out is answered `stale_claim`
 (retryable): nothing was applied and the record comes round.
 
+### Claim Control
+
+```json
+{ "type": "group_poll", "...": "as above", "visibility_ms": 300000 }
+{ "type": "group_extend", "...": "scope", "offset": 41, "attempts": 1,
+  "extend_ms": 60000, "request_id": 9 }
+{ "type": "group_extended", "visible_ms": 60000, "request_id": 9 }
+{ "type": "group_nack", "...": "scope", "offset": 41, "delay_ms": 30000, "request_id": 10 }
+{ "type": "group_dead_letter", "...": "scope", "offset": 41, "request_id": 11 }
+```
+
+Sent only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`. That
+includes the two new fields: an older broker ignores `visibility_ms` and
+`delay_ms` and would claim for its own timeout or nack at once.
+
+`visibility_ms` sets how long one poll's claims stand. `group_extend` keeps a
+claim standing for `extend_ms` from now and answers with what it granted. It is
+refused with `stale_claim` once the claim named by `offset` and `attempts` no
+longer stands, because it lapsed or the record went out again. `delay_ms` on a
+nack makes the record owed only after the delay, holding a place under the
+in-flight cap until then. `group_dead_letter` lists the record as a dead letter
+and finishes it, answered with `cache_ok`; a record already finished is
+`invalid_request`. The broker caps every duration at
+`FELIX_GROUP_MAX_VISIBILITY_MS`. All of these need `group.consume`. Extensions
+and delays are the leader's memory, so a failover redelivers sooner.
+
 ### Dead Letters
 
 Past `FELIX_GROUP_MAX_ATTEMPTS` (5) a record is dead-lettered, so one poison

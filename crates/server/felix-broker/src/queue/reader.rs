@@ -168,7 +168,8 @@ impl GroupReader {
         max: usize,
         now: Instant,
     ) -> Result<Vec<Claimed>> {
-        self.poll_below(key, log, u64::MAX, max, now, None).await
+        self.poll_below(key, log, u64::MAX, max, now, None, None)
+            .await
     }
 
     /// [`Self::poll`], handing out nothing at or past `committed`.
@@ -178,6 +179,9 @@ impl GroupReader {
     /// group that had consumed it would have moved on from an offset the next
     /// leader fills with something else. Records already handed out are
     /// redelivered as usual; they were committed when they went out.
+    ///
+    /// The claims stand for `visibility`, or the reader's own when `None`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn poll_below(
         &self,
         key: &GroupKey,
@@ -186,6 +190,7 @@ impl GroupReader {
         max: usize,
         now: Instant,
         consumer: Option<&GroupConsumer>,
+        visibility: Option<Duration>,
     ) -> Result<Vec<Claimed>> {
         let log_tail = log.tail_offset().await?;
         // Past a poisoned log's durable offset may be a batch whose publish
@@ -196,7 +201,8 @@ impl GroupReader {
         let claim = {
             locked.inherit_below(log_tail);
             locked.set_max_in_flight(self.max_in_flight());
-            locked.claim_as(tail, max, now, self.visibility, consumer)
+            let visibility = visibility.unwrap_or(self.visibility);
+            locked.claim_as(tail, max, now, visibility, consumer)
         };
         drop(locked);
         let tracker = Arc::clone(&held.tracker);
@@ -342,6 +348,85 @@ impl GroupReader {
         drop(tracker);
         self.wake(key);
         Ok(())
+    }
+
+    /// Give one record back, to be owed again `delay` after `now`.
+    ///
+    /// Until then it holds a place in flight, as a claim would, so a group
+    /// cannot park more records than its in-flight cap. Leader memory, like
+    /// every claim: a failover redelivers it sooner.
+    pub async fn nack_after(
+        &self,
+        key: &GroupKey,
+        offset: u64,
+        delay: Duration,
+        now: Instant,
+    ) -> Result<()> {
+        let (_held, mut tracker) = self.current(key).await?;
+        check_handed_out(&tracker, offset)?;
+        tracker.nack_after(offset, now + delay);
+        drop(tracker);
+        // A waiting poll may have been sleeping until a later lapse.
+        self.wake(key);
+        Ok(())
+    }
+
+    /// Keep the claim `attempts` names on `offset` standing until `by` after
+    /// `now`.
+    ///
+    /// Refused with [`BrokerError::GroupClaimLapsed`] once that claim no
+    /// longer stands. Extending whatever claim is there instead would let a
+    /// consumer that lost the record keep it from the one now holding it,
+    /// should that one die.
+    pub async fn extend(
+        &self,
+        key: &GroupKey,
+        offset: u64,
+        attempts: u32,
+        by: Duration,
+        now: Instant,
+    ) -> Result<()> {
+        let (_held, mut tracker) = self.current(key).await?;
+        check_handed_out(&tracker, offset)?;
+        if tracker.extend(offset, attempts, now, now + by) {
+            return Ok(());
+        }
+        Err(BrokerError::GroupClaimLapsed { offset })
+    }
+
+    /// Give up on one record for a consumer: list it as a dead letter, then
+    /// finish it. Returns false, writing nothing, when it is already finished.
+    ///
+    /// Recorded before it is settled, as when the group gives up on its own,
+    /// so a crash in between leaves it listed and owed rather than finished
+    /// with no trace. The group is held across the write so a poll cannot hand
+    /// it out again before it settles.
+    pub async fn dead_letter(&self, key: &GroupKey, offset: u64) -> Result<bool> {
+        let (held, mut tracker) = self.current(key).await?;
+        check_handed_out(&tracker, offset)?;
+        if !tracker.in_play(offset) {
+            return Ok(false);
+        }
+        self.dead_letters.record(key, offset).await?;
+        // The write replaced any redrive record.
+        tracker.take_redriven(offset);
+        let advanced = tracker.ack(offset);
+        drop(tracker);
+        self.wake(key);
+        if let Some(committed) = advanced {
+            self.cursors
+                .commit_unless(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &key.group,
+                    committed,
+                    &held.retired,
+                )
+                .await?;
+        }
+        Ok(true)
     }
 
     /// Where `group` has finished, as recorded on disk.
@@ -585,12 +670,17 @@ impl GroupReader {
             // One count is the map's own. Anyone else holding the slot is mid
             // operation and would go on using a tracker that is no longer the
             // group's, handing out what a rebuilt one hands out too.
+            // A claim still standing is kept too: an extended claim or a
+            // delayed nack can outlast the idle time, and a rebuilt tracker
+            // would hand that record out early.
             let unused = Arc::strong_count(&slot.cell) == 1
                 && Arc::strong_count(&slot.changed) == 1
-                && slot
-                    .cell
-                    .get()
-                    .is_none_or(|tracker| Arc::strong_count(tracker) == 1);
+                && slot.cell.get().is_none_or(|tracker| {
+                    Arc::strong_count(tracker) == 1
+                        && tracker.try_lock().is_ok_and(|tracker| {
+                            tracker.next_lapse().is_none_or(|lapse| lapse <= now)
+                        })
+                });
             !(unused && now.saturating_duration_since(slot.last_used) >= idle_after)
         });
         trackers.last_sweep = now;

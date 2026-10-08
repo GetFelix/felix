@@ -42,6 +42,7 @@ fn message_cache_operations() {
         request_id: 42,
         consumer: None,
         reclaim: false,
+        visibility_ms: 0,
     };
     let frame = message.encode().expect("encode");
     // Without a consumer the frame is the one an older broker always read.
@@ -49,7 +50,7 @@ fn message_cache_operations() {
         .expect("utf8")
         .to_string();
     assert!(
-        !text.contains("consumer") && !text.contains("reclaim"),
+        !text.contains("consumer") && !text.contains("reclaim") && !text.contains("visibility"),
         "{text}"
     );
     assert_eq!(Message::decode(frame).expect("decode"), message);
@@ -64,6 +65,7 @@ fn message_cache_operations() {
         request_id: 43,
         consumer: Some("snapshotter".to_string()),
         reclaim: true,
+        visibility_ms: 0,
     };
     let frame = named.encode().expect("encode");
     assert_eq!(Message::decode(frame).expect("decode"), named);
@@ -118,6 +120,7 @@ fn message_cache_operations() {
             group: "workers".to_string(),
             offset: 11,
             request_id: 42,
+            delay_ms: 0,
         },
     ] {
         let frame = message.clone().encode().expect("encode");
@@ -142,6 +145,7 @@ fn message_cache_operations() {
         group: "g".to_string(),
         offset: 1,
         request_id: 1,
+        delay_ms: 0,
     };
     assert_ne!(
         ack.encode().expect("encode"),
@@ -653,4 +657,95 @@ fn a_cache_value_without_a_version_omits_the_field() {
     };
     let json = serde_json::to_string(&versioned).expect("encode");
     assert!(json.contains("\"version\":12"), "{json}");
+}
+
+#[test]
+fn group_claim_control_messages_round_trip() {
+    for message in [
+        Message::GroupExtend {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 1,
+            group: "g".to_string(),
+            offset: 9,
+            attempts: 2,
+            extend_ms: 60_000,
+            request_id: 1,
+        },
+        Message::GroupExtended {
+            visible_ms: 60_000,
+            request_id: 1,
+        },
+        Message::GroupDeadLetter {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 1,
+            group: "g".to_string(),
+            offset: 9,
+            request_id: 2,
+        },
+        Message::GroupNack {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 1,
+            group: "g".to_string(),
+            offset: 9,
+            request_id: 3,
+            delay_ms: 5_000,
+        },
+        Message::GroupPoll {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 1,
+            group: "g".to_string(),
+            max_records: 4,
+            wait_ms: 0,
+            request_id: 4,
+            consumer: None,
+            reclaim: false,
+            visibility_ms: 120_000,
+        },
+    ] {
+        let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
+}
+
+/// A nack and a poll that use neither new field encode to the bytes they
+/// always did, and an older peer's frames read as no delay and the broker's
+/// own visibility.
+#[test]
+fn claim_control_fields_are_left_out_at_their_defaults() {
+    let nack = Message::GroupNack {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "jobs".to_string(),
+        shard: 0,
+        group: "g".to_string(),
+        offset: 1,
+        request_id: 1,
+        delay_ms: 0,
+    };
+    let json = String::from_utf8(nack.encode().expect("encode").payload.to_vec()).expect("utf8");
+    assert_eq!(
+        json,
+        r#"{"type":"group_nack","tenant_id":"t1","namespace":"ns","stream":"jobs","shard":0,"group":"g","offset":1,"request_id":1}"#
+    );
+
+    let legacy = r#"{"type":"group_nack","tenant_id":"t1","namespace":"ns",
+        "stream":"jobs","shard":0,"group":"g","offset":1,"request_id":1}"#;
+    match serde_json::from_str::<Message>(legacy).expect("legacy nack") {
+        Message::GroupNack { delay_ms, .. } => assert_eq!(delay_ms, 0),
+        other => panic!("expected a group nack, got {other:?}"),
+    }
+    let legacy = r#"{"type":"group_poll","tenant_id":"t1","namespace":"ns",
+        "stream":"jobs","shard":0,"group":"g","max_records":1,"request_id":1}"#;
+    match serde_json::from_str::<Message>(legacy).expect("legacy poll") {
+        Message::GroupPoll { visibility_ms, .. } => assert_eq!(visibility_ms, 0),
+        other => panic!("expected a group poll, got {other:?}"),
+    }
 }

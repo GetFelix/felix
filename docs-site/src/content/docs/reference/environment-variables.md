@@ -2076,6 +2076,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_GROUP_MAX_ATTEMPTS` | `5` | Deliveries before a record is dead-lettered. |
 | `FELIX_GROUP_MAX_WAIT_MS` | `30000` | Cap on a long-polling client's requested wait. |
 | `FELIX_GROUP_MAX_IN_FLIGHT` | `10000` | Most records one group may have handed out and unsettled on a shard. A poll past it answers empty until room frees. |
+| `FELIX_GROUP_MAX_VISIBILITY_MS` | `43200000` | Cap on a poll's chosen visibility, a claim extension and a nack delay. Never below `FELIX_GROUP_VISIBILITY_TIMEOUT_MS`. |
 
 ### Durable storage tuning
 

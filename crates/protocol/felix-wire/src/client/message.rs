@@ -823,6 +823,12 @@ pub enum Message {
         /// connection's first such poll only.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         reclaim: bool,
+        /// How long this poll's claims stand, in milliseconds. Omitted or `0`
+        /// is the broker's visibility timeout. The broker caps it. Sent only
+        /// to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`: an older
+        /// one would ignore it and claim for its own timeout.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        visibility_ms: u64,
     },
     /// Records claimed by a `GroupPoll`, in offset order.
     ///
@@ -845,6 +851,49 @@ pub enum Message {
     /// Hand one record back without finishing it, to be redelivered at once
     /// rather than after the visibility timeout.
     GroupNack {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        offset: u64,
+        request_id: u64,
+        /// Owe the record again only this many milliseconds from now, rather
+        /// than at once. Omitted or `0` is at once. The broker caps it. Sent
+        /// only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`: an
+        /// older one would ignore it and redeliver at once.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        delay_ms: u64,
+    },
+    /// Keep a claim standing for `extend_ms` from now. Answered with
+    /// `group_extended`.
+    ///
+    /// Refused with `stale_claim` once the claim has lapsed, or once the
+    /// record has been handed out again: `attempts` is the count the record
+    /// was delivered with, and names that one delivery. Sent only to a broker
+    /// that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+    GroupExtend {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        offset: u64,
+        attempts: u32,
+        /// The broker caps it.
+        extend_ms: u64,
+        request_id: u64,
+    },
+    /// A `group_extend` landed. The claim stands for `visible_ms` from when
+    /// the broker answered, which is less than asked for when the broker
+    /// capped it.
+    GroupExtended { visible_ms: u64, request_id: u64 },
+    /// Give up on one record: list it as a dead letter of the group and
+    /// finish it, as the group does itself once a record runs out of attempts.
+    /// `group_redrive` puts it back. Answered with `cache_ok`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+    GroupDeadLetter {
         tenant_id: String,
         namespace: String,
         stream: String,
@@ -1096,6 +1145,12 @@ where
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// For `skip_serializing_if`, like [`is_false`].
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[cfg(test)]
