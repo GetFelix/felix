@@ -6,7 +6,8 @@ name: TLA+ walks
 # behaviours hundreds of steps long instead, which is sampling, not proof: a
 # pass means nothing was found. Each family's negative twin must still find
 # its violation within the budget, the same expectation model as ci.yml.
-# See docs/formal/README.md, "Long random walks".
+# A pull request that changes the walks runs them too. See
+# docs/formal/README.md, "Long random walks".
 
 on:
   schedule:
@@ -26,6 +27,12 @@ on:
         description: "TLC seed (empty for a random one, printed in the log)"
         required: false
         default: ""
+  # A change to the walks themselves gets a real run before it merges;
+  # nothing else runs this per push.
+  pull_request:
+    paths:
+      - .github/workflows/tla-walk.yml
+      - docs/formal/FelixShardWalk*.cfg
 
 permissions:
   contents: read
