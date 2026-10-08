@@ -84,6 +84,13 @@ impl Client {
         } = self.open_event_stream().await?;
         let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;
+        // Sent only where it will be answered: an older broker ignores it.
+        let queue_capacity = self.runtime_config.broker_sub_queue_capacity.filter(|_| {
+            felix_wire::supports_feature(
+                negotiated.server_features,
+                felix_wire::FEATURE_SUBSCRIBE_QUEUE,
+            )
+        });
 
         // A broker that predates resume ignores the unknown `start` field and
         // subscribes at the tail, then answers `Subscribed` -- so the client
@@ -114,6 +121,7 @@ impl Client {
                 // Absent for shard 0, so a subscribe to a single-shard stream
                 // is byte-identical to what a client sent before sharding.
                 shard: (shard != 0).then_some(shard),
+                queue_capacity,
             },
         )
         .await?;
@@ -124,12 +132,13 @@ impl Client {
             self.runtime_config.max_frame_bytes,
         )
         .await?;
-        let (subscription_id, start_offset, live_offset) = match response {
+        let (subscription_id, start_offset, live_offset, granted_capacity) = match response {
             Some(Message::Subscribed {
                 subscription_id,
                 start_offset,
                 live_offset,
-            }) => (subscription_id, start_offset, live_offset),
+                queue_capacity,
+            }) => (subscription_id, start_offset, live_offset, queue_capacity),
             Some(Message::Ok) => {
                 return Err(anyhow::anyhow!(
                     "subscribe response missing subscription id"
@@ -222,7 +231,8 @@ impl Client {
             #[cfg(feature = "telemetry")]
             bench_embed_ts: self.runtime_config.bench_embed_ts,
         })
-        .with_join(start_offset, live_offset))
+        .with_join(start_offset, live_offset)
+        .with_queue_capacity(granted_capacity))
     }
 
     /// The first offset on one shard of a durable stream whose record was

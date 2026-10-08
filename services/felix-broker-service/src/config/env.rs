@@ -266,6 +266,11 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_CAPACITY);
+        let subscriber_queue_capacity_max = std::env::var("FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX);
         let max_subscriptions_per_conn = std::env::var("FELIX_MAX_SUBSCRIPTIONS_PER_CONN")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -404,6 +409,7 @@ impl BrokerConfig {
             pub_ingress_wait,
             core_shards,
             subscriber_queue_capacity,
+            subscriber_queue_capacity_max,
             max_subscriptions_per_conn,
             subscriber_queue_policy,
             subscriber_writer_lanes,

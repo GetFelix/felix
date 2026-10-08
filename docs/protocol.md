@@ -192,11 +192,26 @@ The `shard` field selects which shard of the stream to read, defaulting to 0. A
 subscription reads **one** shard, so consuming a whole multi-shard stream means
 one subscription per shard; `stream_shards` says how many there are.
 
+`queue_capacity` (optional, `u32`) asks for this subscriber's broker-side queue
+to hold that many envelopes instead of the stream's default. An envelope is one
+published batch, not one record. The broker clamps it to
+`1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and answers with the granted value
+on `subscribed`. A client sends it only to a broker that advertised
+`FEATURE_SUBSCRIBE_QUEUE`, since an older broker ignores the field. There is
+no matching field for the overflow policy: under `block` a subscriber's full
+queue makes every publisher on the shard wait, so it stays an operator setting
+for the stream. A reader that cannot tolerate gaps relies on
+`subscription_lagged` and a resume from the log instead.
+
 ### Subscribed (server -> client)
 ```
 { "type": "subscribed", "subscription_id": <number>,
-  "start_offset": <u64>?, "live_offset": <u64>? }
+  "start_offset": <u64>?, "live_offset": <u64>?, "queue_capacity": <u32>? }
 ```
+
+`queue_capacity` is the capacity the broker granted, present only when the
+subscribe asked for one, so a subscribe without it gets the frame it always
+did.
 
 Confirms a subscription and carries the id the broker assigned it. The same id
 opens the event stream that carries its deliveries:
@@ -1509,6 +1524,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
+| `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted value on `subscribed`. See [Subscribe](#subscribe) |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
 
 Features are advertised in **both** directions. A client offers its own in the

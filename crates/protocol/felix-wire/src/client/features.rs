@@ -299,6 +299,16 @@ pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
 /// and say nothing.
 pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
 
+/// A subscriber sizes its own broker-side queue: `queue_capacity` on
+/// `subscribe`, answered by the granted `queue_capacity` on `subscribed`.
+///
+/// Advertised by a *broker*. An older broker ignores the field and gives the
+/// stream's default, so a client checks the bit to know whether to expect the
+/// answer. Only the capacity is the subscriber's to choose; what happens when
+/// the queue is full stays the stream's policy, so no subscriber can make a
+/// publisher wait for it.
+pub const FEATURE_SUBSCRIBE_QUEUE: u32 = 0x4000_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -327,7 +337,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_GROUP_ADMIN
     | FEATURE_CACHE_CONDITIONAL
     | FEATURE_RECORD_TIMESTAMPS
-    | FEATURE_GROUP_CLAIM_CONTROL;
+    | FEATURE_GROUP_CLAIM_CONTROL
+    | FEATURE_SUBSCRIBE_QUEUE;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

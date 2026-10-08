@@ -10,6 +10,7 @@ fn parse_subscribe_response_variants() {
             subscription_id: 7,
             start_offset: None,
             live_offset: None,
+            queue_capacity: None,
         }))
         .expect("ok"),
         7

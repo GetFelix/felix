@@ -119,6 +119,7 @@ async fn subscribe(
             stream: MOVED_STREAM.to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         },
     )
     .await?;

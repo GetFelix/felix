@@ -160,6 +160,32 @@ the replay instead of losing part of it.
 behaves as `DropNew`: the arriving record is the one discarded. The metric
 `felix_sub_queue_drop_old_emulated_total` is what tells you that happened.
 
+### Choosing a queue size
+
+A subscriber can ask for its own queue capacity when it subscribes, instead of
+the stream's `subscriber_queue_capacity`. A reader with bursty processing asks
+for more room so a burst does not overflow it; a reader that only cares about
+recent records can ask for less. The capacity counts published batches, not
+records.
+
+The broker clamps the request to between 1 and
+`FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (default 4096) and answers with the
+capacity it granted, so the client knows what it got. Each queued batch stays
+in broker memory until the subscriber reads it, and the maximum is what bounds
+that per subscriber. In the Rust client, set
+`ClientConfig::broker_sub_queue_capacity` and read the grant from
+`Subscription::queue_capacity`. A broker that predates the option does not
+advertise `FEATURE_SUBSCRIBE_QUEUE`; the client does not ask it, and the
+subscription gets the stream's default.
+
+A subscriber picks only the size. The overflow policy stays the stream's,
+because a subscriber that could pick `Block` could stall every publisher on the
+shard just by reading slowly, and anyone allowed to subscribe could do it. A
+reader that must not miss records uses a durable stream: when its queue drops,
+the subscription ends with `subscription_lagged` and the offset to resume from,
+and `ClusterClient` resubscribes there and replays the gap from the log. A
+larger queue only makes that rarer.
+
 :::caution[At-Most-Once Semantics]
 A dropped event is not redelivered. A subscriber that falls behind its queue
 misses messages. On a **durable** stream the loss is detectable and

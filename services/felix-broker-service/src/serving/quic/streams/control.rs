@@ -453,6 +453,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 subscription_id,
                 start,
                 shard,
+                queue_capacity,
             } => {
                 subscribe::subscribe(
                     &cx,
@@ -463,6 +464,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     subscription_id,
                     start,
                     shard,
+                    queue_capacity,
                 )
                 .await?
             }

@@ -25,11 +25,26 @@ impl Broker {
         stream: &str,
         shard: u32,
     ) -> Result<Subscription> {
+        self.subscribe_sized(tenant_id, namespace, stream, shard, None)
+            .await
+    }
+
+    /// [`Broker::subscribe`] with this subscriber's queue holding
+    /// `queue_capacity` envelopes instead of the stream's default. The caller
+    /// bounds it; the stream's overflow policy still applies.
+    pub async fn subscribe_sized(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        queue_capacity: Option<usize>,
+    ) -> Result<Subscription> {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
         let stream_state = handle.state;
-        let (subscriber_id, receiver) = stream_state.register_subscriber();
+        let (subscriber_id, receiver) = stream_state.register_subscriber_sized(queue_capacity);
         Ok(Subscription {
             receiver,
             guard: SubscriptionGuard {
@@ -149,6 +164,21 @@ impl Broker {
         shard: u32,
         start: StartPosition,
     ) -> Result<ResumedSubscription> {
+        self.subscribe_from_sized(tenant_id, namespace, stream, shard, start, None)
+            .await
+    }
+
+    /// [`Broker::subscribe_from`] with a queue capacity, as
+    /// [`Broker::subscribe_sized`] takes it.
+    pub async fn subscribe_from_sized(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: StartPosition,
+        queue_capacity: Option<usize>,
+    ) -> Result<ResumedSubscription> {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
@@ -200,7 +230,7 @@ impl Broker {
         };
 
         let (backlog, backlog_start, subscriber_id, receiver) =
-            stream_state.register_clamped(requested);
+            stream_state.register_clamped(requested, queue_capacity);
         // Built the moment the subscriber exists, so every error path below
         // releases the registration by `Drop` instead of stranding a closed
         // sender in the registry for the publish path to reap later. Repeated

@@ -607,6 +607,27 @@ publishers (the `publisher_principal` fleet feature, or
 `FELIX_RECORD_PUBLISHERS=true` on a single broker), and then on replay and to
 consumer groups as well.
 
+### Sizing the broker's queue for a subscription
+
+Each subscription has a bounded queue on the broker. Set
+`broker_sub_queue_capacity` in the `ClientConfig` to ask for a different size
+than the stream's default, counted in published batches. The broker clamps it
+to its `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and the subscription reports what
+it got:
+
+```rust
+config.broker_sub_queue_capacity = Some(4096);
+let client = Client::connect(addr, "localhost", config).await?;
+let subscription = client.subscribe("acme", "prod", "webhooks").await?;
+// `None` from a broker that predates the option: the stream's default applies.
+let granted = subscription.queue_capacity();
+```
+
+It applies to every subscription the client opens, including the ones a
+`ClusterClient` reopens after a move or a lag. A larger queue makes drops
+rarer; it does not change what happens on a drop, which the stream's policy
+decides (see [When a subscription falls behind](#when-a-subscription-falls-behind)).
+
 ### When an event was written, and replaying from a time
 
 Set `timestamps: true` in the `ClientConfig` and each event from a durable

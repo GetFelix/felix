@@ -216,7 +216,8 @@ Start a subscription to one shard of a stream.
   "stream": "string",
   "subscription_id": "number | absent",
   "start": "\"latest\" | \"earliest\" | {\"offset\": number} | absent",
-  "shard": "number | absent"
+  "shard": "number | absent",
+  "queue_capacity": "number | absent"
 }
 ```
 
@@ -228,6 +229,12 @@ Start a subscription to one shard of a stream.
   multi-shard stream needs one subscription per shard
 - `subscription_id`: an explicit id for the subscription. Absent, the broker
   assigns one
+- `queue_capacity`: how many published batches this subscriber's queue on the
+  broker holds, instead of the stream's default. The broker clamps it to
+  `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and echoes the grant on
+  `subscribed`. Sent only to a broker advertising `FEATURE_SUBSCRIBE_QUEUE`.
+  The overflow policy is not the subscriber's to pick, since a `block` queue
+  would make the shard's publishers wait on one reader
 
 **Semantics**:
 - Broker answers `subscribed` with the subscription's id, or
@@ -545,7 +552,8 @@ Success answers. Each names the request it answers where there is one.
 
 ```json
 { "type": "subscribed", "subscription_id": "number",
-  "start_offset": "number | absent", "live_offset": "number | absent" }
+  "start_offset": "number | absent", "live_offset": "number | absent",
+  "queue_capacity": "number | absent" }
 { "type": "publish_ok", "request_id": "number" }
 { "type": "cache_ok", "request_id": "number" }
 { "type": "ok" }
@@ -829,6 +837,7 @@ advertised its bit.
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`, answered with `cache_condition_result`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time` with `offset_value`. Offered by a client that reads `timestamp_micros` on a group record; the field is sent only to a client that offered it |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
+| `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted capacity on `subscribed`. A client checks it before sending the field, since an older broker ignores it |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
