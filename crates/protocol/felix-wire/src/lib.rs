@@ -46,9 +46,9 @@ pub use client::flags::{
 pub use client::frame::{CLIENT_ALPN, Frame, FrameHeader, MAGIC, VERSION};
 pub use client::message::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, InspectedAssignment,
-    InspectedFence, InspectedLease, InspectedReplica, Message, PublishRefusalReason,
-    ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
-    UnknownRequest,
+    InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription, Message,
+    PublishRefusalReason, ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange,
+    StreamRecord, SubscriptionCursor, SubscriptionFilter, UnknownRequest,
 };
 pub use client::{binary, text};
 pub use error::{Error, Result};

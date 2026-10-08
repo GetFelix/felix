@@ -55,6 +55,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await?;
         Result::<bool>::Ok(handled)
@@ -160,6 +161,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await
     });
@@ -240,6 +242,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await
     });
@@ -360,6 +363,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await
     });
@@ -460,6 +464,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await
     });
@@ -539,6 +544,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             peer_features,
+            None,
         )
         .await?;
         Result::<_>::Ok(held)
@@ -699,6 +705,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             None,
             peer_flags,
             0,
+            None,
         )
         .await?;
         Result::<_>::Ok(held)
@@ -876,6 +883,7 @@ async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            None,
         )
         .await
     });

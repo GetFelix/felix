@@ -849,7 +849,8 @@ exchanges the frames it always did. It is a separate field rather than a wider
 number because an older broker decodes `client_features` as a `u32` and would
 fail the whole `auth` on anything larger. The first feature in the second word
 is `FEATURE_INSPECT` (`0x1`): the broker answers `shard_inspect`, its own view
-of one shard, for a token holding `node.view:cluster:*`. See
+of one shard, and `subscriptions_list`, the subscriptions it serves with their
+queues and drops, for a token holding `node.view:cluster:*`. See
 [Diagnosing a cluster](/deployment/diagnosing/).
 
 The full list, with what each depends on, is in

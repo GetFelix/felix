@@ -519,11 +519,61 @@ Without `--shard` every shard of the stream is shown, one block (or one JSON
 line) each. `NAME` is looked up in the configured tenant and namespace;
 `TENANT/NAMESPACE/NAME` names any other.
 
-This needs a broker token allowed `node.view` on `cluster:*`, which no tenant
-grant reaches. A broker from before this release does not answer inspection,
-and felixctl says `broker ADDR does not support inspect` rather than guessing.
-[Diagnosing a cluster](/deployment/diagnosing/) goes through what to look for,
-symptom by symptom.
+### Subscriptions
+
+`felixctl inspect subs` lists the subscriptions each broker serves: who they
+deliver to, their queue, what they have dropped and how far behind they are.
+
+```bash
+felixctl inspect subs                              # every broker, every tenant
+felixctl inspect subs orders --shard 0
+felixctl inspect subs --dropping --json
+felixctl inspect subs --principal p:billing
+felixctl inspect subs --node broker-a --limit 500
+```
+
+```
+NODE      STREAM/SHARD           SUB  CONNECTION          PRINCIPAL  POLICY    QUEUE    DROPPED  POSITION  TAIL     BEHIND
+broker-a  acme/default/orders/0  4    17 10.0.4.12:50122  p:billing  drop_new  512/512  3812     1040000   1048576  8576
+broker-a  acme/default/orders/0  5    18 10.0.4.31:41870  p:audit    drop_new  0/512    0        1048576   1048576  0
+```
+
+- `SUB` is the shard's id for the subscriber. `CONNECTION` is the broker's id
+  for the client's connection and the client's address; `PRINCIPAL` is the
+  `sub` of the token it subscribed with.
+- `POLICY` is what a full queue costs: `drop_new` (the default) and `drop_old`
+  drop the batch for this subscriber, `block` makes the publisher wait.
+- `QUEUE` is the queue's depth and capacity, in batches. `DROPPED` is records
+  lost from it since the subscription started.
+- `POSITION` is one past the last offset taken from the queue to be written to
+  the client, `TAIL` the shard's next offset, and `BEHIND` the difference.
+  `POSITION` is `-` on an in-memory stream and until a new subscription's first
+  live batch.
+
+Every broker the cluster advertises is asked, or only `--node`. `STREAM`
+narrows to one stream (`NAME`, or `TENANT/NAMESPACE/NAME`), `--shard` to one of
+its shards, `--principal` to one principal's subscriptions and `--dropping` to
+those that have dropped something. A broker that cannot be reached or does not
+support inspection is listed below the table, and the others are still shown.
+
+A page holds `--limit` subscriptions per broker, 100 by default and at most
+1000. When a broker has more, felixctl prints the command that continues:
+
+```
+more on broker-a: --node broker-a --cursor eyJ0ZW5hbnRfaWQiOiJhY21lIiwi...
+```
+
+With `--json` each broker prints one line: `node_id`, `subscriptions` (each
+with `behind` added when it has a position) and `next_cursor`, or `node_id` and
+`error` for a broker that did not answer.
+
+### Permissions
+
+Every `inspect` command needs a broker token allowed `node.view` on
+`cluster:*`, which no tenant grant reaches. A broker from before inspection
+does not answer it, and felixctl says `broker ADDR does not support inspect`
+rather than guessing. [Diagnosing a cluster](/deployment/diagnosing/) goes
+through what to look for, symptom by symptom.
 
 ## Benchmarks
 
@@ -576,6 +626,6 @@ felixctl man --out-dir ~/.local/share/man/man1
 
 State reads are planned, and so is a Homebrew formula. See
 [issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
-`felixctl inspect` is coming: subscriptions and connections, the control
-plane's placement decisions, a broker's segments read offline, and where one
+`felixctl inspect` is coming: connections, the control plane's placement
+decisions, a broker's segments read offline, and where one
 record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).

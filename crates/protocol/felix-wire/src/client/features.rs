@@ -360,8 +360,9 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_STREAM_READ
     | FEATURE_SUBSCRIBE_QUEUE;
 
-/// The broker answers `shard_inspect`: its own view of one shard, for an
-/// operator holding `node.view:cluster:*`.
+/// The broker answers `shard_inspect` and `subscriptions_list`: its own view
+/// of one shard, and of the subscriptions it serves, for an operator holding
+/// `node.view:cluster:*`.
 ///
 /// The first bit of the extended word, so it travels in `server_features_hi`.
 /// Advertised by a *broker*, like every request-shaped feature: an older

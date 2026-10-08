@@ -100,6 +100,7 @@ pub(crate) async fn handle_subscribe_message(
     queue_capacity: Option<u32>,
     peer_flags: u16,
     peer_features: u32,
+    principal: Option<String>,
 ) -> Result<bool> {
     // Which shard of the stream this subscription reads.
     //
@@ -227,6 +228,13 @@ pub(crate) async fn handle_subscribe_message(
                 }
             },
         };
+
+        subscription.set_owner(felix_broker::SubscriberOwner {
+            subscription_id,
+            connection_id: connection.info().id.0,
+            peer: connection.info().peer_addr.to_string(),
+            principal,
+        });
 
         // A shard's fence closes before its readers are ended, and the routes
         // that admitted this request catch up only after. A subscription that
