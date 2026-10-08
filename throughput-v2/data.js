@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791454939659,
+  "lastUpdate": 1791458531502,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25064,6 +25064,58 @@ window.BENCHMARK_DATA = {
             "range": "63845.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1189889.42\nmean: 1165333.70\nstdev: 63845.00\ncv: 5.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "11d8dd30a0be303ac83e370beae124af029c06cd",
+          "message": "feat(felixctl): create, change and delete through the control plane (#1005) (#1059)\n\ntenant, namespace, stream and cache create and rm; stream and cache set;\nnode drain and deregister; shard move and shard move cancel; placement\npause, resume and abandon. Deletes and drains ask on a terminal and need\n--yes elsewhere. Part of #1005.",
+          "timestamp": "2026-10-08T04:05:14-07:00",
+          "tree_id": "202f60c71a077c7862f192e39891f8b8cd446f5f",
+          "url": "https://github.com/GetFelix/felix/commit/11d8dd30a0be303ac83e370beae124af029c06cd"
+        },
+        "date": 1791458530260,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513987.79,
+            "range": "23588.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513987.79\nmean: 505627.57\nstdev: 23588.11\ncv: 4.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513987.79,
+            "range": "23588.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513987.79\nmean: 505627.57\nstdev: 23588.11\ncv: 4.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112968.59,
+            "range": "1020.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112968.59\nmean: 112782.03\nstdev: 1020.78\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1129685.87,
+            "range": "10207.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1129685.87\nmean: 1127820.33\nstdev: 10207.76\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
