@@ -2,8 +2,8 @@
 
 The command-line tool for [Felix](https://github.com/GetFelix/felix). It
 publishes to and reads from streams, reads, writes and watches cache keys,
-shows which broker owns each shard, lists what the control plane knows, and
-runs load tests.
+shows which broker owns each shard, creates, changes and deletes what the
+control plane manages, moves shards and drains brokers, and runs load tests.
 
 ```bash
 cargo install felixctl --version 0.6.0-preview.2
@@ -14,6 +14,7 @@ felixctl pub orders 'hello'
 felixctl sub orders --from earliest --count 10
 felixctl cache get users alice
 felixctl topology orders
+felixctl stream create orders --shards 4 --replication 3
 felixctl stream ls
 felixctl bench latency orders
 ```
@@ -34,8 +35,9 @@ From a checkout, `cargo install --path crates/tools/felixctl`.
 Every command prints readable text, or JSON with `--json`, and exits with a
 status that says what went wrong: 2 for bad arguments or settings, 3 when
 nothing could be reached, 4 when a broker or the control plane refused, 5 when
-something does not exist. `felixctl help <command>` shows each command's flags
-and examples.
+something does not exist. Deletes and drains ask first on a terminal and need
+`--yes` anywhere else. `felixctl help <command>` shows each command's flags and
+examples.
 
 Connection settings come from a named context in `felixctl/config.toml` under
 the platform config directory, overridden by `FELIX_*` variables, overridden

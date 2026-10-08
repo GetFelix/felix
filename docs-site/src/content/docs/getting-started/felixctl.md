@@ -1,16 +1,16 @@
 ---
 title: "felixctl"
-description: "The felixctl command: publish, subscribe, read caches, see where shards live, list what the control plane knows, and run benchmarks."
+description: "The felixctl command: publish, subscribe, read caches, see where shards live, manage the control plane, and run benchmarks."
 ---
 
 `felixctl` is Felix's command-line tool. It publishes to and reads from
 streams, reads, writes and watches cache keys, shows which broker owns each
-shard, lists tenants, namespaces, streams, caches, brokers and shard
-assignments, and runs load tests. Every command prints readable text by
-default and JSON with `--json`.
+shard, creates, changes and deletes tenants, namespaces, streams and caches,
+moves shards, drains brokers, and runs load tests. Every command prints
+readable text by default and JSON with `--json`.
 
 Its data-plane commands use only the public API of the Rust client
-(`felix-client`); the listing commands use the control plane's REST API.
+(`felix-client`); the control-plane commands use the control plane's REST API.
 
 ## Install
 
@@ -262,6 +262,8 @@ cannot name owners; against one, owners come from the control plane too.
 
 ## The control plane
 
+### Listing and inspecting
+
 ```bash
 felixctl tenant ls
 felixctl tenant info t1
@@ -274,10 +276,96 @@ felixctl shard ls --leader broker-2
 felixctl shard ls --name orders --json
 ```
 
-These are read-only. Listings follow the control plane's `next_cursor` until
-every page is read. `tenant ls` needs a token allowed `tenant.manage` on the
-whole cluster; the rest need the matching manage or view permission for the
-tenant, or `node.view` for nodes and shards.
+Listings follow the control plane's `next_cursor` until every page is read.
+`tenant ls` needs a token allowed `tenant.manage` on the whole cluster; the
+rest need the matching manage or view permission for the tenant, or
+`node.view` for nodes and shards.
+
+### Creating, changing and deleting
+
+```bash
+felixctl tenant create acme --display-name 'Acme Corp'
+felixctl namespace create payments --tenant acme
+felixctl stream create orders --shards 4 --replication 3 --consistency quorum
+felixctl stream set orders --retention-secs 86400
+felixctl cache create sessions --shards 2
+felixctl cache set sessions --display-name 'Login sessions'
+felixctl stream rm orders
+felixctl namespace rm payments --yes
+```
+
+Streams and caches go in the current tenant and namespace, namespaces in the
+current tenant. `stream create` defaults to one shard, a replication factor
+of 1, `leader` consistency, `at-least-once` delivery, a durable log and the
+broker's own retention bounds:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--shards` | 1 | Shard count, fixed at creation |
+| `--replication` | 1 | Brokers holding a copy of each shard, the leader included |
+| `--kind` | `stream` | The kind recorded for the stream, `stream` or `queue` |
+| `--consistency` | `leader` | `quorum` acknowledges once a majority of copies hold a record |
+| `--delivery` | `at-least-once` | or `at-most-once` |
+| `--durable` | `true` | `false` keeps records in memory only |
+| `--retention-secs`, `--retention-bytes` | broker's bound | Age and per-shard size bounds |
+| `--region` | anywhere | Region the stream's data stays in, fixed at creation |
+| `--routing` | `modulo` | `jump-hash` once the `jump_hash_routing` fleet feature is finalized |
+
+`cache create` takes `--shards`, `--replication`, `--consistency` and
+`--display-name`. Creating a stream or cache that already exists with the
+same settings succeeds and says so; with different settings it is refused
+with status 4. A tenant or namespace that already exists is refused too.
+
+`stream set` changes consistency, delivery, durability or retention and prints
+each field that changed. A retention bound not given keeps its value, and
+`default` hands a bound back to the broker. Shards, replication, region and
+routing cannot change. `cache set` changes only the display name.
+
+`rm` deletes, and deleting a namespace or tenant deletes everything in it. A
+tenant takes its signing keys and RBAC rules with it.
+
+### Brokers, shards and placement
+
+```bash
+felixctl node drain broker-2
+felixctl node deregister broker-2 --yes
+felixctl shard move orders 2 --to broker-3 --dry-run
+felixctl shard move orders 2 --to broker-3
+felixctl shard move sessions 0 --to broker-1 --cache
+felixctl shard move cancel orders 2
+felixctl placement pause
+felixctl placement resume
+felixctl placement abandon orders 2 --yes
+```
+
+`node drain` stops placement putting anything new on a broker and moves its
+shards away while it keeps serving them. `node deregister` marks it as having
+left on purpose; its shards fail over once its lease has run out, so drain it
+first to move them without a failover.
+
+`shard move` moves a shard's leadership: the destination copies the log, and
+the old leader serves until it has caught up and cuts over. It prints the step
+the move is at and the assignment it wrote; `--dry-run` prints what it would
+write without starting it. `shard move cancel` stops a move that has not cut
+over. Placement may start the same move again, so `placement pause` first to
+keep a shard where it is. Pausing stops only the moves placement starts by
+itself: new shards are still placed, failed leaders still replaced, and moves
+under way finish.
+
+`placement abandon` gives up the log of a durable shard whose only copies are
+out of reach and places it afresh. Records only the old leader held are lost,
+acknowledged ones included. The control plane refuses it while the leader is
+serving or a replica can take over without loss.
+
+These need `node.manage` on the cluster.
+
+### Confirmation
+
+`tenant rm`, `namespace rm`, `stream rm`, `cache rm`, `node drain` and
+`node deregister` ask before acting when stdin is a terminal, and go ahead
+only on `y` or `yes`. Anywhere else, a script or a pipe, they need `--yes`
+(`-y`) and stop with status 2 without it. `placement abandon` never asks and
+always needs `--yes`.
 
 ## Benchmarks
 
@@ -328,7 +416,6 @@ felixctl man --out-dir ~/.local/share/man/man1
 
 ## Not yet
 
-Control-plane writes (creating streams and caches, moving shards, draining and
-deregistering brokers, RBAC), consumer groups, counters and state reads are
-planned. Release binaries and packages are not published yet. See
-[issue #872](https://github.com/GetFelix/felix/issues/872).
+RBAC rules, consumer groups, counters and state reads are planned, and so is
+a Homebrew formula. See
+[issue #1005](https://github.com/GetFelix/felix/issues/1005).

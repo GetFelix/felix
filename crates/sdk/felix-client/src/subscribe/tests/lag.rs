@@ -69,6 +69,7 @@ async fn serve(
                 subscription_id: 1,
                 start_offset: None,
                 live_offset: None,
+                queue_capacity: None,
             },
         )
         .await?;

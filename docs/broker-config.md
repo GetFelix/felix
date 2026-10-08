@@ -50,6 +50,7 @@ pub_conn_inflight_bytes: 16777216
 pub_ingress_wait: false
 core_shards: 0
 subscriber_queue_capacity: 512
+subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
@@ -301,7 +302,14 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 - `subscriber_queue_capacity` and `subscriber_queue_policy` control broker-core per-subscriber
   buffering and drop behavior (the fanout enqueue path); `subscriber_lane_queue_depth` and
   `subscriber_lane_queue_policy` control the writer-lane stage one hop later (the actual QUIC
-  write). Both default to `drop_new`.
+  write). Both default to `drop_new`. `drop_old` is accepted at both stages but behaves as
+  `drop_new`: the arriving batch is dropped, not the oldest.
+- `subscriber_queue_capacity_max` (env: `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`, default `4096`)
+  bounds the `queue_capacity` a subscriber may ask for on `subscribe`. A larger request is
+  granted the maximum, and the subscriber is told what it got. Each queued batch stays in
+  memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
+  chooses only the size, never the policy: under `block` one slow reader would stall every
+  publisher on the shard.
 - `subscriber_writer_lanes` and `subscriber_lane_shard` control outbound event write parallelism.
 - `subscriber_lane_shard: auto` is the default and is usually the best starting point.
 - Lanes often help high fanout + large payload workloads, but gains can plateau; do not assume

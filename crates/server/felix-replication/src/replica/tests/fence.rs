@@ -266,6 +266,7 @@ async fn a_fence_names_the_shards_own_log() {
 
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
     felix_wire::internal::ReplicateFetch {
+        timed: false,
         correlation_id: 4,
         shard: batch(generation, 0, &[]).shard,
         log: ReplicaLog::Stream,

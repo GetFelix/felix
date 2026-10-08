@@ -44,6 +44,7 @@ fn help_works_both_ways_for_every_command() {
         "stream",
         "node",
         "shard",
+        "placement",
         "bench",
         "completions",
     ] {
@@ -93,6 +94,32 @@ fn an_unreachable_control_plane_exits_3() {
     let error: serde_json::Value =
         serde_json::from_slice(&output.stderr).expect("a JSON error on stderr");
     assert_eq!(error["exit"], 3);
+}
+
+#[test]
+fn a_destructive_command_off_a_terminal_needs_yes() {
+    let home = tempfile::tempdir().unwrap();
+    // The control plane is unreachable, so exit 3 would mean a request was
+    // sent; 2 means it stopped first.
+    let reach = ["--tenant", "t", "--controlplane-url", "http://127.0.0.1:9"];
+    for command in [
+        &["stream", "rm", "orders"][..],
+        &["cache", "rm", "sessions"],
+        &["namespace", "rm", "payments"],
+        &["tenant", "rm", "acme"],
+        &["node", "drain", "broker-2"],
+        &["node", "deregister", "broker-2"],
+        &["placement", "abandon", "orders", "0"],
+    ] {
+        let args: Vec<&str> = command.iter().chain(&reach).copied().collect();
+        let output = felixctl(home.path(), &args);
+        assert_eq!(output.status.code(), Some(2), "{command:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--yes"), "{command:?}: {stderr}");
+    }
+    let mut args = vec!["stream", "rm", "orders", "--yes"];
+    args.extend(reach);
+    assert_eq!(felixctl(home.path(), &args).status.code(), Some(3));
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Ack protocol: outgoing envelopes, waiter messages, the timeout window, and the
+//! Ack protocol: outgoing envelopes, the timeout window, and the
 //! helpers that push acks onto the writer with the right backpressure policy.
 
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use felix_wire::Message;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::errors::AckEnqueueError;
@@ -65,8 +65,8 @@ pub(crate) enum Outgoing {
 /// `FLAG_BINARY_PUBLISH_ACKED` frame is blocked reading a binary ack frame.
 /// Answering in the wrong one strands the client on a frame it cannot parse,
 /// which is why this is carried all the way to the emit site rather than decided
-/// there — the commit-ack path emits from the ack-waiter task, long after the
-/// request frame itself is gone.
+/// there — a commit ack is sent by the task that saw the commit, long after
+/// the request frame itself is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AckEncoding {
     Json,
@@ -174,64 +174,6 @@ pub(crate) enum EnqueuePolicy {
     Backpressure,
 }
 
-/// Result reported by the ack-waiter task for commit-ack publishes.
-///
-/// The waiter task is responsible for awaiting the worker completion signal (oneshot),
-/// applying timeouts, and producing a normalized result for the response writer.
-pub(crate) enum AckWaiterResult {
-    Publish {
-        request_id: u64,
-        encoding: AckEncoding,
-        payload_len: u64,
-        start: crate::serving::quic::telemetry::TelemetryInstant,
-        response: Result<super::PublishResult, oneshot::error::RecvError>,
-    },
-    PublishTimeout {
-        request_id: u64,
-        encoding: AckEncoding,
-        start: crate::serving::quic::telemetry::TelemetryInstant,
-    },
-    PublishBatch {
-        request_id: u64,
-        encoding: AckEncoding,
-        payload_bytes: Vec<usize>,
-        response: Result<super::PublishResult, oneshot::error::RecvError>,
-        /// Carried from the enqueue so a successful ack can name the owner a
-        /// forwarded batch went to. Resolved there rather than here because
-        /// that is where the routing decision was made.
-        forwarded_to: Option<felix_wire::binary::PublishOwner>,
-    },
-    PublishBatchTimeout {
-        request_id: u64,
-        encoding: AckEncoding,
-    },
-}
-
-/// Message sent to the ack-waiter task to track one in-flight commit-ack request.
-///
-/// Carries the oneshot receiver and a semaphore permit (`ack_waiters`) which bounds the number of
-/// in-flight commit acks. Releasing the permit signals “this commit-ack slot is free again”.
-pub(crate) enum AckWaiterMessage {
-    Publish {
-        request_id: u64,
-        encoding: AckEncoding,
-        payload_len: u64,
-        start: crate::serving::quic::telemetry::TelemetryInstant,
-        response_rx: oneshot::Receiver<super::PublishResult>,
-        permit: tokio::sync::OwnedSemaphorePermit,
-    },
-    PublishBatch {
-        request_id: u64,
-        encoding: AckEncoding,
-        payload_bytes: Vec<usize>,
-        response_rx: oneshot::Receiver<super::PublishResult>,
-        permit: tokio::sync::OwnedSemaphorePermit,
-        /// The shard's owner, when this batch was forwarded to one and the
-        /// client advertised the flag bit that carries it.
-        forwarded_to: Option<felix_wire::binary::PublishOwner>,
-    },
-}
-
 /// Tracks consecutive outbound-ack enqueue timeouts in a sliding time window.
 ///
 /// This is a defensive mechanism: if we cannot enqueue responses for too long, the control stream
@@ -287,13 +229,7 @@ pub(crate) async fn send_outgoing_critical(
     let send_result = tokio::time::timeout(ACK_ENQUEUE_TIMEOUT, tx.send(message)).await;
     match send_result {
         Ok(Ok(())) => {
-            let prev = depth.fetch_add(1, Ordering::Relaxed);
-            let cur = prev + 1;
-            let global = GLOBAL_ACK_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-            t_gauge!(gauge).set(global as f64);
-            if prev < ACK_HI_WATER && cur >= ACK_HI_WATER {
-                let _ = throttle_tx.send(true);
-            }
+            note_enqueued(depth, gauge, throttle_tx);
             Ok(())
         }
         Ok(Err(_)) => Err(AckEnqueueError::Closed),
@@ -301,6 +237,24 @@ pub(crate) async fn send_outgoing_critical(
             t_counter!("felix_broker_out_ack_timeout_total").increment(1);
             Err(AckEnqueueError::Timeout)
         }
+    }
+}
+
+/// Count one answer onto the writer's queue, and throttle the control loop
+/// when the queue crosses its high watermark.
+pub(crate) fn note_enqueued(
+    depth: &AtomicUsize,
+    gauge: &'static str,
+    throttle_tx: &watch::Sender<bool>,
+) {
+    #[cfg(not(feature = "telemetry"))]
+    let _ = gauge;
+    let prev = depth.fetch_add(1, Ordering::Relaxed);
+    let cur = prev + 1;
+    let global = GLOBAL_ACK_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    t_gauge!(gauge).set(global as f64);
+    if prev < ACK_HI_WATER && cur >= ACK_HI_WATER {
+        let _ = throttle_tx.send(true);
     }
 }
 
@@ -320,13 +274,7 @@ pub(crate) async fn send_outgoing_best_effort(
     // Best-effort enqueue; fail fast if the ack queue is full to avoid deadlocks.
     match tx.try_send(message) {
         Ok(()) => {
-            let prev = depth.fetch_add(1, Ordering::Relaxed);
-            let cur = prev + 1;
-            let global = GLOBAL_ACK_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-            t_gauge!(gauge).set(global as f64);
-            if prev < ACK_HI_WATER && cur >= ACK_HI_WATER {
-                let _ = throttle_tx.send(true);
-            }
+            note_enqueued(depth, gauge, throttle_tx);
             Ok(())
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
@@ -339,21 +287,28 @@ pub(crate) async fn send_outgoing_best_effort(
 
 pub(crate) async fn handle_ack_enqueue_result(
     result: std::result::Result<(), AckEnqueueError>,
-    state: &Arc<Mutex<AckTimeoutState>>,
+    state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
+    throttle_tx: &watch::Sender<bool>,
+    cancel_tx: &watch::Sender<bool>,
+) -> Result<()> {
+    note_ack_enqueue_result(result, state, throttle_tx, cancel_tx)
+}
+
+/// [`handle_ack_enqueue_result`] for callers that cannot await.
+pub(crate) fn note_ack_enqueue_result(
+    result: std::result::Result<(), AckEnqueueError>,
+    state: &parking_lot::Mutex<AckTimeoutState>,
     throttle_tx: &watch::Sender<bool>,
     cancel_tx: &watch::Sender<bool>,
 ) -> Result<()> {
     match result {
         Ok(()) => {
-            let mut guard = state.lock().await;
-            guard.reset(Instant::now());
+            state.lock().reset(Instant::now());
             Ok(())
         }
         Err(AckEnqueueError::Timeout) => {
             let _ = throttle_tx.send(true);
-            let now = Instant::now();
-            let mut guard = state.lock().await;
-            let count = guard.register_timeout(now);
+            let count = state.lock().register_timeout(Instant::now());
             if count >= ACK_TIMEOUT_THRESHOLD {
                 crate::serving::quic::errors::record_ack_enqueue_failure_metrics(
                     "ack_queue_timeout",

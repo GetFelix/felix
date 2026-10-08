@@ -1,10 +1,10 @@
-//! Tunables for the subscription event writer: batching limits and flush pacing.
+//! Tunables for a subscription's delivery: batching limits and flush pacing.
 
 use std::time::Duration;
 
-/// Configuration for the subscription event writer.
+/// Configuration for a subscription's lane feeder.
 ///
-/// Fields are chosen to make the event writer a pure “I/O + framing” component:
+/// Fields are chosen to make the feeder a pure “I/O + framing” component:
 /// it doesn’t need the broker, only identifiers and batching policy.
 ///
 /// Batching behavior:

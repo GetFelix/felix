@@ -241,7 +241,12 @@ impl ClientError {
             | E::SequenceExpired { .. }
             | E::SequenceReused { .. }
             | E::GroupOffsetNotHandedOut { .. }
-            | E::CommitNeedsDurableStream => Self::invalid(message),
+            | E::CommitNeedsDurableStream
+            | E::ExpectedOffsetNeedsDurableStream
+            | E::EmptyConditionalPublish => Self::invalid(message),
+            // Answered as `publish_refused` with the tail wherever the request
+            // can carry it; this is only for a caller that cannot.
+            E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),
             // Retrying cannot bring the claim back; the record is owed to the
             // group and reaches whoever polls next.
             E::GroupClaimLapsed { .. } => {

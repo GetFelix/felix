@@ -184,6 +184,7 @@ fn reopen_resumes_appending_where_recovery_left_off() {
             index: outcome.index,
             version: crate::segment::format::FORMAT_VERSION,
         },
+        0,
         4096,
     )
     .expect("reopen");
@@ -227,6 +228,7 @@ fn reopen_truncates_a_torn_tail_off_the_file() {
             index: outcome.index,
             version: crate::segment::format::FORMAT_VERSION,
         },
+        0,
         4096,
     )
     .expect("reopen");

@@ -125,7 +125,9 @@ async fn send_outgoing_best_effort_reports_closed() {
 
 #[tokio::test]
 async fn handle_ack_enqueue_timeout_threshold_triggers_cancel() {
-    let state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (throttle_tx, throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     for _ in 0..(ACK_TIMEOUT_THRESHOLD - 1) {
@@ -154,7 +156,9 @@ async fn handle_ack_enqueue_timeout_threshold_triggers_cancel() {
 
 #[tokio::test]
 async fn handle_ack_enqueue_full_returns_error() {
-    let state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let err =
@@ -166,7 +170,9 @@ async fn handle_ack_enqueue_full_returns_error() {
 
 #[tokio::test]
 async fn handle_ack_enqueue_closed_shutdowns_stream() {
-    let state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (throttle_tx, throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let result = handle_ack_enqueue_result(

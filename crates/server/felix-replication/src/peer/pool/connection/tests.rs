@@ -88,6 +88,7 @@ mod correlation {
                 capabilities: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
+                times: None,
                 correlation_id: 7,
                 shard: shard(),
                 first_offset: 12,
@@ -131,6 +132,7 @@ mod correlation {
                 last_generation: 1,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
+                timed: false,
                 correlation_id: 7,
                 shard: shard(),
                 log: ReplicaLog::Stream,
@@ -139,6 +141,7 @@ mod correlation {
                 labelled: false,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+                times: None,
                 correlation_id: 7,
                 shard: shard(),
                 first_offset: 12,
