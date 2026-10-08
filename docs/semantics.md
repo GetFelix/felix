@@ -255,6 +255,13 @@ is answered `not_leader`.
 it repeats, which looks the same as losing to a rival. The writer reads the
 shard at its expected offset to see whose batch is there.
 
+`publish_if` is answered outside the publish queue, but it is charged
+against the tenant's publish quota and the ingress byte budgets before the
+check, as a queued publish is, and refused over quota with the same
+retryable `overloaded` answer.
+
+> `a_conditional_publish_over_quota_is_refused_like_a_publish`.
+
 An in-memory stream has no offsets, so it refuses a conditional write.
 
 ## Moves

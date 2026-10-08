@@ -24,6 +24,8 @@ for what the current release guarantees.
   writer's expected offset goes stale on failover. Served by the shard's
   leader only: a non-leader answers `not_leader`. An in-memory stream refuses
   it. A commit without `expected_offset` is byte-identical to before.
+  `publish_if` is charged against the tenant's publish quota and the ingress
+  byte budgets like any acked publish, and refused over quota the same way.
   felix-client adds `publish_if` and `commit_if` on `Client` and
   `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
   `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,

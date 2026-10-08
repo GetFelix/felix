@@ -97,7 +97,9 @@ pub(crate) async fn commit(
 /// offset.
 ///
 /// Not forwarded, for the reason a commit is not: the check is against the
-/// leader's tail, and a refusal has to name that tail.
+/// leader's tail, and a refusal has to name that tail. Not queued either, but
+/// charged against the tenant's quota and the ingress budgets as a queued
+/// publish is, before the claim, so it is no way around them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_at(
     broker: &Broker,
@@ -110,6 +112,9 @@ pub(crate) async fn publish_at(
     expected_offset: u64,
     publisher: Option<&Bytes>,
 ) -> Result<u64, NotWritten> {
+    let _permit =
+        crate::serving::quic::handlers::publish::admit_unqueued(publish_ctx, tenant_id, &payloads)
+            .await?;
     let shard = shard_key(publish_ctx, tenant_id, namespace, stream, key);
     leader_write(
         broker,
