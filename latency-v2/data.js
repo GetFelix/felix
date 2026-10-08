@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791501470206,
+  "lastUpdate": 1791503971148,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -32670,6 +32670,72 @@ window.BENCHMARK_DATA = {
             "range": "179.90",
             "unit": "us",
             "extra": "trials: 5\nmedian: 630.00\nmean: 722.80\nstdev: 179.90\ncv: 24.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa0da16c55672d6bf43b457f869e66036ed2a021",
+          "message": "feat(felixctl): inspect subscribers (#1077) (#1084)\n\n* feat(felixctl): inspect subscribers (#1077)\n\nA broker advertising FEATURE_INSPECT now also answers subscriptions_list\nwith one page of the subscriptions it serves: stream and shard, the\nconnection, client address and principal, overflow policy, queue depth and\ncapacity, records dropped, and position against the shard's tail. It needs\nnode.view:cluster:*, pages by (shard, subscriber id), defaults to 100 and\ncaps at 1000.\n\nThe broker answers from each shard's fanout snapshot. Each subscriber gets\na SubscriberStats: the fanout adds to its drop count on the drop path, the\nreceiver stores its position once per batch taken, and the serving layer\nattaches the connection and principal after subscribing.\n\nfelixctl inspect subs asks every broker, or one with --node, and prints a\ntable or one JSON line per broker. Diagnosing a cluster covers a\nsubscriber missing records and one falling behind.\n\nPart of #1077.\n\n* chore: note the TLA+ model is unaffected\n\nSpec-Unaffected: inspect subs adds a read-only request and a per-subscriber drop counter; nothing about the lease, quorum mark, reports, promotion or handoff changes.",
+          "timestamp": "2026-10-08T16:52:48-07:00",
+          "tree_id": "ca63acd6f1b4c7e7a914dc1a1d078a6d2cd73ac2",
+          "url": "https://github.com/GetFelix/felix/commit/fa0da16c55672d6bf43b457f869e66036ed2a021"
+        },
+        "date": 1791503967416,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.60\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "22.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 253.20\nstdev: 22.75\ncv: 8.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "1226.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 846.40\nstdev: 1226.83\ncv: 144.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 218.20\nstdev: 1.30\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 439,
+            "range": "9.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 439.00\nmean: 440.00\nstdev: 9.43\ncv: 2.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 616,
+            "range": "39.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 616.00\nmean: 614.80\nstdev: 39.13\ncv: 6.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
