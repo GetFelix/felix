@@ -129,6 +129,39 @@ let addr: SocketAddr = "127.0.0.1:5000".parse()?;
 let client = Client::connect(addr, "localhost", config).await?;
 ```
 
+### Acting for many users
+
+A gateway that serves many users, each with their own Felix token, can hold one
+`Client` and give each user a handle that shares its connections:
+
+```rust
+use std::sync::Arc;
+use felix_client::{RefreshingToken, TokenProvider};
+
+let gateway = Client::connect(addr, "localhost", config).await?;
+
+// Every stream alice's handle opens authenticates with alice's token, and the
+// broker checks each of her requests against her grants, not the gateway's.
+let alice_tokens: Arc<dyn TokenProvider> =
+    Arc::new(RefreshingToken::with_initial(alice_token, refresh_alice));
+let alice = gateway.with_identity("t1", alice_tokens).await?;
+let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+
+// A fixed token, for a handle that will not outlive it.
+let bob = gateway.with_identity_token("t1", bob_token).await?;
+```
+
+A handle opens one publish stream and one cache stream and no connections, so
+the gateway's connection count stays the same however many users it serves.
+One user's token expiring or being revoked stops only that user's new streams.
+Dropping a handle closes its streams.
+
+A refused publish or cache request ends the stream it was sent on, as on any
+client, so a handle that has had one refused cannot publish or reach the cache
+afterwards; build a new one. Users share the connections' flow-control
+windows, so read every subscription promptly or drop it. `ClusterClient` does
+not offer handles yet. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
+
 ### TLS and ALPN
 
 `ClientConfig` takes a ready-made `quinn::ClientConfig`.

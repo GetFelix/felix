@@ -214,10 +214,15 @@ impl Client {
         };
         let nodes = [&publish_node, &cache_node, &event_node];
 
-        let publish_chunk_bytes = client_config.publish_chunk_bytes;
-        let publish_queue_depth = client_config.publish_queue_depth.max(1);
-        let publish_admission =
-            Arc::new(PublishAdmission::new(client_config.publish_inflight_bytes));
+        let worker_settings = WorkerSettings {
+            publish_queue_depth: client_config.publish_queue_depth.max(1),
+            publish_chunk_bytes: client_config.publish_chunk_bytes,
+            publish_inflight_bytes: client_config.publish_inflight_bytes,
+            publish_shard_streams: client_config.publish_shard_streams,
+        };
+        let publish_admission = Arc::new(PublishAdmission::new(
+            worker_settings.publish_inflight_bytes,
+        ));
         let publish_stream_count = publish_pool_size * publish_streams_per_conn;
         let mut publish_workers = Vec::with_capacity(publish_stream_count);
         let mut worker_connections: Vec<QuicConnection> = Vec::new();
@@ -243,8 +248,7 @@ impl Client {
         publish_workers.push(spawn_publish_worker(
             first,
             &runtime_config,
-            publish_queue_depth,
-            publish_chunk_bytes,
+            worker_settings,
         ));
         if layout == Layout::Pooled {
             publish_node.fill(publish_pool_size, false).await?;
@@ -256,38 +260,16 @@ impl Client {
             publish_workers.push(spawn_publish_worker(
                 opened,
                 &runtime_config,
-                publish_queue_depth,
-                publish_chunk_bytes,
+                worker_settings,
             ));
         }
-        // A client that has lost a pooled stream's connection is finished
-        // (`is_usable`), so it does not open shard streams on a fresh one: the
-        // caller replaces the client instead.
-        let open_shard_stream: OpenWorker = {
-            let node = Arc::clone(&publish_node);
-            let pooled = worker_connections.clone();
-            Arc::new(move || {
-                let node = Arc::clone(&node);
-                let lost = pooled
-                    .iter()
-                    .any(|connection| connection.close_reason().is_some());
-                Box::pin(async move {
-                    anyhow::ensure!(!lost, "the client's connection to the broker was lost");
-                    let opened = node.open().await?;
-                    debug!("client shard publish stream authenticated");
-                    Ok(spawn_publish_worker(
-                        opened,
-                        &runtime_config,
-                        publish_queue_depth,
-                        publish_chunk_bytes,
-                    ))
-                })
-            })
-        };
-        let publish_shard_streams = Arc::new(ShardStreams::new(
-            client_config.publish_shard_streams,
-            open_shard_stream,
-        ));
+        let publish_shard_streams = shard_streams(
+            &publish_node,
+            &credentials,
+            &worker_connections,
+            runtime_config,
+            worker_settings,
+        );
 
         // Several streams per cache connection: a new connection per cache op
         // would pay a handshake each time, and one stream would head-of-line
@@ -306,21 +288,16 @@ impl Client {
         );
         let mut cache_workers = Vec::with_capacity(cache_pool_size * cache_streams_per_conn);
         for _ in 0..cache_pool_size * cache_streams_per_conn {
-            let OpenedStream {
-                send, recv, lease, ..
-            } = cache_node.open().await?;
-            let conn_index = lease.slot();
-            debug!(conn_index, "client cache stream authenticated");
-            note_connection(&mut worker_connections, lease.connection());
-            let (tx, rx) = mpsc::channel(CACHE_WORKER_QUEUE_DEPTH);
-            let counts = Arc::clone(&cache_conn_counts);
-            let max_frame_bytes = runtime_config.max_frame_bytes;
-            tokio::spawn(async move {
-                let _lease = lease;
-                run_cache_worker_with_limit(conn_index, send, recv, rx, counts, max_frame_bytes)
-                    .await
-            });
-            cache_workers.push(CacheWorker { tx, conn_index });
+            cache_workers.push(
+                open_cache_worker(
+                    &cache_node,
+                    &credentials,
+                    &cache_conn_counts,
+                    &mut worker_connections,
+                    runtime_config.max_frame_bytes,
+                )
+                .await?,
+            );
         }
 
         // Event connections may sit idle until the first subscribe, and a
@@ -356,7 +333,9 @@ impl Client {
             cache_conn_counts,
             event_conn_counts,
             auth_tenant_id,
+            credentials,
             runtime_config,
+            worker_settings,
         })
     }
 
@@ -413,7 +392,7 @@ impl Client {
     /// Open an authenticated stream for a request of its own, or a
     /// subscription, on the event connections.
     pub(crate) async fn open_event_stream(&self) -> Result<OpenedStream> {
-        self.event_node.open().await
+        self.event_node.open_as(&self.credentials).await
     }
 }
 
@@ -426,14 +405,83 @@ enum Layout {
     Shared,
 }
 
+/// The publish settings a client keeps after connect, for the workers it
+/// opens later: shard streams, and the workers of [`Client::with_identity`].
+#[derive(Clone, Copy)]
+pub(super) struct WorkerSettings {
+    pub(super) publish_queue_depth: usize,
+    pub(super) publish_chunk_bytes: usize,
+    pub(super) publish_inflight_bytes: usize,
+    pub(super) publish_shard_streams: usize,
+}
+
+/// The on-demand shard streams beside a client's publish pool, authenticated
+/// with `credentials`.
+///
+/// A client that has lost a pooled stream's connection is finished
+/// (`is_usable`), so it does not open shard streams on a fresh one: the caller
+/// replaces the client instead.
+pub(super) fn shard_streams(
+    node: &Arc<NodeConnections>,
+    credentials: &Arc<Credentials>,
+    pooled: &[QuicConnection],
+    runtime_config: ClientRuntimeConfig,
+    settings: WorkerSettings,
+) -> Arc<ShardStreams> {
+    let node = Arc::clone(node);
+    let credentials = Arc::clone(credentials);
+    let pooled = pooled.to_vec();
+    let open: OpenWorker = Arc::new(move || {
+        let node = Arc::clone(&node);
+        let credentials = Arc::clone(&credentials);
+        let lost = pooled
+            .iter()
+            .any(|connection| connection.close_reason().is_some());
+        Box::pin(async move {
+            anyhow::ensure!(!lost, "the client's connection to the broker was lost");
+            let opened = node.open_as(&credentials).await?;
+            debug!("client shard publish stream authenticated");
+            Ok(spawn_publish_worker(opened, &runtime_config, settings))
+        })
+    });
+    Arc::new(ShardStreams::new(settings.publish_shard_streams, open))
+}
+
+/// Open one cache stream as `credentials` and start the worker that owns it.
+pub(super) async fn open_cache_worker(
+    node: &NodeConnections,
+    credentials: &Credentials,
+    counts: &Arc<Vec<AtomicUsize>>,
+    worker_connections: &mut Vec<QuicConnection>,
+    max_frame_bytes: usize,
+) -> Result<CacheWorker> {
+    let OpenedStream {
+        send, recv, lease, ..
+    } = node.open_as(credentials).await?;
+    let conn_index = lease.slot();
+    debug!(conn_index, "client cache stream authenticated");
+    note_connection(worker_connections, lease.connection());
+    let (tx, rx) = mpsc::channel(CACHE_WORKER_QUEUE_DEPTH);
+    let counts = Arc::clone(counts);
+    tokio::spawn(async move {
+        let _lease = lease;
+        run_cache_worker_with_limit(conn_index, send, recv, rx, counts, max_frame_bytes).await
+    });
+    Ok(CacheWorker { tx, conn_index })
+}
+
 /// Start the writer for one publish stream. The writer holds the stream's
 /// lease, so the connection's count drops when the writer exits.
-fn spawn_publish_worker(
+pub(super) fn spawn_publish_worker(
     opened: OpenedStream,
     runtime_config: &ClientRuntimeConfig,
-    publish_queue_depth: usize,
-    publish_chunk_bytes: usize,
+    settings: WorkerSettings,
 ) -> PublishWorker {
+    let WorkerSettings {
+        publish_queue_depth,
+        publish_chunk_bytes,
+        ..
+    } = settings;
     let OpenedStream {
         send,
         recv,
@@ -468,7 +516,7 @@ fn spawn_publish_worker(
     }
 }
 
-fn note_connection(connections: &mut Vec<QuicConnection>, connection: &QuicConnection) {
+pub(super) fn note_connection(connections: &mut Vec<QuicConnection>, connection: &QuicConnection) {
     if !connections
         .iter()
         .any(|known| known.info().id == connection.info().id)

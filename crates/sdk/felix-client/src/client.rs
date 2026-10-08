@@ -13,6 +13,7 @@ mod commit;
 mod connect;
 mod discovery;
 mod groups;
+mod identity;
 
 pub use groups::{GroupInfo, GroupMember, GroupPosition};
 mod publish;
@@ -26,7 +27,7 @@ use felix_transport::QuicConnection;
 
 use crate::cache::CacheWorker;
 use crate::config::ClientRuntimeConfig;
-use crate::connection::NodeConnections;
+use crate::connection::{Credentials, NodeConnections};
 use crate::publish::{PublishAdmission, PublishSharding, PublishWorker, ShardStreams};
 
 /// A client of one broker, over multiplexed QUIC connections.
@@ -70,7 +71,11 @@ pub struct Client {
     cache_conn_counts: Arc<Vec<AtomicUsize>>,
     event_conn_counts: Arc<Vec<AtomicUsize>>,
     auth_tenant_id: String,
+    // What every stream this client opens authenticates as. A client from
+    // `with_identity` shares its parent's connections but not these.
+    credentials: Arc<Credentials>,
     runtime_config: ClientRuntimeConfig,
+    worker_settings: connect::WorkerSettings,
     /// Optional requests this broker said it implements.
     server_features: u32,
 }

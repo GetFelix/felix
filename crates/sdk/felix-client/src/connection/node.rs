@@ -128,10 +128,19 @@ impl NodeConnections {
     /// whoever owns the stream should hold it for as long as the stream is in
     /// use.
     pub(crate) async fn open(&self) -> Result<OpenedStream> {
+        self.open_as(&self.credentials).await
+    }
+
+    /// [`NodeConnections::open`], authenticating the stream with
+    /// `credentials` instead of the set's own.
+    ///
+    /// The broker authenticates and authorizes each stream on its own, so
+    /// streams for different principals can share a connection without one's
+    /// grants reaching the other's requests.
+    pub(crate) async fn open_as(&self, credentials: &Credentials) -> Result<OpenedStream> {
         let (link, first) = self.place().await?;
         let lease = StreamLease::new(link);
-        let (send, recv, negotiated) = self
-            .credentials
+        let (send, recv, negotiated) = credentials
             .open(lease.connection(), first, self.max_frame_bytes)
             .await?;
         Ok(OpenedStream {
