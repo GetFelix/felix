@@ -231,6 +231,12 @@ tasks:
     # must violate, so a finding cannot quietly turn into a pass.
     cmds:
       - "scripts/check_tla.sh"
+  tla:walk:
+    desc: "Sample long random walks over replica-set changes with TLC (docs/formal, FelixShardWalk*)"
+    # Simulation, not proof: TLA_SIM_MINUTES per walk (default 25). Nightly in
+    # tla-walk.yml, not per push.
+    cmds:
+      - "scripts/check_tla.sh --simulate {{.CLI_ARGS}}"
   tla:pairing:
     desc: "Assert a change to the code docs/formal models also touches the spec, or says why not"
     # Diffs BASE...HEAD, so it needs history back to BASE.
