@@ -729,6 +729,10 @@ AckQuorum(b) ==
 LearnHwm(b, f) ==
     /\ bgen[b] > 0 /\ f /= b
     /\ hwm[f] < hwm[b]
+    \* A leader that took a shorter log from a fence answer can hold less than
+    \* its old mark, which NoTruncationBelowHwm flags; a twin that checks only
+    \* its own invariant walks on from there.
+    /\ Len(log[b]) >= hwm[b]
     /\ Len(log[f]) >= hwm[b]
     /\ SubSeq(log[f], 1, hwm[b]) = SubSeq(log[b], 1, hwm[b])
     /\ hwm' = [hwm EXCEPT ![f] = hwm[b]]
@@ -752,7 +756,7 @@ LearnHwm(b, f) ==
 \* A write that holds the fence from admission is counted from there.
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
@@ -1197,7 +1201,7 @@ OldSetLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     MajorityOf({ m \in mine[b] \ halted : HoldsPrefix(m, b, k) } \cup {b},
                                mine[b]) }
-    IN CHOOSE k \in held : \A j \in held : j <= k
+    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* The leader, still serving, moves to the next generation with `set`.
 Regenerate(v, views, set) ==
