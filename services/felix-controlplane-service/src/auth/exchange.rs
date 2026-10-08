@@ -15,22 +15,37 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_internal, api_internal_message};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_internal_message, api_validation_error,
+};
 use crate::auth::bearer::{Refusal, extract_bearer, refused};
 use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_for};
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
-use crate::auth::rbac::authorize::{format_object, narrow_object, parse_object};
+use crate::auth::rbac::authorize::{
+    ParsedObject, format_object, narrow_object, parse_object, parse_permission,
+};
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::rbac::policy_store::GroupingRule;
+use crate::auth::refresh_token::Narrowing;
+use crate::store::StoreError;
 
 /// Optional narrowing filter: keep only these actions and/or resources out of
 /// what RBAC already granted. Never widens scope.
 #[derive(Debug, Deserialize, ToSchema, Clone, Default)]
 pub struct TokenExchangeRequest {
+    /// Keep only these actions, on every resource the token keeps.
     pub requested: Option<Vec<String>>,
+    /// Keep only these resources, for every action the token keeps.
     pub resources: Option<Vec<String>>,
+    /// Keep only these `action:object` pairs, each narrowed separately, so a
+    /// token can read one resource and write another. Requires `requested`
+    /// to be sent as `[]` and `resources` to be absent or empty: an older
+    /// control plane ignores `permissions`, and an empty `requested` makes it
+    /// refuse instead of minting full rights.
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
     /// Who the token is for: `felix-broker` (the default) to connect to
     /// brokers, or `felix-controlplane` for this API. A token is accepted by
     /// one of the two, never both.
@@ -65,8 +80,10 @@ impl std::fmt::Debug for TokenExchangeResponse {
 /// Exchange an upstream IdP token for a Felix EdDSA token.
 ///
 /// # Errors
-/// `401` for a missing or invalid bearer token, `403` when the issuer is not
-/// allowed or no permissions remain, `500` for store failures.
+/// `400` for a malformed narrowing, `401` for a missing or invalid bearer
+/// token, `403` when the issuer is not allowed or no permissions remain, `409`
+/// for `permissions` before every Raft member supports it, `500` for store
+/// failures.
 #[utoipa::path(
     post,
     path = "/v1/tenants/{tenant_id}/token/exchange",
@@ -75,8 +92,10 @@ impl std::fmt::Debug for TokenExchangeResponse {
     request_body = TokenExchangeRequest,
     responses(
         (status = 200, description = "Exchange token", body = TokenExchangeResponse),
+        (status = 400, description = "Invalid narrowing"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden")
+        (status = 403, description = "Forbidden"),
+        (status = 409, description = "Pair narrowing needs every control-plane member upgraded")
     )
 )]
 pub async fn exchange_token(
@@ -157,6 +176,7 @@ pub(crate) async fn mint_for_principal(
     audience: &str,
 ) -> Result<TokenExchangeResponse, ApiError> {
     let tenant_id = tenant_id.to_string();
+    let narrowing = narrowing_for(request, &tenant_id, audience)?;
     let policies = state
         .store
         .list_rbac_policies(&tenant_id)
@@ -180,12 +200,9 @@ pub(crate) async fn mint_for_principal(
             api_internal_message("failed to build enforcer")
         })?;
 
-    let mut perms = effective_permissions(&enforcer, principal_id, &tenant_id);
-
-    perms = filter_permissions(
-        perms,
-        request.requested.as_deref(),
-        request.resources.as_deref(),
+    let perms = narrow_permissions(
+        effective_permissions(&enforcer, principal_id, &tenant_id),
+        &narrowing,
         &tenant_id,
     );
 
@@ -219,16 +236,17 @@ pub(crate) async fn mint_for_principal(
         crate::auth::refresh::now_secs(),
         refresh_ttl,
     );
-    record.narrowing = Some(crate::auth::refresh_token::Narrowing {
-        requested: request.requested.clone(),
-        resources: request.resources.clone(),
-        audience: audience.to_string(),
-    });
+    record.narrowing = Some(narrowing);
     state
         .store
         .insert_refresh_token(record)
         .await
-        .map_err(|err| api_internal("failed to store refresh token", &err))?;
+        .map_err(|err| match err {
+            // A pair narrowing during a rolling upgrade, before every Raft
+            // member can keep it; the message says so.
+            StoreError::Conflict(message) => api_conflict("conflict", &message),
+            err => api_internal("failed to store refresh token", &err),
+        })?;
     metrics::counter!("felix_refresh_tokens_issued_total", "via" => "exchange").increment(1);
 
     Ok(TokenExchangeResponse {
@@ -245,7 +263,7 @@ pub(crate) fn token_audience(requested: Option<&str>) -> Result<&'static str, Ap
     match requested {
         None | Some(BROKER_AUDIENCE) => Ok(BROKER_AUDIENCE),
         Some(CONTROLPLANE_AUDIENCE) => Ok(CONTROLPLANE_AUDIENCE),
-        Some(_) => Err(crate::api::error::api_validation_error(
+        Some(_) => Err(api_validation_error(
             "audience must be felix-broker or felix-controlplane",
         )),
     }
@@ -264,6 +282,104 @@ pub fn access_token_ttl() -> Duration {
             .filter(|&value| value > 0)
             .unwrap_or(900),
     )
+}
+
+/// The narrowing `request` asks for, as the refresh record keeps it.
+///
+/// With `permissions`, `requested` must be `[]` and is recorded that way, so a
+/// control plane that predates `permissions` refreshes the chain to nothing
+/// rather than to full rights.
+fn narrowing_for(
+    request: &TokenExchangeRequest,
+    tenant_id: &str,
+    audience: &str,
+) -> Result<Narrowing, ApiError> {
+    if let Some(pairs) = &request.permissions {
+        if request
+            .requested
+            .as_ref()
+            .is_none_or(|actions| !actions.is_empty())
+            || request
+                .resources
+                .as_ref()
+                .is_some_and(|hints| !hints.is_empty())
+        {
+            return Err(api_validation_error(
+                "permissions needs requested: [] and no resources",
+            ));
+        }
+        for pair in pairs {
+            parse_permission(pair, tenant_id).map_err(|err| {
+                api_validation_error(&format!("permission {pair:?} is invalid: {err}"))
+            })?;
+        }
+    }
+    Ok(Narrowing {
+        requested: request.requested.clone(),
+        resources: request
+            .resources
+            .clone()
+            .filter(|_| request.permissions.is_none()),
+        permissions: request.permissions.clone(),
+        audience: audience.to_string(),
+    })
+}
+
+/// `perms` narrowed as `narrowing` says. `permissions`, when present, is the
+/// whole narrowing; the empty `requested` beside it is only there for older
+/// control planes.
+pub(crate) fn narrow_permissions(
+    perms: Vec<String>,
+    narrowing: &Narrowing,
+    tenant_id: &str,
+) -> Vec<String> {
+    match &narrowing.permissions {
+        Some(pairs) => filter_pairs(perms, pairs, tenant_id),
+        None => filter_permissions(
+            perms,
+            narrowing.requested.as_deref(),
+            narrowing.resources.as_deref(),
+            tenant_id,
+        ),
+    }
+}
+
+/// Keep each granted permission narrowed by every `action:object` pair with
+/// the same action, the rule [`filter_permissions`] applies, but per pair
+/// rather than across every requested action and resource. Never widens: the
+/// action must match a grant exactly, the object is cut down to what the
+/// grant covers, and a pair that does not parse matches nothing.
+fn filter_pairs(perms: Vec<String>, pairs: &[String], tenant_id: &str) -> Vec<String> {
+    let wanted: Vec<(&str, ParsedObject)> = pairs
+        .iter()
+        .filter_map(|pair| {
+            let (action, object) = pair.split_once(':')?;
+            Some((action, parse_object(object, tenant_id).ok()?))
+        })
+        .collect();
+
+    let mut kept = Vec::new();
+    let mut seen = HashSet::new();
+    for perm in perms {
+        let Some((action, object)) = perm.split_once(':') else {
+            continue;
+        };
+        let Ok(granted) = parse_object(object, tenant_id) else {
+            continue;
+        };
+        for (wanted_action, wanted_object) in &wanted {
+            if *wanted_action != action {
+                continue;
+            }
+            if let Some(narrowed) = narrow_object(&granted, wanted_object) {
+                let narrowed = format!("{action}:{}", format_object(&narrowed));
+                if seen.insert(narrowed.clone()) {
+                    kept.push(narrowed);
+                }
+            }
+        }
+    }
+    kept
 }
 
 /// Keep what was granted AND requested. `requested` filters by action;

@@ -255,6 +255,7 @@ fn refresh_token() -> RefreshToken {
         narrowing: Some(Narrowing {
             requested: Some(vec![s("stream.read")]),
             resources: Some(vec![s("stream:t/n/s")]),
+            permissions: Some(vec![s("stream.publish:stream:t/n/s")]),
             audience: s("felix-broker"),
         }),
     }

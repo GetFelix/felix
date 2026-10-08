@@ -44,7 +44,25 @@ Content-Type: application/json
 ```
 
 `requested` and `resources` narrow the permissions RBAC grants and never widen
-them. If nothing is left, the exchange returns `403`. `audience` picks who the
+them, as a cross product of actions and resources. `permissions` narrows by
+`action:object` pairs instead, each on its own, so a token can subscribe to one
+stream and publish to another:
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+`permissions` must come with `"requested": []` and no non-empty `resources`,
+or the request is a `400`; a pair that does not parse is a `400` too. The empty
+`requested` makes an older control plane, which ignores `permissions`, refuse
+rather than mint full rights. With the Raft store a pair narrowing is a `409`
+until every member supports it. If nothing is left, the exchange returns `403`. `audience` picks who the
 token is for: `felix-broker` (the default) or `felix-controlplane` for this
 API. A token is accepted by one of the two, never both.
 

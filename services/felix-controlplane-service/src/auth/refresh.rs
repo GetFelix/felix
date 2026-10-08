@@ -281,12 +281,7 @@ pub async fn refresh_token_handler(
     // Current RBAC, narrowed the way the exchange narrowed it, so a refresh
     // never hands back more than the exchange did.
     if let Some(narrowing) = &record.narrowing {
-        perms = crate::auth::exchange::filter_permissions(
-            perms,
-            narrowing.requested.as_deref(),
-            narrowing.resources.as_deref(),
-            &tenant_id,
-        );
+        perms = crate::auth::exchange::narrow_permissions(perms, narrowing, &tenant_id);
     }
     if perms.is_empty() {
         // Every grant is gone since the token was issued. Refusing here is the
