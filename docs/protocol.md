@@ -792,6 +792,61 @@ search.
 `latest` to wait for one. A time older than every record the shard still holds
 answers with the oldest.
 
+### StreamRead
+```
+{ "type": "stream_read", "tenant_id": "<string>", "namespace": "<string>",
+  "stream": "<string>", "shard": <u32>, "from": <u64>, "end": <u64>?,
+  "max_records": <u32>?, "max_bytes": <u64>?, "request_id": <u64> }
+```
+
+Reads one page of a durable stream shard's records, from `from` and stopping
+before `end`, and answers with `stream_records`. Unlike `subscribe`, it
+registers no subscriber and never runs on into live delivery, so it suits
+loading a known slice of history: a match's events up to a snapshot offset, a
+page in a UI, a single record at a known offset. A longer range is read page by
+page, each one from the last answer's `next_offset`.
+
+- `end` left out lets the page run to the committed tail.
+- `max_records` and `max_bytes` left out, or `0`, take the broker's caps. The
+  broker caps both anyway: records at `FELIX_DURABLE_MAX_RECORDS_PER_READ`,
+  payload at 4 MiB. A single record larger than the byte budget still comes
+  back, alone.
+- The page holds only records that will stay: on a `Quorum` stream nothing at
+  or past the committed mark, and under `FsyncMode::OnCommit` nothing not yet
+  synced. It never waits for more. A page that reaches that point comes back
+  short or empty, and asking again later from `next_offset` picks up what has
+  been committed since.
+- `from` below the oldest retained offset is answered with
+  `subscribe_cursor_error` and `too_old`, and `from` past the shard's tail with
+  `in_future`, the same as a subscribe. `end` at or below `from` is an empty
+  page.
+
+Needs `stream.subscribe` on the stream, since it reads what a subscription
+would. Only the shard's leader answers; any other broker answers `not_leader`
+to a client that offered `FEATURE_REDIRECT`, and an error otherwise. An
+in-memory stream has no log to read and is answered with an error. Sent only
+to a broker that advertised `FEATURE_STREAM_READ`.
+
+### StreamRecords (server -> client)
+```
+{ "type": "stream_records",
+  "records": [{ "offset": <u64>, "payload": "<base64>",
+                "publisher": "<principal>"?, "timestamp_micros": <u64> }],
+  "next_offset": <u64>, "request_id": <u64> }
+```
+
+Records come in offset order. `next_offset` is where the next page starts. It
+is not always the last record's offset plus one: offsets that hold no record a
+client is given, such as a leader's generation-start records, are passed over.
+Once it reaches `end`, the range is done. An empty page with `next_offset`
+unchanged means nothing committed lies there yet.
+
+`publisher` is the principal that published the record, when the broker
+recorded one (see [Event batch publisher](#event-batch-publisher)).
+`timestamp_micros` is when it was appended (see
+[Event batch timestamps](#event-batch-timestamps)). Both are sent to every
+client that reads, since the message is new.
+
 ### StreamShards
 ```
 { "type": "stream_shards", "tenant_id": "<string>", "namespace": "<string>",
@@ -914,6 +969,8 @@ field of `detail` is optional. See [Error codes](#error-codes).
   can be replayed from any retained offset. History read from disk joins live
   delivery with no gap and no duplicate; see
   [durable storage](durable-storage.md#resuming-a-subscription).
+- A subscription has no end: replay runs on into live delivery. To read a
+  bounded range and stop, use [`stream_read`](#streamread).
 - Publish returns `ok` when accepted by the broker unless `ack` is `none`.
 - PublishBatch returns `ok` once for the batch unless `ack` is `none`.
 - A stream may carry several acked publishes before any is answered. Answers
@@ -1510,6 +1567,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
+| `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing. See [StreamRead](#streamread) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

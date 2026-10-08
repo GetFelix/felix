@@ -401,6 +401,14 @@ them out and reads on past them, so a page is empty only at the tail. Their
 offsets stay taken: a reader sees the offset after one follow the offset before
 it.
 
+Clients reach this read directly through `stream_read`
+([protocol](protocol.md#streamread)), which `Broker::read_range` serves with
+one `read_from` per page and no subscriber. It reads no further than a
+subscriber may: the committed mark on a `Quorum` shard, and under `OnCommit`
+the durable offset, so a record whose sync has not finished is never returned.
+The answer's `next_offset` steps over generation-start records, so a client
+paging a range never has to guess where the next page starts.
+
 ## Resuming a subscription
 
 Durability is only half of a resume: records surviving a restart is worthless if

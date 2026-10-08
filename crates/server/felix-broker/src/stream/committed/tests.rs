@@ -388,3 +388,52 @@ async fn reads_are_refused_while_the_bound_is_unknown_or_refused() {
         .await;
     assert!(matches!(history, Err(BrokerError::NotReadable { .. })));
 }
+
+/// **A bounded read stops at the committed mark without waiting for it**,
+/// and is refused while the bound is unknown.
+#[tokio::test]
+async fn a_range_read_stops_at_the_mark_and_does_not_wait() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Committed(0)).await;
+    for payload in [&b"a"[..], b"b", b"c"] {
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "quorum", 0)
+            .await
+            .expect("handle");
+        broker
+            .publish_batch_with_outcome(&handle, &[Bytes::copy_from_slice(payload)], None)
+            .await
+            .expect("publish");
+    }
+    bounds.set(ReadBound::Committed(1));
+
+    let page = tokio::time::timeout(
+        Duration::from_secs(5),
+        broker.read_range("t1", "ns", "quorum", 0, 0, None, 100, 1 << 20),
+    )
+    .await
+    .expect("a read at the mark waited")
+    .expect("read");
+    assert_eq!(
+        page.records.iter().map(|r| r.offset).collect::<Vec<_>>(),
+        vec![0]
+    );
+    assert_eq!(page.next_offset, 1);
+    let at_mark = broker
+        .read_range("t1", "ns", "quorum", 0, 1, Some(3), 100, 1 << 20)
+        .await
+        .expect("read");
+    assert!(at_mark.records.is_empty());
+    assert_eq!(at_mark.next_offset, 1);
+
+    bounds.set(ReadBound::Settling);
+    assert!(matches!(
+        broker
+            .read_range("t1", "ns", "quorum", 0, 0, None, 100, 1 << 20)
+            .await,
+        Err(BrokerError::NotReadable {
+            reason: NotReadable::Settling,
+            ..
+        })
+    ));
+}

@@ -637,6 +637,35 @@ the leading broker's clock, so the search is exact while that clock only moves
 forward, and close otherwise. `client.supports_offset_for_time()` says whether
 the broker answers it.
 
+### Reading a range and stopping
+
+`subscribe_from` keeps going into live delivery. To load a fixed slice, such as
+a match's events up to a snapshot offset, read it page by page instead. No
+subscription is opened:
+
+```rust
+let mut from = start;
+while from < end {
+    let page = client
+        .read("acme", "prod", "matches", 0, from, Some(end), 500)
+        .await?;
+    if page.records.is_empty() {
+        break; // nothing committed past here yet
+    }
+    for record in &page.records {
+        apply(record.offset, &record.payload);
+    }
+    from = page.next_offset;
+}
+```
+
+Continue from `next_offset` rather than the last offset plus one, since offsets
+that hold no record are passed over. A page holds at most `max_records` (`0`
+for the broker's cap) and is capped in size by the broker. A start below what
+retention kept, or past the tail, fails with `SubscribeCursorError`.
+`ClusterClient::read` does the same against whichever broker leads the shard,
+and `client.supports_read()` says whether the broker answers it.
+
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the

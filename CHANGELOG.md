@@ -12,6 +12,20 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A client can read a bounded range of a durable stream and stop (#1018). A
+  broker advertising `FEATURE_STREAM_READ` (`0x2000_0000`) answers
+  `stream_read` (shard, `from`, optional `end`, `max_records`, `max_bytes`)
+  with `stream_records`: one page of committed records and the `next_offset`
+  to continue from, which steps over generation-start records. No subscriber
+  is registered and the read never waits. A page stops at the committed mark
+  on a `Quorum` shard and, under `FsyncMode::OnCommit`, at the durable offset,
+  and is capped at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of
+  payload. A `from` below retention or past the tail gets
+  `subscribe_cursor_error`. Needs `stream.subscribe`; only the shard's leader
+  answers. In felix-client, `Client::read` and `ClusterClient::read` return a
+  `StreamPage`; felix-broker has `Broker::read_range`. Frames to clients that
+  do not send the request are unchanged. An `end` on `Subscribe` is tracked
+  in #1053.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
