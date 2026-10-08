@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791463309740,
+  "lastUpdate": 1791467363443,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -32010,6 +32010,72 @@ window.BENCHMARK_DATA = {
             "range": "169.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 544.00\nmean: 579.40\nstdev: 169.40\ncv: 29.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3635e15fb2b29e6a7ea9088f70ebbd73a474126e",
+          "message": "perf(broker): send commit acks from the task that settles the publish (#926) (#1062)\n\n* perf(broker): send commit acks from the task that settles the publish (#926)\n\nA publish acknowledged on commit is answered by the commit task (or the\nexecutor, for an in-memory write) straight onto the control stream's\nwriter queue. The per-stream ack-waiter task, its oneshot per publish and\nits per-publish timeout are gone; one deadline sweep per stream times out\nowed acks. The writer sends every answer already queued in one write.\n\nAcks still never precede durability, a pipelining client still gets them\nin request order, and a failed, dropped or timed-out publish still gets\nits error. The test-only subscriber event_writer is removed.\n\n* chore: mark the ack hand-off change as outside the model\n\nSpec-Unaffected: changes which task delivers a publish ack, not when; an ack is still sent only after the record commits under the stream's mode, so acked records and the quorum mark are unchanged.",
+          "timestamp": "2026-10-08T06:43:12-07:00",
+          "tree_id": "6dfc0bf6b191452e49b8b9e8ae00d7d4cb811430",
+          "url": "https://github.com/GetFelix/felix/commit/3635e15fb2b29e6a7ea9088f70ebbd73a474126e"
+        },
+        "date": 1791467359970,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 135.20\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 182,
+            "range": "12.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 187.80\nstdev: 12.66\ncv: 6.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 260,
+            "range": "37.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 265.40\nstdev: 37.83\ncv: 14.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 178,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 177.40\nstdev: 1.34\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 360,
+            "range": "8.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 360.00\nmean: 360.80\nstdev: 8.53\ncv: 2.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 502,
+            "range": "66.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 502.00\nmean: 527.60\nstdev: 66.83\ncv: 12.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
