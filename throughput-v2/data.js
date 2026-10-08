@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791450613009,
+  "lastUpdate": 1791452642548,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24960,6 +24960,58 @@ window.BENCHMARK_DATA = {
             "range": "18084.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1604766.29\nmean: 1611920.79\nstdev: 18084.03\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7b2efbf1171a0599f9e73af1ab717998d4598fb",
+          "message": "feat(wire,broker,client): let a subscriber size its own broker queue (#1019) (#1056)\n\nA subscribe may carry queue_capacity, counted in published batches. A broker\nadvertising FEATURE_SUBSCRIBE_QUEUE (0x4000_0000) clamps it to\n1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX (default 4096) and echoes the grant\non subscribed. Frames without the field are byte-identical to before, and\nORIGINAL_V1_FLAGS is unchanged.\n\nOnly the size is the subscriber's. The overflow policy stays the stream's:\na subscriber that could pick Block could stall every publisher on its shard.\n\n- Broker: Broker::subscribe_sized and subscribe_from_sized; the stream's\n  default capacity and policy apply when none is given.\n- Client: ClientConfig::broker_sub_queue_capacity, sent only to a broker\n  advertising the bit, and Subscription::queue_capacity for the grant.\n- Docs: DropOld is accepted but behaves as DropNew at every stage; the\n  status table and references no longer present it as working.\n\nSpec-Unaffected: the model covers leases, offsets and the quorum mark; a subscriber queue size changes only how much one reader buffers.",
+          "timestamp": "2026-10-08T02:37:02-07:00",
+          "tree_id": "d82e2f85698548d37bca151b95167d2292b52f68",
+          "url": "https://github.com/GetFelix/felix/commit/c7b2efbf1171a0599f9e73af1ab717998d4598fb"
+        },
+        "date": 1791452641907,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 732240.26,
+            "range": "60110.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732240.26\nmean: 714588.91\nstdev: 60110.28\ncv: 8.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 732240.26,
+            "range": "60110.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732240.26\nmean: 714588.91\nstdev: 60110.28\ncv: 8.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161264.41,
+            "range": "12476.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161264.41\nmean: 155698.99\nstdev: 12476.72\ncv: 8.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1612644.1,
+            "range": "124767.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1612644.10\nmean: 1556989.89\nstdev: 124767.12\ncv: 8.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
