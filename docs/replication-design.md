@@ -429,7 +429,16 @@ promised another leader that generation refuses it, and it stays closed. The
 lease fallback is unchanged: when some replica does not offer the fence, the
 shard opens on the lease, as before, and
 `felix_broker_promotions_opened_total{path}` counts every new leadership, not
-only promotions. `FelixShardElectHandoff.cfg` checks the cut-over and the
+only promotions.
+
+The cost is the promotion's cost on more paths. A new leader that cannot
+reach a majority retries the fence on every replication pass and does not
+serve or report until it gets one; it does not give up or step down. The
+shard is unavailable until the leader reaches a majority, or dies and
+placement promotes from the last report, which waits for a broker holding
+the log if that report names no follower that does. A move's destination cut
+off from its followers at the cut-over is now in that position, where before
+it served unfenced. `FelixShardElectHandoff.cfg` checks the cut-over and the
 hand-back fenced, with replicas electing themselves (`FenceEveryChange` in the
 model).
 
@@ -1278,9 +1287,11 @@ the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 `a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
-returns. With `majority_ack` finalized the promotion is fenced instead, and
-`a_move_cut_short_by_kills_leaves_no_replica_halted` checks that the brokers
-holding the unacknowledged tail halt and rejoin.
+returns. With `majority_ack` finalized the cut-over is fenced with no lease
+fallback, so the destination, cut off from every follower, never serves or
+reports, and `a_move_cut_short_by_kills_leaves_no_replica_halted` checks that
+the shard waits the same way and that every replica rejoins with nothing
+halted once the destination and the old leader return.
 
 The last report is the one promotion reads, so a leader that stops on purpose
 has to make it a good one. A stopping broker stops taking forwarded writes,
