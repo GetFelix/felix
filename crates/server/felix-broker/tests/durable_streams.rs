@@ -1965,3 +1965,76 @@ async fn a_subscription_ends_at_its_first_drop_and_says_where_to_resume() {
     assert!(end.is_none());
     assert_eq!(receiver.lagged(), Some(1));
 }
+
+fn queued_offsets(receiver: &mut felix_broker::SubscriptionReceiver) -> Vec<u64> {
+    let mut offsets = Vec::new();
+    while let Ok(envelope) = receiver.try_recv() {
+        let base = envelope.base_offset().expect("durable offsets");
+        offsets.extend((0..envelope.len() as u64).map(|i| base + i));
+    }
+    offsets
+}
+
+/// A subscriber's own queue size bounds only that subscriber. The small one
+/// drops, and the jump in its offsets says exactly what it lost; the
+/// publisher is never refused and a subscriber on the default queue gets
+/// everything.
+#[tokio::test]
+async fn a_subscribers_queue_size_is_its_own() {
+    let dir = tempdir().expect("dir");
+    let storage =
+        DurableStorage::open(dir.path(), log_config(FsyncMode::OnCommit)).expect("storage");
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_durable_storage(storage)
+        .with_topic_capacity(8)
+        .expect("capacity");
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    register(&broker, "orders", true).await;
+
+    let (mut small, _small_guard) = broker
+        .subscribe_sized("t1", "default", "orders", 0, Some(2))
+        .await
+        .expect("small subscribe")
+        .into_parts();
+    let (mut default, _default_guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("default subscribe")
+        .into_parts();
+    let (mut large, _large_guard) = broker
+        .subscribe_from_sized(
+            "t1",
+            "default",
+            "orders",
+            0,
+            StartPosition::Latest,
+            Some(32),
+        )
+        .await
+        .expect("large subscribe")
+        .subscription
+        .into_parts();
+
+    for i in 0..12 {
+        broker
+            .publish("t1", "default", "orders", payload(&format!("r{i}")))
+            .await
+            .expect("a full subscriber queue never refuses the publisher");
+    }
+
+    assert_eq!(queued_offsets(&mut small), vec![0, 1]);
+    assert_eq!(queued_offsets(&mut default), (0..8).collect::<Vec<_>>());
+    assert_eq!(queued_offsets(&mut large), (0..12).collect::<Vec<_>>());
+
+    // Drained, the small queue takes the next record, and the jump from 1
+    // to 12 is the drop.
+    broker
+        .publish("t1", "default", "orders", payload("r12"))
+        .await
+        .expect("publish");
+    assert_eq!(queued_offsets(&mut small), vec![12]);
+}

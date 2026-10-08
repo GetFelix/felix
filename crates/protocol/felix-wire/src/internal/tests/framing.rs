@@ -143,6 +143,7 @@ fn every_body_begins_with_its_correlation_id() {
             last_generation: 1,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
+            timed: false,
             correlation_id: id,
             shard: shard.clone(),
             log: ReplicaLog::Stream,
@@ -151,6 +152,7 @@ fn every_body_begins_with_its_correlation_id() {
             labelled: false,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
+            times: None,
             correlation_id: id,
             shard: shard.clone(),
             first_offset: 10,

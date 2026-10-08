@@ -189,6 +189,11 @@ impl BrokerConfig {
         {
             config.subscriber_queue_capacity = value;
         }
+        if let Some(value) = override_cfg.subscriber_queue_capacity_max
+            && value > 0
+        {
+            config.subscriber_queue_capacity_max = value;
+        }
         if let Some(value) = override_cfg.max_subscriptions_per_conn
             && value > 0
         {
@@ -292,6 +297,7 @@ pub(super) struct BrokerConfigOverride {
     pub_ingress_wait: Option<bool>,
     core_shards: Option<usize>,
     subscriber_queue_capacity: Option<usize>,
+    subscriber_queue_capacity_max: Option<usize>,
     max_subscriptions_per_conn: Option<usize>,
     subscriber_queue_policy: Option<String>,
     subscriber_writer_lanes: Option<usize>,

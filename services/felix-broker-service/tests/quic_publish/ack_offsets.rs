@@ -30,6 +30,7 @@ async fn authed_stream(
             token: auth.token.clone(),
             client_flags,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;

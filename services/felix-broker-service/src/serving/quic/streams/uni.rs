@@ -107,6 +107,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 // and nothing here would ever send an optional message back.
                 client_flags: _,
                 client_features: _,
+                client_features_hi: _,
             } => {
                 if auth_ctx.is_some() {
                     tracing::debug!("closing uni stream after duplicate auth");

@@ -144,6 +144,12 @@ pub enum Kind {
     ConditionalForwardCacheOp = 34,
     /// `ForwardCacheOk` with whether the write was made and a version.
     ConditionalForwardCacheOk = 35,
+    /// `ReplicateLabelledRecords` followed by each record's append time on
+    /// the sender. An older follower refuses it rather than stamping the
+    /// records with its own clock.
+    ReplicateTimedRecords = 36,
+    /// `ReplicateLabelledFetch`, answered with `ReplicateTimedRecords`.
+    ReplicateTimedFetch = 37,
 }
 
 impl Kind {
@@ -186,6 +192,8 @@ impl Kind {
             33 => Ok(Kind::ReplicateLabelledFetch),
             34 => Ok(Kind::ConditionalForwardCacheOp),
             35 => Ok(Kind::ConditionalForwardCacheOk),
+            36 => Ok(Kind::ReplicateTimedRecords),
+            37 => Ok(Kind::ReplicateTimedFetch),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

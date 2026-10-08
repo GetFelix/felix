@@ -4,8 +4,8 @@
 //! is what keeps them in order. The hash is cached per stream so a hot
 //! stream does not rehash on every publish.
 //!
-//! A `ClusterClient` publisher sends each shard to its own stream first
-//! (`shard_streams`), and only falls back to the hash when the client has no
+//! Under `HashStream` each shard goes to its own stream first
+//! (`shard_streams`), and falls back to the hash only when the client has no
 //! room for another.
 //!
 //! The hash is seeded per client. Each worker's connection sits on one broker
@@ -36,10 +36,12 @@ pub enum PublishSharding {
     /// Pick the stream by hashing the stream's name, so each stream's
     /// publishes share one writer and stay in order. The default.
     ///
-    /// A [`crate::ClusterClient`] narrows that to each shard: every shard of
-    /// a stream has one writer, its own while the client has room for one,
-    /// so a shard's publishes stay in order and a stalled shard holds up no
-    /// other.
+    /// The client narrows that to each shard: every shard of a stream has
+    /// one writer, its own while the client has room for one, so a shard's
+    /// publishes stay in order, a stalled shard holds up no other, and one
+    /// stream's shards can use several connections. A plain
+    /// [`crate::Client`] asks the broker for a stream's width before its
+    /// first keyed publish to it.
     HashStream,
 }
 
@@ -72,9 +74,9 @@ impl Deref for Selected<'_> {
 }
 
 impl Publisher {
-    /// The writer for a publish to `shard` of the stream, when the caller
-    /// knows the shard: the shard's own stream when it has or can get one,
-    /// else the pool.
+    /// The writer for a publish with `key`: its shard's own stream when the
+    /// client can tell the shard and has or can get a stream for it, else
+    /// the pool. See [`Self::shard_of`] for which shard that is.
     ///
     /// Round-robin skips the shard's stream. It asked for spreading over
     /// order, and a stream of its own would put every publish on one writer.
@@ -83,8 +85,12 @@ impl Publisher {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        key: Option<&[u8]>,
         shard: Option<u32>,
     ) -> Result<Selected<'_>> {
+        let shard = self
+            .shard_of(tenant_id, namespace, stream, key, shard)
+            .await;
         if self.inner.sharding == PublishSharding::HashStream
             && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
             && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
@@ -93,6 +99,54 @@ impl Publisher {
         }
         self.select_worker(tenant_id, namespace, stream)
             .map(Selected::Pooled)
+    }
+
+    /// The shard whose writer a publish goes to: 0 without a key, else the
+    /// one the key maps to under the width this client keeps for the stream.
+    ///
+    /// The caller's `shard` is used only by a publisher with no widths. Every
+    /// other path publishing through this client, a `ClusterClient` or an
+    /// idempotent producer included, gets its writer from the same kept
+    /// width, so one key never has two writers however each caller worked
+    /// its shard out. `None` sends a keyed publish to the pool.
+    pub(super) async fn shard_of(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&[u8]>,
+        shard: Option<u32>,
+    ) -> Option<u32> {
+        let Some(key) = key else {
+            return Some(0);
+        };
+        if self.inner.sharding != PublishSharding::HashStream {
+            return shard;
+        }
+        match &self.inner.widths {
+            Some(widths) => Some(widths.shard_of(tenant_id, namespace, stream, key).await),
+            None => shard,
+        }
+    }
+
+    /// Ask a stream's width again once the broker says the stream is gone: it
+    /// may be created again with another width. Nothing sent to it while it
+    /// was gone landed, so no shard of the new stream is left on two writers.
+    pub(super) fn forget_width_if_gone<T>(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&[u8]>,
+        outcome: &Result<T>,
+    ) {
+        if let (Some(_), Some(widths), Err(err)) = (key, &self.inner.widths, outcome)
+            && err
+                .downcast_ref::<crate::BrokerError>()
+                .is_some_and(|err| err.code == felix_wire::ErrorCode::NotFound)
+        {
+            widths.forget(tenant_id, namespace, stream);
+        }
     }
 
     pub(super) fn select_worker(

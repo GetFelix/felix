@@ -66,6 +66,7 @@ async fn subscribe_requests_no_id_and_adopts_server_assigned_id() -> Result<()> 
                             subscription_id: SERVER_ASSIGNED_ID,
                             start_offset: None,
                             live_offset: None,
+                            queue_capacity: None,
                         },
                     )
                     .await?;
@@ -169,6 +170,7 @@ async fn subscription_stream_close_returns_none() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -265,6 +267,7 @@ async fn subscription_connection_loss_is_an_error_not_an_end() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -374,6 +377,7 @@ async fn subscription_empty_event_batch_returns_none() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;

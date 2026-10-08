@@ -10,6 +10,11 @@ use crate::serving::quic::handlers::publish::{
     Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
 
+/// Extended feature bits this broker serves, sent in `server_features_hi`.
+/// None yet; the first one also starts keeping the client's
+/// `client_features_hi`.
+const SERVED_FEATURES_HI: u32 = 0;
+
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,
     session: &mut Session,
@@ -92,7 +97,7 @@ pub(super) async fn authenticate(
             // own. A client that sent no `client_flags` predates
             // negotiation and would not understand `AuthOk`, so it must
             // keep receiving the plain `Ok` it expects.
-            let response = match client_flags {
+            let mut response = match client_flags {
                 Some(_) => Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
                     // Only what this broker can actually answer.
@@ -124,6 +129,10 @@ pub(super) async fn authenticate(
                                 None => 0,
                             }
                             | felix_wire::FEATURE_ATOMIC_COMMIT
+                            // A broker without durable storage has no
+                            // offsets to compare, so it refuses every
+                            // one; it still knows the request.
+                            | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | match publish_ctx.client_endpoints {
                                 Some(_) => {
                                     felix_wire::FEATURE_TOPOLOGY
@@ -163,6 +172,7 @@ pub(super) async fn authenticate(
                             // deployment rather than a guess.
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_CACHE_SHARDS
+                            | felix_wire::FEATURE_SUBSCRIBE_QUEUE
                             // Likewise: a single node owns every shard.
                             | felix_wire::FEATURE_SHARD_OWNERS
                             // Advertised unconditionally: the
@@ -176,6 +186,9 @@ pub(super) async fn authenticate(
                             // Every durable record stores its append time; an
                             // in-memory stream is answered with an error.
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
+                            // Likewise answered for a durable stream and
+                            // refused for an in-memory one.
+                            | felix_wire::FEATURE_STREAM_READ
                             // Codes are sent only to a client that offered
                             // the bit; advertising it tells that client an
                             // error without one is not a gap in this broker.
@@ -200,6 +213,7 @@ pub(super) async fn authenticate(
                                 }
                             },
                     ),
+                    server_features_hi: None,
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
                     // explicitly would change the bytes every
@@ -211,6 +225,19 @@ pub(super) async fn authenticate(
                 },
                 None => Message::Ok,
             };
+            // The extended word goes only to a client that said it reads one.
+            if let Message::AuthOk {
+                server_features: Some(features),
+                server_features_hi,
+                ..
+            } = &mut response
+            {
+                (*features, *server_features_hi) = felix_wire::answer_features(
+                    *features,
+                    SERVED_FEATURES_HI,
+                    session.peer_features,
+                );
+            }
             handle_ack_enqueue_result(
                 send_outgoing_critical(
                     out_ack_tx,

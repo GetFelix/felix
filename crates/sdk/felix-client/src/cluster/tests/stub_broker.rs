@@ -269,6 +269,7 @@ async fn serve_stream(
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_SHARD_OWNERS,
                     ),
+                    server_features_hi: None,
                     listener_ports: None,
                     publish_window: None,
                 };
@@ -344,6 +345,7 @@ async fn serve_stream(
                         subscription_id: next_subscription_id(),
                         start_offset,
                         live_offset,
+                        queue_capacity: None,
                     },
                     other => other,
                 };
