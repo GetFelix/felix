@@ -42,6 +42,7 @@ mod publish;
 mod record_time;
 mod responder;
 mod session;
+mod stream_read;
 mod subscribe;
 mod unsupported;
 
@@ -320,6 +321,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 token,
                 client_flags,
                 client_features,
+                // Nothing reads the extended word until a feature lives there.
+                client_features_hi: _,
             } => {
                 session::authenticate(
                     &cx,
@@ -453,6 +456,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 subscription_id,
                 start,
                 shard,
+                queue_capacity,
             } => {
                 subscribe::subscribe(
                     &cx,
@@ -463,6 +467,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     subscription_id,
                     start,
                     shard,
+                    queue_capacity,
                 )
                 .await?
             }
@@ -929,6 +934,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 event,
                 changes,
                 request_id,
+                expected_offset,
             } => {
                 commit::commit(
                     &cx,
@@ -937,10 +943,35 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     event,
                     changes,
+                    expected_offset,
+                    request_id,
+                )
+                .await?
+            }
+            Message::PublishIf {
+                tenant_id,
+                namespace,
+                stream,
+                payloads,
+                key,
+                expected_offset,
+                request_id,
+            } => {
+                commit::publish_if(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key: key,
+                    },
+                    payloads,
+                    expected_offset,
                     request_id,
                 )
                 .await?
@@ -960,7 +991,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     key,
                     request_id,
@@ -978,7 +1009,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 record_time::offset_for_time(
                     &cx,
                     &mut session,
-                    record_time::TimeTarget {
+                    record_time::ShardTarget {
                         tenant_id,
                         namespace,
                         stream,
@@ -989,7 +1020,38 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::StreamRead {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                from,
+                end,
+                max_records,
+                max_bytes,
+                request_id,
+            } => {
+                stream_read::stream_read(
+                    &cx,
+                    &mut session,
+                    record_time::ShardTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                    },
+                    stream_read::ReadBounds {
+                        from,
+                        end,
+                        max_records,
+                        max_bytes,
+                    },
+                    request_id,
+                )
+                .await?
+            }
             Message::GroupRecords { .. }
+            | Message::StreamRecords { .. }
             | Message::OffsetValue { .. }
             | Message::CommitOk { .. }
             | Message::StateValue { .. }

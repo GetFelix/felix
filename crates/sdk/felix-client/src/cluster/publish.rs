@@ -192,7 +192,7 @@ impl ClusterClient {
         for client in self.nodes.clients().await {
             // The shard publisher finishes the pooled streams and the shard
             // streams this client's publishes go on.
-            let finished = client.shard_publisher().finish().await;
+            let finished = client.publisher_handle().finish().await;
             if let Err(err) = finished {
                 let err = err.context(format!("finish publishing to {}", client.dialled()));
                 first.get_or_insert(err);
@@ -278,7 +278,7 @@ async fn publish_once(
     payload: Vec<u8>,
     ack: AckMode,
 ) -> AckOutcome {
-    let publisher = client.shard_publisher();
+    let publisher = client.publisher_handle();
     publisher
         .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)
         .await
@@ -294,7 +294,7 @@ async fn publish_once_to(
     ack: AckMode,
 ) -> AckOutcome {
     let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
-    let publisher = client.shard_publisher();
+    let publisher = client.publisher_handle();
     match key {
         Some(key) => {
             publisher

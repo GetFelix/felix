@@ -54,7 +54,7 @@ fn fixture(cap: usize) -> Fixture {
 /// The writer a publish to `shard` of `stream` gets: its own, or a pool slot.
 async fn route(publisher: &Publisher, stream: &str, shard: u32) -> Own {
     match publisher
-        .route("t", "ns", stream, Some(shard))
+        .route("t", "ns", stream, Some(b"k".as_slice()), Some(shard))
         .await
         .expect("route")
     {

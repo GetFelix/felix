@@ -229,22 +229,24 @@ async fn publish_batch_binary_appends_bench_ts_when_enabled() -> Result<()> {
     });
 
     let publisher = Publisher {
-        inner: Arc::new(PublisherInner::with_runtime_config(
-            Arc::new(vec![PublishWorker {
-                tx,
-                handle: tokio::sync::Mutex::new(Some(handle)),
-                request_counter: AtomicU64::new(1),
-                server_flags: felix_wire::KNOWN_FLAGS,
-                publish_window: 0,
-            }]),
-            PublishSharding::RoundRobin,
-            Arc::new(PublishAdmission::new(
-                crate::config::DEFAULT_PUBLISH_INFLIGHT_BYTES,
-            )),
-            ahash::RandomState::new(),
-            None,
-            true,
-        )),
+        inner: Arc::new({
+            let mut inner = PublisherInner::with_admission(
+                Arc::new(vec![PublishWorker {
+                    tx,
+                    handle: tokio::sync::Mutex::new(Some(handle)),
+                    request_counter: AtomicU64::new(1),
+                    server_flags: felix_wire::KNOWN_FLAGS,
+                    publish_window: 0,
+                }]),
+                PublishSharding::RoundRobin,
+                Arc::new(PublishAdmission::new(
+                    crate::config::DEFAULT_PUBLISH_INFLIGHT_BYTES,
+                )),
+                ahash::RandomState::new(),
+            );
+            inner.bench_embed_ts = true;
+            inner
+        }),
     };
     publisher
         .publish_batch_binary("t", "ns", "s", &[b"x".to_vec()])

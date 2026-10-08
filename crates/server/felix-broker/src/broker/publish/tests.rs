@@ -11,6 +11,7 @@ use crate::error::BrokerError;
 use crate::stream::SubQueuePolicy;
 use crate::{Broker, StreamMetadata};
 
+mod conditional;
 mod idempotent;
 mod publisher;
 

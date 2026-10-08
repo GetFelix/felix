@@ -104,6 +104,7 @@ async fn subscribe(
             // answers the plain `Ok` a flagless client expects.
             client_flags: None,
             client_features,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -119,6 +120,7 @@ async fn subscribe(
             stream: MOVED_STREAM.to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         },
     )
     .await?;

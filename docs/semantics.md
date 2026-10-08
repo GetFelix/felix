@@ -212,6 +212,58 @@ quarter of the lease as margin, and the control plane hands a silent broker's
 shards on only a further quarter past the expiry, measured on its own
 monotonic clock as well as the store's. See "Where the guarantees stop" below.
 
+## Conditional writes
+
+`publish_if` appends a batch only if it would start at exactly the offset the
+writer expects, the shard's next. `commit` takes the same `expected_offset`.
+Both are negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
+
+**Of two writers expecting the same offset, exactly one is written.** The
+check is made where the log assigns offsets, under the lock that assigns
+them, so no other append can land between the check and the claim.
+
+> `of_writers_racing_at_one_offset_exactly_one_wins`,
+> `one_of_many_appends_at_the_same_offset_is_written`,
+> `a_conditional_publish_lands_once_and_names_the_tail`.
+
+**A refused write leaves nothing behind.** It writes no record, consumes no
+offset and claims no place in the commit order, so the next publish takes the
+offset it would have had and waits on nothing. The refusal is
+`publish_refused` with `offset_mismatch` and the tail it was checked against.
+
+> `a_refused_publish_leaves_no_record_and_no_gap`,
+> `an_append_at_a_stale_offset_writes_and_claims_nothing`,
+> `a_commit_at_a_stale_offset_changes_no_state`.
+
+**The tail counts every record.** Plain publishes, commits, and the
+generation-start record a new leader writes all move it. After a failover a
+writer's expected offset is stale even when nobody else wrote, and the refusal
+names the offset to resume from. A writer that still owns the shard re-reads
+from its old tail to the new one and carries on.
+
+> `a_generation_start_moves_the_expected_offset`.
+
+**The fence is as strong as leadership.** The check runs on the shard's
+leader, against its log. On a `Quorum` stream a leader that has lost its
+majority cannot answer, so a write it accepted is not acknowledged. On a
+`Leader` stream a deposed leader still inside its lease checks against its own
+tail, which may be stale; see "Consistency" above and "Where the guarantees
+stop". A write to a broker that does not lead the shard is not forwarded: it
+is answered `not_leader`.
+
+**A lost answer cannot be retried blindly.** The retry is refused by the write
+it repeats, which looks the same as losing to a rival. The writer reads the
+shard at its expected offset to see whose batch is there.
+
+`publish_if` is answered outside the publish queue, but it is charged
+against the tenant's publish quota and the ingress byte budgets before the
+check, as a queued publish is, and refused over quota with the same
+retryable `overloaded` answer.
+
+> `a_conditional_publish_over_quota_is_refused_like_a_publish`.
+
+An in-memory stream has no offsets, so it refuses a conditional write.
+
 ## Moves
 
 A shard whose leader is alive is moved rather than failed over: the
