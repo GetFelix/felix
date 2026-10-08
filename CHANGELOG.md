@@ -16,7 +16,7 @@ for what the current release guarantees.
   macOS and Linux, with completions and man pages (#1005). `release.yml`
   writes it from each release's archive checksums and pushes it to
   `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
-  `HOMEBREW_TAP_TOKEN` secret; dry runs keep it as an artifact and nightlies
+  `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap); dry runs keep it as an artifact and nightlies
   skip it.
 - Stream logs can copy their sealed segments to an object store before
   retention deletes them, the first part of tiered storage (#172). Off by
