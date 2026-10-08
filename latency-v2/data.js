@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791463024306,
+  "lastUpdate": 1791463309740,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31944,6 +31944,72 @@ window.BENCHMARK_DATA = {
             "range": "205.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 440.00\nmean: 497.00\nstdev: 205.80\ncv: 41.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca94d3f1ec013af4c34e37e0427b422b5556c3e1",
+          "message": "feat(client): spread one stream's shards over a plain client's connections (#724) (#1063)\n\n* feat(client): spread one stream's shards over a plain client's connections (#724)\n\nA plain Client learns a stream's width on its first keyed publish to it and\nputs each shard on a publish stream of its own, placed on the least-loaded\nconnection, as a ClusterClient already did. Every publish to one shard keeps\none writer and one QUIC stream, so per-shard order holds; unkeyed and\nsingle-shard streams stay on one stream for total order.\n\nFELIX_PUB_SHARD_STREAMS=0 now takes effect; the env reader dropped zero.\n\n* fix(client): pick a key's writer only from the client's kept width (#724)\n\nA caller's own shard no longer chooses the writer, so a ClusterClient, an\nidempotent producer and plain publishes through one client share a key's\nwriter even when they disagree about the width. A publish refused with\nnot_found drops the kept width, so a stream recreated at another width is\nrouted by its new one.",
+          "timestamp": "2026-10-08T05:31:52-07:00",
+          "tree_id": "6d605a16f778f532055a0c44d25be20f140ba54b",
+          "url": "https://github.com/GetFelix/felix/commit/ca94d3f1ec013af4c34e37e0427b422b5556c3e1"
+        },
+        "date": 1791463305394,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 136,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 136.20\nstdev: 0.45\ncv: 0.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.40\nstdev: 1.82\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 247,
+            "range": "5.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 248.20\nstdev: 5.17\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.60\nstdev: 0.89\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 365,
+            "range": "5.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 365.00\nmean: 365.00\nstdev: 5.15\ncv: 1.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "169.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 579.40\nstdev: 169.40\ncv: 29.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
