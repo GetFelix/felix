@@ -128,6 +128,46 @@ shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
 by jump consistent hashing of the same hash; an unkeyed publish goes to shard
 0. See the [wire protocol](/architecture/wire-protocol/) page.
 
+## Conditional publishes
+
+A single writer, such as the process that owns a match's state, can publish
+only if the stream has not moved since it last wrote. `publish_if` carries the
+offset the writer expects the batch to start at, the shard's next. The broker
+checks it where it assigns offsets, so of two writers expecting the same
+offset exactly one is written. The other is refused with the tail and writes
+nothing.
+
+```rust
+use felix_client::ConditionalWrite;
+
+let mut next = 0;
+match cluster
+    .publish_if("acme", "games", "match-7", None, vec![b"tick 120".to_vec()], next)
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    // Another writer got there first, or a failover moved the tail.
+    ConditionalWrite::Refused { tail } => return Err(anyhow::anyhow!("lost the stream at {tail}")),
+}
+```
+
+A few things to know:
+
+- The tail counts every record on the shard, including the one a new leader
+  writes when it takes over. After a failover the expected offset is stale
+  even with no rival, and the refusal says where the shard is now.
+- A refused publish consumes no offset, so the next write is not held up and
+  leaves no gap.
+- If the answer is lost, do not resend: the retry would be refused by your own
+  write. Read the shard at the expected offset to see whether it landed.
+- The broker leading the shard answers it; it is never forwarded. On a
+  `Leader` stream the fence is only as strong as the leader's lease.
+- It needs a durable stream. Negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
+- `commit_if` is the same check on an [atomic commit](/features/atomic-commits/).
+
+See [Conditional writes](https://github.com/GetFelix/felix/blob/main/docs/semantics.md#conditional-writes)
+for the guarantees and the tests behind them.
+
 ## Isolation and backpressure
 
 Each subscription gets its own bounded queue in the broker and its own QUIC
@@ -246,6 +286,19 @@ consumer can treat a retry differently from a first attempt.
 
 See [Queues](/features/queues/) for dead letters, redrive, and the
 ordering rules that make the cursor safe.
+
+### Reading a range, without subscribing
+
+A subscription has no end. Replay from an offset runs on into live delivery
+until the client unsubscribes. To read a fixed slice of a durable stream, such
+as one match's events or a page of history in a UI, use a range read
+(`stream_read` on the wire, `Client::read` in Rust). It returns one page of
+committed records from a start offset, stopping before an end offset, with the
+offset to read the next page from. Nothing is registered with the stream's
+fanout, so the broker does no live work for it. A page is capped in records and
+bytes, and it never waits: once it reaches what is committed it comes back short.
+It is a request and response over JSON, one round trip per page. For bulk
+export, a subscription is still the faster path.
 
 ### Exactly-once delivery is not offered
 

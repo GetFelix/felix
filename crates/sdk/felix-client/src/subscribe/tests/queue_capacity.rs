@@ -38,6 +38,7 @@ async fn subscribe_against(
                     Some(features) => Message::AuthOk {
                         server_flags: felix_wire::ORIGINAL_V1_FLAGS,
                         server_features: Some(features),
+                        server_features_hi: None,
                         listener_ports: None,
                         publish_window: None,
                     },

@@ -269,6 +269,7 @@ async fn serve_stream(
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_SHARD_OWNERS,
                     ),
+                    server_features_hi: None,
                     listener_ports: None,
                     publish_window: None,
                 };

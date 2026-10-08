@@ -34,6 +34,7 @@ pub(crate) async fn run_pubsub(
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -103,6 +104,7 @@ pub(crate) async fn run_cache(
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -155,6 +157,7 @@ pub(crate) async fn publish(
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -197,6 +200,7 @@ async fn cache_get(
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;

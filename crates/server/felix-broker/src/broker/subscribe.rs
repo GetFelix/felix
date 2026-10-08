@@ -453,7 +453,7 @@ impl Broker {
 }
 
 /// The durable `tail` as a reader may see it.
-fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u32) -> Result<u64> {
+pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u32) -> Result<u64> {
     match bound {
         ReadBound::Unbounded => Ok(tail),
         ReadBound::Committed(mark) => Ok(mark.min(tail)),

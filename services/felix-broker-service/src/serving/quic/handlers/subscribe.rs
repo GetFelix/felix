@@ -537,10 +537,6 @@ pub(crate) async fn handle_subscribe_message(
     .await
 }
 
-/// Turn a broker error into the most specific protocol message available.
-///
-/// A cursor rejection is machine-readable so the client can choose a remedy;
-/// everything else stays a generic `Error`.
 /// The queue capacity a subscriber gets for `requested`: at least one, and
 /// no more than the configured maximum.
 pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
@@ -548,7 +544,11 @@ pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
     requested.clamp(1, max)
 }
 
-fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
+/// Turn a broker error into the most specific protocol message available.
+///
+/// A cursor rejection is machine-readable so the client can choose a remedy;
+/// everything else stays a generic `Error`.
+pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
     match err {
         felix_broker::BrokerError::CursorTooOld { oldest, requested } => {
             Message::SubscribeCursorError {

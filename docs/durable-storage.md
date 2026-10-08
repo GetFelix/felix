@@ -170,6 +170,18 @@ then it dominates: waking all of them makes the work per commit grow with the
 number in flight, so throughput falls as load rises. Measured at
 [storage-performance.md](storage-performance.md#8-releasing-a-commit-turn-wakes-one-publisher-not-all-of-them).
 
+### A conditional append
+
+`publish_if`, and a commit with an expected offset, append only if the batch
+would start at exactly that offset. The log checks the tail on its append
+thread, under the lock that assigns offsets, and claims the batch's range in
+the commit sequencer in the same step (`DiskLog::append_claimed_at`). A batch
+that fails the check is never staged: it writes nothing, consumes no offset,
+and reserves no range, so nothing behind it waits on a turn that will not
+come. The refusal reports the tail read under that lock. A follower storing a
+leader's batch at the leader's offsets uses the same check without the claim
+(`append_pending_at`).
+
 The append happens **before** fanout and **before** the acknowledgement. The
 alternative is unrecoverable: a record delivered to subscribers and acknowledged
 to the publisher but lost in a crash is a silent hole in a log that consumers
@@ -347,6 +359,11 @@ Rules that recovery depends on:
   being split or rejected.
 - Sealing syncs the data and index, then trims any preallocated tail so the file
   on disk is exactly its contents.
+- The active segment reserves blocks ahead of its writes without moving the
+  file size. It starts with 1 MiB and doubles the reservation, off the append
+  path, each time the records pass half of it, up to the segment size. A
+  failed extension never fails an append. See section 5 of
+  [storage-performance.md](storage-performance.md).
 
 ## Reads
 
@@ -395,6 +412,14 @@ stored. Every other reader goes through `StreamLog::read_from`, which leaves
 them out and reads on past them, so a page is empty only at the tail. Their
 offsets stay taken: a reader sees the offset after one follow the offset before
 it.
+
+Clients reach this read directly through `stream_read`
+([protocol](protocol.md#streamread)), which `Broker::read_range` serves with
+one `read_from` per page and no subscriber. It reads no further than a
+subscriber may: the committed mark on a `Quorum` shard, and under `OnCommit`
+the durable offset, so a record whose sync has not finished is never returned.
+The answer's `next_offset` steps over generation-start records, so a client
+paging a range never has to guess where the next page starts.
 
 ## Resuming a subscription
 
@@ -670,7 +695,7 @@ cursors.
 | `FELIX_DURABLE_SEGMENT_BYTES` | `268435456` | Rollover size |
 | `FELIX_DURABLE_INDEX_SPACING_BYTES` | `4096` | Sparse index interval |
 | `FELIX_DURABLE_MAX_RECORDS_PER_READ` | `10000` | Record cap on one range read |
-| `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks at creation |
+| `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks ahead of the writes: 1 MiB at creation, doubling as the segment fills |
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
 | `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |

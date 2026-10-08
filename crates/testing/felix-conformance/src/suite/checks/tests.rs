@@ -92,6 +92,7 @@ fn ensure_flag_advertised_variants() {
         Some(Message::AuthOk {
             server_flags,
             server_features: None,
+            server_features_hi: None,
             listener_ports: None,
             publish_window: None,
         })

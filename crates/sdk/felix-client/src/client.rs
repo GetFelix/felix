@@ -10,11 +10,13 @@
 mod cache;
 mod cache_watch;
 mod commit;
+pub use commit::ConditionalWrite;
 mod connect;
 mod discovery;
 mod groups;
 
 pub use groups::{GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
+pub use subscribe::StreamPage;
 mod publish;
 mod subscribe;
 

@@ -518,6 +518,76 @@ async fn a_commit_is_seen_by_the_queue_and_the_state_together() -> Result<()> {
     Ok(())
 }
 
+/// **Two writers at one offset, over QUIC: one lands, one is told the
+/// tail.** A conditional commit is the same check on the whole shard.
+#[tokio::test]
+async fn a_conditional_publish_lands_once_and_names_the_tail() -> Result<()> {
+    use felix_client::{CommitOp, ConditionalWrite};
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let first = running.client().await?;
+    let second = running.client().await?;
+
+    let opened = first
+        .publish_if("t1", "default", QUEUE, None, vec![b"open".to_vec()], 0)
+        .await?;
+    assert_eq!(opened, ConditionalWrite::Written { offset: 0 });
+
+    let (a, b) = tokio::join!(
+        first.publish_if("t1", "default", QUEUE, None, vec![b"a".to_vec()], 1),
+        second.publish_if("t1", "default", QUEUE, None, vec![b"b".to_vec()], 1),
+    );
+    let mut answers = [a?, b?];
+    answers.sort_by_key(|answer| matches!(answer, ConditionalWrite::Refused { .. }));
+    assert_eq!(
+        answers,
+        [
+            ConditionalWrite::Written { offset: 1 },
+            ConditionalWrite::Refused { tail: 2 },
+        ]
+    );
+
+    let stale = first
+        .commit_if(
+            "t1",
+            "default",
+            b"match",
+            vec![
+                CommitOp::publish(QUEUE, "score"),
+                CommitOp::put(QUEUE, "score", "1"),
+            ],
+            1,
+        )
+        .await?;
+    assert_eq!(stale, ConditionalWrite::Refused { tail: 2 });
+    let state = first
+        .state_get("t1", "default", QUEUE, b"match", "score")
+        .await?;
+    assert_eq!(state.value, None, "a refused commit wrote state");
+
+    let landed = first
+        .commit_if(
+            "t1",
+            "default",
+            b"match",
+            vec![
+                CommitOp::publish(QUEUE, "score"),
+                CommitOp::put(QUEUE, "score", "1"),
+            ],
+            2,
+        )
+        .await?;
+    assert_eq!(landed, ConditionalWrite::Written { offset: 2 });
+    let claimed = first
+        .group_poll("t1", "default", QUEUE, 0, "readers", 10)
+        .await?;
+    let payloads: Vec<_> = claimed.iter().map(|r| r.payload.clone()).collect();
+    assert_eq!(payloads.len(), 3, "{payloads:?}");
+    running.stop().await;
+    Ok(())
+}
+
 /// **A client consuming a queue, end to end.** Until the wire carried group
 /// operations this could not be written at all: the machinery was reachable
 /// only from inside the broker.

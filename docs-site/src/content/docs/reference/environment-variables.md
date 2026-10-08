@@ -1878,8 +1878,9 @@ export FELIX_DURABLE_MAX_RECORDS_PER_READ="5000"
 
 ### `FELIX_DURABLE_PREALLOCATE`
 
-**Description**: Reserve a segment's blocks when it is created, keeping block
-allocation off the append path.
+**Description**: Reserve a segment's blocks ahead of its writes, keeping block
+allocation off the append path. A new segment reserves 1 MiB and doubles the
+reservation as it fills, up to `FELIX_DURABLE_SEGMENT_BYTES`.
 
 **Type**: Boolean
 

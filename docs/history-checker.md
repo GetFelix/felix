@@ -490,8 +490,8 @@ list. It does not fix the interleaving, which depends on the scheduler and the
 brokers. A failing seed makes the failure likely to recur, not certain. Run it
 a few times.
 
-On a small disk, set `FELIX_DURABLE_PREALLOCATE=false` so each broker does not
-reserve full segments up front.
+Each active segment reserves blocks as it fills, up to a full segment. On a
+small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 
 The per-PR run uses the fixed seed and takes about a minute per test, cluster
 start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
