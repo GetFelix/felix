@@ -163,3 +163,146 @@ fn some_extension_follows_wildcards() {
     assert!(!matches_some_extension("group:t2/*", prefix));
     assert!(!matches_some_extension("group:t1/ns/orders", prefix));
 }
+
+fn may_read(matcher: &PermissionMatcher, ns: &str, cache: &str, keys: CacheKeys<'_>) -> bool {
+    matcher.allows_cache_keys(
+        Action::CacheRead,
+        &crate::TenantId::new("t1"),
+        &crate::Namespace::new(ns),
+        &crate::CacheScope::new(cache),
+        keys,
+    )
+}
+
+#[test]
+fn a_whole_cache_grant_covers_every_key_and_prefix() {
+    for grant in [
+        "cache.read:cache:t1/ns/rooms",
+        "cache.read:cache:t1/ns/*",
+        "cache.read:cache:t1/*/*",
+    ] {
+        let reader = matcher(&[grant]);
+        assert!(
+            may_read(&reader, "ns", "rooms", CacheKeys::Key("a")),
+            "{grant}"
+        );
+        assert!(
+            may_read(&reader, "ns", "rooms", CacheKeys::Prefix("")),
+            "{grant}"
+        );
+        assert!(
+            may_read(&reader, "ns", "rooms", CacheKeys::Prefix("room1/")),
+            "{grant}"
+        );
+    }
+    let reader = matcher(&["cache.read:cache:t1/ns/rooms"]);
+    assert!(!may_read(&reader, "ns", "other", CacheKeys::Key("a")));
+    assert!(!may_read(&reader, "ns2", "rooms", CacheKeys::Key("a")));
+}
+
+#[test]
+fn an_exact_key_grant_allows_that_key_alone() {
+    let reader = matcher(&["cache.read:cache:t1/ns/rooms/user:1"]);
+    assert!(may_read(&reader, "ns", "rooms", CacheKeys::Key("user:1")));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Key("user:10")));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Key("user:")));
+    assert!(!may_read(&reader, "ns", "other", CacheKeys::Key("user:1")));
+    // A prefix watch on exactly the key would still read `user:10`.
+    assert!(!may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Prefix("user:1")
+    ));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Prefix("")));
+}
+
+#[test]
+fn a_prefix_grant_is_a_literal_string_prefix() {
+    let reader = matcher(&["cache.read:cache:t1/ns/rooms/room1/*"]);
+    assert!(may_read(&reader, "ns", "rooms", CacheKeys::Key("room1/")));
+    assert!(may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Key("room1/x/y")
+    ));
+    assert!(!may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Key("room10/x")
+    ));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Key("room1")));
+    assert!(may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Prefix("room1/")
+    ));
+    assert!(may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Prefix("room1/a")
+    ));
+    assert!(!may_read(
+        &reader,
+        "ns",
+        "rooms",
+        CacheKeys::Prefix("room1")
+    ));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Prefix("")));
+
+    // Without a separator the prefix reaches longer ids too.
+    let loose = matcher(&["cache.read:cache:t1/ns/rooms/user:1*"]);
+    assert!(may_read(&loose, "ns", "rooms", CacheKeys::Key("user:10")));
+}
+
+#[test]
+fn a_key_grant_needs_its_action() {
+    let reader = matcher(&["cache.read:cache:t1/ns/rooms/a"]);
+    let may_write = reader.allows_cache_keys(
+        Action::CacheWrite,
+        &crate::TenantId::new("t1"),
+        &crate::Namespace::new("ns"),
+        &crate::CacheScope::new("rooms"),
+        CacheKeys::Key("a"),
+    );
+    assert!(!may_write);
+    let writer = matcher(&["cache.write:cache:t1/ns/rooms/a"]);
+    assert!(!may_read(&writer, "ns", "rooms", CacheKeys::Key("a")));
+}
+
+/// A `*` in a key grant only ever means "this prefix". Anywhere else it
+/// would turn the key into a pattern, so the grant matches nothing.
+#[test]
+fn a_star_inside_a_key_grant_matches_nothing() {
+    for grant in [
+        "cache.read:cache:t1/ns/rooms/a*b",
+        "cache.read:cache:t1/ns/rooms/*a",
+        "cache.read:cache:t1/ns/rooms/a**",
+        "cache.read:cache:t1/ns/rooms/",
+    ] {
+        let reader = matcher(&[grant]);
+        for key in ["a*b", "ab", "axb", "a", "*a", "a**", ""] {
+            assert!(
+                !may_read(&reader, "ns", "rooms", CacheKeys::Key(key)),
+                "{grant} {key}"
+            );
+        }
+    }
+}
+
+/// Matched per segment, a wildcard in a cache-wide grant cannot slide across
+/// `/` and turn the cache name into a key.
+#[test]
+fn a_cache_wide_wildcard_does_not_reach_keys_of_other_caches() {
+    let reader = matcher(&["cache.read:cache:t1/*/secret"]);
+    assert!(may_read(&reader, "ns", "secret", CacheKeys::Key("a")));
+    assert!(!may_read(&reader, "ns", "rooms", CacheKeys::Key("secret")));
+
+    let keyed = matcher(&["cache.read:cache:t1/*/rooms/a*"]);
+    assert!(may_read(&keyed, "ns", "rooms", CacheKeys::Key("a1")));
+    assert!(!may_read(&keyed, "ns", "other", CacheKeys::Key("rooms/a1")));
+}

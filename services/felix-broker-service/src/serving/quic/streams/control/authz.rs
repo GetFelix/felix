@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use felix_authz::{
-    Action, CacheScope, GroupName, Namespace, StreamName, TenantId, cache_resource, stream_resource,
+    Action, CacheKeys, CacheScope, GroupName, Namespace, StreamName, TenantId, stream_resource,
 };
 
 use super::responder::{Responder, send_control_error};
@@ -172,53 +172,44 @@ pub(super) async fn authorize_group(
     Ok(false)
 }
 
+/// Cache requests, by [`felix_authz::PermissionMatcher::allows_cache_keys`]'s
+/// rule: a grant on the whole cache, or on the key or prefix in `keys`.
+// One parameter per part of the resource it checks.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn authorize_cache(
     auth_ctx: Option<&AuthContext>,
     tenant_id: &str,
     action: Action,
     namespace: &str,
     cache: &str,
+    keys: CacheKeys<'_>,
     ctx: &Responder<'_>,
 ) -> Result<bool> {
-    let Some(auth_ctx) = auth_ctx else {
-        send_control_error(
-            ctx.out_ack_tx,
-            ctx.out_ack_depth,
-            ctx.ack_throttle_tx,
-            ctx.ack_timeout_state,
-            ctx.cancel_tx,
-            ClientError::unauthenticated("auth required"),
-        )
-        .await?;
-        return Ok(false);
+    let refused = match auth_ctx {
+        None => ClientError::unauthenticated("auth required"),
+        Some(auth_ctx) if auth_ctx.tenant_id != tenant_id => {
+            ClientError::forbidden("tenant mismatch")
+        }
+        Some(auth_ctx)
+            if auth_ctx.matcher.allows_cache_keys(
+                action,
+                &TenantId::new(tenant_id),
+                &Namespace::new(namespace),
+                &CacheScope::new(cache),
+                keys,
+            ) =>
+        {
+            return Ok(true);
+        }
+        Some(_) => ClientError::forbidden("forbidden"),
     };
-    if auth_ctx.tenant_id != tenant_id {
-        send_control_error(
-            ctx.out_ack_tx,
-            ctx.out_ack_depth,
-            ctx.ack_throttle_tx,
-            ctx.ack_timeout_state,
-            ctx.cancel_tx,
-            ClientError::forbidden("tenant mismatch"),
-        )
-        .await?;
-        return Ok(false);
-    }
-    let resource = cache_resource(
-        &TenantId::new(tenant_id),
-        &Namespace::new(namespace),
-        &CacheScope::new(cache),
-    );
-    if auth_ctx.matcher.allows(action, &resource) {
-        return Ok(true);
-    }
     send_control_error(
         ctx.out_ack_tx,
         ctx.out_ack_depth,
         ctx.ack_throttle_tx,
         ctx.ack_timeout_state,
         ctx.cancel_tx,
-        ClientError::forbidden("forbidden"),
+        refused,
     )
     .await?;
     Ok(false)

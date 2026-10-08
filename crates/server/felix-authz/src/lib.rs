@@ -24,7 +24,7 @@ pub use action::Action;
 pub use error::{AuthzError, AuthzResult};
 pub use ids::{CacheScope, GroupName, Namespace, StreamName, TenantId};
 pub use jwks::{Jwk, Jwks, KeyUse};
-pub use matcher::{PermissionMatcher, wildcard_match};
+pub use matcher::{CacheKeys, PermissionMatcher, wildcard_match};
 pub use permission::{Permission, PermissionPattern};
 pub use resource::{
     cache_resource, group_resource, namespace_resource, stream_resource, tenant_resource,

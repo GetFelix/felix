@@ -221,6 +221,7 @@ fn cache_object(tenant_id: &str, namespace: &str, cache: &str) -> ParsedObject {
         tenant_id: tenant_id.to_string(),
         namespace: Segment::Exact(namespace.to_string()),
         cache: Segment::Exact(cache.to_string()),
+        key: None,
     }
 }
 
