@@ -12,6 +12,60 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- One Rust `Client` can act for many users over the same connections (#969).
+  `Client::with_identity(tenant_id, token_provider)` and
+  `Client::with_identity_token` return a client that shares the parent's
+  connections and authenticates every stream it opens with the user's token,
+  so the broker checks each user's publish, subscribe, cache and group
+  requests against that user's grants alone. It opens one publish and one
+  cache stream and no connections. One user's token expiring or being revoked
+  stops only that user's streams. No wire change: the broker already
+  authenticates per stream. A refused publish or cache request still ends the
+  stream it came on, so a gateway should build a new identity after one.
+  `ClusterClient` does not offer it yet.
+- A write can be made only at the offset its writer expects, on a broker
+  advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
+  `publish_if` appends a batch only if it would start at `expected_offset`, the
+  shard's next; `commit` takes the same optional `expected_offset` as a
+  compare-and-set on the whole shard. The check is made where the log assigns
+  offsets, under the same lock, so of two writers at one offset exactly one is
+  written. A refusal is `publish_refused` with the new `offset_mismatch` reason
+  and the shard's tail; it writes nothing, consumes no offset and holds up no
+  later publish. The tail counts a new leader's generation-start record, so a
+  writer's expected offset goes stale on failover. Served by the shard's
+  leader only: a non-leader answers `not_leader`. An in-memory stream refuses
+  it. A commit without `expected_offset` is byte-identical to before.
+  `publish_if` is charged against the tenant's publish quota and the ingress
+  byte budgets like any acked publish, and refused over quota the same way.
+  felix-client adds `publish_if` and `commit_if` on `Client` and
+  `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
+  `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,
+  `publish_batch_at` and `commit_to_handle_at`. Per-key version
+  preconditions are #1051.
+- A second feature word for when the `u32` feature set runs out (#1055).
+  `FEATURE_EXTENDED` (`0x8000_0000`) in `client_features` or
+  `server_features` says the peer sends and reads `client_features_hi` /
+  `server_features_hi`. A peer sends the marker and the word only when it
+  knows a feature there, and a broker answers with its word only to a client
+  that set the marker, so every existing frame is unchanged. No feature uses
+  the word yet. felix-wire adds `FEATURE_EXTENDED`, `KNOWN_FEATURES_HI`,
+  `offer_features`, `answer_features` and `peer_features_hi`. Breaking for
+  code that builds `Message::Auth` or `Message::AuthOk`: both have a new
+  field.
+- A client can read a bounded range of a durable stream and stop (#1018). A
+  broker advertising `FEATURE_STREAM_READ` (`0x2000_0000`) answers
+  `stream_read` (shard, `from`, optional `end`, `max_records`, `max_bytes`)
+  with `stream_records`: one page of committed records and the `next_offset`
+  to continue from, which steps over generation-start records. No subscriber
+  is registered and the read never waits. A page stops at the committed mark
+  on a `Quorum` shard and, under `FsyncMode::OnCommit`, at the durable offset,
+  and is capped at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of
+  payload. A `from` below retention or past the tail gets
+  `subscribe_cursor_error`. Needs `stream.subscribe`; only the shard's leader
+  answers. In felix-client, `Client::read` and `ClusterClient::read` return a
+  `StreamPage`; felix-broker has `Broker::read_range`. Frames to clients that
+  do not send the request are unchanged. An `end` on `Subscribe` is tracked
+  in #1053.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
@@ -165,6 +219,18 @@ for what the current release guarantees.
   `StreamLog::begin_append_marked_at` and `replication::apply`, which take the
   records' times (empty for this broker's clock), and of felix-wire's
   `ReplicateRecords` and `ReplicateFetch`, which gain `times` and `timed`.
+- Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
+  `expected_offset` field, and `PublishRefusalReason` and
+  `felix_broker::BrokerError` have new variants, so struct literals and
+  exhaustive matches need updating.
+- A durable stream no longer reserves a whole 256 MiB segment of disk per
+  shard when it is created (#1016). The active segment reserves 1 MiB (or a
+  sixteenth of the segment size, if smaller) and doubles the reservation each
+  time its records pass half of it, up to the segment size. Each extension runs
+  on a blocking thread after the append that earned it and is best effort: a
+  failure is logged, counted in `felix_storage_segment_reserve_failed_total`,
+  and never fails an append. Reserving still leaves the file size alone, so
+  recovery is unchanged. `SegmentWriter::reopen` takes a reservation limit.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only

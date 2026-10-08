@@ -796,7 +796,8 @@ assert!(fast_count >= expected_count);
 | **Consumer groups** | At-least-once, bounded redelivery, dead letters | Shard assignment across a group's consumers |
 | **Message ordering** | Per shard | Configurable cross-shard |
 | **Subscriber isolation** | Yes | None |
-| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads` | Conditional put, multi-key transactions |
+| **Single-writer fencing** | `publish_if`, and `commit` with `expected_offset`: written only at the shard's next offset, atomic with the claim | Per-key version preconditions on a commit; writer epochs |
+| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads`; conditional put and delete by version | Multi-key transactions |
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | None |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | None |

@@ -392,6 +392,47 @@ already open keeps working after the token expires. Forwarded publishes are the
 exception. When a broker forwards a publish to the shard owner, the owner checks
 the token the publish stream opened with and rejects it once it has expired.
 
+### Many users over one client
+
+A gateway that acts for many users, each with their own Felix token, does not
+need a `Client` per user. `Client::with_identity(tenant_id, token_provider)`
+returns a client that shares the parent's connections and authenticates every
+stream it opens with the user's token. `with_identity_token` takes a fixed
+token instead.
+
+```rust,ignore
+let gateway = Client::connect(addr, "broker", gateway_config).await?;
+let alice = gateway.with_identity("t1", alice_tokens).await?;
+// Checked against alice's grants, not the gateway's.
+alice.cache_get("t1", "app", "sessions", "alice:profile").await?;
+```
+
+This works because the broker authenticates streams, not connections. Each
+QUIC stream sends its own `Auth` and gets its own session, and every request on
+it is checked against that session's token. Streams for different users can
+share a connection without one user's grants covering another's request. No
+wire change or feature bit is involved, so every broker version serves it.
+
+How an identity behaves:
+
+- It opens one publish stream and one cache stream before `with_identity`
+  returns, so a refused token fails there. Subscriptions, cache watches and
+  group requests open their own streams under the same token, as on any client.
+- Its token provider is asked for a token on each stream open. One user's token
+  expiring or being revoked stops only that user's new streams. A refused
+  `Auth` closes one stream, never the connection.
+- Dropping it closes its streams and leaves the connections to the gateway and
+  the other users.
+- A refused publish or cache request ends the stream it came on, on every
+  client. With one stream of each, the identity can no longer publish or reach
+  the cache after that, so a gateway that forwards requests a user may not make
+  should build a new identity after a refusal.
+- Publish admission (`publish_inflight_bytes`) is per identity, but the
+  connections' flow-control windows are shared. A subscription the gateway does
+  not read can slow delivery to the other users on that connection, so drain
+  each one promptly or drop it.
+- `ClusterClient` does not offer it yet.
+
 ## Bootstrap Mode (Day-0)
 
 Felix includes a **one-time operator bootstrap** flow to initialize tenant auth before any admin tokens exist.

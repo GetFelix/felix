@@ -104,6 +104,7 @@ async fn subscribe(
             // answers the plain `Ok` a flagless client expects.
             client_flags: None,
             client_features,
+            client_features_hi: None,
         },
     )
     .await?;

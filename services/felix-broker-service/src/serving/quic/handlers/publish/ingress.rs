@@ -294,6 +294,50 @@ pub(crate) async fn enqueue_tenant_publish(
     Ok(enqueued)
 }
 
+/// Charge a write that does not go through the publish queue, `publish_if`,
+/// exactly what an acked publish is charged on its way in: the tenant's
+/// quota first, then the connection's and the broker's byte budgets, waiting
+/// for those no longer than a queued publish would. Hold the permit until the
+/// write is done.
+///
+/// Over quota is the same retryable `overloaded` refusal, with the wait, that
+/// a publish gets, and nothing is taken from the bucket or the budgets.
+pub(crate) async fn admit_unqueued(
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    payloads: &[Bytes],
+) -> Result<AdmissionPermit, ClientError> {
+    let messages = payloads.len() as u64;
+    let bytes: usize = payloads.iter().map(Bytes::len).sum();
+    if let Err(wait) = publish_ctx
+        .tenant_rates
+        .try_admit(tenant, messages, bytes as u64)
+    {
+        tenants::record_throttled(tenant, tenants::THROTTLE_REFUSED);
+        return Err(ClientError::tenant_quota(wait));
+    }
+    let deadline = tokio::time::Instant::now() + publish_ctx.wait_timeout;
+    let acquire_both = async {
+        let conn = publish_ctx.conn_admission.acquire(bytes).await?;
+        let global = publish_ctx.admission.acquire(bytes).await?;
+        Ok::<_, tokio::sync::AcquireError>(AdmissionPermit {
+            _conn: conn,
+            _global: global,
+        })
+    };
+    match tokio::time::timeout_at(deadline, acquire_both).await {
+        Ok(Ok(permit)) => {
+            tenants::record_published(tenant, messages, bytes as u64);
+            Ok(permit)
+        }
+        Ok(Err(_)) => Err(ClientError::overloaded("publish admission closed")),
+        Err(_) => {
+            t_counter!("felix_broker_ingress_rejected_total").increment(1);
+            Err(ClientError::overloaded("publish admission timed out"))
+        }
+    }
+}
+
 // Adjust queue depth gauges safely when send fails or work completes.
 pub(crate) fn decrement_depth(
     depth: &Arc<AtomicUsize>,

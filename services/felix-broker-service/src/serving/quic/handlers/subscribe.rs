@@ -522,7 +522,7 @@ pub(crate) async fn handle_subscribe_message(
 ///
 /// A cursor rejection is machine-readable so the client can choose a remedy;
 /// everything else stays a generic `Error`.
-fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
+pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
     match err {
         felix_broker::BrokerError::CursorTooOld { oldest, requested } => {
             Message::SubscribeCursorError {
