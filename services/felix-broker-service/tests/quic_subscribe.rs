@@ -382,6 +382,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
