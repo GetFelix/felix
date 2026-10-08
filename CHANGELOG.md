@@ -12,6 +12,18 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A subscriber can choose its own broker-side queue capacity on a broker
+  advertising `FEATURE_SUBSCRIBE_QUEUE` (`0x4000_0000`) (#1019). `subscribe`
+  takes an optional `queue_capacity`, counted in published batches; the broker
+  clamps it to `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (new, default 4096)
+  and echoes the grant as `queue_capacity` on `subscribed`. A subscribe
+  without it, and the answer, are byte-identical to before. The overflow policy
+  stays the stream's: a subscriber that could choose `Block` could stall every
+  publisher on its shard. felix-client adds
+  `ClientConfig::broker_sub_queue_capacity` and `Subscription::queue_capacity`;
+  felix-broker adds `Broker::subscribe_sized` and
+  `Broker::subscribe_from_sized`. `ClientConfig` gains a public field, so code
+  building it with a struct literal must set it.
 - One Rust `Client` can act for many users over the same connections (#969).
   `Client::with_identity(tenant_id, token_provider)` and
   `Client::with_identity_token` return a client that shares the parent's
@@ -243,6 +255,10 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- The docs no longer list `DropOld` as a working overflow policy (#1019). It is
+  accepted at the broker, writer-lane and client stages but behaves as
+  `DropNew` at each: the arriving batch is dropped, not the oldest. The status
+  table, configuration reference and client docs now say so.
 - JSON numbers survive a decode and re-encode exactly. serde_json's default
   float parser could land a long literal one ulp off, so an extension body the
   broker passed on carried a different number. Nightly fuzzing found it.

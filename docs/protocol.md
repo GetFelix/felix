@@ -224,11 +224,26 @@ The `shard` field selects which shard of the stream to read, defaulting to 0. A
 subscription reads **one** shard, so consuming a whole multi-shard stream means
 one subscription per shard; `stream_shards` says how many there are.
 
+`queue_capacity` (optional, `u32`) asks for this subscriber's broker-side queue
+to hold that many envelopes instead of the stream's default. An envelope is one
+published batch, not one record. The broker clamps it to
+`1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and answers with the granted value
+on `subscribed`. A client sends it only to a broker that advertised
+`FEATURE_SUBSCRIBE_QUEUE`, since an older broker ignores the field. There is
+no matching field for the overflow policy: under `block` a subscriber's full
+queue makes every publisher on the shard wait, so it stays an operator setting
+for the stream. A reader that cannot tolerate gaps relies on
+`subscription_lagged` and a resume from the log instead.
+
 ### Subscribed (server -> client)
 ```
 { "type": "subscribed", "subscription_id": <number>,
-  "start_offset": <u64>?, "live_offset": <u64>? }
+  "start_offset": <u64>?, "live_offset": <u64>?, "queue_capacity": <u32>? }
 ```
+
+`queue_capacity` is the capacity the broker granted, present only when the
+subscribe asked for one, so a subscribe without it gets the frame it always
+did.
 
 Confirms a subscription and carries the id the broker assigned it. The same id
 opens the event stream that carries its deliveries:
@@ -1610,6 +1625,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
 | `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. See [PublishIf](#publishif) |
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing. See [StreamRead](#streamread) |
+| `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted value on `subscribed`. See [Subscribe](#subscribe) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

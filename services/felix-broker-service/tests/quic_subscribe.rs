@@ -1023,6 +1023,86 @@ async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<
     Ok(())
 }
 
+/// A subscriber's requested queue capacity is clamped to the broker's range
+/// and echoed back; one that asks for nothing hears nothing about it.
+#[tokio::test]
+#[serial]
+async fn quic_subscribe_grants_a_clamped_queue_capacity() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    config.subscriber_queue_capacity_max = 64;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let subscribe_asking = |capacity: Option<u32>| {
+        let cert = cert.clone();
+        let auth = &auth;
+        async move {
+            let mut client_config = build_client_config(cert, auth)?;
+            client_config.broker_sub_queue_capacity = capacity;
+            let client = Client::connect(addr, "localhost", client_config).await?;
+            let sub = client.subscribe("t1", "default", "orders").await?;
+            Result::<_>::Ok((client, sub))
+        }
+    };
+    let (_big_client, mut big) = subscribe_asking(Some(10_000)).await?;
+    let (_tiny_client, tiny) = subscribe_asking(Some(0)).await?;
+    let (_mid_client, mid) = subscribe_asking(Some(48)).await?;
+    let (plain_client, plain) = subscribe_asking(None).await?;
+    assert_eq!(big.queue_capacity(), Some(64), "clamped to the maximum");
+    assert_eq!(tiny.queue_capacity(), Some(1), "clamped to one");
+    assert_eq!(mid.queue_capacity(), Some(48), "granted as asked");
+    assert_eq!(
+        plain.queue_capacity(),
+        None,
+        "nothing asked, nothing echoed"
+    );
+
+    plain_client
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"hello".to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+        .await?;
+    let event = timeout(Duration::from_secs(2), big.next_event())
+        .await??
+        .expect("event");
+    assert_eq!(event.payload.as_ref(), b"hello");
+
+    server_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 #[serial]
 async fn quic_stream_read_pages_a_range_without_subscribing() -> Result<()> {

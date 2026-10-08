@@ -223,6 +223,7 @@ async fn control_loop_subscribe_forbidden_sends_error() -> Result<()> {
             stream: "updates".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let (result, messages) = run_control_loop_with_frames(
@@ -253,6 +254,7 @@ async fn control_loop_subscribe_tenant_mismatch_sends_error() -> Result<()> {
             stream: "updates".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let (result, messages) = run_control_loop_with_frames(
@@ -312,6 +314,7 @@ async fn control_loop_rejects_subscribe_without_auth() -> Result<()> {
         stream: "updates".to_string(),
         subscription_id: Some(1),
         shard: None,
+        queue_capacity: None,
     })))];
     let (result, messages) = run_control_loop_with_frames(
         broker,

@@ -99,6 +99,7 @@ pub(crate) async fn handle_subscribe_message(
     subscription_id: Option<u64>,
     start: Option<StartPosition>,
     shard: Option<u32>,
+    queue_capacity: Option<u32>,
     peer_flags: u16,
     peer_features: u32,
 ) -> Result<bool> {
@@ -119,6 +120,8 @@ pub(crate) async fn handle_subscribe_message(
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_PUBLISHER);
     let timestamps_enabled =
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS);
+    let queue_capacity = queue_capacity
+        .map(|requested| grant_queue_capacity(requested, config.subscriber_queue_capacity_max));
     // Subscribe is a control-plane request: acknowledgements/metadata stay on this bi stream.
     // Actual event delivery happens on a fresh uni stream (broker -> client).
     let span = tracing::trace_span!(
@@ -173,7 +176,13 @@ pub(crate) async fn handle_subscribe_message(
         let mut join = None;
         let mut subscription = match start {
             None => match broker
-                .subscribe(&tenant_id, &namespace, &stream, shard)
+                .subscribe_sized(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    queue_capacity.map(|granted| granted as usize),
+                )
                 .await
             {
                 Ok(subscription) => subscription,
@@ -191,7 +200,14 @@ pub(crate) async fn handle_subscribe_message(
                 }
             },
             Some(start) => match broker
-                .subscribe_from(&tenant_id, &namespace, &stream, shard, start)
+                .subscribe_from_sized(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    start,
+                    queue_capacity.map(|granted| granted as usize),
+                )
                 .await
             {
                 Ok(resumed) => {
@@ -330,6 +346,9 @@ pub(crate) async fn handle_subscribe_message(
                     live_offset: join
                         .filter(|_| offsets_enabled)
                         .map(|join| join.live_offset),
+                    // Echoed only when asked for, so a subscribe without it
+                    // gets the frame it always did.
+                    queue_capacity,
                 }),
             )
             .await,
@@ -516,6 +535,13 @@ pub(crate) async fn handle_subscribe_message(
     }
     .instrument(span)
     .await
+}
+
+/// The queue capacity a subscriber gets for `requested`: at least one, and
+/// no more than the configured maximum.
+pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
+    let max = u32::try_from(max).unwrap_or(u32::MAX).max(1);
+    requested.clamp(1, max)
 }
 
 /// Turn a broker error into the most specific protocol message available.

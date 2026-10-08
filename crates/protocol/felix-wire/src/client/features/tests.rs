@@ -301,6 +301,17 @@ fn stream_read_is_a_new_feature_bit_and_disturbs_nothing() {
     assert!(!crate::supports_feature(0, crate::FEATURE_STREAM_READ));
 }
 
+#[test]
+fn subscribe_queue_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_SUBSCRIBE_QUEUE;
+    assert_eq!(crate::FEATURE_SUBSCRIBE_QUEUE & others, 0);
+    assert_eq!(crate::FEATURE_SUBSCRIBE_QUEUE, 0x4000_0000);
+    assert!(!crate::supports_feature(
+        crate::FEATURE_SUBSCRIPTION_LAGGED,
+        crate::FEATURE_SUBSCRIBE_QUEUE
+    ));
+}
+
 /// **Every feature bit is its own.** The per-bit tests above mask a bit out of
 /// `KNOWN_FEATURES`, which two constants sharing a value pass. This lists them
 /// all, so a new bit given a value already in use fails here.
@@ -364,6 +375,7 @@ fn every_feature_bit_is_distinct_and_known() {
             crate::FEATURE_PUBLISH_CONDITIONAL,
         ),
         ("FEATURE_STREAM_READ", crate::FEATURE_STREAM_READ),
+        ("FEATURE_SUBSCRIBE_QUEUE", crate::FEATURE_SUBSCRIBE_QUEUE),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

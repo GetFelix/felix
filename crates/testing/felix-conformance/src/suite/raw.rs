@@ -50,6 +50,7 @@ pub(crate) async fn run_pubsub(
             stream: "conformance".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         },
     )
     .await?;

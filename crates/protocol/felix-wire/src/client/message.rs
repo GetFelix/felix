@@ -449,6 +449,15 @@ pub enum Message {
         /// per shard and merges them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shard: Option<u32>,
+        /// How many envelopes this subscriber's broker-side queue should hold.
+        /// An envelope is one published batch, not one record.
+        ///
+        /// The broker clamps it to `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+        /// and answers with what it granted. Absent means the stream's default.
+        /// The overflow policy is not the subscriber's to choose. Sent only to
+        /// a broker that advertised `FEATURE_SUBSCRIBE_QUEUE`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_capacity: Option<u32>,
     },
     /// Subscription confirmation with server-assigned ID.
     Subscribed {
@@ -464,6 +473,10 @@ pub enum Message {
         /// in between. Equal to `start_offset` for `latest`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live_offset: Option<u64>,
+        /// The queue capacity the broker granted, after clamping. Sent only
+        /// when the subscribe asked for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_capacity: Option<u32>,
     },
     /// A subscribe could not start where it was asked to.
     ///

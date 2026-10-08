@@ -317,6 +317,16 @@ pub const FEATURE_PUBLISH_CONDITIONAL: u32 = 0x1000_0000;
 /// has no arm for it.
 pub const FEATURE_STREAM_READ: u32 = 0x2000_0000;
 
+/// A subscriber sizes its own broker-side queue: `queue_capacity` on
+/// `subscribe`, answered by the granted `queue_capacity` on `subscribed`.
+///
+/// Advertised by a *broker*. An older broker ignores the field and gives the
+/// stream's default, so a client checks the bit to know whether to expect the
+/// answer. Only the capacity is the subscriber's to choose; what happens when
+/// the queue is full stays the stream's policy, so no subscriber can make a
+/// publisher wait for it.
+pub const FEATURE_SUBSCRIBE_QUEUE: u32 = 0x4000_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -347,7 +357,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_RECORD_TIMESTAMPS
     | FEATURE_GROUP_CLAIM_CONTROL
     | FEATURE_PUBLISH_CONDITIONAL
-    | FEATURE_STREAM_READ;
+    | FEATURE_STREAM_READ
+    | FEATURE_SUBSCRIBE_QUEUE;
 
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.

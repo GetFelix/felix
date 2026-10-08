@@ -230,6 +230,9 @@ pub struct BrokerConfig {
     pub core_shards: usize,
     /// Per-subscriber queue capacity in broker core.
     pub subscriber_queue_capacity: usize,
+    /// The largest queue capacity a subscriber may ask for on `subscribe`.
+    /// A larger request is granted this.
+    pub subscriber_queue_capacity_max: usize,
     /// Max concurrent subscriptions a single QUIC connection may hold. Prevents a single
     /// connection from unboundedly growing broker memory via subscriber queues/writer-lane
     /// registrations.
@@ -433,6 +436,7 @@ impl Default for BrokerConfig {
             pub_ingress_wait: false,
             core_shards: 0,
             subscriber_queue_capacity: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY,
+            subscriber_queue_capacity_max: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX,
             max_subscriptions_per_conn: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN,
             subscriber_queue_policy: DEFAULT_SUBSCRIBER_QUEUE_POLICY,
             subscriber_writer_lanes: DEFAULT_SUBSCRIBER_WRITER_LANES,

@@ -345,6 +345,7 @@ async fn serve_stream(
                         subscription_id: next_subscription_id(),
                         start_offset,
                         live_offset,
+                        queue_capacity: None,
                     },
                     other => other,
                 };

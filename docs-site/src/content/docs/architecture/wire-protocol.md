@@ -216,7 +216,8 @@ Start a subscription to one shard of a stream.
   "stream": "string",
   "subscription_id": "number | absent",
   "start": "\"latest\" | \"earliest\" | {\"offset\": number} | absent",
-  "shard": "number | absent"
+  "shard": "number | absent",
+  "queue_capacity": "number | absent"
 }
 ```
 
@@ -228,6 +229,12 @@ Start a subscription to one shard of a stream.
   multi-shard stream needs one subscription per shard
 - `subscription_id`: an explicit id for the subscription. Absent, the broker
   assigns one
+- `queue_capacity`: how many published batches this subscriber's queue on the
+  broker holds, instead of the stream's default. The broker clamps it to
+  `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and echoes the grant on
+  `subscribed`. Sent only to a broker advertising `FEATURE_SUBSCRIBE_QUEUE`.
+  The overflow policy is not the subscriber's to pick, since a `block` queue
+  would make the shard's publishers wait on one reader
 
 **Semantics**:
 - Broker answers `subscribed` with the subscription's id, or
@@ -545,7 +552,8 @@ Success answers. Each names the request it answers where there is one.
 
 ```json
 { "type": "subscribed", "subscription_id": "number",
-  "start_offset": "number | absent", "live_offset": "number | absent" }
+  "start_offset": "number | absent", "live_offset": "number | absent",
+  "queue_capacity": "number | absent" }
 { "type": "publish_ok", "request_id": "number" }
 { "type": "cache_ok", "request_id": "number" }
 { "type": "ok" }
@@ -831,6 +839,7 @@ advertised its bit.
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
 | `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. A client checks it before sending `expected_offset`, since an older broker ignores it and would commit unconditionally |
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing |
+| `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted capacity on `subscribed`. A client checks it before sending the field, since an older broker ignores it |
 
 `0x8000_0000` is `FEATURE_EXTENDED`, not a feature: it says a second feature
 word follows, as `client_features_hi` on `auth` or `server_features_hi` on
