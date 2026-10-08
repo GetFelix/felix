@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791426099098,
+  "lastUpdate": 1791429330321,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24596,6 +24596,58 @@ window.BENCHMARK_DATA = {
             "range": "10060.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 846369.65\nmean: 849002.27\nstdev: 10060.68\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "69922bb947fb4ddbf397c8f05b5bcb39d8f674bb",
+          "message": "feat(auth): narrow token exchange by action and resource pairs (#968) (#1047)\n\nToken exchange gains a permissions field of action:object pairs. Each\npair narrows the grants with exactly its action, so one token can\nsubscribe to one stream and publish to another, which the cross\nproduct of requested and resources cannot express. It never widens.\n\nThe pairs must be sent with requested: [], and the refresh record stores\nthat empty list next to them, so a control plane that predates the field\nrefuses rather than minting or refreshing to full rights. Under Raft the\nnew field is metadata version 5, and an exchange with pairs is a 409\nuntil every member has it.\n\nCloses #968",
+          "timestamp": "2026-10-07T19:21:37-07:00",
+          "tree_id": "74291d4dec18c1b557a59250d2ab85bef7f63bec",
+          "url": "https://github.com/GetFelix/felix/commit/69922bb947fb4ddbf397c8f05b5bcb39d8f674bb"
+        },
+        "date": 1791429329803,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 289811.31,
+            "range": "42710.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 289811.31\nmean: 281667.66\nstdev: 42710.58\ncv: 15.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 289811.31,
+            "range": "42710.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 289811.31\nmean: 281667.66\nstdev: 42710.58\ncv: 15.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 75061.92,
+            "range": "7872.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 75061.92\nmean: 72389.77\nstdev: 7872.48\ncv: 10.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 750619.22,
+            "range": "78724.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 750619.22\nmean: 723897.69\nstdev: 78724.81\ncv: 10.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
