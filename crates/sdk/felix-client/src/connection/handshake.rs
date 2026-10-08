@@ -40,6 +40,16 @@ impl Credentials {
         }
     }
 
+    /// The same offers, authenticating as a different principal.
+    pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
+        Self {
+            tenant_id,
+            tokens,
+            features: self.features,
+            flags: self.flags,
+        }
+    }
+
     /// Also ask for each record's append time. See
     /// [`felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS`].
     pub(crate) fn with_timestamps(mut self, timestamps: bool) -> Self {
@@ -136,6 +146,7 @@ impl Credentials {
                 token,
                 client_flags: None,
                 client_features: None,
+                client_features_hi: None,
             },
         )
         .await
@@ -186,6 +197,8 @@ async fn authenticate_stream(
     features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
+    let (features, features_hi) =
+        felix_wire::offer_features(features, felix_wire::KNOWN_FEATURES_HI);
     write_message(
         send,
         Message::Auth {
@@ -193,6 +206,7 @@ async fn authenticate_stream(
             token: token.to_string(),
             client_flags: Some(flags),
             client_features: Some(features),
+            client_features_hi: features_hi,
         },
     )
     .await
@@ -202,6 +216,9 @@ async fn authenticate_stream(
         Some(Message::AuthOk {
             server_flags,
             server_features,
+            // No extended feature yet. The first one reads it with
+            // `felix_wire::peer_features_hi`.
+            server_features_hi: _,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {

@@ -60,8 +60,19 @@ immutable files.
 Appending past end of file makes the filesystem allocate blocks and update the
 inode's block map on the write path, and invites fragmentation as segments from
 different shards interleave. `fallocate(FALLOC_FL_KEEP_SIZE)` on Linux and
-`F_PREALLOCATE` on macOS reserve the blocks up front without changing the file's
-logical length, so recovery's "valid bytes end at EOF" reasoning still holds.
+`F_PREALLOCATE` on macOS reserve the blocks ahead of the writes without changing
+the file's logical length, so recovery's "valid bytes end at EOF" reasoning still
+holds.
+
+A new segment reserves 1 MiB, or a sixteenth of the segment size if that is
+smaller. Each time its records pass half of what is reserved, the reservation
+doubles, up to the segment size. A busy segment reaches the default 256 MiB in
+about nine steps and writes into reserved blocks nearly all the time, while an
+idle stream holds 1 MiB per shard instead of a whole segment. The extension runs
+on a blocking thread after the append that earned it, so no append waits on it.
+It is best effort: one that fails, for example on a full disk, is logged and
+counted in `felix_storage_segment_reserve_failed_total`, and later writes
+allocate their own blocks.
 
 ### 6. Sparse indexes
 

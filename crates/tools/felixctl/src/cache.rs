@@ -1,5 +1,6 @@
 //! `felixctl cache get|put|del|watch`. `ls` and `info` are control-plane
-//! requests and live in [`crate::controlplane`].
+//! requests and live in [`crate::controlplane`]; `create`, `set` and `rm` in
+//! [`crate::manage`].
 //!
 //! Gets, puts and deletes go through the cluster client, which sends each to
 //! the owner of the key's shard when it knows it.
@@ -9,8 +10,9 @@ use felix_client::{CacheChange, CacheWatchFilter, CacheWatchItem, ShardedCacheWa
 use crate::cli::CacheCommand;
 use crate::connect::Broker;
 use crate::context::Settings;
-use crate::controlplane;
+use crate::controlplane::{self, Api};
 use crate::error::{Exit, MarkExit, fail};
+use crate::manage;
 use crate::output::{Output, payload_field};
 
 pub(crate) async fn run(
@@ -22,6 +24,21 @@ pub(crate) async fn run(
         CacheCommand::Ls => return controlplane::list_caches(settings, out).await,
         CacheCommand::Info { cache } => {
             return controlplane::cache_info(settings, cache, out).await;
+        }
+        CacheCommand::Create(args) => {
+            let api = Api::new(settings)?;
+            return manage::create_cache(&api, settings, args, out).await;
+        }
+        CacheCommand::Set {
+            cache,
+            display_name,
+        } => {
+            let api = Api::new(settings)?;
+            return manage::set_cache(&api, settings, cache, display_name, out).await;
+        }
+        CacheCommand::Rm { cache, confirm } => {
+            let api = Api::new(settings)?;
+            return manage::remove_cache(&api, settings, cache, *confirm, out).await;
         }
         _ => {}
     }
@@ -93,7 +110,11 @@ pub(crate) async fn run(
             let limit = count.unwrap_or(u64::MAX);
             watch(&broker, out, cache, key, prefix, *retained, *from, limit).await
         }
-        CacheCommand::Ls | CacheCommand::Info { .. } => unreachable!("handled above"),
+        CacheCommand::Ls
+        | CacheCommand::Info { .. }
+        | CacheCommand::Create(_)
+        | CacheCommand::Set { .. }
+        | CacheCommand::Rm { .. } => unreachable!("handled above"),
     }
 }
 

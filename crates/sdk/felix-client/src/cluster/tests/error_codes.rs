@@ -215,6 +215,7 @@ async fn a_subscribe_waits_out_a_shard_that_is_still_opening() -> Result<()> {
                 subscription_id: 0,
                 start_offset: None,
                 live_offset: None,
+                queue_capacity: None,
             }
         }
     })?;
@@ -295,6 +296,7 @@ async fn a_chosen_shard_follows_its_own_redirect() -> Result<()> {
         subscription_id: 0,
         start_offset: None,
         live_offset: None,
+        queue_capacity: None,
     })?;
     let owner_addr = owner.addr.to_string();
     let entry = StubBroker::start_with(server_config, move |_| Message::NotLeader {

@@ -3,21 +3,25 @@
 //!
 //! A roll can also start early, in the background, while the segment still has
 //! room (`LogConfig::rollover_threshold_percent`). A background roll that fails
-//! is terminal for the log: see [`RollState`].
+//! is terminal for the log: see [`RollState`]. The active segment's block
+//! reservation grows in the background too, but a failed extension is not
+//! terminal.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
-use crate::log::{AppendRecord, AppendResult, RecordMark};
+use crate::log::{AppendRecord, AppendResult, Offset, RecordMark};
 use crate::segment::SegmentWriter;
+use crate::segment::reservation::Extension;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 impl DiskLog {
     /// Roll if needed, then assign offsets and write the batch, if `condition`
-    /// holds; `None`, and nothing written, when it does not. With `order`, the
-    /// batch's range is claimed there as soon as its offsets are assigned.
+    /// holds; `Err` with the log's tail, and nothing written, when it does
+    /// not. With `order`, the batch's range is claimed there as soon as its
+    /// offsets are assigned.
     ///
     /// The work runs on the log's append thread. A batch whose caller gives
     /// up before the thread starts on it is skipped. Once started it is
@@ -30,7 +34,7 @@ impl DiskLog {
         records: Vec<AppendRecord>,
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
-    ) -> Result<Option<Written>> {
+    ) -> Result<std::result::Result<Written, Offset>> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
         }
@@ -57,12 +61,12 @@ impl DiskLog {
                     let kept =
                         appender.append_now(&records, &digests, condition, order.as_ref(), gone);
                     let (reply, index) = match kept {
-                        Ok(Some(kept)) => (
-                            Ok(Some((kept.written, kept.prepare_roll))),
+                        Ok(Ok(kept)) => (
+                            Ok(Ok((kept.written, kept.prepare_roll, kept.extension))),
                             (!kept.index.is_empty())
                                 .then(|| (kept.index, kept.segment, Arc::clone(&appender))),
                         ),
-                        Ok(None) => (Ok(None), None),
+                        Ok(Err(tail)) => (Ok(Err(tail)), None),
                         Err(err) => (Err(err), None),
                     };
                     (Ok((reply, records, appender)), index)
@@ -83,9 +87,13 @@ impl DiskLog {
         let (appended, records, appender) = appended;
         drop((records, appender));
         let appended = appended?;
-        let Some((written, prepare_roll)) = appended else {
-            return Ok(None);
+        let (written, prepare_roll, extension) = match appended {
+            Ok(appended) => appended,
+            Err(tail) => return Ok(Err(tail)),
         };
+        if let Some(extension) = extension {
+            Arc::clone(&inner).extend_reservation(extension);
+        }
 
         // Start the replacement while the current segment still has room,
         // so the flushes it costs never land on an append. `Idle ->
@@ -132,7 +140,7 @@ impl DiskLog {
             *inner.roll_task.lock() = Some(handle);
         }
 
-        Ok(Some(written))
+        Ok(Ok(written))
     }
 }
 
@@ -151,10 +159,12 @@ impl Written {
 }
 
 /// What [`LogInner::append_now`] kept: the batch, whether the segment has
-/// crossed the early-roll threshold, and index entries still to write.
+/// crossed the early-roll threshold, the reservation step it has earned, and
+/// index entries still to write.
 struct Kept {
     written: Written,
     prepare_roll: bool,
+    extension: Option<Extension>,
     index: crate::segment::index::UnwrittenEntries,
     segment: u64,
 }
@@ -179,17 +189,19 @@ pub(super) enum WriteIf {
         sequence: u64,
     },
     /// The batch must start at exactly this offset.
-    At(crate::log::Offset),
+    At(Offset),
 }
 
 impl LogInner {
     /// The append itself, on the log's append thread: roll if the batch will
     /// not fit, then encode the batch and give it its place under `segments`,
     /// write it without that lock, and take it in under the lock again.
-    /// `None` when `condition` does not hold or the caller gave up before the
-    /// thread got to it;
-    /// otherwise the batch, and whether the segment has crossed the early-roll
-    /// threshold.
+    /// `Err` with the tail when `condition` does not hold or the caller gave
+    /// up before the thread got to it; otherwise the batch, and whether the
+    /// segment has crossed the early-roll threshold.
+    ///
+    /// The tail is read under the same lock the condition was checked under,
+    /// so a refusal reports the tail it was refused against.
     fn append_now(
         &self,
         records: &[AppendRecord],
@@ -197,10 +209,10 @@ impl LogInner {
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
         gone: &dyn Fn() -> bool,
-    ) -> Result<Option<Kept>> {
+    ) -> Result<std::result::Result<Kept, Offset>> {
         let _appends = self.append_lock.lock();
         if gone() {
-            return Ok(None);
+            return Ok(Err(self.segments.read().tail_offset()));
         }
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
@@ -227,7 +239,7 @@ impl LogInner {
             WriteIf::At(offset) => segments.tail_offset() == offset,
         };
         if !holds {
-            return Ok(None);
+            return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
         let staged = segments.active_mut().stage(records)?;
@@ -247,6 +259,7 @@ impl LogInner {
             .fetch_add(records.len() as u64, Ordering::Relaxed);
         let durable_target = segments.tail_offset();
         let prepare_roll = segments.should_prepare_roll();
+        let extension = segments.active_mut().reservation_due();
         drop(segments);
 
         let pending = PendingAppend {
@@ -258,9 +271,10 @@ impl LogInner {
         };
         let turn = order.map(|order| order.reserve_owned(first_offset, last_offset + 1));
         self.hold_append_at(HoldAt::Reply);
-        Ok(Some(Kept {
+        Ok(Ok(Kept {
             written: Written { pending, turn },
             prepare_roll,
+            extension,
             index,
             segment,
         }))
@@ -342,6 +356,41 @@ impl LogInner {
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// Grow the active segment's block reservation on a blocking thread, so
+    /// the append that earned it does not wait on the call. Best effort: a
+    /// failure only means later writes allocate their own blocks, which the
+    /// write path already handles down to a full disk.
+    fn extend_reservation(self: Arc<Self>, extension: Extension) {
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            {
+                let hold = self.hold_next_extension.lock().take();
+                if let Some(release) = hold {
+                    let _ = release.recv();
+                }
+            }
+            #[cfg(test)]
+            let applied = if self.fail_extensions.load(Ordering::Acquire) {
+                Err(std::io::ErrorKind::StorageFull.into())
+            } else {
+                extension.apply()
+            };
+            #[cfg(not(test))]
+            let applied = extension.apply();
+            if let Err(err) = applied {
+                tracing::warn!(
+                    shard = %self.label,
+                    error = %err,
+                    reserve_to = extension.to(),
+                    "could not extend the active segment's block reservation; appends will allocate as they write",
+                );
+                metrics::counter!(metrics_names::SEGMENT_RESERVE_FAILED_TOTAL).increment(1);
+            }
+            #[cfg(test)]
+            self.extensions_done.fetch_add(1, Ordering::AcqRel);
+        });
     }
 
     /// Seal the active segment now, off the append path, and return the

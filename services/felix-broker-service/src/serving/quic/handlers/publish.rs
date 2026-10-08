@@ -64,7 +64,7 @@ pub(crate) use control::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
     handle_publish_batch_message, handle_publish_message, sequence_reuse,
 };
-pub(crate) use ingress::{PublishTarget, decrement_depth, reset_local_depth_only};
+pub(crate) use ingress::{PublishTarget, admit_unqueued, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
 pub(crate) use route::resolve_shard;
 #[cfg(test)]

@@ -96,7 +96,7 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
                 0,
                 0,
                 now_micros(),
-                config.preallocate_bytes(),
+                config.reserve_limit_bytes(),
                 config.index_spacing_bytes,
             )?,
             truncated_bytes: 0,
@@ -166,7 +166,7 @@ pub(super) fn place_empty_shard(
         0,
         base_offset,
         now_micros(),
-        config.preallocate_bytes(),
+        config.reserve_limit_bytes(),
         config.index_spacing_bytes,
     )?;
     // Flushed before anything can append to it: a base offset that did not
@@ -651,6 +651,7 @@ fn recover_existing(
             index: outcome.index,
             version: outcome.header.version,
         },
+        config.reserve_limit_bytes(),
         config.index_spacing_bytes,
     )?;
     // The index was just rewritten from the scan, so it always counts as a

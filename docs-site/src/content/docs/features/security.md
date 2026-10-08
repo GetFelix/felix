@@ -467,6 +467,13 @@ sequenceDiagram
     B-->>C: Allow or reject operation
 ```
 
+A token is bound to a QUIC stream, not a connection: each stream sends its own
+`Auth` and every request on it is checked against that token. So one client can
+carry several users. The Rust client's `Client::with_identity` opens streams
+under another user's token over the same connections, and the broker still
+checks each user's requests against that user's grants alone. See
+[Acting for many users](/clients/rust/#acting-for-many-users).
+
 ## Not built
 
 - **Encryption at rest.** Durable log segments are plaintext on disk. If the

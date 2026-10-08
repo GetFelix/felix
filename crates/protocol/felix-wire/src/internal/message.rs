@@ -62,10 +62,13 @@ pub enum InternalMessage {
 }
 
 /// The record kinds, whichever log they are for, send as
+/// `ReplicateTimedRecords` once they carry generations and times,
 /// `ReplicateLabelledRecords` once they carry generations, and otherwise as
 /// `ReplicateCommittedRecords` once they carry a commit offset.
 fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
-    if records.generations.is_some() {
+    if records.generations.is_some() && records.times.is_some() {
+        Kind::ReplicateTimedRecords
+    } else if records.generations.is_some() {
         Kind::ReplicateLabelledRecords
     } else if records.commit_offset.is_some() {
         Kind::ReplicateCommittedRecords
@@ -116,6 +119,7 @@ impl InternalMessage {
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(m) if m.labelled && m.timed => Kind::ReplicateTimedFetch,
             Self::ReplicateFetch(m) if m.labelled => Kind::ReplicateLabelledFetch,
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
         }

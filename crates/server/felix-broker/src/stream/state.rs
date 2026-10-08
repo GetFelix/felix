@@ -452,8 +452,18 @@ impl StreamState {
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
+        self.register_subscriber_sized(None)
+    }
+
+    /// Register a subscriber whose queue holds `capacity` envelopes, or the
+    /// stream's default for `None`. The overflow policy is always the stream's.
+    pub(crate) fn register_subscriber_sized(
+        &self,
+        capacity: Option<usize>,
+    ) -> (u64, SubscriptionReceiver) {
+        let capacity = capacity.unwrap_or(self.subscriber_queue_capacity).max(1);
         let mut state = self.subscribers.lock();
-        let (tx, rx) = mpsc::channel(self.subscriber_queue_capacity);
+        let (tx, rx) = mpsc::channel(capacity);
         let id = state.next_id;
         state.next_id += 1;
         let lag = Arc::default();
@@ -527,6 +537,7 @@ impl StreamState {
     pub(crate) fn register_clamped(
         &self,
         from_seq: u64,
+        queue_capacity: Option<usize>,
     ) -> (Vec<RingRecord>, u64, u64, SubscriptionReceiver) {
         let state = self.log_state.lock();
         let oldest = state
@@ -560,7 +571,7 @@ impl StreamState {
             None => state.next_seq.max(start),
         };
 
-        let (subscriber_id, receiver) = self.register_subscriber();
+        let (subscriber_id, receiver) = self.register_subscriber_sized(queue_capacity);
         drop(state);
         (backlog, backlog_start, subscriber_id, receiver)
     }

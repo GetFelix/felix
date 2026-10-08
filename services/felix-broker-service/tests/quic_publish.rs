@@ -405,6 +405,7 @@ async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -486,6 +487,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -755,6 +757,7 @@ async fn quic_publish_unknown_flag_bit_is_rejected() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -850,6 +853,7 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -1152,6 +1156,7 @@ async fn reuse_a_sequence_over_json(
         token: auth.token.clone(),
         client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
         client_features: Some(client_features),
+        client_features_hi: None,
     })
     .await?
     {

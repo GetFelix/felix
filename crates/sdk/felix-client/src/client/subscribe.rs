@@ -84,6 +84,13 @@ impl Client {
         } = self.open_event_stream().await?;
         let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;
+        // Sent only where it will be answered: an older broker ignores it.
+        let queue_capacity = self.runtime_config.broker_sub_queue_capacity.filter(|_| {
+            felix_wire::supports_feature(
+                negotiated.server_features,
+                felix_wire::FEATURE_SUBSCRIBE_QUEUE,
+            )
+        });
 
         // A broker that predates resume ignores the unknown `start` field and
         // subscribes at the tail, then answers `Subscribed` -- so the client
@@ -114,6 +121,7 @@ impl Client {
                 // Absent for shard 0, so a subscribe to a single-shard stream
                 // is byte-identical to what a client sent before sharding.
                 shard: (shard != 0).then_some(shard),
+                queue_capacity,
             },
         )
         .await?;
@@ -124,12 +132,13 @@ impl Client {
             self.runtime_config.max_frame_bytes,
         )
         .await?;
-        let (subscription_id, start_offset, live_offset) = match response {
+        let (subscription_id, start_offset, live_offset, granted_capacity) = match response {
             Some(Message::Subscribed {
                 subscription_id,
                 start_offset,
                 live_offset,
-            }) => (subscription_id, start_offset, live_offset),
+                queue_capacity,
+            }) => (subscription_id, start_offset, live_offset, queue_capacity),
             Some(Message::Ok) => {
                 return Err(anyhow::anyhow!(
                     "subscribe response missing subscription id"
@@ -222,7 +231,8 @@ impl Client {
             #[cfg(feature = "telemetry")]
             bench_embed_ts: self.runtime_config.bench_embed_ts,
         })
-        .with_join(start_offset, live_offset))
+        .with_join(start_offset, live_offset)
+        .with_queue_capacity(granted_capacity))
     }
 
     /// The first offset on one shard of a durable stream whose record was
@@ -267,4 +277,82 @@ impl Client {
     pub fn supports_offset_for_time(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_RECORD_TIMESTAMPS)
     }
+
+    /// One page of a durable stream shard's committed records, from `from`
+    /// and stopping before `end`, without subscribing. Read the next page from
+    /// [`StreamPage::next_offset`]; the range is done once it reaches `end`.
+    ///
+    /// `max_records` of `0` takes the broker's cap, and the broker also caps
+    /// a page's size. A page that reaches what is committed comes back short
+    /// or empty rather than waiting. Without `end` the page may run to the
+    /// committed tail.
+    ///
+    /// A `from` below what retention kept, or past the tail, fails with
+    /// [`SubscribeCursorError`]. Needs the `stream.subscribe` permission, and
+    /// only the shard's leader answers.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn read(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from: u64,
+        end: Option<u64>,
+        max_records: u32,
+    ) -> Result<StreamPage> {
+        if !self.supports_read() {
+            anyhow::bail!("this broker cannot read a range of a stream");
+        }
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::StreamRead {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            from,
+            end,
+            max_records,
+            max_bytes: 0,
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::StreamRecords {
+                records,
+                next_offset,
+                ..
+            } => Ok(StreamPage {
+                records,
+                next_offset,
+            }),
+            Message::SubscribeCursorError {
+                reason,
+                requested,
+                available,
+            } => Err(SubscribeCursorError {
+                reason,
+                requested,
+                available,
+            }
+            .into()),
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to stream_read: {other:?}"
+            )),
+        }
+    }
+
+    /// Whether the broker answers [`Client::read`].
+    pub fn supports_read(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_READ)
+    }
+}
+
+/// One page from [`Client::read`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamPage {
+    /// Committed records, in offset order.
+    pub records: Vec<felix_wire::StreamRecord>,
+    /// Where the next page starts. Offsets that hold no record are passed
+    /// over, so this is not always the last offset plus one.
+    pub next_offset: u64,
 }
