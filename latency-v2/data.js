@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791452639985,
+  "lastUpdate": 1791454935725,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31746,6 +31746,72 @@ window.BENCHMARK_DATA = {
             "range": "366.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 295.00\nmean: 453.20\nstdev: 366.59\ncv: 80.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efb32c8724f51368107089936d4468112d156a9d",
+          "message": "feat(replication): keep the leader's record times on replicas (#1045) (#1057)\n\nA follower stamped each replicated record with its own clock, so after a\nfailover the new leader reported inherited records' times shifted by the\nreplication delay, and offset_for_time answered against those.\n\nBrokers now offer the RECORD_TIMES peer capability (1 << 5). A leader sends\na follower that offered it ReplicateTimedRecords (internal kind 36): the\nlabelled body followed by one u64 time per record, which the follower stores\nas-is. A promoted leader taking a replica's tail asks with\nReplicateTimedFetch (kind 37). An older follower never offers the bit and is\nsent the labelled kind it reads; a newer follower receiving from an older\nleader gets no times and stamps its own clock, as before.\n\nSpec-Unaffected: the model covers offsets, generations and the quorum mark; record times are carried and stored, never compared, and change no replication decision.",
+          "timestamp": "2026-10-08T03:19:03-07:00",
+          "tree_id": "172095da07a295834ca5d8fb228b910b6763c7d6",
+          "url": "https://github.com/GetFelix/felix/commit/efb32c8724f51368107089936d4468112d156a9d"
+        },
+        "date": 1791454931700,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 106.00\nstdev: 1.00\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 142.40\nstdev: 3.21\ncv: 2.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 190,
+            "range": "5.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 189.80\nstdev: 5.72\ncv: 3.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 139.00\nstdev: 0.71\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 281,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 281.00\nmean: 280.20\nstdev: 4.76\ncv: 1.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 378,
+            "range": "423.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 378.00\nmean: 645.40\nstdev: 423.29\ncv: 65.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
