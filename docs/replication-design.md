@@ -338,7 +338,8 @@ When the fence applies:
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
-it retries every 200 ms. Every other change of leader pays a round trip to a
+it retries after 200 ms (`FENCE_RETRY`), doubling the wait with each failed
+attempt up to 2 s (`FENCE_RETRY_MAX`). Every other change of leader pays a round trip to a
 majority before it serves; a write that reaches the broker meanwhile waits
 for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
 being refused. It could not have acknowledged a `Quorum` write
@@ -432,7 +433,7 @@ shard opens on the lease, as before, and
 only promotions.
 
 The cost is the promotion's cost on more paths. A new leader that cannot
-reach a majority retries the fence on every replication pass and does not
+reach a majority retries the fence, backing off as a promotion does, and does not
 serve or report until it gets one; it does not give up or step down. The
 shard is unavailable until the leader reaches a majority, or dies and
 placement promotes from the last report, which waits for a broker holding

@@ -175,10 +175,12 @@ was told succeeded.
 #### What each one costs
 
 `Quorum` costs latency, and it costs availability at the other end: a stream
-that cannot reach a majority **stops accepting writes** rather than accepting
-ones it might not keep. A publish with no reachable majority is refused, and a
-refusal means *"this cannot be vouched for"* rather than *"this did not
-happen"*: the record may well have landed on the leader. Retry through an
+that cannot reach a majority **stops acknowledging writes** rather than
+acknowledging ones it might not keep. A publish with no reachable majority
+waits up to `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s by default), then fails
+with `quorum_timeout`, and that error means *"this cannot be vouched for"*
+rather than *"this did not happen"*: the record may well have landed on the
+leader. Retry through an
 idempotent producer, which re-sends under the same sequence and cannot land
 it twice.
 
