@@ -152,6 +152,14 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A durable stream no longer reserves a whole 256 MiB segment of disk per
+  shard when it is created (#1016). The active segment reserves 1 MiB (or a
+  sixteenth of the segment size, if smaller) and doubles the reservation each
+  time its records pass half of it, up to the segment size. Each extension runs
+  on a blocking thread after the append that earned it and is best effort: a
+  failure is logged, counted in `felix_storage_segment_reserve_failed_total`,
+  and never fails an append. Reserving still leaves the file size alone, so
+  recovery is unchanged. `SegmentWriter::reopen` takes a reservation limit.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only
