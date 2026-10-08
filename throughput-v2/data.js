@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791476323251,
+  "lastUpdate": 1791479261153,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25324,6 +25324,58 @@ window.BENCHMARK_DATA = {
             "range": "42235.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1661665.77\nmean: 1651339.85\nstdev: 42235.43\ncv: 2.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b6d893f93c278cafbfc52e85a28c4115493410d4",
+          "message": "fix(history): settle client publishes before the final read (#1075) (#1076)\n\n* fix(history): let stopping clients settle their publishes before the final read (#1075)\n\nA dropped IdempotentProducer still sends what it was handed (#977), so an\nappend the history recorded as unknown could land after the final read. A\nsubscriber catching up was then delivered a record past the final log's end.\nA stopping client now closes its producer and finishes its publishes first.\n\n* fix(client): stop a producer that has not closed in time (#1075)\n\nIdempotentProducer::close_within closes the producer and, at the timeout,\naborts its task so nothing it held is sent later. The history clients use it:\na producer stuck re-sending to brokers that restarted on new ports held the\ncampaign for a minute and could still land a value after the final read.",
+          "timestamp": "2026-10-08T10:02:54-07:00",
+          "tree_id": "61e2dc5812edbba36c82c58ce97a5c45a5b178d9",
+          "url": "https://github.com/GetFelix/felix/commit/b6d893f93c278cafbfc52e85a28c4115493410d4"
+        },
+        "date": 1791479259983,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 333222.94,
+            "range": "6547.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333222.94\nmean: 335013.09\nstdev: 6547.12\ncv: 1.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 333222.94,
+            "range": "6547.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333222.94\nmean: 335013.09\nstdev: 6547.12\ncv: 1.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81008,
+            "range": "437.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81008.00\nmean: 80911.32\nstdev: 437.64\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810079.96,
+            "range": "4376.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810079.96\nmean: 809113.23\nstdev: 4376.43\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
