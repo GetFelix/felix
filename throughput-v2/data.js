@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791452642548,
+  "lastUpdate": 1791454939659,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25012,6 +25012,58 @@ window.BENCHMARK_DATA = {
             "range": "124767.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1612644.10\nmean: 1556989.89\nstdev: 124767.12\ncv: 8.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efb32c8724f51368107089936d4468112d156a9d",
+          "message": "feat(replication): keep the leader's record times on replicas (#1045) (#1057)\n\nA follower stamped each replicated record with its own clock, so after a\nfailover the new leader reported inherited records' times shifted by the\nreplication delay, and offset_for_time answered against those.\n\nBrokers now offer the RECORD_TIMES peer capability (1 << 5). A leader sends\na follower that offered it ReplicateTimedRecords (internal kind 36): the\nlabelled body followed by one u64 time per record, which the follower stores\nas-is. A promoted leader taking a replica's tail asks with\nReplicateTimedFetch (kind 37). An older follower never offers the bit and is\nsent the labelled kind it reads; a newer follower receiving from an older\nleader gets no times and stamps its own clock, as before.\n\nSpec-Unaffected: the model covers offsets, generations and the quorum mark; record times are carried and stored, never compared, and change no replication decision.",
+          "timestamp": "2026-10-08T03:19:03-07:00",
+          "tree_id": "172095da07a295834ca5d8fb228b910b6763c7d6",
+          "url": "https://github.com/GetFelix/felix/commit/efb32c8724f51368107089936d4468112d156a9d"
+        },
+        "date": 1791454938813,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 512948.17,
+            "range": "17095.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 512948.17\nmean: 506372.13\nstdev: 17095.96\ncv: 3.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 512948.17,
+            "range": "17095.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 512948.17\nmean: 506372.13\nstdev: 17095.96\ncv: 3.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118988.94,
+            "range": "6384.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118988.94\nmean: 116533.37\nstdev: 6384.50\ncv: 5.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1189889.42,
+            "range": "63845.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1189889.42\nmean: 1165333.70\nstdev: 63845.00\ncv: 5.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
