@@ -23,6 +23,15 @@ for what the current release guarantees.
   never cross the boundary, and each client owns its Tokio runtime. A test
   fails while the header is stale, and CI runs a C program against the
   conformance fixture. Not published to crates.io.
+- Nightly TLC simulation of long random walks over replica-set changes
+  (#934). `FelixShardWalkSpares`, `FelixShardWalkMoves` and
+  `FelixShardWalkHandoff` lift the bounds the exhaustive configurations
+  stop at (time to 40, six writes, six moves) and sample traces up to 300
+  steps; each has a negative twin that must find its violation within the
+  budget. `scripts/check_tla.sh --simulate` (`task tla:walk`) runs them,
+  and `tla-walk.yml` runs them nightly and uploads TLC's trace on a
+  failure. `Tick` in `FelixShard.tla` enumerates clocks over the drift
+  window only, with the same states.
 - felixctl writes to the control plane (part of #1005). `tenant`, `namespace`,
   `stream` and `cache` gain `create` and `rm`; `stream set` changes
   consistency, delivery, durability and retention, keeping a retention bound

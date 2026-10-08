@@ -1,0 +1,91 @@
+name: TLA+ walks
+
+# Long random walks over replica-set changes, in TLC's simulation mode. The
+# per-push `formal` job in ci.yml checks every behaviour up to small bounds:
+# a move or two and a promotion or two. These lift the bounds and sample
+# behaviours hundreds of steps long instead, which is sampling, not proof: a
+# pass means nothing was found. Each family's negative twin must still find
+# its violation within the budget, the same expectation model as ci.yml.
+# A pull request that changes the walks runs them too. See
+# docs/formal/README.md, "Long random walks".
+
+on:
+  schedule:
+    # 05:23 UTC nightly, a slot no other scheduled workflow uses.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Budget per configuration, in minutes"
+        required: false
+        default: "25"
+      depth:
+        description: "Steps per trace"
+        required: false
+        default: "300"
+      seed:
+        description: "TLC seed (empty for a random one, printed in the log)"
+        required: false
+        default: ""
+  # A change to the walks themselves gets a real run before it merges;
+  # nothing else runs this per push.
+  pull_request:
+    paths:
+      - .github/workflows/tla-walk.yml
+      - docs/formal/FelixShardWalk*.cfg
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tla-walk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  walk:
+    name: Walk ${{ matrix.family }}
+    runs-on: ubuntu-latest
+    # A pass configuration spends its whole budget; its twin usually stops
+    # well short of it.
+    timeout-minutes: 60
+    strategy:
+      # One family finding something says nothing about the others.
+      fail-fast: false
+      matrix:
+        include:
+          - family: spares
+            configs: FelixShardWalkSpares FelixShardWalkSparesSeatEarly
+          - family: moves
+            configs: FelixShardWalkMoves FelixShardWalkMovesDestination
+          - family: handoff
+            configs: FelixShardWalkHandoff FelixShardWalkHandoffNoWait
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Walk
+        env:
+          TLA_SIM_MINUTES: ${{ inputs.minutes || '25' }}
+          TLA_DEPTH: ${{ inputs.depth || '300' }}
+          TLA_SEED: ${{ inputs.seed }}
+          CONFIGS: ${{ matrix.configs }}
+        # Word splitting is wanted: the matrix entry is a list of names. An
+        # empty TLA_SEED is unset so the script draws one.
+        run: |
+          if [ -z "$TLA_SEED" ]; then unset TLA_SEED; fi
+          scripts/check_tla.sh --simulate $CONFIGS
+
+      # TLC's whole output for each walk, the trace and the seed with it.
+      - name: Upload the traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tla-walk-${{ matrix.family }}
+          path: target/tla/walk/
+          retention-days: 14
