@@ -271,9 +271,11 @@ for what the current release guarantees.
   is unchanged: when a replica does not offer the fence the shard opens on
   the lease as before. `felix_broker_promotions_opened_total{path}` now counts
   every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
-  `FelixShardElectHandoff.cfg` (passes) and
+  `FelixShardElectHandoff.cfg` (passes; an hour, so by hand),
+  `FelixShardElectHandoffLeaders.cfg` (the same without a write, per PR) and
   `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
-  leader at an elected generation).
+  leader at an elected generation). The CI model check now runs on seven jobs, filled
+  by each configuration's measured time, to stay under the hour.
 - A publish acknowledged on commit is answered by the task that sees it
   commit (#926). The commit task, or the executor for an in-memory write, puts
   the ack straight onto the control stream's writer queue, instead of
