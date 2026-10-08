@@ -299,6 +299,13 @@ pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
 /// and say nothing.
 pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
 
+/// The broker answers `stream_read`: one page of a durable stream shard's
+/// committed records, without registering a subscriber.
+///
+/// Advertised by a *broker*: `stream_read` is a request, and an older broker
+/// has no arm for it.
+pub const FEATURE_STREAM_READ: u32 = 0x2000_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -327,7 +334,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_GROUP_ADMIN
     | FEATURE_CACHE_CONDITIONAL
     | FEATURE_RECORD_TIMESTAMPS
-    | FEATURE_GROUP_CLAIM_CONTROL;
+    | FEATURE_GROUP_CLAIM_CONTROL
+    | FEATURE_STREAM_READ;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

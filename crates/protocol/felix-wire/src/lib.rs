@@ -29,7 +29,7 @@ pub use client::features::{
     FEATURE_GROUP_CLAIM_CONTROL, FEATURE_GROUP_CONSUMER, FEATURE_GROUP_DEAD_LETTERS,
     FEATURE_GROUP_PUBLISHER, FEATURE_GROUP_SKIPPED, FEATURE_IDEMPOTENT_PRODUCER,
     FEATURE_PUBLISH_PIPELINE, FEATURE_RECORD_TIMESTAMPS, FEATURE_REDIRECT, FEATURE_SEQUENCE_REUSED,
-    FEATURE_SHARD_MOVED, FEATURE_SHARD_OWNERS, FEATURE_STREAM_PUBLISH_WINDOW,
+    FEATURE_SHARD_MOVED, FEATURE_SHARD_OWNERS, FEATURE_STREAM_PUBLISH_WINDOW, FEATURE_STREAM_READ,
     FEATURE_STREAM_SHARDS, FEATURE_SUBSCRIPTION_LAGGED, FEATURE_TOPOLOGY, FEATURE_UNSUPPORTED,
     KNOWN_FEATURES, supports_feature,
 };
@@ -44,7 +44,8 @@ pub use client::flags::{
 pub use client::frame::{CLIENT_ALPN, Frame, FrameHeader, MAGIC, VERSION};
 pub use client::message::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, Message,
-    PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, UnknownRequest,
+    PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
+    UnknownRequest,
 };
 pub use client::{binary, text};
 pub use error::{Error, Result};

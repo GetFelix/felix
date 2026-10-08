@@ -157,3 +157,67 @@ fn subscription_lagged_round_trips() {
     );
     assert_eq!(Message::decode(frame).expect("decode"), lagged);
 }
+
+#[test]
+fn a_stream_read_round_trips() {
+    let request = Message::StreamRead {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "matches".to_string(),
+        shard: 2,
+        from: 10,
+        end: Some(20),
+        max_records: 5,
+        max_bytes: 4096,
+        request_id: 7,
+    };
+    let decoded = Message::decode(request.encode().expect("encode")).expect("decode");
+    assert_eq!(request, decoded);
+
+    let answer = Message::StreamRecords {
+        records: vec![
+            crate::StreamRecord {
+                offset: 10,
+                payload: bytes::Bytes::from_static(b"one"),
+                publisher: Some("alice".to_string()),
+                timestamp_micros: 1_700_000_000_000_000,
+            },
+            crate::StreamRecord {
+                offset: 12,
+                payload: bytes::Bytes::from_static(b"two"),
+                publisher: None,
+                timestamp_micros: 1_700_000_000_000_001,
+            },
+        ],
+        next_offset: 13,
+        request_id: 7,
+    };
+    let decoded = Message::decode(answer.encode().expect("encode")).expect("decode");
+    assert_eq!(answer, decoded);
+}
+
+/// The optional fields stay off the wire when unset, so the shortest request
+/// is just the shard and where to start.
+#[test]
+fn a_stream_read_leaves_unset_bounds_out() {
+    let request = Message::StreamRead {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "s".to_string(),
+        shard: 0,
+        from: 3,
+        end: None,
+        max_records: 0,
+        max_bytes: 0,
+        request_id: 1,
+    };
+    assert_eq!(
+        serde_json::to_string(&request).expect("encode"),
+        r#"{"type":"stream_read","tenant_id":"t1","namespace":"ns","stream":"s","shard":0,"from":3,"request_id":1}"#
+    );
+    let decoded: Message = serde_json::from_str(
+        r#"{"type":"stream_read","tenant_id":"t1","namespace":"ns","stream":"s","shard":0,"from":3,"request_id":1}"#,
+    )
+    .expect("decode");
+    assert_eq!(decoded, request);
+}

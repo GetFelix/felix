@@ -124,6 +124,7 @@ impl SegmentSet {
                 index: outcome.index,
                 version: outcome.header.version,
             },
+            self.config.reserve_limit_bytes(),
             self.config.index_spacing_bytes,
         )?;
         self.active_reader = Arc::new(SegmentReader::open(
@@ -183,6 +184,7 @@ impl SegmentSet {
                     index: rebuild_index_prefix(index, valid_bytes),
                     version: read_segment_header(&path, id, &self.label)?.version,
                 },
+                self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,
             )?
         } else {
@@ -191,7 +193,7 @@ impl SegmentSet {
                 id,
                 base_offset,
                 now_micros(),
-                self.config.preallocate_bytes(),
+                self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,
             )?
         };

@@ -169,6 +169,19 @@ pub struct GroupRecord {
     pub timestamp_micros: Option<u64>,
 }
 
+/// One record a `stream_read` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamRecord {
+    pub offset: u64,
+    #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+    pub payload: Bytes,
+    /// The principal that published the record, when the broker recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    pub timestamp_micros: u64,
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
