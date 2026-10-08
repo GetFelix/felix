@@ -152,6 +152,22 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A plain `Client` spreads one stream's shards over its connections, as a
+  `ClusterClient` already did (#724). Its publishers learn a stream's width
+  from the broker on the first keyed publish to it (`StreamShards`, one round
+  trip, kept for the client's life) and put each shard on a publish stream of
+  its own, placed on the least-loaded connection, so one client's hot
+  multi-shard stream no longer rides one connection and one listener. Order is
+  kept per shard: every publish a client makes to one shard still goes through
+  one writer and one QUIC stream. Unkeyed publishes are shard 0, so a stream
+  published without keys, or a single-shard stream, stays on one stream for
+  total order. A stream whose width cannot be learned keeps all its keyed
+  publishes on shard 0's stream. A plain client's idempotent producer and its
+  other publishers now share those streams, so mixing them on one stream no
+  longer splits a shard across two writers. Unkeyed publishes through a plain
+  `Client` move from a pooled stream to shard 0's own, which costs one stream
+  open per stream on the first publish. `FELIX_PUB_SHARD_STREAMS` now applies
+  to plain clients too; `0` restores the old routing.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only

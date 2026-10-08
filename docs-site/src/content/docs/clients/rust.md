@@ -334,18 +334,27 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
-A `ClusterClient` goes one step further under `HashStream`: it knows the
-shard of every publish it makes, so each shard gets a stream of its own. The
-broker answers a stream's pipelined publishes in order, so shards sharing a
-stream would wait on the slowest; on separate streams a shard stalled on a
-quorum holds up only itself. The stream opens on the shard's first publish,
-which pays one extra round trip to authenticate it, and stays open. It keeps
-at most `publish_shard_streams` of them per broker (16 by default,
-`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool. A plain `Client`
-does not know a stream's width, so it keeps every publish to a stream on one
-writer as described above. A publisher taken from `ClusterClient::client()`
-is a plain one, so mixing it with the `ClusterClient`'s own publishes to the
-same stream puts that stream on two writers.
+Under `HashStream` the client goes one step further: each shard of a stream
+gets a stream of its own. The broker answers a stream's pipelined publishes in
+order, so shards sharing a stream would wait on the slowest; on separate
+streams a shard stalled on a quorum holds up only itself. Each shard stream
+is placed on the least-loaded connection, so a busy multi-shard stream
+spreads over the client's connections and the broker's listeners instead of
+riding one. The stream opens on the shard's first publish, which pays one
+extra round trip to authenticate it, and stays open. A client keeps at most
+`publish_shard_streams` of them per broker (16 by default,
+`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
+
+A `ClusterClient` knows the shard of every publish. A plain `Client` asks the
+broker for a stream's width on its first keyed publish to it (one more round
+trip) and keeps the answer for its life. If it cannot get one, every keyed
+publish to that stream goes on shard 0's stream, as one writer.
+
+The ordering guarantee is per shard: every publish one client makes to one
+shard goes through one writer and one QUIC stream, so the shard holds them in
+the order they were issued. Unkeyed publishes are all shard 0, so a stream
+published without keys, like a single-shard stream, keeps total order and
+stays on one connection per client.
 
 ### Errors you can act on
 

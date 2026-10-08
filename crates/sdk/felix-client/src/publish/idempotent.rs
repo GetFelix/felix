@@ -656,16 +656,7 @@ impl Driver {
         batches: &[Vec<Vec<u8>>],
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        // Under a ClusterClient every publish names its shard, so each shard
-        // can have its own stream. A plain Client's do not, so its producer
-        // stays on the pool with the rest of that client's publishes.
-        let publisher = match &self.source {
-            Source::Cluster(_) => client.shard_publisher(),
-            Source::Single(_) => match client.publisher().await {
-                Ok(publisher) => publisher,
-                Err(err) => return (Vec::new(), Err(err)),
-            },
-        };
+        let publisher = client.publisher_handle();
         publisher
             .publish_idempotent_pipelined(
                 &key.0,

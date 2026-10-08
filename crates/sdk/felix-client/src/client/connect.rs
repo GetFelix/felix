@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::Client;
+use super::discovery::ask_stream_routing;
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
 use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
@@ -18,7 +19,8 @@ use crate::config::{
 };
 use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
 use crate::publish::{
-    OpenWorker, PublishAdmission, PublishWorker, ShardStreams, run_publisher_writer_with_limit,
+    LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
+    run_publisher_writer_with_limit,
 };
 
 impl Client {
@@ -288,6 +290,39 @@ impl Client {
             client_config.publish_shard_streams,
             open_shard_stream,
         ));
+        let cache_request_counter = Arc::new(AtomicU64::new(1));
+        let learn_width: LearnWidth = {
+            let node = Arc::clone(&event_node);
+            let requests = Arc::clone(&cache_request_counter);
+            let tenant = auth_tenant_id.clone();
+            let max_frame_bytes = runtime_config.max_frame_bytes;
+            Arc::new(move |tenant_id, namespace, stream| {
+                let node = Arc::clone(&node);
+                let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let tenant = tenant.clone();
+                Box::pin(async move {
+                    // The checks `Client::stream_routing` makes before asking.
+                    anyhow::ensure!(
+                        felix_wire::supports_feature(
+                            server_features,
+                            felix_wire::FEATURE_STREAM_SHARDS
+                        ),
+                        "broker does not report stream shard counts"
+                    );
+                    anyhow::ensure!(tenant_id == tenant, "tenant mismatch");
+                    ask_stream_routing(
+                        &node,
+                        request_id,
+                        max_frame_bytes,
+                        &tenant_id,
+                        &namespace,
+                        &stream,
+                    )
+                    .await
+                })
+            })
+        };
+        let publish_widths = Arc::new(StreamWidths::new(learn_width));
 
         // Several streams per cache connection: a new connection per cache op
         // would pay a handshake each time, and one stream would head-of-line
@@ -348,10 +383,11 @@ impl Client {
             publish_workers: Arc::new(publish_workers),
             publish_stream_hasher: ahash::RandomState::new(),
             publish_shard_streams,
+            publish_widths,
             publish_sharding: client_config.publish_sharding,
             publish_admission,
             cache_workers,
-            cache_request_counter: AtomicU64::new(1),
+            cache_request_counter,
             cache_worker_rr: AtomicUsize::new(0),
             cache_conn_counts,
             event_conn_counts,

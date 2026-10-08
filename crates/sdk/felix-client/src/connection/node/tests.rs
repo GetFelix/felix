@@ -209,6 +209,30 @@ async fn grows_to_the_ceiling_when_stream_credit_runs_out() -> Result<()> {
     Ok(())
 }
 
+/// Streams opened after the pool go to the least-loaded connection, so a
+/// stream's per-shard publish streams land on different connections, and
+/// so on different listeners when the broker has several.
+#[tokio::test]
+async fn later_streams_spread_over_a_filled_pool() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(&broker, endpoint, limits(4, 1024));
+    node.fill(4, false).await?;
+    let mut pool = Vec::new();
+    for _ in 0..8 {
+        pool.push(node.open().await?);
+    }
+    let mut later = Vec::new();
+    for _ in 0..4 {
+        later.push(node.open().await?);
+    }
+    let mut slots: Vec<usize> = later.iter().map(|stream| stream.lease.slot()).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    assert_eq!(slots.len(), 4, "four later streams share connections");
+    assert_eq!(broker.accepted(), 4);
+    Ok(())
+}
+
 /// The stream budget is the other trigger: a connection carrying its share
 /// gets a neighbour even when the broker would grant more.
 #[tokio::test]

@@ -14,6 +14,7 @@ mod idempotent;
 mod routing;
 mod send;
 mod shard_streams;
+mod widths;
 mod writer;
 
 pub use idempotent::IdempotentProducer;
@@ -21,6 +22,7 @@ pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
 pub(crate) use shard_streams::{OpenWorker, ShardStreams};
+pub(crate) use widths::{LearnWidth, StreamWidths};
 pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -761,6 +763,9 @@ pub(crate) struct PublisherInner {
     /// Streams of their own for shards, shared by every publisher from the
     /// client. `None` routes everything through `workers`.
     shard_streams: Option<Arc<ShardStreams>>,
+    /// What a keyed publish with no shard named looks its shard up in.
+    /// `None` sends such publishes to the pool.
+    widths: Option<Arc<StreamWidths>>,
     bench_embed_ts: bool,
     /// Intersection of every worker's advertised flags.
     ///
@@ -801,6 +806,7 @@ impl PublisherInner {
             stream_cache: Mutex::new(StreamShardCache::new(STREAM_SHARD_CACHE_CAPACITY)),
             stream_hasher,
             shard_streams: None,
+            widths: None,
             bench_embed_ts: false,
             server_flags,
         }
@@ -811,11 +817,13 @@ impl PublisherInner {
         sharding: PublishSharding,
         admission: Arc<PublishAdmission>,
         stream_hasher: ahash::RandomState,
-        shard_streams: Option<Arc<ShardStreams>>,
+        shard_streams: Arc<ShardStreams>,
+        widths: Arc<StreamWidths>,
         bench_embed_ts: bool,
     ) -> Self {
         let mut inner = Self::with_admission(workers, sharding, admission, stream_hasher);
-        inner.shard_streams = shard_streams;
+        inner.shard_streams = Some(shard_streams);
+        inner.widths = Some(widths);
         inner.bench_embed_ts = bench_embed_ts;
         inner
     }
@@ -829,6 +837,19 @@ impl PublisherInner {
     ) -> Self {
         let mut inner = Self::new(workers, PublishSharding::HashStream);
         inner.shard_streams = Some(Arc::new(ShardStreams::new(cap, open)));
+        inner
+    }
+
+    /// [`Self::with_shard_streams`] that learns stream widths with `learn`.
+    #[cfg(test)]
+    pub(crate) fn with_widths(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+        learn: LearnWidth,
+    ) -> Self {
+        let mut inner = Self::with_shard_streams(workers, cap, open);
+        inner.widths = Some(Arc::new(StreamWidths::new(learn)));
         inner
     }
 }

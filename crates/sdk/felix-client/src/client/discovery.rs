@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
-use crate::connection::OpenedStream;
+use crate::connection::{NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
@@ -128,52 +128,18 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        let OpenedStream {
-            mut send,
-            mut recv,
-            lease: _lease,
-            ..
-        } = self.open_event_stream().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        write_message(
-            &mut send,
-            Message::StreamShards {
-                tenant_id: tenant_id.to_string(),
-                namespace: namespace.to_string(),
-                stream: stream.to_string(),
-                request_id,
-            },
+        ask_stream_routing(
+            &self.event_node,
+            request_id,
+            self.runtime_config.max_frame_bytes,
+            tenant_id,
+            namespace,
+            stream,
         )
         .await
-        .context("send stream shards request")?;
-        let mut scratch = BytesMut::with_capacity(4 * 1024);
-        let answer =
-            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
-        let _ = send.finish();
-        match answer {
-            Some(Message::StreamShardsView {
-                shards, routing, ..
-            }) => Ok((shards, routing.unwrap_or_default())),
-            Some(Message::Error {
-                message,
-                code,
-                retry,
-                detail,
-            }) => Err(crate::error::refused(
-                "stream shards rejected",
-                message,
-                code,
-                retry,
-                detail,
-            )),
-            Some(other) => Err(anyhow::anyhow!(
-                "unexpected stream shards response: {other:?}"
-            )),
-            None => Err(anyhow::anyhow!("stream shards response missing")),
-        }
     }
 
     /// How many shards a cache was placed with.
@@ -311,5 +277,58 @@ impl Client {
             )),
             None => Err(anyhow::anyhow!("shard owners response missing")),
         }
+    }
+}
+
+/// Ask a broker for a stream's width and mapping. Takes the event connections
+/// rather than the client, so a publisher can ask too.
+pub(super) async fn ask_stream_routing(
+    event_node: &NodeConnections,
+    request_id: u64,
+    max_frame_bytes: usize,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    let OpenedStream {
+        mut send,
+        mut recv,
+        lease: _lease,
+        ..
+    } = event_node.open().await?;
+    write_message(
+        &mut send,
+        Message::StreamShards {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            request_id,
+        },
+    )
+    .await
+    .context("send stream shards request")?;
+    let mut scratch = BytesMut::with_capacity(4 * 1024);
+    let answer = read_message_with_limit(&mut recv, &mut scratch, max_frame_bytes).await?;
+    let _ = send.finish();
+    match answer {
+        Some(Message::StreamShardsView {
+            shards, routing, ..
+        }) => Ok((shards, routing.unwrap_or_default())),
+        Some(Message::Error {
+            message,
+            code,
+            retry,
+            detail,
+        }) => Err(crate::error::refused(
+            "stream shards rejected",
+            message,
+            code,
+            retry,
+            detail,
+        )),
+        Some(other) => Err(anyhow::anyhow!(
+            "unexpected stream shards response: {other:?}"
+        )),
+        None => Err(anyhow::anyhow!("stream shards response missing")),
     }
 }

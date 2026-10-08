@@ -4,8 +4,8 @@
 //! is what keeps them in order. The hash is cached per stream so a hot
 //! stream does not rehash on every publish.
 //!
-//! A `ClusterClient` publisher sends each shard to its own stream first
-//! (`shard_streams`), and only falls back to the hash when the client has no
+//! Under `HashStream` each shard goes to its own stream first
+//! (`shard_streams`), and falls back to the hash only when the client has no
 //! room for another.
 //!
 //! The hash is seeded per client. Each worker's connection sits on one broker
@@ -36,10 +36,12 @@ pub enum PublishSharding {
     /// Pick the stream by hashing the stream's name, so each stream's
     /// publishes share one writer and stay in order. The default.
     ///
-    /// A [`crate::ClusterClient`] narrows that to each shard: every shard of
-    /// a stream has one writer, its own while the client has room for one,
-    /// so a shard's publishes stay in order and a stalled shard holds up no
-    /// other.
+    /// The client narrows that to each shard: every shard of a stream has
+    /// one writer, its own while the client has room for one, so a shard's
+    /// publishes stay in order, a stalled shard holds up no other, and one
+    /// stream's shards can use several connections. A plain
+    /// [`crate::Client`] asks the broker for a stream's width before its
+    /// first keyed publish to it.
     HashStream,
 }
 
@@ -93,6 +95,31 @@ impl Publisher {
         }
         self.select_worker(tenant_id, namespace, stream)
             .map(Selected::Pooled)
+    }
+
+    /// The shard a publish lands on, if the client can tell: 0 without a
+    /// key, the caller's `shard` when it named one, else the one the key
+    /// routes to once the stream's width is known. `None` sends a keyed
+    /// publish to the pool, and is only for a publisher that would not use
+    /// the shard anyway.
+    pub(super) async fn shard_of(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&[u8]>,
+        shard: Option<u32>,
+    ) -> Option<u32> {
+        let Some(key) = key else {
+            return Some(0);
+        };
+        if shard.is_some() || self.inner.sharding != PublishSharding::HashStream {
+            return shard;
+        }
+        match &self.inner.widths {
+            Some(widths) => Some(widths.shard_of(tenant_id, namespace, stream, key).await),
+            None => None,
+        }
     }
 
     pub(super) fn select_worker(

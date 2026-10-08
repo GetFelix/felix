@@ -389,3 +389,19 @@ fn config_env_sharding_variants() {
         std::env::remove_var("FELIX_PUB_SHARDING");
     }
 }
+
+/// `0` turns shard streams off, so unlike the pool sizes it is not ignored.
+#[allow(deprecated)]
+#[test]
+#[serial_test::serial]
+fn zero_shard_streams_from_env_is_honoured() {
+    let quinn = quinn::ClientConfig::with_platform_verifier();
+    unsafe {
+        std::env::set_var("FELIX_PUB_SHARD_STREAMS", "0");
+    }
+    let config = ClientConfig::from_env_or_yaml(quinn, None).expect("config");
+    unsafe {
+        std::env::remove_var("FELIX_PUB_SHARD_STREAMS");
+    }
+    assert_eq!(config.publish_shard_streams, 0);
+}

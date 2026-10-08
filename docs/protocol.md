@@ -1100,13 +1100,17 @@ holds back answers the others have committed, then fills the window and stops
 the stream. The Rust `ClusterClient` therefore sends each publish on a stream
 that carries only its shard, opened on the shard's first publish on the same
 connection. It can, because it computes the shard of every publish to pick
-the owner: keyed, unkeyed (shard 0) and idempotent alike. It keeps at most
-`publish_shard_streams` such streams per broker (16 by default); shards past
-that share the hashed pool, and a shard never changes stream while its writer
-lives, so its publishes stay in order. A plain `Client` does not know a
-stream's width, so it keeps every publish to a stream on one pooled stream.
-Nothing on the wire changes: the broker cannot tell these streams from any
-other.
+the owner: keyed, unkeyed (shard 0) and idempotent alike. A plain `Client`
+does the same once it knows the stream's width, which it asks for
+(`StreamShards`) on its first keyed publish to the stream and keeps for its
+life; if it cannot learn it, every keyed publish to that stream goes on shard
+0's stream. Each shard stream is placed on the least-loaded connection, so
+one hot stream's shards spread over the client's connections and the
+broker's listeners. A client keeps at most `publish_shard_streams` such
+streams per broker (16 by default); shards past that share the hashed pool,
+and a shard never changes stream while its writer lives, so its publishes
+stay in order. Nothing on the wire changes: the broker cannot tell these
+streams from any other.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a

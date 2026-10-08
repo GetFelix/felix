@@ -56,13 +56,15 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
-  - Most publish streams a `ClusterClient` opens per broker for one shard
-    each, beside the pool. Default: `16`. `0` turns them off.
-  - Each `ClusterClient` publish goes on its shard's own stream, so a shard
-    stalled on the broker holds up only itself. Opened on the shard's first
-    publish and kept. Shards past the cap use the pool. Only with
-    `hash_stream`. A plain `Client` ignores it: it does not know a stream's
-    width, so all its publishes to a stream share one pooled stream.
+  - Most publish streams a client opens per broker for one shard each,
+    beside the pool. Default: `16`. `0` turns them off.
+  - Each publish goes on its shard's own stream, so a shard stalled on the
+    broker holds up only itself, and one stream's shards spread over the
+    client's connections and listeners. Opened on the shard's first publish,
+    on the least-loaded connection, and kept. Shards past the cap use the
+    pool. Only with `hash_stream`. A plain `Client` learns a stream's width
+    from the broker on its first keyed publish to it; a `ClusterClient`
+    already knows it.
 
 ### Cache Parallelism
 
