@@ -12,6 +12,12 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
+  macOS and Linux, with completions and man pages (#1005). `release.yml`
+  writes it from each release's archive checksums and pushes it to
+  `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
+  `HOMEBREW_TAP_TOKEN` secret; dry runs keep it as an artifact and nightlies
+  skip it.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it

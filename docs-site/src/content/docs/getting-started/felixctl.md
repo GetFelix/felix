@@ -14,7 +14,15 @@ Its data-plane commands use only the public API of the Rust client
 
 ## Install
 
-Starting with 0.6.0-preview, each release publishes felixctl in three forms.
+Starting with 0.6.0-preview, each release publishes felixctl in three forms,
+plus a Homebrew formula.
+
+With Homebrew, on macOS or Linux, which also installs the shell completions
+and man pages:
+
+```bash
+brew install getfelix/tap/felixctl
+```
 
 From crates.io, which puts `felixctl` in `~/.cargo/bin`:
 
@@ -330,5 +338,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 
 Control-plane writes (creating streams and caches, moving shards, draining and
 deregistering brokers, RBAC), consumer groups, counters and state reads are
-planned. Release binaries and packages are not published yet. See
-[issue #872](https://github.com/GetFelix/felix/issues/872).
+planned, and so is `felixctl apply -f`. See
+[issue #1005](https://github.com/GetFelix/felix/issues/1005).
