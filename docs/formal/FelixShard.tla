@@ -450,11 +450,12 @@ Init ==
 Tick ==
     /\ now < MaxTime
     /\ now' = now + 1
-    /\ clock' \in { c \in [Brokers -> 0..(MaxTime + Drift)] :
+    \* Drawn from the drift window, not from 0..MaxTime + Drift: the same
+    \* clocks, without enumerating every function up to MaxTime on each tick,
+    \* which the long walks (FelixShardWalk*.cfg) could not afford.
+    /\ clock' \in { c \in [Brokers -> (IF now + 1 > Drift THEN now + 1 - Drift ELSE 0)..(now + 1 + Drift)] :
                      \A b \in Brokers : /\ c[b] >= clock[b]
-                                        /\ c[b] <= clock[b] + 2
-                                        /\ c[b] >= now + 1 - Drift
-                                        /\ c[b] <= now + 1 + Drift }
+                                        /\ c[b] <= clock[b] + 2 }
     /\ UNCHANGED << gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
@@ -728,6 +729,10 @@ AckQuorum(b) ==
 LearnHwm(b, f) ==
     /\ bgen[b] > 0 /\ f /= b
     /\ hwm[f] < hwm[b]
+    \* A leader that took a shorter log from a fence answer can hold less than
+    \* its old mark, which NoTruncationBelowHwm flags; a twin that checks only
+    \* its own invariant walks on from there.
+    /\ Len(log[b]) >= hwm[b]
     /\ Len(log[f]) >= hwm[b]
     /\ SubSeq(log[f], 1, hwm[b]) = SubSeq(log[b], 1, hwm[b])
     /\ hwm' = [hwm EXCEPT ![f] = hwm[b]]
@@ -751,7 +756,7 @@ LearnHwm(b, f) ==
 \* A write that holds the fence from admission is counted from there.
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
@@ -1196,7 +1201,7 @@ OldSetLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     MajorityOf({ m \in mine[b] \ halted : HoldsPrefix(m, b, k) } \cup {b},
                                mine[b]) }
-    IN CHOOSE k \in held : \A j \in held : j <= k
+    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* The leader, still serving, moves to the next generation with `set`.
 Regenerate(v, views, set) ==
@@ -1238,6 +1243,8 @@ Reseat(v, o, views) ==
 \* generation.
 GrowSet(v, d, views) ==
     /\ Grow
+    \* Short of the factor, which is odd: a full set does not grow.
+    /\ Cardinality(ReplicaSet) % 2 = 0
     /\ moves < MaxMoves
     /\ joining = {}
     /\ d \in out
@@ -1273,32 +1280,42 @@ Decide(v, f, views) ==
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-Step ==
-    \/ Tick /\ UNCHANGED counterVars
-    \/ \E b \in Brokers :
-        \/ /\ \/ SendHeartbeat(b)
-              \/ AcceptHeartbeat(b)
-              \/ LoseHeartbeat(b)
-              \/ StepDown(b)
-              \/ Admit(b)
-              \/ Resend(b)
-              \/ Claim(b)
-              \/ Commit(b)
-              \/ AckQuorum(b)
-              \/ Report(b)
-              \/ ObserveFence(b)
-              \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
-           /\ UNCHANGED counterVars
-        \/ OpenForWrites(b)
-        \/ Decide(Now, b, cpView)
-        \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-        \/ CommitCounter(b)
-        \/ AckCounters(b)
-        \/ \E f \in Brokers : ShipCounter(b, f) \/ AnswerCounterFence(b, f)
-    \/ LoseReport /\ UNCHANGED counterVars
-    \/ \E p \in Planners : Snapshot(p) /\ UNCHANGED counterVars
+quietVars == << counterVars, heard >>
 
-Next == (Step /\ UNCHANGED heard) \/ (DeliverReport /\ UNCHANGED counterVars)
+\* Every action is its own disjunct, with what it leaves alone conjoined
+\* inside it. TLC splits a next-state relation only at disjunctions and
+\* constant `\E`, and its simulation mode picks an action before a successor:
+\* folded into one action, a walk would pick among successor states, and
+\* Tick's clock choices would crowd out everything else.
+Next ==
+    \/ Tick /\ UNCHANGED quietVars
+    \/ \E b \in Brokers :
+        \/ SendHeartbeat(b) /\ UNCHANGED quietVars
+        \/ AcceptHeartbeat(b) /\ UNCHANGED quietVars
+        \/ LoseHeartbeat(b) /\ UNCHANGED quietVars
+        \/ StepDown(b) /\ UNCHANGED quietVars
+        \/ Admit(b) /\ UNCHANGED quietVars
+        \/ Resend(b) /\ UNCHANGED quietVars
+        \/ Claim(b) /\ UNCHANGED quietVars
+        \/ Commit(b) /\ UNCHANGED quietVars
+        \/ AckQuorum(b) /\ UNCHANGED quietVars
+        \/ Report(b) /\ UNCHANGED quietVars
+        \/ ObserveFence(b) /\ UNCHANGED quietVars
+        \/ \E f \in Brokers :
+            \/ Ship(b, f) /\ UNCHANGED quietVars
+            \/ LearnHwm(b, f) /\ UNCHANGED quietVars
+            \/ AnswerFence(b, f) /\ UNCHANGED quietVars
+            \/ ShipCounter(b, f) /\ UNCHANGED heard
+            \/ AnswerCounterFence(b, f) /\ UNCHANGED heard
+        \/ OpenForWrites(b) /\ UNCHANGED heard
+        \/ Decide(Now, b, cpView) /\ UNCHANGED heard
+        \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
+           /\ UNCHANGED heard
+        \/ CommitCounter(b) /\ UNCHANGED heard
+        \/ AckCounters(b) /\ UNCHANGED heard
+    \/ LoseReport /\ UNCHANGED quietVars
+    \/ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
+    \/ DeliverReport /\ UNCHANGED counterVars
 
 Spec == Init /\ [][Next]_vars
 
