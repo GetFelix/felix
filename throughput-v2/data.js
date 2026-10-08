@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791490206704,
+  "lastUpdate": 1791495695424,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25584,6 +25584,58 @@ window.BENCHMARK_DATA = {
             "range": "5474.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1041476.01\nmean: 1039085.67\nstdev: 5474.97\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2d813d6de97be37ecc0b34d3f099fad1a2e5ed8",
+          "message": "feat(storage): offload sealed segments with a durable manifest (#172) (#1070)\n\nPart of #172. With FELIX_DURABLE_OFFLOAD_DIR set, a pass on the retention\ntimer copies each stream log's sealed segments through object_store's local\nfilesystem backend, verifies size and CRC-32 by reading the copy back, and\nrecords it in a per-shard offload.manifest, fsynced. Retention deletes only\nrecorded segments, so a crash at any step leaves the local segment or a\nrecorded copy. Recovery accepts a gap in the local chain the manifest\ncovers. Truncation and reset prune the manifest before they cut. Reads below\nthe local head still return Trimmed.",
+          "timestamp": "2026-10-08T14:38:08-07:00",
+          "tree_id": "484cea4fc8a3b44930470e279bf32ff7144400de",
+          "url": "https://github.com/GetFelix/felix/commit/d2d813d6de97be37ecc0b34d3f099fad1a2e5ed8"
+        },
+        "date": 1791495694632,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 691341.36,
+            "range": "61890.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 691341.36\nmean: 680571.19\nstdev: 61890.95\ncv: 9.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 691341.36,
+            "range": "61890.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 691341.36\nmean: 680571.19\nstdev: 61890.95\ncv: 9.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 164879.47,
+            "range": "3677.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 164879.47\nmean: 164624.86\nstdev: 3677.31\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1648794.68,
+            "range": "36773.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1648794.68\nmean: 1646248.61\nstdev: 36773.05\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
