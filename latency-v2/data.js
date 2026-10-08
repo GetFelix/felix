@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791429327253,
+  "lastUpdate": 1791430499990,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31284,6 +31284,72 @@ window.BENCHMARK_DATA = {
             "range": "291.54",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1117.00\nmean: 1022.40\nstdev: 291.54\ncv: 28.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "09c20ebd015267460adea802e6cd9c6d52b830e8",
+          "message": "feat(groups): extend a claim, delay a nack, dead-letter a record (#974) (#1048)\n\nA consumer can now manage each claim itself, behind a new broker feature\nbit, FEATURE_GROUP_CLAIM_CONTROL (0x800_0000):\n\n- group_extend keeps a claim standing for extend_ms from now, answered with\n  group_extended. It names the delivery by offset and attempts, so once the\n  claim lapses and the record goes out again the extension is refused with\n  stale_claim rather than reaching the new holder's claim.\n- delay_ms on group_nack owes the record again only after the delay. It holds\n  a place in flight until then, so it counts against the in-flight cap, and it\n  cannot be extended or reclaimed.\n- group_dead_letter lists the record as a dead letter and then finishes it,\n  holding the group across the write, the same order the broker uses when a\n  record runs out of attempts. group_redrive works on it unchanged.\n- visibility_ms on group_poll sets how long that poll's claims stand.\n\nDurations are capped by FELIX_GROUP_MAX_VISIBILITY_MS (12 hours). Both new\nfields are skipped at zero, so frames from peers that do not use them are\nunchanged, and the client refuses them to a broker without the bit. A\ngroup's tracker is no longer evicted as idle while a claim stands.\n\nPer-stream visibility and max attempts in control-plane metadata are left\nfor a follow-up.\n\nSpec-Unaffected: extend, delayed nack and consumer dead-letter are group writes through the same fence entry and round confirmation FelixShardSessions models for an ack; claims stay leader memory and no replication or lease step changes.",
+          "timestamp": "2026-10-07T19:42:56-07:00",
+          "tree_id": "4b5989cc0552057579f11c00ef71f4adee9ac522",
+          "url": "https://github.com/GetFelix/felix/commit/09c20ebd015267460adea802e6cd9c6d52b830e8"
+        },
+        "date": 1791430496208,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.20\nstdev: 1.92\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 247,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 247.00\nstdev: 1.58\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 307,
+            "range": "8.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 307.00\nmean: 307.40\nstdev: 8.20\ncv: 2.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 215.40\nstdev: 1.14\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 437,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 437.00\nmean: 436.80\nstdev: 1.30\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 745,
+            "range": "478.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 745.00\nmean: 899.60\nstdev: 478.52\ncv: 53.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
