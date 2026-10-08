@@ -40,6 +40,16 @@ impl Credentials {
         }
     }
 
+    /// The same offers, authenticating as a different principal.
+    pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
+        Self {
+            tenant_id,
+            tokens,
+            features: self.features,
+            flags: self.flags,
+        }
+    }
+
     /// Also ask for each record's append time. See
     /// [`felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS`].
     pub(crate) fn with_timestamps(mut self, timestamps: bool) -> Self {

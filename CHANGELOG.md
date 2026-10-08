@@ -12,6 +12,17 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- One Rust `Client` can act for many users over the same connections (#969).
+  `Client::with_identity(tenant_id, token_provider)` and
+  `Client::with_identity_token` return a client that shares the parent's
+  connections and authenticates every stream it opens with the user's token,
+  so the broker checks each user's publish, subscribe, cache and group
+  requests against that user's grants alone. It opens one publish and one
+  cache stream and no connections. One user's token expiring or being revoked
+  stops only that user's streams. No wire change: the broker already
+  authenticates per stream. A refused publish or cache request still ends the
+  stream it came on, so a gateway should build a new identity after one.
+  `ClusterClient` does not offer it yet.
 - A write can be made only at the offset its writer expects, on a broker
   advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
   `publish_if` appends a batch only if it would start at `expected_offset`, the
