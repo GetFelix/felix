@@ -11,8 +11,8 @@ use crate::serving::quic::handlers::cache_watch::WatchResponder;
 use crate::shards::routing::{Dispatch, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
-/// The shard an `offset_for_time` names.
-pub(super) struct TimeTarget {
+/// The stream shard a request names.
+pub(super) struct ShardTarget {
     pub(super) tenant_id: String,
     pub(super) namespace: String,
     pub(super) stream: String,
@@ -24,7 +24,7 @@ pub(super) struct TimeTarget {
 pub(super) async fn offset_for_time(
     cx: &Ctx<'_>,
     session: &mut Session,
-    target: TimeTarget,
+    target: ShardTarget,
     at_micros: u64,
     request_id: u64,
 ) -> Result<Step> {
@@ -57,14 +57,36 @@ pub(super) async fn offset_for_time(
     Ok(Step::Next)
 }
 
-/// The offset, or the message to answer with instead. Only the shard's
-/// leader answers: a follower's log can hold records a failover takes back.
+/// The offset, or the message to answer with instead.
 async fn lookup(
     cx: &Ctx<'_>,
     peer_features: u32,
-    target: &TimeTarget,
+    target: &ShardTarget,
     at_micros: u64,
 ) -> Result<Option<u64>, Message> {
+    if let Some(answer) = not_served_here(cx, peer_features, target) {
+        return Err(answer);
+    }
+    cx.broker
+        .offset_for_time(
+            &target.tenant_id,
+            &target.namespace,
+            &target.stream,
+            target.shard,
+            at_micros,
+        )
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "offset for time not served").into_message())
+}
+
+/// The redirect or error to answer with, unless this broker leads the shard.
+/// Only the leader answers a read: a follower's log can hold records a
+/// failover takes back.
+pub(super) fn not_served_here(
+    cx: &Ctx<'_>,
+    peer_features: u32,
+    target: &ShardTarget,
+) -> Option<Message> {
     let key = ShardKey {
         tenant_id: target.tenant_id.clone(),
         namespace: target.namespace.clone(),
@@ -74,7 +96,7 @@ async fn lookup(
     };
     let publish_ctx = cx.publish_ctx;
     match dispatch(publish_ctx.ingress.as_deref(), &key) {
-        Dispatch::Local { .. } => {}
+        Dispatch::Local { .. } => None,
         dispatched => {
             let not_here = match &dispatched {
                 Dispatch::Unavailable(reason) => {
@@ -94,19 +116,9 @@ async fn lookup(
                         peer_features,
                     )
             {
-                return Err(answer);
+                return Some(answer);
             }
-            return Err(not_here.into_message());
+            Some(not_here.into_message())
         }
     }
-    cx.broker
-        .offset_for_time(
-            &target.tenant_id,
-            &target.namespace,
-            &target.stream,
-            target.shard,
-            at_micros,
-        )
-        .await
-        .map_err(|err| ClientError::from_broker(&err, "offset for time not served").into_message())
 }

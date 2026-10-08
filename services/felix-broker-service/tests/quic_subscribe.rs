@@ -1022,3 +1022,148 @@ async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<
     server_task.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial]
+async fn quic_stream_read_pages_a_range_without_subscribing() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    for (stream, durable) in [("matches", true), ("chatter", false)] {
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                stream,
+                StreamMetadata {
+                    durable,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client =
+        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+    assert!(client.supports_read());
+    let publisher = client.publisher().await?;
+    for i in 0..10 {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                "matches",
+                format!("move-{i}").into_bytes(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+    }
+
+    let mut seen = Vec::new();
+    let mut from = 2;
+    while from < 8 {
+        let page = client
+            .read("t1", "default", "matches", 0, from, Some(8), 4)
+            .await?;
+        assert!(page.records.len() <= 4);
+        assert!(page.next_offset > from);
+        for record in &page.records {
+            assert_eq!(
+                record.payload.as_ref(),
+                format!("move-{}", record.offset).as_bytes()
+            );
+            assert!(record.timestamp_micros > 0);
+        }
+        seen.extend(page.records.iter().map(|record| record.offset));
+        from = page.next_offset;
+    }
+    assert_eq!(from, 8);
+    assert_eq!(seen, (2..8).collect::<Vec<_>>());
+    assert_eq!(
+        broker
+            .registered_subscribers("t1", "default", "matches", 0)
+            .await?,
+        0,
+        "a read registered a subscriber"
+    );
+
+    let tail = client
+        .read("t1", "default", "matches", 0, 10, None, 0)
+        .await?;
+    assert!(tail.records.is_empty());
+    assert_eq!(tail.next_offset, 10);
+    let past = client
+        .read("t1", "default", "matches", 0, 11, None, 0)
+        .await
+        .expect_err("past the tail");
+    let cursor = past
+        .downcast_ref::<felix_client::SubscribeCursorError>()
+        .expect("a cursor error");
+    assert_eq!(cursor.reason, felix_wire::CursorErrorReason::InFuture);
+    assert_eq!(cursor.available, 10);
+    assert!(
+        client
+            .read("t1", "default", "chatter", 0, 0, None, 0)
+            .await
+            .is_err(),
+        "an in-memory stream has no log to read"
+    );
+
+    // A grant on another stream, as a narrowed token would carry, is not one
+    // on this stream; nor is publishing to it.
+    for perms in [
+        vec!["stream.subscribe:stream:t1/default/other".to_string()],
+        vec!["stream.publish:stream:t1/*/*".to_string()],
+    ] {
+        let narrow = auth_fixture("t1", perms);
+        let narrow = Client::connect(
+            addr,
+            "localhost",
+            build_client_config(cert.clone(), &narrow)?,
+        )
+        .await?;
+        let refused = narrow
+            .read("t1", "default", "matches", 0, 0, None, 0)
+            .await
+            .expect_err("no subscribe grant on the stream");
+        assert!(refused.to_string().contains("forbidden"), "{refused:#}");
+    }
+
+    server_task.abort();
+    Ok(())
+}

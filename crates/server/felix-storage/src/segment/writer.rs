@@ -14,7 +14,8 @@
 //!   is cheap; only `sync` touches the device. Keeping them apart is what lets
 //!   the log amortise one device flush across many appends (see
 //!   `disk_log::sync`), which is the single largest lever on durable throughput.
-//! * **Blocks are reserved up front.** See `crate::io::preallocate`.
+//! * **Blocks are reserved ahead of the writes.** A small reservation up
+//!   front, grown as the segment fills: see `crate::segment::reservation`.
 //! * **The staging buffer is never freed.** Steady-state appends do no
 //!   allocation at all beyond growing it once to the high-water batch size.
 
@@ -31,6 +32,7 @@ use crate::segment::format::{
     SEGMENT_HEADER_LEN, SegmentHeader, body_len, encode_record, record_len,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
+use crate::segment::reservation::{Extension, Reservation};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
 
@@ -54,6 +56,8 @@ pub struct SegmentWriter {
     /// A duplicate descriptor for work that runs without the lock that guards
     /// `file`: flushes, and a staged batch's write.
     sync_handle: Arc<File>,
+    /// Blocks reserved ahead of the writes.
+    reservation: Reservation,
     /// Set when this writer can no longer make truthful claims about the
     /// segment: an append that could not be rolled back, so its real length is
     /// unknown, or a failed sync.
@@ -72,13 +76,14 @@ pub struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    /// Create a brand new segment starting at `base_offset`.
+    /// Create a brand new segment starting at `base_offset`, reserving blocks
+    /// for at most `reserve_limit_bytes` of it as it fills.
     pub fn create(
         dir: &Path,
         id: SegmentId,
         base_offset: Offset,
         created_at_micros: u64,
-        preallocate_bytes: u64,
+        reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
     ) -> Result<Self> {
         Self::create_at_version(
@@ -86,7 +91,7 @@ impl SegmentWriter {
             id,
             base_offset,
             created_at_micros,
-            preallocate_bytes,
+            reserve_limit_bytes,
             index_spacing_bytes,
             BASELINE_VERSION,
         )
@@ -98,11 +103,11 @@ impl SegmentWriter {
         id: SegmentId,
         base_offset: Offset,
         created_at_micros: u64,
-        preallocate_bytes: u64,
+        reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
         version: u16,
     ) -> Result<Self> {
-        let created = BlankSegment::create(dir, id, preallocate_bytes, index_spacing_bytes)?
+        let created = BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes)?
             .activate(base_offset, created_at_micros, version)
             .and_then(|mut writer| {
                 // The header must be durable before any record claims to live
@@ -118,13 +123,15 @@ impl SegmentWriter {
         created
     }
 
-    /// Reopen an existing, already validated segment for further appends.
+    /// Reopen an existing, already validated segment for further appends,
+    /// reserving blocks for at most `reserve_limit_bytes` of it as it fills.
     ///
     /// Trusts `resume` and does not re-validate.
     pub fn reopen(
         dir: &Path,
         id: SegmentId,
         resume: ResumeState,
+        reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
     ) -> Result<Self> {
         let ResumeState {
@@ -149,6 +156,10 @@ impl SegmentWriter {
         let index = IndexWriter::open(&dir.join(index_file_name(id)), index)?
             .with_spacing(index_spacing_bytes);
         let sync_handle = Arc::new(file.try_clone()?);
+        // Counted from the records, not from whatever the file had reserved:
+        // the first append re-reserves ahead of them.
+        let reservation =
+            Reservation::new(Arc::clone(&sync_handle), reserve_limit_bytes, valid_bytes);
 
         Ok(Self {
             id,
@@ -162,6 +173,7 @@ impl SegmentWriter {
             record_count,
             staging: Vec::new(),
             sync_handle,
+            reservation,
             poisoned: false,
             #[cfg(test)]
             fail_next_sync: false,
@@ -475,6 +487,12 @@ impl SegmentWriter {
         self.synced_bytes = self.synced_bytes.max(bytes.min(self.size_bytes));
     }
 
+    /// The next step of this segment's reservation, if its writes have earned
+    /// one. Hands it out once; the caller applies it off the append path.
+    pub(crate) fn reservation_due(&mut self) -> Option<Extension> {
+        self.reservation.due(self.size_bytes)
+    }
+
     /// Finish this segment: sync data and index, then release any preallocated
     /// blocks past the last record so the file on disk is exactly its contents.
     ///
@@ -483,6 +501,7 @@ impl SegmentWriter {
     pub fn seal(&mut self) -> Result<SegmentDescriptor> {
         self.sync()?;
         self.index.sync()?;
+        self.reservation.close();
         self.file.set_len(self.size_bytes)?;
         if let Err(err) = sync_data(&self.file) {
             self.poisoned = true;
@@ -561,14 +580,16 @@ pub(crate) struct BlankSegment {
     file: File,
     index_path: PathBuf,
     index_spacing_bytes: u64,
+    reserve_limit_bytes: u64,
 }
 
 impl BlankSegment {
-    /// Create the file and its index, and make the directory entry durable.
+    /// Create the file and its index, reserve the first blocks, and make the
+    /// directory entry durable.
     pub(crate) fn create(
         dir: &Path,
         id: SegmentId,
-        preallocate_bytes: u64,
+        reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
     ) -> Result<Self> {
         let path = dir.join(segment_file_name(id));
@@ -576,7 +597,8 @@ impl BlankSegment {
             .write(true)
             .create_new(true)
             .open(&path)?;
-        if let Err(err) = preallocate(&file, preallocate_bytes).and_then(|()| sync_dir(dir)) {
+        let reserve = Reservation::initial_bytes(reserve_limit_bytes);
+        if let Err(err) = preallocate(&file, 0, reserve).and_then(|()| sync_dir(dir)) {
             // On a full disk the reservation is what fails. A file left behind
             // would be a log's only segment with no header.
             drop(file);
@@ -589,6 +611,7 @@ impl BlankSegment {
             file,
             index_path: dir.join(index_file_name(id)),
             index_spacing_bytes,
+            reserve_limit_bytes,
         })
     }
 
@@ -618,6 +641,11 @@ impl BlankSegment {
             self.index_spacing_bytes,
         )?;
         let sync_handle = Arc::new(self.file.try_clone()?);
+        let reservation = Reservation::new(
+            Arc::clone(&sync_handle),
+            self.reserve_limit_bytes,
+            Reservation::initial_bytes(self.reserve_limit_bytes),
+        );
         Ok(SegmentWriter {
             id: self.id,
             base_offset,
@@ -630,6 +658,7 @@ impl BlankSegment {
             record_count: 0,
             staging: Vec::new(),
             sync_handle,
+            reservation,
             poisoned: false,
             #[cfg(test)]
             fail_next_sync: false,

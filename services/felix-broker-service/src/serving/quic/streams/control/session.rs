@@ -181,6 +181,9 @@ pub(super) async fn authenticate(
                             // Every durable record stores its append time; an
                             // in-memory stream is answered with an error.
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
+                            // Likewise answered for a durable stream and
+                            // refused for an in-memory one.
+                            | felix_wire::FEATURE_STREAM_READ
                             // Codes are sent only to a client that offered
                             // the bit; advertising it tells that client an
                             // error without one is not a gap in this broker.

@@ -829,6 +829,7 @@ advertised its bit.
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`, answered with `cache_condition_result`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time` with `offset_value`. Offered by a client that reads `timestamp_micros` on a group record; the field is sent only to a client that offered it |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
+| `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing |
 
 `0x8000_0000` is `FEATURE_EXTENDED`, not a feature: it says a second feature
 word follows, as `client_features_hi` on `auth` or `server_features_hi` on
@@ -1251,7 +1252,8 @@ Planned protocol enhancements (not in v1):
 
 Since delivered, and no longer on this list: consumer acknowledgements for
 at-least-once delivery (consumer groups), historical replay from an offset or
-a time (`offset_for_time`, then subscribe at the answer),
+a time (`offset_for_time`, then subscribe at the answer), a bounded range read
+that stops at an end offset (`stream_read`),
 tenant isolation, a per-tenant publish rate limit, and server-side filtering for the cache, which is what a
 keyed watch is (`cache_watch` delivers one key or prefix, filtered at the
 broker's fanout boundary). Stream filtering above refers to streams, where it

@@ -711,3 +711,56 @@ async fn a_power_loss_during_a_reset_leaves_old_or_new() {
         }
     }
 }
+
+/// Power goes while the active segment's reservation is being extended. The
+/// extension reserves blocks without moving the file's length, so every crash
+/// must recover exactly what a crash without it would: the acknowledged
+/// records and a gap-free prefix of the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_mid_extension_recovers_the_written_records() {
+    let scenario = Scenario {
+        fsync_mode: FsyncMode::OnCommit,
+        background_roll: false,
+        writeback: Writeback::AnySubset,
+        seed: BASE_SEED,
+    };
+    let config = scenario.config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    std::fs::create_dir_all(&root).expect("log dir");
+    let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+    let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+    let (release, held) = std::sync::mpsc::channel();
+    *log.inner.hold_next_extension.lock() = Some(held);
+
+    let mut next: Offset = 0;
+    let append = async |next: &mut Offset| {
+        let record = AppendRecord {
+            payload: Bytes::from(payload(scenario.seed, *next)),
+            timestamp_micros: 1_700_000_000 + *next,
+            mark: Default::default(),
+            publisher: None,
+        };
+        log.append(&[record]).await.expect("append");
+        *next += 1;
+    };
+    while log.inner.hold_next_extension.lock().is_some() {
+        append(&mut next).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // The extension is parked; keep writing while it is.
+    for _ in 0..3 {
+        append(&mut next).await;
+    }
+
+    let acknowledged = log.durable_offset();
+    for seed in 0..24 {
+        let image = tempdir().expect("image dir");
+        observer
+            .crash(seed, scenario.writeback, image.path())
+            .expect("build the crash image");
+        verify(image.path(), &config, scenario, seed, acknowledged, next).await;
+    }
+    drop(release);
+    log.shutdown().await.expect("shutdown");
+}
