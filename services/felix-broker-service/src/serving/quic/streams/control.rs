@@ -24,8 +24,8 @@
 //!      into publish handlers so they can adjust behavior.
 //!
 //!   5) Ack-on-commit mode: when `config.ack_on_commit` is enabled, publish handlers may defer the
-//!      ack until the publish worker commits. `ack_waiters` bounds in-flight waiters and
-//!      `ack_waiter_tx` delivers waiter work to the background ack-waiter task.
+//!      ack until the publish commits. `commit_acks` lets whoever settles the publish send
+//!      that ack itself, and runs its timeout.
 //!
 //! Return value convention:
 //!   Ok(true)  => graceful close / stream should be considered "done" (no error)
@@ -50,13 +50,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use crate::serving::quic::codec::FrameScratch;
 use anyhow::{Context, Result};
 use felix_broker::Broker;
 use felix_wire::Message;
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 
 use super::frame_source::FrameSource;
 use crate::config::BrokerConfig;
@@ -64,7 +63,7 @@ use crate::observability::timings;
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::quic::client_error::{ClientError, ErrorCodeSupport};
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, AckWaiterMessage, Outgoing, PublishContext, StreamHandleCache,
+    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, StreamHandleCache,
     handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
     handle_binary_publish_batch_control, send_outgoing_critical,
 };
@@ -84,7 +83,7 @@ use responder::{Responder, send_control_error};
 ///   - `ack_throttle_rx/tx`: shared throttling state; this loop reads current state, handlers/writer
 ///     update it.
 ///   - `ack_timeout_state`: shared state used to detect/report ack enqueue timeouts.
-///   - `ack_waiters` / `ack_waiter_tx`: bounds and routes "ack when commit finishes" work.
+///   - `commit_acks`: answers for publishes acknowledged on commit.
 ///   - `frame_scratch`: bytes read past the current frame, kept for the next read.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
@@ -100,12 +99,10 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     out_ack_depth: Arc<AtomicUsize>,
     ack_throttle_rx: watch::Receiver<bool>,
     ack_throttle_tx: watch::Sender<bool>,
-    ack_timeout_state: Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: watch::Sender<bool>,
     mut cancel_rx_read: watch::Receiver<bool>,
-    ack_waiters: Arc<Semaphore>,
-    ack_waiter_tx: mpsc::Sender<AckWaiterMessage>,
-    ack_wait_timeout: Duration,
+    commit_acks: CommitAcks,
     frame_scratch: &mut FrameScratch,
     error_codes: Arc<ErrorCodeSupport>,
     ack_order: Arc<AckOrder>,
@@ -234,8 +231,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &ack_throttle_tx,
                     &ack_timeout_state,
                     &cancel_tx,
-                    &ack_waiters,
-                    &ack_waiter_tx,
+                    &commit_acks,
                     session.peer_flags,
                     session.peer_features,
                 )
@@ -301,9 +297,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             ack_throttle_tx: &ack_throttle_tx,
             ack_timeout_state: &ack_timeout_state,
             cancel_tx: &cancel_tx,
-            ack_waiters: &ack_waiters,
-            ack_waiter_tx: &ack_waiter_tx,
-            ack_wait_timeout,
+            commit_acks: &commit_acks,
             throttled,
             sample,
             read_ns,
@@ -1223,11 +1217,9 @@ struct Ctx<'a> {
     out_ack_tx: &'a mpsc::Sender<Outgoing>,
     out_ack_depth: &'a Arc<AtomicUsize>,
     ack_throttle_tx: &'a watch::Sender<bool>,
-    ack_timeout_state: &'a Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &'a Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &'a watch::Sender<bool>,
-    ack_waiters: &'a Arc<Semaphore>,
-    ack_waiter_tx: &'a mpsc::Sender<AckWaiterMessage>,
-    ack_wait_timeout: Duration,
+    commit_acks: &'a CommitAcks,
     throttled: bool,
     sample: bool,
     read_ns: Option<u64>,

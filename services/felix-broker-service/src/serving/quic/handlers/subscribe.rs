@@ -28,8 +28,6 @@
 
 mod config;
 mod conn_counts;
-#[cfg(test)]
-mod event_writer;
 mod feeder;
 mod lane;
 mod replay;
@@ -91,7 +89,7 @@ pub(crate) async fn handle_subscribe_message(
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
-    ack_timeout_state: &Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     cancel_tx: &tokio::sync::watch::Sender<bool>,
     tenant_id: String,
     namespace: String,
@@ -582,7 +580,7 @@ async fn subscribe_failed(
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
-    ack_timeout_state: &Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     cancel_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<bool> {
     subscriptions.release();

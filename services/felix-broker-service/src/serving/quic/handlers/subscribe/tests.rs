@@ -3,7 +3,6 @@
 
 mod conn_counts;
 mod connection_writer;
-mod event_writer;
 mod feeder;
 mod frame_writer;
 mod handle_subscribe;
@@ -25,7 +24,6 @@ use tokio::io::AsyncReadExt;
 use super::conn_counts::{
     ACTIVE_SUB_CONN_COUNTS, connection_subscriber_register, connection_subscriber_unregister,
 };
-use super::event_writer::run_event_writer;
 use super::lane::ConnectionCommand;
 use super::writer::{run_connection_writer, write_parts_many, write_parts_to};
 use super::*;
@@ -105,29 +103,6 @@ fn decode_delivery_payloads(frame: &felix_wire::Frame) -> Result<Vec<Bytes>> {
         return Ok(felix_wire::binary::decode_shared_event_batch(frame)?.payloads);
     }
     Ok(felix_wire::binary::decode_event_batch(frame)?.payloads)
-}
-
-async fn spawn_event_writer(
-    rx: mpsc::Receiver<Bytes>,
-    config: EventWriterConfig,
-) -> Result<(
-    tokio::task::JoinHandle<Result<()>>,
-    felix_transport::QuicConnection,
-)> {
-    let (server_config, cert) = make_server_config()?;
-    let transport = TransportConfig::default();
-    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
-    let addr = server.local_addr()?;
-
-    let server_task = tokio::spawn(async move {
-        let connection = server.accept().await?;
-        let event_send = connection.open_uni().await?;
-        run_event_writer(event_send, rx, config).await
-    });
-
-    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
-    let connection = client.connect(addr, "localhost").await?;
-    Ok((server_task, connection))
 }
 
 // Unique per call, which `SystemTime::now()` is not: consecutive reads can

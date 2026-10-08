@@ -492,7 +492,7 @@ For a bidirectional stream, `handle_stream` creates:
 
 - one outbound response queue;
 - one `run_writer_loop` task owning the stream's `SendStream`;
-- an optional commit-ack waiter task;
+- the commit-ack deadline sweep, which times out commit acks that are owed;
 - cancellation and throttling channels; and
 - a per-stream cache of resolved stream handles.
 
@@ -652,11 +652,18 @@ stream it is the in-memory append and fanout, and nothing more. For a durable
 stream it is a write that has reached disk under the stream's fsync policy; for
 one declared `Quorum` it is a write a majority of the shard's replicas hold.
 
-Commit acknowledgements use:
+Commit acknowledgements are sent by whoever settles the publish: the executor
+for an in-memory write, the commit task for a durable one. Nothing waits in
+between. They use:
 
-- `handlers/publish/ack.rs::AckWaiterMessage`;
-- a bounded waiter semaphore; and
-- `streams/ack_waiter.rs::run_ack_waiter_loop`.
+- `handlers/publish/commit_ack.rs::CommitAcks`, one per control stream, which
+  makes a `CommitReply` that travels with the job and answers the client;
+- a bounded semaphore of answers owed; and
+- `CommitAcks::run_deadlines`, one deadline sweep per stream in place of a
+  timer per publish.
+
+The writer takes every answer already queued and sends them in one write. It
+never waits for more.
 
 Acknowledgements carry request IDs and may be emitted out of order, allowing
 independent completed jobs to respond without waiting for an earlier slow job.

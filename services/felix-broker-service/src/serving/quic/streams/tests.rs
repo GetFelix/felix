@@ -1,6 +1,6 @@
 //! QUIC stream unit/integration tests for the broker transport.
 //!
-//! Cover the control/uni loops, writer/ack waiter branches, and telemetry paths
+//! Cover the control/uni loops, writer branches, and telemetry paths
 //! to ensure protocol handling and backpressure behaviors remain correct.
 //!
 //! - QUIC streams preserve ordering per stream and per connection.
@@ -16,7 +16,6 @@
 //! Run with `cargo test -p felix-broker-service --lib serving::quic::streams`, or narrow with
 //! individual test names.
 
-mod ack_waiter;
 mod control_auth;
 mod control_cache;
 mod control_cache_keys;
@@ -52,10 +51,9 @@ use rcgen::generate_simple_self_signed;
 use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use serial_test::serial;
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::time::timeout;
 
-use super::ack_waiter::run_ack_waiter_loop;
 use super::control::run_control_loop;
 use super::frame_source::{DelayFrameSource, FrameSource, TestFrameSource};
 use super::hooks::test_hooks;
@@ -66,11 +64,10 @@ use crate::config::BrokerConfig;
 use crate::observability::timings;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use crate::serving::quic::handlers::publish::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, Outgoing, PublishAdmission, PublishContext,
-    PublishTarget, SubscriptionLimiter, test_channel,
+    AckTimeoutState, CommitAcks, Outgoing, PublishAdmission, PublishContext, PublishTarget,
+    SubscriptionLimiter, test_channel,
 };
 use crate::serving::quic::handlers::subscribe::WriterLaneManager;
-use crate::serving::quic::telemetry;
 use crate::serving::quic::{ACK_HI_WATER, ACK_LO_WATER};
 
 const TEST_PRIVATE_KEY: [u8; 32] = [13u8; 32];
@@ -217,7 +214,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
             .map(|_| None)
             .map_err(anyhow::Error::from);
             if let Some(response) = job.response {
-                let _ = response.send(result);
+                response.send(result);
             }
         }
     });
@@ -308,8 +305,10 @@ async fn run_control_loop_with_codes(
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -327,9 +326,7 @@ async fn run_control_loop_with_codes(
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         error_codes,
         Default::default(),
@@ -364,32 +361,6 @@ impl FrameSource for PendingFrameSource {
             Ok(None)
         })
     }
-}
-
-fn spawn_ack_waiter_with_closed_out_ack(
-    ack_wait_timeout: Duration,
-) -> (
-    mpsc::Sender<AckWaiterMessage>,
-    Arc<Semaphore>,
-    tokio::task::JoinHandle<()>,
-) {
-    let (out_ack_tx, out_ack_rx) = mpsc::channel(1);
-    drop(out_ack_rx);
-    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(1);
-    let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let handle = tokio::spawn(run_ack_waiter_loop(
-        ack_waiter_rx,
-        out_ack_tx,
-        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        ack_throttle_tx,
-        ack_timeout_state,
-        cancel_tx,
-        cancel_rx,
-        ack_wait_timeout,
-    ));
-    (ack_waiter_tx, Arc::new(Semaphore::new(1)), handle)
 }
 
 fn build_server_config() -> Result<(quinn::ServerConfig, CertificateDer<'static>)> {

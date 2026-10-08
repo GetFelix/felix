@@ -85,8 +85,10 @@ fn spawn_pipelining_stream(
     let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let order = Arc::new(AckOrder::new());
     let loop_order = Arc::clone(&order);
     let broker = Arc::clone(broker);
@@ -94,8 +96,6 @@ fn spawn_pipelining_stream(
     let auth = Arc::clone(&auth.auth);
     let publish_ctx = publish_ctx.clone();
     let control = tokio::spawn(async move {
-        // Held so the loop's ack waiters have somewhere to go.
-        let _ack_waiter_rx = ack_waiter_rx;
         let mut scratch = crate::serving::quic::FrameScratch::new();
         run_control_loop(
             &mut source,
@@ -113,9 +113,7 @@ fn spawn_pipelining_stream(
             ack_timeout_state,
             cancel_tx,
             cancel_rx,
-            Arc::new(Semaphore::new(8)),
-            ack_waiter_tx,
-            Duration::from_millis(500),
+            commit_acks,
             &mut scratch,
             Default::default(),
             loop_order,
@@ -352,5 +350,107 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
         .await
         .context("the stalled stream was never closed")??;
     timeout(Duration::from_secs(5), writer).await??;
+    Ok(())
+}
+
+/// **Commit acks sent by the tasks that settle them keep request order.**
+/// Sixty-four publishes pipelined over four streams, two durable and two in
+/// memory, settle on different executors and commit tasks in whatever order
+/// they finish. The client still reads every answer in the order it sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_commit_acks_reach_the_client_in_request_order() -> Result<()> {
+    const PUBLISHES: u64 = 64;
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::OnCommit,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    for stream in 0..4 {
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                &format!("s{stream}"),
+                felix_broker::StreamMetadata {
+                    durable: stream < 2,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+    let auth = auth_fixture("t1", default_perms());
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = BrokerConfig {
+        ack_on_commit: true,
+        pub_workers_per_conn: 4,
+        ..BrokerConfig::default()
+    };
+    let max_frame_bytes = config.max_frame_bytes;
+    let server_task = tokio::spawn(crate::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        build_quinn_client_config(cert)?,
+        TransportConfig::default(),
+    )?;
+    let connection = client.connect(addr, "localhost").await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let mut scratch = crate::serving::quic::FrameScratch::new();
+    crate::serving::quic::write_message(&mut send, pipelining_auth(&auth)).await?;
+    let authed =
+        crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut scratch)
+            .await?;
+    assert!(
+        matches!(authed, Some(Message::Ok | Message::AuthOk { .. })),
+        "{authed:?}"
+    );
+
+    for request_id in 1..=PUBLISHES {
+        crate::serving::quic::write_message(
+            &mut send,
+            Message::Publish {
+                tenant_id: "t1".to_string(),
+                namespace: "default".to_string(),
+                stream: format!("s{}", request_id % 4),
+                payload: format!("record-{request_id}").into_bytes(),
+                key: None,
+                request_id: Some(request_id),
+                ack: Some(felix_wire::AckMode::PerMessage),
+            },
+        )
+        .await?;
+    }
+    let mut answered = Vec::new();
+    while answered.len() < PUBLISHES as usize {
+        let message = timeout(
+            Duration::from_secs(10),
+            crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut scratch),
+        )
+        .await??;
+        match message {
+            Some(Message::PublishOk { request_id, .. }) => answered.push(request_id),
+            other => panic!("expected publish_ok, got {other:?}"),
+        }
+    }
+    assert_eq!(answered, (1..=PUBLISHES).collect::<Vec<_>>());
+    server_task.abort();
     Ok(())
 }
