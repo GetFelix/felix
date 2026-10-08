@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791444937413,
+  "lastUpdate": 1791448584929,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31548,6 +31548,72 @@ window.BENCHMARK_DATA = {
             "range": "958.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 770.00\nmean: 1245.00\nstdev: 958.67\ncv: 77.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "34426bb88442bbaca5be661b1e6577dc91a5b937",
+          "message": "feat(wire,broker,client): publish only at an expected offset (#1017) (#1052)\n\n* feat(wire,broker,client): publish only at an expected offset (#1017)\n\nA writer can now append only if the shard's next offset is the one it\nexpects, behind a new broker feature bit, FEATURE_PUBLISH_CONDITIONAL\n(0x1000_0000):\n\n- publish_if appends a batch only if it would start at expected_offset,\n  answered with publish_ok and the offset, or publish_refused with the new\n  offset_mismatch reason and the shard's tail.\n- commit takes an optional expected_offset, a compare-and-set on the whole\n  shard. Absent, the frame is byte-identical to before.\n\nThe check is made on the log's append thread under the lock that assigns\noffsets, and the batch's commit range is claimed in the same step\n(DiskLog::append_claimed_at), so of two writers at one offset exactly one is\nwritten. A refused batch writes nothing, consumes no offset and reserves no\nrange, so nothing behind it is held up. The tail counts a new leader's\ngeneration-start record, so an expected offset goes stale on failover and the\nrefusal says where to resume.\n\nBoth are served by the shard's leader the way a commit is: a non-leader\nanswers not_leader rather than forwarding. An in-memory stream refuses them.\nfelix-client adds publish_if and commit_if on Client and ClusterClient,\nanswering ConditionalWrite. Per-key version preconditions are #1051.\n\nSpec-Unaffected: a conditional append is an append that may not happen; it enters the same dispatch, fence and quorum wait as a commit and changes nothing the shard model describes about leases, generations or replication.\n\n* fix(serving): charge publish_if against the tenant quota and ingress budget (#1017)\n\npublish_if is answered outside the publish queue, so it skipped the tenant\npublish quota and the ingress byte budgets. It now takes both before the\nclaim, the way an acked publish does on enqueue: the quota first, refused\nwith the same retryable overloaded answer and retry hint, then the\nconnection and broker byte budgets, held until the write is done. The claim\nstays where it is, so the check and the offset assignment remain one step.\n\nSpec-Unaffected: admission accounting only; no lease, generation or replication step changes.",
+          "timestamp": "2026-10-08T01:33:03-07:00",
+          "tree_id": "4c605dac8bc28f5e37d92179f40b3dfed314c481",
+          "url": "https://github.com/GetFelix/felix/commit/34426bb88442bbaca5be661b1e6577dc91a5b937"
+        },
+        "date": 1791448580988,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 105.40\nstdev: 0.55\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 140.60\nstdev: 1.34\ncv: 0.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 195,
+            "range": "41.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 210.00\nstdev: 41.13\ncv: 19.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "2.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 140.20\nstdev: 2.77\ncv: 1.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 284,
+            "range": "49.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 284.00\nmean: 303.80\nstdev: 49.65\ncv: 16.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 491,
+            "range": "298.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 491.00\nmean: 658.60\nstdev: 298.79\ncv: 45.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
