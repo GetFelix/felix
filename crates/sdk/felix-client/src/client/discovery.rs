@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
-use crate::connection::{NodeConnections, OpenedStream};
+use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
@@ -133,6 +133,7 @@ impl Client {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ask_stream_routing(
             &self.event_node,
+            &self.credentials,
             request_id,
             self.runtime_config.max_frame_bytes,
             tenant_id,
@@ -284,6 +285,7 @@ impl Client {
 /// rather than the client, so a publisher can ask too.
 pub(super) async fn ask_stream_routing(
     event_node: &NodeConnections,
+    credentials: &Credentials,
     request_id: u64,
     max_frame_bytes: usize,
     tenant_id: &str,
@@ -295,7 +297,7 @@ pub(super) async fn ask_stream_routing(
         mut recv,
         lease: _lease,
         ..
-    } = event_node.open().await?;
+    } = event_node.open_as(credentials).await?;
     write_message(
         &mut send,
         Message::StreamShards {

@@ -26,6 +26,7 @@ pub(super) async fn subscribe(
     subscription_id: Option<u64>,
     start: Option<StartPosition>,
     shard: Option<u32>,
+    queue_capacity: Option<u32>,
 ) -> Result<Step> {
     let Ctx {
         broker,
@@ -109,6 +110,7 @@ pub(super) async fn subscribe(
         subscription_id,
         start,
         shard,
+        queue_capacity,
         session.peer_flags,
         session.peer_features,
     )

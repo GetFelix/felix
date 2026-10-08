@@ -173,6 +173,13 @@ impl InternalMessage {
                         None => body.put_u64(m.commit_offset.unwrap_or(0)),
                     }
                 }
+                if self.kind() == Kind::ReplicateTimedRecords {
+                    let times = m.times.as_deref().unwrap_or_default();
+                    debug_assert_eq!(times.len(), m.payloads.len(), "one time per record");
+                    for index in 0..m.payloads.len() {
+                        body.put_u64(times.get(index).copied().unwrap_or(0));
+                    }
+                }
             }
             Self::ReplicateOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -423,7 +430,7 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::Fence(message))
             }
-            Kind::ReplicateFetch | Kind::ReplicateLabelledFetch => {
+            Kind::ReplicateFetch | Kind::ReplicateLabelledFetch | Kind::ReplicateTimedFetch => {
                 let message = ReplicateFetch {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -436,7 +443,8 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     from_offset: take_u64(&mut body)?,
                     max_bytes: take_u32(&mut body)?,
-                    labelled: header.kind == Kind::ReplicateLabelledFetch,
+                    labelled: header.kind != Kind::ReplicateFetch,
+                    timed: header.kind == Kind::ReplicateTimedFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -458,7 +466,8 @@ impl InternalMessage {
             | Kind::ReplicateCounterRecords
             | Kind::ReplicateMarkedRecords
             | Kind::ReplicateCommittedRecords
-            | Kind::ReplicateLabelledRecords => {
+            | Kind::ReplicateLabelledRecords
+            | Kind::ReplicateTimedRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -482,7 +491,8 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let labelled = header.kind == Kind::ReplicateLabelledRecords;
+                let timed = header.kind == Kind::ReplicateTimedRecords;
+                let labelled = header.kind == Kind::ReplicateLabelledRecords || timed;
                 let committed = header.kind == Kind::ReplicateCommittedRecords || labelled;
                 let (mut marks, publishers) =
                     if header.kind == Kind::ReplicateMarkedRecords || committed {
@@ -525,6 +535,14 @@ impl InternalMessage {
                 } else {
                     None
                 };
+                let times = if timed {
+                    if body.remaining() / 8 < payloads.len() {
+                        return Err(Error::Incomplete);
+                    }
+                    Some((0..payloads.len()).map(|_| body.get_u64()).collect())
+                } else {
+                    None
+                };
                 expect_empty(&body)?;
                 // An unmarked batch has no marks, as the leader built it; the
                 // checksum covers marks only when there are any.
@@ -550,6 +568,7 @@ impl InternalMessage {
                     publishers,
                     commit_offset,
                     generations,
+                    times,
                 };
                 if let Some(log) = log {
                     return Ok(match log {

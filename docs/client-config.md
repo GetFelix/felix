@@ -80,7 +80,8 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 - `client_sub_queue_capacity` (env: `FELIX_CLIENT_SUB_QUEUE_CAPACITY`)
   - Per-subscription delivery queue depth. Default: `256`.
 - `client_sub_queue_policy` (env: `FELIX_CLIENT_SUB_QUEUE_POLICY`)
-  - Behavior when the delivery queue is full: `block`, `drop_new`, or `drop_old`.
+  - Behavior when the delivery queue is full: `block`, `drop_new`, or `drop_old`. `drop_old`
+    behaves as `drop_new`: the arriving event is dropped, not the oldest.
   - Default: `drop_new`, which bounds latency and exposes overload through dropped-event telemetry.
   - Applies to live records only. History replayed by `subscribe_from` (records below the
     subscription's `live_offset`) always waits for room, so a replay is never dropped.

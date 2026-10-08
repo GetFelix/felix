@@ -125,6 +125,18 @@ pub enum BrokerError {
     /// one has nowhere to put them.
     #[error("an atomic commit needs a durable stream")]
     CommitNeedsDurableStream,
+    /// A conditional publish or commit expected the shard's next offset to be
+    /// `expected`, and it is `tail`. Nothing was written and no offset was
+    /// consumed.
+    #[error("expected the shard's next offset to be {expected}, but it is {tail}")]
+    OffsetMismatch { expected: u64, tail: u64 },
+    /// A conditional publish with no records. The check is made by writing,
+    /// so an empty batch would check nothing.
+    #[error("a conditional publish needs at least one record")]
+    EmptyConditionalPublish,
+    /// An expected offset needs offsets, and a stream with no log has none.
+    #[error("an expected offset needs a durable stream")]
+    ExpectedOffsetNeedsDurableStream,
     /// The shard's state view could not be rebuilt because commits kept
     /// landing while it read. Retry.
     #[error("the shard's state is being rebuilt; retry")]

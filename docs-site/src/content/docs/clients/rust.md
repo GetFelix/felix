@@ -129,6 +129,39 @@ let addr: SocketAddr = "127.0.0.1:5000".parse()?;
 let client = Client::connect(addr, "localhost", config).await?;
 ```
 
+### Acting for many users
+
+A gateway that serves many users, each with their own Felix token, can hold one
+`Client` and give each user a handle that shares its connections:
+
+```rust
+use std::sync::Arc;
+use felix_client::{RefreshingToken, TokenProvider};
+
+let gateway = Client::connect(addr, "localhost", config).await?;
+
+// Every stream alice's handle opens authenticates with alice's token, and the
+// broker checks each of her requests against her grants, not the gateway's.
+let alice_tokens: Arc<dyn TokenProvider> =
+    Arc::new(RefreshingToken::with_initial(alice_token, refresh_alice));
+let alice = gateway.with_identity("t1", alice_tokens).await?;
+let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+
+// A fixed token, for a handle that will not outlive it.
+let bob = gateway.with_identity_token("t1", bob_token).await?;
+```
+
+A handle opens one publish stream and one cache stream and no connections, so
+the gateway's connection count stays the same however many users it serves.
+One user's token expiring or being revoked stops only that user's new streams.
+Dropping a handle closes its streams.
+
+A refused publish or cache request ends the stream it was sent on, as on any
+client, so a handle that has had one refused cannot publish or reach the cache
+afterwards; build a new one. Users share the connections' flow-control
+windows, so read every subscription promptly or drop it. `ClusterClient` does
+not offer handles yet. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
+
 ### TLS and ALPN
 
 `ClientConfig` takes a ready-made `quinn::ClientConfig`.
@@ -619,6 +652,27 @@ publishers (the `publisher_principal` fleet feature, or
 `FELIX_RECORD_PUBLISHERS=true` on a single broker), and then on replay and to
 consumer groups as well.
 
+### Sizing the broker's queue for a subscription
+
+Each subscription has a bounded queue on the broker. Set
+`broker_sub_queue_capacity` in the `ClientConfig` to ask for a different size
+than the stream's default, counted in published batches. The broker clamps it
+to its `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and the subscription reports what
+it got:
+
+```rust
+config.broker_sub_queue_capacity = Some(4096);
+let client = Client::connect(addr, "localhost", config).await?;
+let subscription = client.subscribe("acme", "prod", "webhooks").await?;
+// `None` from a broker that predates the option: the stream's default applies.
+let granted = subscription.queue_capacity();
+```
+
+It applies to every subscription the client opens, including the ones a
+`ClusterClient` reopens after a move or a lag. A larger queue makes drops
+rarer; it does not change what happens on a drop, which the stream's policy
+decides (see [When a subscription falls behind](#when-a-subscription-falls-behind)).
+
 ### When an event was written, and replaying from a time
 
 Set `timestamps: true` in the `ClientConfig` and each event from a durable
@@ -648,6 +702,35 @@ and the oldest record when the time is older than all of them. Times come from
 the leading broker's clock, so the search is exact while that clock only moves
 forward, and close otherwise. `client.supports_offset_for_time()` says whether
 the broker answers it.
+
+### Reading a range and stopping
+
+`subscribe_from` keeps going into live delivery. To load a fixed slice, such as
+a match's events up to a snapshot offset, read it page by page instead. No
+subscription is opened:
+
+```rust
+let mut from = start;
+while from < end {
+    let page = client
+        .read("acme", "prod", "matches", 0, from, Some(end), 500)
+        .await?;
+    if page.records.is_empty() {
+        break; // nothing committed past here yet
+    }
+    for record in &page.records {
+        apply(record.offset, &record.payload);
+    }
+    from = page.next_offset;
+}
+```
+
+Continue from `next_offset` rather than the last offset plus one, since offsets
+that hold no record are passed over. A page holds at most `max_records` (`0`
+for the broker's cap) and is capped in size by the broker. A start below what
+retention kept, or past the tail, fails with `SubscribeCursorError`.
+`ClusterClient::read` does the same against whichever broker leads the shard,
+and `client.supports_read()` says whether the broker answers it.
 
 ### Offsets are how you notice a drop
 
@@ -1279,7 +1362,29 @@ assert!(matches!(
 
 `CommitError::EventCount` refuses a commit without exactly one event, and
 `CommitError::Unsupported` a broker that did not advertise
-`FEATURE_ATOMIC_COMMIT`. What atomic does and does not cover is in
+`FEATURE_ATOMIC_COMMIT`.
+
+`commit_if` and `publish_if` write only at an expected offset, the shard's
+next, for a single writer that must not append after it has been replaced:
+
+```rust
+use felix_client::ConditionalWrite;
+
+let mut next = 0;
+match cluster
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], next)
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    ConditionalWrite::Refused { tail } => { /* lost the stream; it is at `tail` */ }
+}
+```
+
+A refusal is an answer, not an error, and writes nothing. Both need
+`FEATURE_PUBLISH_CONDITIONAL`, and fail without sending anything against a
+broker that did not advertise it. `ClusterClient` follows the leader; neither
+is forwarded between brokers. Do not resend one whose answer was lost: read
+the shard at the expected offset instead. What atomic does and does not cover is in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Clusters

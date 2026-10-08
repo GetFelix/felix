@@ -78,6 +78,7 @@ fn test_config() -> crate::config::BrokerConfig {
         pub_ingress_wait: false,
         core_shards: 0,
         subscriber_queue_capacity: 8,
+        subscriber_queue_capacity_max: 4096,
         max_subscriptions_per_conn: 4096,
         subscriber_queue_policy: felix_broker::SubQueuePolicy::DropNew,
         subscriber_writer_lanes: 4,
@@ -140,4 +141,15 @@ async fn spawn_event_writer(
 fn unique_test_connection_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     0x8000_0000_0000_0000 | NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[test]
+fn a_requested_queue_capacity_is_clamped_at_both_ends() {
+    assert_eq!(super::grant_queue_capacity(0, 4096), 1);
+    assert_eq!(super::grant_queue_capacity(1, 4096), 1);
+    assert_eq!(super::grant_queue_capacity(300, 4096), 300);
+    assert_eq!(super::grant_queue_capacity(4096, 4096), 4096);
+    assert_eq!(super::grant_queue_capacity(u32::MAX, 4096), 4096);
+    // A maximum past u32 does not wrap.
+    assert_eq!(super::grant_queue_capacity(u32::MAX, usize::MAX), u32::MAX);
 }

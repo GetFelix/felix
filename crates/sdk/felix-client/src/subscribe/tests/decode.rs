@@ -45,6 +45,7 @@ async fn subscription_binary_batch_mismatched_id_errors() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -147,6 +148,7 @@ async fn subscription_decode_error_on_invalid_frame() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -252,6 +254,7 @@ async fn subscription_legacy_event_paths_and_unexpected_message_error() -> Resul
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -391,6 +394,7 @@ async fn subscription_binary_batch_decode_error_on_invalid_payload() -> Result<(
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -498,6 +502,7 @@ async fn subscription_binary_batch_success_records_decode_timing() -> Result<()>
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -605,6 +610,7 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
                         subscription_id: sub_id,
                         start_offset: None,
                         live_offset: None,
+                        queue_capacity: None,
                     },
                 )
                 .await?;
@@ -720,6 +726,7 @@ async fn a_skip_count_reaches_the_first_event_of_its_batch() -> Result<()> {
                         subscription_id: sub_id,
                         start_offset: None,
                         live_offset: None,
+                        queue_capacity: None,
                     },
                 )
                 .await?;

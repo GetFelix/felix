@@ -496,6 +496,7 @@ impl ReplicaHandler {
                     &batch.payloads,
                     &batch.marks,
                     &batch.publishers,
+                    batch.times.as_deref().unwrap_or_default(),
                 )
                 .await
             }
@@ -571,6 +572,7 @@ impl ReplicaHandler {
                             &batch.payloads,
                             &batch.marks,
                             &batch.publishers,
+                            batch.times.as_deref().unwrap_or_default(),
                         )
                         .await;
                     }
@@ -940,6 +942,12 @@ impl ReplicaHandler {
             .first()
             .map_or(request.from_offset, |record| record.offset);
         let publishers = replication::publishers_to_wire(&records);
+        let times = (request.labelled && request.timed).then(|| {
+            records
+                .iter()
+                .map(|record| record.timestamp_micros)
+                .collect()
+        });
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
         let end = first_offset + payloads.len() as u64;
@@ -955,6 +963,7 @@ impl ReplicaHandler {
                 .labelled
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
+            times,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);
         match log_kind {

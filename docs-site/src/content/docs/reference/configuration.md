@@ -414,6 +414,20 @@ high fanout / large payload workloads.
 subscriber_queue_capacity: 512
 ```
 
+#### `subscriber_queue_capacity_max`
+
+**Description**: The largest queue capacity a subscriber may ask for on subscribe. A larger request is granted this value. Only the size is the subscriber's to choose; the overflow policy stays `subscriber_queue_policy`.
+
+**Type**: `usize` (count)
+
+**Default**: `4096`
+
+**Environment**: `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+
+```yaml
+subscriber_queue_capacity_max: 4096
+```
+
 #### `max_subscriptions_per_conn`
 
 **Description**: Max concurrent subscriptions a single QUIC connection may hold. `subscriber_queue_capacity` bounds the size of one subscription's buffer. This bounds how many subscriptions one connection can open in total. Without it, a connection issuing unlimited `Subscribe` requests could grow broker memory without limit.
@@ -489,7 +503,7 @@ subscriber_lane_queue_depth: 64
 subscriber_lane_queue_policy: drop_new
 ```
 
-Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
+Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. `drop_old` behaves as `drop_new` here too. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
 
 #### `max_subscriber_writer_lanes`
 

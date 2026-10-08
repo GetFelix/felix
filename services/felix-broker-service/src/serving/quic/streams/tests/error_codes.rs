@@ -12,6 +12,7 @@ fn auth_offering(fixture: &AuthFixture, features: Option<u32>) -> Message {
         token: fixture.token.clone(),
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: features,
+        client_features_hi: None,
     }
 }
 
