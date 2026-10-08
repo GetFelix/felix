@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791467363443,
+  "lastUpdate": 1791476320651,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -32076,6 +32076,72 @@ window.BENCHMARK_DATA = {
             "range": "66.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 502.00\nmean: 527.60\nstdev: 66.83\ncv: 12.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "344e119aabdeeb9861a762a295d2afacc270da18",
+          "message": "ci(formal): nightly TLC walks over replica-set changes (#934) (#1060)\n\n* ci(formal): nightly TLC walks over replica-set changes (#934)\n\nThree FelixShardWalk configurations, one per family of set changes\n(spares, moves, handoff), lift the exhaustive bounds to time 40, six\nwrites and six moves, and run in TLC's simulation mode. Each has a\nnegative twin that must find its violation within the budget.\n\ncheck_tla.sh --simulate runs them with a time budget, depth and printed\nseed under the same expectation model; tla-walk.yml runs them nightly\nand on dispatch, and uploads TLC's output on a failure. Tick now\nenumerates clocks over the drift window only, the same states without\n42^4 candidate functions per tick at time 40.\n\nCloses #934\n\n* ci(formal): run the walks on a pull request that changes them (#934)\n\n* fix(formal): let random walks pick among actions, not clock choices (#934)\n\nTLC splits Next into actions only at disjunctions and constant \\E, and its\nsimulation mode picks an action before a successor. Next was one\nconjunction, so a walk picked among successor states and Tick, with up to\n81 clock choices under drift, ran time to its bound within a few dozen\nsteps. With time stopped no lease lapses after a seat, so the spares twin\nnever lost a record. List each action as its own disjunct, the same\nbehaviours, and only grow a set that is short of the factor.\n\n* fix(formal): keep the shard spec total on a log below its mark (#934)\n\nA promoted leader can take a fence answer with a newer but shorter log\nand end up holding less than its old mark. The walk configurations that\ncheck NoTruncationBelowHwm report that state; the spares twin checks only\nAckedHeldByLeader, walked on, and LearnHwm took a SubSeq past the log's\nend. Guard LearnHwm and HoldsPrefix on the leader's length, and give\nOldSetLen a floor when no majority holds anything.",
+          "timestamp": "2026-10-08T09:07:02-07:00",
+          "tree_id": "779d5364037701a73414f6cee1cb557d150701d0",
+          "url": "https://github.com/GetFelix/felix/commit/344e119aabdeeb9861a762a295d2afacc270da18"
+        },
+        "date": 1791476317724,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 72,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 72.00\nmean: 72.00\nstdev: 0.71\ncv: 0.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.60\nstdev: 2.07\ncv: 2.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 126,
+            "range": "16.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 132.40\nstdev: 16.44\ncv: 12.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 89.60\nstdev: 1.67\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "76.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 241.80\nstdev: 76.87\ncv: 31.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 437,
+            "range": "1129.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 437.00\nmean: 926.40\nstdev: 1129.51\ncv: 121.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
