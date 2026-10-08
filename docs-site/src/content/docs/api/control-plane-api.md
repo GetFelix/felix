@@ -151,6 +151,9 @@ Canonical object grammar for RBAC policy payloads:
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`, with
+  `cache.read` or `cache.write` only. The namespace and cache must be named,
+  and the key may end in one `*` and contain none elsewhere.
 - `cluster:*`, the cluster itself; see [Cluster membership](#cluster-membership)
 
 Rejected on write:

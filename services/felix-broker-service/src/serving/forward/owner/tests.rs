@@ -406,6 +406,65 @@ async fn a_forwarded_cache_op_is_checked_against_its_own_action() {
     }
 }
 
+/// **The owner re-checks a forwarded cache op with its key.** A key grant
+/// covers the keys it names and no others, for every forwarded op, and a
+/// whole-cache grant still covers them all.
+#[tokio::test]
+async fn a_forwarded_cache_op_is_checked_against_its_key() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let handler = handler_with(
+        broker,
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+    );
+    let token = |object: &str| {
+        credentials.token(&[
+            &format!("cache.read:{object}"),
+            &format!("cache.write:{object}"),
+        ])
+    };
+    let cache = format!("cache:{TENANT}/{NAMESPACE}/{CACHE}");
+    // `forwarded_cache_op` uses the key `session:abc`.
+    let cases = [
+        (cache.clone(), true),
+        (format!("{cache}/session:abc"), true),
+        (format!("{cache}/session:*"), true),
+        (format!("{cache}/session:ab"), false),
+        (format!("{cache}/session:abcd*"), false),
+        (format!("{cache}/other*"), false),
+    ];
+    for (object, allowed) in cases {
+        let credential = token(&object);
+        for op in [
+            CacheOpKind::Get,
+            CacheOpKind::Put,
+            CacheOpKind::Delete,
+            CacheOpKind::CounterAdd,
+            CacheOpKind::CounterGet,
+        ] {
+            let answer = handler
+                .apply_cache_op(forwarded_cache_op(op, credential.clone()))
+                .await;
+            let refused = matches!(
+                &answer,
+                InternalMessage::ForwardCacheError(err) if err.code == ErrorCode::Unauthorized
+            );
+            assert_eq!(refused, !allowed, "{object} {op:?}: {answer:?}");
+        }
+    }
+}
+
 /// A forwarded cache op the owner's store refused is answered as an error,
 /// never as a success the store never applied.
 #[tokio::test]

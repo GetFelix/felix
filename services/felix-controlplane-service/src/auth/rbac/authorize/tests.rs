@@ -508,3 +508,133 @@ fn a_group_sits_under_its_stream_namespace_and_tenant() {
     let all_groups = parse_object("group:t1/ns/orders/*", "t1").expect("parse");
     assert!(!object_within_scope(&all_groups, &stream));
 }
+
+fn cache(raw: &str) -> ParsedObject {
+    parse_object(raw, "t1").expect(raw)
+}
+
+#[test]
+fn a_cache_key_object_round_trips() {
+    for raw in [
+        "cache:t1/ns/rooms",
+        "cache:t1/ns/rooms/room1",
+        "cache:t1/ns/rooms/room1/*",
+        "cache:t1/ns/rooms/user:1",
+        "cache:t1/ns/rooms/a/b:c/d*",
+    ] {
+        assert_eq!(format_object(&cache(raw)), raw);
+    }
+    assert_eq!(
+        cache("cache:t1/ns/rooms/room1/*"),
+        ParsedObject::Cache {
+            tenant_id: "t1".to_string(),
+            namespace: Segment::Exact("ns".to_string()),
+            cache: Segment::Exact("rooms".to_string()),
+            key: Some(KeyScope::Prefix("room1/".to_string())),
+        }
+    );
+}
+
+/// A `*` in a key only ever ends a prefix; a bare `*` or an empty key is the
+/// whole cache by another spelling; and a key needs a named cache.
+#[test]
+fn a_malformed_cache_key_object_is_refused() {
+    for raw in [
+        "cache:t1/ns/rooms/",
+        "cache:t1/ns/rooms/*",
+        "cache:t1/ns/rooms/**",
+        "cache:t1/ns/rooms/a*b",
+        "cache:t1/ns/rooms/*a",
+        "cache:t1/ns/rooms/a**",
+        "cache:t1/ns/*/a",
+        "cache:t1/*/*/a*",
+        "cache:t2/ns/rooms/a",
+    ] {
+        assert!(parse_object(raw, "t1").is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn a_cache_scope_contains_its_key_scopes_and_not_the_reverse() {
+    let whole = cache("cache:t1/ns/rooms");
+    let prefix = cache("cache:t1/ns/rooms/room1/*");
+    let narrower = cache("cache:t1/ns/rooms/room1/a*");
+    let key = cache("cache:t1/ns/rooms/room1/x");
+    let elsewhere = cache("cache:t1/ns/rooms/room10/x");
+
+    assert!(object_within_scope(&whole, &prefix));
+    assert!(object_within_scope(&cache("cache:t1/*/*"), &key));
+    assert!(object_within_scope(&cache("namespace:t1/ns"), &key));
+    assert!(object_within_scope(&prefix, &narrower));
+    assert!(object_within_scope(&prefix, &key));
+    assert!(object_within_scope(&key, &key));
+    assert!(!object_within_scope(&prefix, &elsewhere));
+    assert!(!object_within_scope(&prefix, &whole));
+    assert!(!object_within_scope(&narrower, &prefix));
+    assert!(!object_within_scope(&key, &prefix));
+    assert!(!object_within_scope(
+        &key,
+        &cache("cache:t1/ns/rooms/room1/x*")
+    ));
+    assert!(!object_within_scope(
+        &prefix,
+        &cache("cache:t1/ns/other/room1/x")
+    ));
+
+    // A literal prefix: `user:1*` reaches `user:10`, the exact key does not.
+    assert!(object_within_scope(
+        &cache("cache:t1/ns/rooms/user:1*"),
+        &cache("cache:t1/ns/rooms/user:10")
+    ));
+    assert!(!object_within_scope(
+        &cache("cache:t1/ns/rooms/user:1"),
+        &cache("cache:t1/ns/rooms/user:10")
+    ));
+}
+
+/// Token exchange narrowing: a key hint narrows a whole-cache grant to the
+/// key, and never widens a key grant.
+#[test]
+fn narrowing_understands_cache_keys() {
+    let whole = cache("cache:t1/*/*");
+    let hint = cache("cache:t1/ns/rooms/room1/*");
+    assert_eq!(narrow_object(&whole, &hint), Some(hint.clone()));
+
+    let granted = cache("cache:t1/ns/rooms/room1/a*");
+    assert_eq!(narrow_object(&granted, &hint), Some(granted.clone()));
+    assert_eq!(
+        narrow_object(&granted, &cache("cache:t1/ns/rooms")),
+        Some(granted.clone())
+    );
+    assert_eq!(
+        narrow_object(&granted, &cache("cache:t1/ns/rooms/room2/*")),
+        None
+    );
+    assert_eq!(
+        narrow_object(&granted, &cache("namespace:t1/ns")),
+        Some(granted.clone())
+    );
+}
+
+#[test]
+fn a_cache_key_rule_takes_only_data_actions() {
+    let caller = vec![cache("tenant:t1")];
+    let rule = |action: &str| PolicyRule {
+        subject: "room1".to_string(),
+        object: "cache:t1/ns/rooms/room1/*".to_string(),
+        action: action.to_string(),
+    };
+    assert!(validate_new_rule_allowed(&caller, "t1", &rule(ACTION_CACHE_READ)).is_ok());
+    assert!(validate_new_rule_allowed(&caller, "t1", &rule(ACTION_CACHE_WRITE)).is_ok());
+    assert!(validate_new_rule_allowed(&caller, "t1", &rule(ACTION_CACHE_MANAGE)).is_err());
+
+    // Delegation still holds: a caller scoped to one prefix cannot write a
+    // rule over a wider one.
+    let room_admin = vec![cache("cache:t1/ns/rooms/room1/*")];
+    let wider = PolicyRule {
+        object: "cache:t1/ns/rooms/room*".to_string(),
+        ..rule(ACTION_CACHE_READ)
+    };
+    assert!(validate_new_rule_allowed(&room_admin, "t1", &wider).is_err());
+    assert!(validate_new_rule_allowed(&room_admin, "t1", &rule(ACTION_CACHE_READ)).is_ok());
+}

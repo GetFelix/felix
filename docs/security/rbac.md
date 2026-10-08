@@ -80,6 +80,60 @@ named on its own; grant it through the stream or `group:…/{stream}/*`.
 A stream, namespace or tenant scope contains the groups under it, so a
 delegated admin can grant groups inside what they administer.
 
+### Granting cache keys
+
+A cache grant can name some of a cache's keys instead of the whole cache, by
+adding the key as a fourth segment:
+
+- `cache:{tenant}/{namespace}/{cache}/{key}`: exactly that key.
+- `cache:{tenant}/{namespace}/{cache}/{prefix}*`: every key starting with
+  `prefix`.
+
+A prefix is a literal string prefix with no separator rule. `user:1*` covers
+`user:1`, `user:10` and `user:1/x`; to keep `user:10` out, grant `user:1/*` and
+key the data that way. Cache names cannot contain `/`, so everything after the
+third `/` is the key, and a key may itself contain `/` or `:`.
+
+The broker checks every cache request against its key
+(`PermissionMatcher::allows_cache_keys` in `felix-authz`). A request is allowed
+if a grant matches the whole cache, as before, or a key grant covers what it
+touches:
+
+| Request | Checked against |
+| --- | --- |
+| get, counter get | its key, with `cache.read` |
+| put, delete, conditional put/delete, counter add | its key, with `cache.write` |
+| watch on a key | that key, with `cache.read` |
+| watch on a prefix | the prefix, with `cache.read`: allowed only by a prefix grant that the watched prefix starts with |
+
+An exact-key grant never allows a prefix watch, even on the same string, since
+the watch reads every longer key too. A forwarded cache op is re-checked with
+its key at the owning broker.
+
+Rules the control plane enforces on writes:
+
+- The key part is a literal, optionally ending in one `*`. A `*` anywhere else
+  is refused, so a key name can never become a pattern. A key that itself
+  contains `*` can still be stored and read; it can only be granted through a
+  shorter prefix or the whole cache.
+- `cache:t1/ns/c/*` and an empty key are refused. That is the whole cache,
+  which is spelled `cache:t1/ns/c`.
+- The namespace and cache must be named. `cache:t1/ns/*/room1*` is refused for
+  the same reason as `stream:t1/*/orders`.
+- Only `cache.read` and `cache.write` take a key object.
+
+A whole-cache scope contains every key scope of that cache, and a prefix scope
+contains the keys and longer prefixes under it, so a delegated admin can grant
+keys inside what they administer, and token exchange narrows a whole-cache
+grant to a key or prefix hint (`resources: ["cache:t1/ns/rooms/room1/*"]`).
+
+Key grants do not narrow anything: unlike a group grant, a principal that also
+holds a whole-cache grant keeps it.
+
+Mixed versions fail closed. A broker from before key grants checks only
+`cache:{tenant}/{namespace}/{cache}`, which a key grant does not match, so it
+refuses the request; an older control plane refuses to parse the object.
+
 ## Object Grammar
 
 Valid canonical objects:
@@ -87,6 +141,8 @@ Valid canonical objects:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream}`
 - `cache:{tenant_id}/{namespace}/{cache}`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*` (see
+  [Granting cache keys](#granting-cache-keys))
 - `group:{tenant_id}/{namespace}/{stream}/{group}` (see
   [Granting one group](#granting-one-group))
 
