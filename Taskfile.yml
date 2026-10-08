@@ -454,6 +454,19 @@ tasks:
           cargo +nightly fuzz run {{.ITEM}}
           -- -max_total_time={{.SECONDS}}
 
+  capi:header:
+    desc: Regenerate crates/sdk/felix-capi/include/felix.h from the source (cbindgen).
+    env:
+      FELIX_CAPI_BLESS: "1"
+    cmds:
+      - cargo test -p felix-capi --test header
+  capi:test:
+    desc: >
+      Build the C test against the header and both library forms and run it.
+      Without arguments it needs no broker; `-- fixture` runs it against
+      `felix-cluster client-fixture`, which must be built first.
+    cmds:
+      - crates/sdk/felix-capi/tests/c/run.sh {{.CLI_ARGS | default "offline"}}
   python:check:
     desc: Build and lint the Python binding (its own workspace, like the demos).
     dir: crates/sdk/felix-python

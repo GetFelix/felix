@@ -350,6 +350,14 @@ jobs:
       - name: Verify against the catalogue
         run: cargo run --locked -q -p felix-conformance -- verify python-conformance.json
 
+      # The C ABI the Go and C# SDKs will bind to, compiled with the system cc
+      # against the checked-in header, linked both ways, and run against its
+      # own fixture. Here because this job already builds the broker and the
+      # harness. Whether the header matches the source is the felix-capi
+      # `header` test, which `task test` runs.
+      - name: C ABI against the fixture
+        run: crates/sdk/felix-capi/tests/c/run.sh fixture
+
   # Same reasoning as the Python job above, and the same shape: the binding
   # wraps the Rust client, so a change anywhere under `crates/sdk/felix-client` can
   # break it. Unconditional for the same reason too -- a job behind a path

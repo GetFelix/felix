@@ -1,0 +1,32 @@
+[package]
+name = "felix-capi"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+rust-version.workspace = true
+description = "C ABI over the Felix Rust client, the base for the Go and C# SDKs"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["felix", "ffi", "c", "pubsub", "bindings"]
+categories = ["api-bindings", "network-programming"]
+# Shipped as a native library next to its header, not through crates.io.
+publish = false
+
+[lib]
+name = "felix"
+# cdylib and staticlib are what C, cgo and P/Invoke link; rlib keeps
+# `cargo test` able to link the unit tests.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+felix-client = { path = "../felix-client", version = "0.6.0-preview.2" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+cbindgen = { version = "0.29", default-features = false }
+
+[lints]
+workspace = true
