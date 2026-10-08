@@ -11,6 +11,7 @@
 //! * `retention` — deleting the oldest segments once a bound is exceeded.
 //! * `epochs`    — where each leadership generation began.
 //! * `replica_state` — the highest generation accepted, and the commit offset.
+//! * `ballot`    — which leader that generation was accepted from.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -41,6 +42,7 @@
 pub mod layout;
 
 mod append;
+mod ballot;
 mod durable_mark;
 mod epochs;
 mod flush;
@@ -88,14 +90,18 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What [`DiskLog::accept_generation`] found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationCheck {
-    /// The generation already accepted.
+    /// The generation already accepted, from this leader or with no leader
+    /// named.
     Current,
     /// Newer than any accepted before; it is now on disk.
     Raised,
     /// Older than one already accepted. The sender has been replaced.
     Superseded { accepted: u64 },
+    /// The generation already accepted, from another leader. Two nodes claim
+    /// one generation, and this replica answered the other.
+    Promised { leader: String },
 }
 
 /// A durable, segmented, append-only log for one shard.
@@ -510,42 +516,70 @@ impl DiskLog {
         self.inner.accepted_generation.load(Ordering::Acquire)
     }
 
-    /// Accept a leader at `generation`, persisting it first if it is new.
+    /// The leader this log accepted its generation from, if it was named.
+    pub fn accepted_leader(&self) -> Option<Arc<str>> {
+        self.inner.ballot.read().1.clone()
+    }
+
+    /// Accept `leader` at `generation`, persisting it first if it is new.
     ///
     /// Returns once a raised generation is on disk, so a caller that
     /// acknowledges afterwards has made a promise that survives a restart: a
     /// leader older than this one is refused from here on, whatever the
     /// routing view says after the restart.
-    pub async fn accept_generation(&self, generation: u64) -> Result<GenerationCheck> {
-        let accepted = self.accepted_generation();
-        if generation < accepted {
-            return Ok(GenerationCheck::Superseded { accepted });
-        }
-        if generation == accepted {
-            return Ok(GenerationCheck::Current);
+    ///
+    /// With a leader named, the promise is a ballot: at the generation already
+    /// accepted only that leader is [`GenerationCheck::Current`], and any
+    /// other is [`GenerationCheck::Promised`]. A generation accepted with no
+    /// leader named takes the first one that asks, persisted before this
+    /// returns. `None` checks the generation alone.
+    pub async fn accept_generation(
+        &self,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<GenerationCheck> {
+        if let Some(found) = check_ballot(&self.inner.ballot.read(), generation, leader) {
+            return Ok(found);
         }
         let inner = Arc::clone(&self.inner);
+        let leader: Option<Arc<str>> = leader.map(Arc::from);
         tokio::task::spawn_blocking(move || {
             let mut persisted = inner.replica_persisted.lock();
-            // Re-read under the writer's lock: a concurrent batch may have
-            // raised it past this one while this waited.
-            let accepted = inner.accepted_generation.load(Ordering::Acquire);
-            if generation < accepted {
-                return Ok(GenerationCheck::Superseded { accepted });
+            // Re-checked under the writer's lock: a concurrent request may
+            // have raised it, or named its leader, while this waited.
+            if let Some(found) = check_ballot(&inner.ballot.read(), generation, leader.as_deref()) {
+                return Ok(found);
             }
-            if generation == accepted {
-                return Ok(GenerationCheck::Current);
+            // Before `replica`, so a crash between the two leaves a ballot
+            // the open takes the generation from, never a raised generation
+            // with no leader.
+            if let Some(leader) = &leader {
+                ballot::store(
+                    &inner.dir,
+                    &ballot::Ballot {
+                        generation,
+                        leader: leader.to_string(),
+                    },
+                )?;
             }
-            let state = replica_state::ReplicaState {
-                accepted_generation: generation,
-                commit_offset: inner.commit_offset.load(Ordering::Acquire),
-            };
-            replica_state::store(&inner.dir, &state)?;
-            *persisted = (state, Some(std::time::Instant::now()));
+            let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
+            if raised {
+                let state = replica_state::ReplicaState {
+                    accepted_generation: generation,
+                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
+                };
+                replica_state::store(&inner.dir, &state)?;
+                *persisted = (state, Some(std::time::Instant::now()));
+            }
+            *inner.ballot.write() = (generation, leader);
             inner
                 .accepted_generation
                 .store(generation, Ordering::Release);
-            Ok(GenerationCheck::Raised)
+            Ok(if raised {
+                GenerationCheck::Raised
+            } else {
+                GenerationCheck::Current
+            })
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -747,6 +781,14 @@ impl DiskLog {
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
         let replica = replica_state::load(&dir)?;
+        // A ballot ahead of `replica` is a raise that crashed between the two
+        // writes; it was never answered, but taking it only refuses more.
+        let (accepted_generation, accepted_leader) = match ballot::load(&dir)? {
+            Some(ballot) if ballot.generation >= replica.accepted_generation => {
+                (ballot.generation, Some(Arc::<str>::from(ballot.leader)))
+            }
+            _ => (replica.accepted_generation, None),
+        };
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
             dir,
@@ -776,7 +818,8 @@ impl DiskLog {
             retention: Mutex::new(None),
             retention_bounds: Mutex::new(config.retention()),
             epochs: Mutex::new(epochs),
-            accepted_generation: AtomicU64::new(replica.accepted_generation),
+            accepted_generation: AtomicU64::new(accepted_generation),
+            ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
@@ -1024,6 +1067,32 @@ impl PendingAppend {
     }
 }
 
+/// What the accepted ballot says of `leader` at `generation`, or `None` when
+/// the answer needs a write: a raise, or the first leader named at the
+/// accepted generation.
+fn check_ballot(
+    (accepted, promised): &(u64, Option<Arc<str>>),
+    generation: u64,
+    leader: Option<&str>,
+) -> Option<GenerationCheck> {
+    if generation < *accepted {
+        return Some(GenerationCheck::Superseded {
+            accepted: *accepted,
+        });
+    }
+    if generation > *accepted {
+        return None;
+    }
+    match (leader, promised) {
+        (None, _) => Some(GenerationCheck::Current),
+        (Some(leader), Some(promised)) if **promised == *leader => Some(GenerationCheck::Current),
+        (Some(_), Some(promised)) => Some(GenerationCheck::Promised {
+            leader: promised.to_string(),
+        }),
+        (Some(_), None) => None,
+    }
+}
+
 /// Shared state behind every clone of a [`DiskLog`].
 struct LogInner {
     label: String,
@@ -1057,6 +1126,10 @@ struct LogInner {
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
+    /// The accepted generation with the leader it was accepted from, when one
+    /// was named. Read together on every replicated batch, so a raise is seen
+    /// with its own leader. Written only under `replica_persisted`.
+    ballot: RwLock<(u64, Option<Arc<str>>)>,
     /// One past the last record known committed. Raised in memory at once and
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].

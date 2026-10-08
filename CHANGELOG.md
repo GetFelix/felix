@@ -12,6 +12,26 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- Replicas keep a ballot with each accepted generation (part of #1009): the
+  leader they accepted it from, by the node id its `Hello` gave. At that
+  generation a replica refuses a fence, a batch, a bootstrap, a rebuild or a
+  tail fetch from any other node with `FencedEpoch`, and a broker will not
+  lead a generation it already accepted from another node. The ballot is a new
+  `ballot` file in the shard directory, fsynced before anything from that
+  leader is answered and read back on open; builds without ballots ignore it,
+  so rolling back still opens the shard. A new internal capability, `BALLOTS`
+  (`1 << 5`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
+  turns ballots off with it. Nothing changes while the control plane names
+  every leader, since it never names two at one generation; this is the
+  safety layer replica elections will need. The TLA+ model gains `Ballots`,
+  `Elections` and `OneLeaderPerGeneration`, with `FelixShardElect.cfg` and
+  two configurations that must fail: `FelixShardElectNoBallot.cfg` (two
+  leaders at one generation) and `FelixShardElectStaleSet.cfg` (a replica
+  standing on a set it has left). Breaking for callers of felix-storage's
+  `DiskLog::accept_generation` and felix-broker's
+  `StreamLog::accept_generation`, which take the leader, of felix-replication's
+  `ReplicaHandler` entry points, which take the sender, and for code matching
+  `GenerationCheck`, which gains `Promised` and is no longer `Copy`.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it

@@ -976,6 +976,9 @@ pub struct DurableShardStore {
     storage: std::sync::Arc<felix_broker::DurableStorage>,
     readers: Option<ShardReaders>,
     generation_starts: Option<GenerationStarts>,
+    /// This broker's node id, when it keeps ballots: leading a generation is
+    /// accepting it from itself.
+    ballot: Option<String>,
 }
 
 /// What a leader needs to write its generation-start record: the broker it
@@ -999,7 +1002,15 @@ impl DurableShardStore {
             storage,
             readers: None,
             generation_starts: None,
+            ballot: None,
         }
+    }
+
+    /// Accept each generation this broker leads as a ballot naming `node_id`,
+    /// so no other node is answered at it here.
+    pub fn with_ballots(mut self, node_id: impl Into<String>) -> Self {
+        self.ballot = Some(node_id.into());
+        self
     }
 
     /// Write a generation-start record whenever a leadership begins
@@ -1060,7 +1071,7 @@ impl DurableShardStore {
             if begins_here {
                 record_term_start(&log, key, generation, starts.is_some()).await?;
             }
-            accept_led_generation(&log, generation).await?;
+            accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
             if begins_here && let Some(starts) = starts {
                 start_generation(&starts.broker, &log, key, generation).await?;
             }
@@ -1105,7 +1116,7 @@ impl ShardStore for DurableShardStore {
         // Leading at a generation accepts it, as following does: once this
         // broker has led at it, a leader older than it is not taken as a
         // follower, even after a restart.
-        accept_led_generation(&log, generation).await?;
+        accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
         // A promotion's record is written when its fence opens the shard.
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
@@ -1376,16 +1387,23 @@ pub async fn record_term_start(
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
-/// log already took a newer leader's.
+/// log already took a newer leader's, or this generation from another node.
 async fn accept_led_generation(
     log: &felix_broker::StreamLog,
     generation: u64,
+    ballot: Option<&str>,
 ) -> anyhow::Result<()> {
-    match log.accept_generation(generation).await {
+    match log.accept_generation(generation, ballot).await {
         Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
             anyhow::bail!(
                 "this broker already accepted generation {accepted} for the shard, \
                  newer than the {generation} it was assigned to lead"
+            );
+        }
+        Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => {
+            anyhow::bail!(
+                "this broker already accepted generation {generation} for the shard \
+                 from {leader}, so it cannot lead it"
             );
         }
         Ok(_) => Ok(()),

@@ -341,6 +341,61 @@ finalized, see [Acknowledging by the followers](#acknowledging-by-the-followers)
 A `Leader` stream acknowledges on the leader's own commit, which no follower
 sees, so its deposed leader is kept out by the lease alone either way.
 
+### Ballots
+
+A replica remembers whom it accepted a generation from, not only the
+generation. The control plane issues each generation once, so today two nodes
+never claim one, and a replica could treat a fence at its accepted generation
+as the leader confirming it still leads. That stops holding once anything other
+than the control plane picks a generation: two control-plane instances working
+from a stale read, or replicas electing a leader without it, which is what
+issue #1009 builds toward. Two candidates at one generation could then each
+fence a majority, and followers would take batches from both.
+
+So the promise is a ballot, `(generation, leader)`. At the generation it
+accepted, a replica answers a fence, a batch, a bootstrap, a rebuild or a tail
+fetch only from the leader it accepted it from, and refuses any other node with
+`FencedEpoch`. A newer generation is a new ballot, whoever asks. The leader is
+the node id the peer gave in its `Hello`, which mTLS checks against its
+certificate. The shard's cursor, dead-letter and counter logs check the
+shard's own log's ballot as they check its generation. A broker leading a
+generation takes the ballot for itself first, and refuses to lead a
+generation it already accepted from another node.
+
+The ballot is on disk before the replica answers: `DiskLog::accept_generation`
+writes the shard's `ballot` file, fsynced and renamed into place with the
+directory synced, then raises the generation in `replica`, and only then
+returns. A crash between the two leaves a ballot ahead of `replica`, and the
+open takes the higher generation from it; nothing was answered at that
+generation yet, and taking it only refuses more. A ballot behind `replica`, or
+none, names no leader, and the first leader to ask at the accepted generation
+is written down as it. That is the state after an upgrade, and with
+`FELIX_INTERNAL_FENCE=false`, which keeps no ballots. The file sits beside
+`replica` rather than inside it so that a build without ballots still opens
+the shard.
+
+It is negotiated like the fence. A broker that keeps ballots offers the
+`BALLOTS` capability (`docs/internal-protocol.md`, "Capabilities"), and only
+with the fence. Nothing reads the offer yet: a broker without it answers as
+before, and a later change that lets replicas elect will need every replica to
+offer it.
+
+The model has it as `Ballots` and `Elections` in `docs/formal/FelixShard.tla`
+(`docs/formal/README.md`, "Ballots: one leader per generation").
+`FelixShardElect.cfg` lets replicas elect themselves and passes with ballots;
+`FelixShardElectNoBallot.cfg` finds two leaders opening at one generation
+without them. `FelixShardElectStaleSet.cfg` shows what ballots do not cover: a
+replica that left the set can still stand on the old one, which self-election
+will have to refuse first.
+
+Evidence: `a_second_leader_at_an_accepted_generation_is_refused`,
+`a_ballot_survives_a_crash_before_anything_is_acknowledged` and
+`a_ballot_written_before_a_crash_is_taken_at_open` (storage);
+`a_fence_from_a_second_leader_at_the_same_generation_is_refused`,
+`a_ballot_is_on_disk_before_the_fence_is_answered` and
+`the_ballot_names_the_peer_that_said_hello` (replica);
+`a_generation_promised_to_another_node_is_not_led` (the leader's side).
+
 ### The generation-start record
 
 A leader must not count a record it inherited toward its quorum mark on the

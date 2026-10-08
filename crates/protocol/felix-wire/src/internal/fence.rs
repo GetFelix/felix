@@ -41,6 +41,11 @@ impl PeerCapabilities {
     /// labelled with their generations. A promoted cache shard is fenced only
     /// when every replica offers it.
     pub const CACHE_FENCE: Self = Self(1 << 4);
+    /// Keeps a ballot with each accepted generation, naming the leader it was
+    /// accepted from by the node id that leader gave in its `Hello`, and
+    /// refuses a fence, a batch or a fetch from any other node at that
+    /// generation.
+    pub const BALLOTS: Self = Self(1 << 5);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

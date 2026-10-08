@@ -155,6 +155,9 @@ expectations=(
   "FelixShardFencedCache pass"
   "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
   "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
+  "FelixShardElect pass"
+  "FelixShardElectNoBallot violates OneLeaderPerGeneration"
+  "FelixShardElectStaleSet violates AckedHeldByLeader"
 )
 
 shard_index=0
@@ -191,6 +194,7 @@ weights=(
   "FelixShardReadsRound 11"
   "FelixShardFencedAck 6"
   "FelixShardFencedCache 10"
+  "FelixShardElect 10"
   "FelixShardCancel 5"
   "FelixShardCancelResend 5"
   "FelixShardFigure8FollowerAcks 5"

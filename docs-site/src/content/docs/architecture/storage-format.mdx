@@ -70,6 +70,7 @@ a segment) should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.index
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
+    ballot                                   ← the leader that generation was accepted from
     producers                                ← producer snapshot, when any producer wrote here
 ```
 
@@ -425,6 +426,30 @@ alone: they trim segments in place and never replace the directory.
 A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see
 `docs/replication-design.md`, "Divergence and truncation".
+
+## `ballot`: whom the generation was accepted from
+
+Beside `replica`, once a broker that keeps ballots has accepted a generation
+from a named leader: that generation and the leader's node id.
+
+```text
+ 0   4  magic        u32  "FLBL"
+ 4   2  version      u16
+ 6   2  leader_len   u16  at most 1024
+ 8   8  generation   u64  the generation the leader was accepted at
+16   n  leader       utf-8 node id, leader_len bytes
+16+n 4  crc          u32  crc32 over bytes 0..16+n
+```
+
+Written the same way as `replica`, and before it when a generation is raised,
+so the ballot is on disk before anything from that leader is stored or
+acknowledged. At the accepted generation only that leader is answered; see
+`docs/replication-design.md`, "Ballots". On open, a ballot at the generation
+in `replica` names its leader, one ahead of it is a raise that crashed between
+the two writes and its generation is taken, and one behind it, or none, names
+no leader. A file that is present and does not decode fails the open, as
+`replica` does. A separate file so that a build that predates ballots ignores
+it and still opens the shard.
 
 ## `producers`: the producer snapshot
 

@@ -743,6 +743,32 @@ mod recording_where_a_leadership_begins {
         );
     }
 
+    /// Leading a generation is accepting it from itself. A broker whose log
+    /// already answered another node at that generation must not lead it
+    /// too, or the shard has two leaders at one generation.
+    #[tokio::test]
+    async fn a_generation_promised_to_another_node_is_not_led() {
+        let (storage, _dir) = storage(3).await;
+        let log = storage
+            .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
+            .expect("open");
+        log.accept_generation(4, Some("broker-c"))
+            .await
+            .expect("accept");
+        let store =
+            DurableShardStore::new(std::sync::Arc::clone(&storage)).with_ballots("broker-a");
+
+        store
+            .open(&key(0), 4, true)
+            .await
+            .expect_err("promised to broker-c");
+        store
+            .open(&key(0), 5, true)
+            .await
+            .expect("a newer generation");
+        assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    }
+
     /// A cache shard's log is opened lazily on first use, not here, so there is
     /// nothing to record against — and replication falls back to comparing from
     /// zero for it.
