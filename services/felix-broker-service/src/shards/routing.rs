@@ -347,7 +347,8 @@ impl IngressRouter {
     /// [`Self::dispatch`] for a write, waiting out a planned move.
     ///
     /// A shard between its fence and its cut-over is held until the routes
-    /// show where it went, then dispatched there; see [`hold`]. A local answer
+    /// show where it went, then dispatched there; see [`hold`]. So is one this
+    /// broker has just taken and is still fencing. A local answer
     /// comes with the write's place in the fence, entered here so a fence that
     /// closes before the write claims its offsets still counts it and the move
     /// waits for it.
@@ -372,6 +373,12 @@ impl IngressRouter {
                     Err(Fenced::NotServing) => true,
                 },
                 Dispatch::Unavailable(Reason::Moving) => true,
+                // This broker just took the shard and is fencing its replicas,
+                // which usually takes a round trip. The write waits for that
+                // as it waits out a move, rather than failing a cut-over.
+                Dispatch::Unavailable(Reason::NotReady) => {
+                    self.fence.awaiting_promotion(key).is_some()
+                }
                 // The leader named here is fenced and will not take it,
                 // whether this broker would forward to it or cannot reach it.
                 _ => draining(&view, key),

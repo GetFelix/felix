@@ -82,12 +82,12 @@ BeginRead(b) ==
 ConfirmRead(b, f) ==
     /\ ReadConfirm = "round"
     /\ reading[b] /\ f \notin rvotes[b]
-    /\ promised[f] <= rgen[b]
-    /\ promised' = [promised EXCEPT ![f] = rgen[b]]
+    /\ MayPromise(f, b, rgen[b])
+    /\ Promise(f, b, rgen[b])
     /\ rvotes' = [rvotes EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    handoffVars, fencing, answered, confirmed, heard, counterVars >>
+                    handoffVars, fencing, answered, confirmed, opened, heard, counterVars >>
     /\ UNCHANGED << reading, rgen, rseen, rval, reads, staleRead >>
 
 Confirmed(b) ==

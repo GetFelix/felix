@@ -252,14 +252,22 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 _ => Arc::new(replication::promotion::NoGate),
             };
             let store: Arc<dyn shard_lifecycle::ShardStore> = match storage {
-                Some(storage) => Arc::new(
-                    shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
+                Some(storage) => {
+                    let store = shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
                         .with_readers(readers)
                         .with_generation_starts(shard_lifecycle::GenerationStarts {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
-                        }),
-                ),
+                        });
+                    // Ballots ride with the fence, as its peers are told
+                    // (`PeerCapabilities::BALLOTS`).
+                    Arc::new(match (&config.peer_transport, &config.membership) {
+                        (Some(peer), Some(membership)) if peer.fence => {
+                            store.with_ballots(membership.node_id.clone())
+                        }
+                        _ => store,
+                    })
+                }
                 // Without durable storage there is no log to open, so taking a
                 // shard is bookkeeping only.
                 None => Arc::new(shard_lifecycle::EphemeralShardStore::with_readers(readers)),
