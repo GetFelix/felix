@@ -450,11 +450,12 @@ Init ==
 Tick ==
     /\ now < MaxTime
     /\ now' = now + 1
-    /\ clock' \in { c \in [Brokers -> 0..(MaxTime + Drift)] :
+    \* Drawn from the drift window, not from 0..MaxTime + Drift: the same
+    \* clocks, without enumerating every function up to MaxTime on each tick,
+    \* which the long walks (FelixShardWalk*.cfg) could not afford.
+    /\ clock' \in { c \in [Brokers -> (IF now + 1 > Drift THEN now + 1 - Drift ELSE 0)..(now + 1 + Drift)] :
                      \A b \in Brokers : /\ c[b] >= clock[b]
-                                        /\ c[b] <= clock[b] + 2
-                                        /\ c[b] >= now + 1 - Drift
-                                        /\ c[b] <= now + 1 + Drift }
+                                        /\ c[b] <= clock[b] + 2 }
     /\ UNCHANGED << gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>

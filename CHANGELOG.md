@@ -12,6 +12,15 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- Nightly TLC simulation of long random walks over replica-set changes
+  (#934). `FelixShardWalkSpares`, `FelixShardWalkMoves` and
+  `FelixShardWalkHandoff` lift the bounds the exhaustive configurations
+  stop at (time to 40, six writes, six moves) and sample traces up to 300
+  steps; each has a negative twin that must find its violation within the
+  budget. `scripts/check_tla.sh --simulate` (`task tla:walk`) runs them,
+  and `tla-walk.yml` runs them nightly and uploads TLC's trace on a
+  failure. `Tick` in `FelixShard.tla` enumerates clocks over the drift
+  window only, with the same states.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
