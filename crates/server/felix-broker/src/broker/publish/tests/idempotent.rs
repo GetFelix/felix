@@ -391,7 +391,7 @@ mod durable {
             .collect();
         let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
         let applied =
-            crate::replication::apply(log(follower), from, checksum, &payloads, &marks, &[])
+            crate::replication::apply(log(follower), from, checksum, &payloads, &marks, &[], &[])
                 .await
                 .expect("apply")
                 .expect("in order");

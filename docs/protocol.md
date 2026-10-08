@@ -1928,10 +1928,12 @@ the same value as `timestamp_micros` on a `GroupRecord`, under
 `FEATURE_RECORD_TIMESTAMPS`, and `offset_for_time` searches the same values.
 
 The time is the clock of the broker that led the shard when the record was
-written, not the publisher's. A follower stamps the records it replicates with
-its own clock, so after a failover the times a new leader reports for records
-it inherited are its own append times, normally later than the old leader's by
-the replication delay.
+written, not the publisher's. A follower stores that time with each record it
+replicates, so a new leader reports the same times for the records it
+inherited as the old leader did. Brokers carry it under the `RECORD_TIMES`
+peer capability (`docs/internal-protocol.md`); a record replicated to or from
+a broker that predates it is stamped with the follower's own clock, normally
+later than the leader's by the replication delay.
 
 ## ALPN
 
