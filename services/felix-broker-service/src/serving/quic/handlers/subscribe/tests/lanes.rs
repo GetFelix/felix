@@ -24,7 +24,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(8);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);

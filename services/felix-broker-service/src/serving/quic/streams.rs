@@ -4,14 +4,13 @@
 //! cache request/response, and publish acknowledgements; uni streams are
 //! ingress-only publish. The pieces composed here: a `writer` task that owns
 //! every write to the `SendStream` (Quinn does not support concurrent
-//! writes), the `control` loop, an `ack_waiter` for delayed publish acks, and
-//! the `uni` loop. Queues are bounded, cancellation is cooperative, and
+//! writes), the `control` loop, the deadline sweep for publishes acknowledged
+//! on commit, and the `uni` loop. Queues are bounded, cancellation is cooperative, and
 //! shutdown drains against a deadline.
 //!
-//! Each loop (read, write, ack waiter) has its own module so it can be read
+//! Each loop (read, write) has its own module so it can be read
 //! and tested on its own.
 
-mod ack_waiter;
 mod control;
 mod frame_source;
 mod hooks;
@@ -27,19 +26,18 @@ use crate::serving::quic::codec::FrameScratch;
 use anyhow::Result;
 use felix_broker::Broker;
 use quinn::{RecvStream, SendStream};
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::quic::client_error::ErrorCodeSupport;
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, AckWaiterMessage, Outgoing, PublishContext, reset_local_depth_only,
+    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, reset_local_depth_only,
 };
 use crate::serving::quic::telemetry::t_counter;
 #[cfg(feature = "telemetry")]
 use crate::serving::quic::telemetry::t_histogram;
 use crate::serving::quic::{ACK_QUEUE_DEPTH, ACK_WAITERS_MAX, GLOBAL_ACK_DEPTH};
-use ack_waiter::run_ack_waiter_loop;
 use control::run_control_loop;
 #[cfg(test)]
 use hooks::test_hooks;
@@ -48,8 +46,8 @@ use writer::run_writer_loop;
 
 /// Handle one bi-directional control stream.
 ///
-/// Spawns the writer task (sole owner of the `SendStream`) and the ack
-/// waiter, runs the control loop in place, then winds everything down: on an
+/// Spawns the writer task (sole owner of the `SendStream`) and the commit-ack
+/// deadline sweep, runs the control loop in place, then winds everything down: on an
 /// abnormal close the tasks are cancelled, and either way they get a bounded
 /// drain before being aborted. "Graceful" means the peer finished the stream
 /// cleanly (EOF).
@@ -83,12 +81,12 @@ pub(crate) async fn handle_stream(
     // watermarks, telling the control loop to throttle.
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
 
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
 
     // Holds chunks read past a frame boundary until the next frame read.
     let mut frame_scratch = FrameScratch::new();
-
-    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel::<AckWaiterMessage>(ACK_WAITERS_MAX);
 
     // Floored so it outlasts the quorum wait a publish to a `Quorum` stream
     // may be sitting on.
@@ -98,13 +96,6 @@ pub(crate) async fn handle_stream(
     let cancel_tx_writer = cancel_tx.clone();
     let cancel_rx_writer = cancel_rx.clone();
     let ack_throttle_tx_writer = ack_throttle_tx.clone();
-
-    let out_ack_tx_waiter = out_ack_tx.clone();
-    let out_ack_depth_waiter = Arc::clone(&out_ack_depth);
-    let ack_throttle_tx_waiter = ack_throttle_tx.clone();
-    let ack_timeout_state_waiter = Arc::clone(&ack_timeout_state);
-    let cancel_tx_waiter = cancel_tx.clone();
-    let cancel_rx_waiter = cancel_rx.clone();
 
     // If the writer exits early, Outgoing messages still queued are dropped;
     // teardown reconciles the depth gauges via `reset_local_depth_only`.
@@ -127,18 +118,16 @@ pub(crate) async fn handle_stream(
         cancel_rx_writer,
     ));
 
-    // Decouples commit completion from the read loop so acks can be emitted
-    // out of order.
-    let ack_waiter_handle = tokio::spawn(run_ack_waiter_loop(
-        ack_waiter_rx,
-        out_ack_tx_waiter,
-        out_ack_depth_waiter,
-        ack_throttle_tx_waiter,
-        ack_timeout_state_waiter,
-        cancel_tx_waiter,
-        cancel_rx_waiter,
+    let commit_acks = CommitAcks::new(
+        out_ack_tx.clone(),
+        Arc::clone(&out_ack_depth),
+        ack_throttle_tx.clone(),
+        Arc::clone(&ack_timeout_state),
+        cancel_tx.clone(),
+        Arc::clone(&ack_waiters),
         ack_wait_timeout,
-    ));
+    );
+    let deadlines_handle = tokio::spawn(commit_acks.clone().run_deadlines(cancel_rx.clone()));
 
     // Ok(true) = graceful EOF; Ok(false) = protocol violation or
     // handler-initiated close; Err = fatal decode/protocol error.
@@ -158,9 +147,7 @@ pub(crate) async fn handle_stream(
         Arc::clone(&ack_timeout_state),
         cancel_tx.clone(),
         cancel_rx.clone(),
-        Arc::clone(&ack_waiters),
-        ack_waiter_tx.clone(),
-        ack_wait_timeout,
+        commit_acks.clone(),
         &mut frame_scratch,
         error_codes,
         ack_order,
@@ -174,7 +161,8 @@ pub(crate) async fn handle_stream(
 
     // Dropping the senders is what lets the background tasks see EOF and exit.
     drop(out_ack_tx);
-    drop(ack_waiter_tx);
+    commit_acks.close();
+    drop(commit_acks);
 
     #[cfg(feature = "telemetry")]
     let drain_start = Instant::now();
@@ -182,7 +170,7 @@ pub(crate) async fn handle_stream(
     let drain_timeout = Duration::from_millis(config.control_stream_drain_timeout_ms);
 
     let mut writer_handle = writer_handle;
-    let mut ack_waiter_handle = ack_waiter_handle;
+    let mut deadlines_handle = deadlines_handle;
     let mut timed_out = false;
 
     tokio::select! {
@@ -190,7 +178,7 @@ pub(crate) async fn handle_stream(
             timed_out = true;
         }
         _ = &mut writer_handle => {}
-        _ = &mut ack_waiter_handle => {}
+        _ = &mut deadlines_handle => {}
     }
 
     #[cfg(feature = "telemetry")]
@@ -207,7 +195,7 @@ pub(crate) async fn handle_stream(
     if timed_out {
         t_counter!("felix_broker_control_stream_drain_timeout_total").increment(1);
         writer_handle.abort();
-        ack_waiter_handle.abort();
+        deadlines_handle.abort();
     }
 
     // Even on abort, or the depth gauges leak.

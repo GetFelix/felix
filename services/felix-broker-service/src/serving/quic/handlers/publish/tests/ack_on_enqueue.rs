@@ -48,7 +48,7 @@ async fn a_publish_acked_on_enqueue_is_written_across_a_move() {
     let (out_tx, mut out_rx) = mpsc::channel(4);
     let (throttle_tx, _throttle_rx) = watch::channel(false);
     let (cancel_tx, _cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::new(Semaphore::new(1)));
     handle_publish_message(
         &leader.broker,
         &queued,
@@ -60,11 +60,11 @@ async fn a_publish_acked_on_enqueue_is_written_across_a_move() {
         &out_tx,
         &Arc::new(AtomicUsize::new(0)),
         &throttle_tx,
-        &Arc::new(Mutex::new(AckTimeoutState::new(Instant::now()))),
+        &Arc::new(parking_lot::Mutex::new(
+            AckTimeoutState::new(Instant::now()),
+        )),
         &cancel_tx,
-        &Arc::new(Semaphore::new(1)),
-        &ack_waiter_tx,
-        Duration::from_secs(1),
+        &commit_acks,
         TENANT.to_string(),
         NAMESPACE.to_string(),
         DURABLE.to_string(),
@@ -97,7 +97,7 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
     let (out_tx, mut out_rx) = mpsc::channel(4);
     let (throttle_tx, _throttle_rx) = watch::channel(false);
     let (cancel_tx, _cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::new(Semaphore::new(1)));
     handle_publish_batch_message(
         0,
         &leader.broker,
@@ -110,10 +110,11 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
         &out_tx,
         &Arc::new(AtomicUsize::new(0)),
         &throttle_tx,
-        &Arc::new(Mutex::new(AckTimeoutState::new(Instant::now()))),
+        &Arc::new(parking_lot::Mutex::new(
+            AckTimeoutState::new(Instant::now()),
+        )),
         &cancel_tx,
-        &Arc::new(Semaphore::new(1)),
-        &ack_waiter_tx,
+        &commit_acks,
         TENANT.to_string(),
         NAMESPACE.to_string(),
         DURABLE.to_string(),

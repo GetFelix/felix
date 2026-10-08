@@ -35,7 +35,7 @@ async fn build_publish_context_clamps_executor_and_queue_minimums() -> Result<()
                 stream: "demo".to_string(),
             },
             payloads: vec![Bytes::from_static(b"ok")],
-            response: Some(response_tx),
+            response: Some(response_tx.into()),
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
@@ -64,7 +64,7 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
                 stream: "missing".to_string(),
             },
             payloads: vec![Bytes::from_static(b"payload")],
-            response: Some(response_tx),
+            response: Some(response_tx.into()),
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
@@ -91,7 +91,7 @@ fn named_job(stream: &str, response: Option<oneshot::Sender<Result<Option<u64>>>
         },
         payloads: vec![Bytes::from_static(b"payload")],
         acked_on_enqueue: response.is_none(),
-        response,
+        response: response.map(Into::into),
         admission_permit: None,
         fenced: None,
         publisher: None,
@@ -369,7 +369,7 @@ mod fence {
             .send(PublishJob {
                 target,
                 payloads: vec![Bytes::from_static(b"late")],
-                response: Some(response_tx),
+                response: Some(response_tx.into()),
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
@@ -446,7 +446,7 @@ mod fence {
             .send(PublishJob {
                 target,
                 payloads: vec![Bytes::from_static(b"on time")],
-                response: Some(response_tx),
+                response: Some(response_tx.into()),
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
@@ -520,7 +520,7 @@ mod lane_claim {
             payloads: (0..records)
                 .map(|n| Bytes::from(format!("record {n}")))
                 .collect(),
-            response: Some(response_tx),
+            response: Some(response_tx.into()),
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
@@ -640,7 +640,7 @@ mod lane_claim {
         for _ in 0..2 {
             let (tx, rx) = oneshot::channel();
             members.push(GroupMember {
-                response: Some(tx),
+                response: Some(tx.into()),
                 acked_on_enqueue: false,
                 records: 1,
             });

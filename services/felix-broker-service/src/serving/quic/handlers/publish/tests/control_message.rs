@@ -11,10 +11,12 @@ async fn handle_publish_message_throttled_sends_error() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
     handle_publish_message(
         &broker,
         &publish_ctx,
@@ -27,9 +29,7 @@ async fn handle_publish_message_throttled_sends_error() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -65,10 +65,12 @@ async fn handle_publish_message_throttled_without_request_id_sends_error() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_message(
         &broker,
@@ -82,9 +84,7 @@ async fn handle_publish_message_throttled_without_request_id_sends_error() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -116,10 +116,12 @@ async fn handle_publish_message_missing_request_id_returns_error() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
     handle_publish_message(
         &broker,
         &publish_ctx,
@@ -132,9 +134,7 @@ async fn handle_publish_message_missing_request_id_returns_error() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -181,10 +181,12 @@ async fn handle_publish_message_drop_when_queue_full_and_ack_none() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_message(
         &broker,
@@ -198,9 +200,7 @@ async fn handle_publish_message_drop_when_queue_full_and_ack_none() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -243,10 +243,12 @@ async fn handle_publish_message_enqueue_error_reports_publish_error() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_message(
         &broker,
@@ -260,9 +262,7 @@ async fn handle_publish_message_enqueue_error_reports_publish_error() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -299,10 +299,12 @@ async fn handle_publish_message_stream_not_found_sends_error() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
     handle_publish_message(
         &broker,
         &publish_ctx,
@@ -315,9 +317,7 @@ async fn handle_publish_message_stream_not_found_sends_error() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "missing".to_string(),
@@ -367,10 +367,12 @@ async fn handle_publish_message_ack_sends_ok() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_message(
         &broker,
@@ -384,9 +386,7 @@ async fn handle_publish_message_ack_sends_ok() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -432,10 +432,12 @@ async fn handle_publish_message_ack_waiters_exhausted() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(0));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_message(
         &broker,
@@ -449,9 +451,7 @@ async fn handle_publish_message_ack_waiters_exhausted() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "tenant".to_string(),
         "ns".to_string(),
         "stream".to_string(),
@@ -479,242 +479,6 @@ async fn handle_publish_message_ack_waiters_exhausted() {
     }
 }
 
-#[tokio::test]
-async fn handle_publish_message_ack_waiter_queue_full() {
-    let broker = Broker::new(EphemeralCache::new().into());
-    broker.register_tenant("tenant").await.expect("tenant");
-    broker
-        .register_namespace("tenant", "ns")
-        .await
-        .expect("namespace");
-    broker
-        .register_stream(
-            "tenant",
-            "ns",
-            "stream",
-            felix_broker::StreamMetadata::default(),
-        )
-        .await
-        .expect("stream");
-    let (publish_ctx, _rx, _tx) = make_publish_context(8);
-    let mut cache = HashMap::new();
-    let mut key = String::new();
-    let (out_tx, mut out_rx) = mpsc::channel(1);
-    let out_depth = Arc::new(AtomicUsize::new(0));
-    let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
-    let (cancel_tx, _cancel_rx) = watch::channel(false);
-    let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(1);
-
-    let permit = ack_waiters.clone().acquire_owned().await.expect("permit");
-    ack_waiter_tx
-        .try_send(AckWaiterMessage::Publish {
-            encoding: AckEncoding::Json,
-            request_id: 99,
-            payload_len: 1,
-            start: crate::serving::quic::telemetry::t_instant_now(),
-            response_rx: oneshot::channel().1,
-            permit,
-        })
-        .expect("fill queue");
-    drop(ack_waiter_rx);
-
-    handle_publish_message(
-        &broker,
-        &publish_ctx,
-        &mut cache,
-        &mut key,
-        false,
-        true,
-        &out_tx,
-        &out_depth,
-        &throttle_tx,
-        &ack_timeout_state,
-        &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
-        "tenant".to_string(),
-        "ns".to_string(),
-        "stream".to_string(),
-        vec![1],
-        None,
-        Some(8),
-        Some(felix_wire::AckMode::PerMessage),
-        false,
-        String::new(),
-    )
-    .await
-    .expect("publish");
-
-    let msg = out_rx.recv().await.expect("outgoing");
-    match msg {
-        Outgoing::Message(Message::PublishError {
-            request_id,
-            message,
-            ..
-        }) => {
-            assert_eq!(request_id, 8);
-            assert!(message.contains("server overloaded"));
-        }
-        _ => panic!("unexpected outgoing"),
-    }
-}
-
-#[tokio::test]
-async fn handle_publish_message_ack_waiter_queue_full_with_permit() {
-    let broker = Broker::new(EphemeralCache::new().into());
-    broker.register_tenant("tenant").await.expect("tenant");
-    broker
-        .register_namespace("tenant", "ns")
-        .await
-        .expect("namespace");
-    broker
-        .register_stream(
-            "tenant",
-            "ns",
-            "stream",
-            felix_broker::StreamMetadata::default(),
-        )
-        .await
-        .expect("stream");
-    let (publish_ctx, _rx, _tx) = make_publish_context(8);
-    let mut cache = HashMap::new();
-    let mut key = String::new();
-    let (out_tx, mut out_rx) = mpsc::channel(1);
-    let out_depth = Arc::new(AtomicUsize::new(0));
-    let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
-    let (cancel_tx, _cancel_rx) = watch::channel(false);
-    let ack_waiters = Arc::new(Semaphore::new(2));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
-
-    let permit = ack_waiters.clone().acquire_owned().await.expect("permit");
-    ack_waiter_tx
-        .try_send(AckWaiterMessage::Publish {
-            encoding: AckEncoding::Json,
-            request_id: 101,
-            payload_len: 1,
-            start: crate::serving::quic::telemetry::t_instant_now(),
-            response_rx: oneshot::channel().1,
-            permit,
-        })
-        .expect("fill queue");
-
-    handle_publish_message(
-        &broker,
-        &publish_ctx,
-        &mut cache,
-        &mut key,
-        false,
-        true,
-        &out_tx,
-        &out_depth,
-        &throttle_tx,
-        &ack_timeout_state,
-        &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
-        "tenant".to_string(),
-        "ns".to_string(),
-        "stream".to_string(),
-        vec![1],
-        None,
-        Some(9),
-        Some(felix_wire::AckMode::PerMessage),
-        false,
-        String::new(),
-    )
-    .await
-    .expect("publish");
-
-    let msg = out_rx.recv().await.expect("outgoing");
-    match msg {
-        Outgoing::Message(Message::PublishError {
-            request_id,
-            message,
-            ..
-        }) => {
-            assert_eq!(request_id, 9);
-            assert!(message.contains("server overloaded"));
-        }
-        _ => panic!("unexpected outgoing"),
-    }
-}
-
-#[tokio::test]
-async fn handle_publish_message_ack_waiter_queue_closed() {
-    let broker = Broker::new(EphemeralCache::new().into());
-    broker.register_tenant("tenant").await.expect("tenant");
-    broker
-        .register_namespace("tenant", "ns")
-        .await
-        .expect("namespace");
-    broker
-        .register_stream(
-            "tenant",
-            "ns",
-            "stream",
-            felix_broker::StreamMetadata::default(),
-        )
-        .await
-        .expect("stream");
-    let (publish_ctx, _rx, _tx) = make_publish_context(8);
-    let mut cache = HashMap::new();
-    let mut key = String::new();
-    let (out_tx, mut out_rx) = mpsc::channel(1);
-    let out_depth = Arc::new(AtomicUsize::new(0));
-    let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
-    let (cancel_tx, _cancel_rx) = watch::channel(false);
-    let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(1);
-    drop(ack_waiter_rx);
-
-    handle_publish_message(
-        &broker,
-        &publish_ctx,
-        &mut cache,
-        &mut key,
-        false,
-        true,
-        &out_tx,
-        &out_depth,
-        &throttle_tx,
-        &ack_timeout_state,
-        &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
-        "tenant".to_string(),
-        "ns".to_string(),
-        "stream".to_string(),
-        vec![1],
-        None,
-        Some(10),
-        Some(felix_wire::AckMode::PerMessage),
-        false,
-        String::new(),
-    )
-    .await
-    .expect("publish");
-
-    let msg = out_rx.recv().await.expect("outgoing");
-    match msg {
-        Outgoing::Message(Message::PublishError {
-            request_id,
-            message,
-            ..
-        }) => {
-            assert_eq!(request_id, 10);
-            assert!(message.contains("server overloaded"));
-        }
-        _ => panic!("unexpected outgoing"),
-    }
-}
-
 /// The single-publish path answers an unservable shard the same way the batch
 /// path does: retryable, with its reason, and not as a missing stream.
 #[tokio::test]
@@ -727,10 +491,12 @@ async fn handle_publish_message_unservable_shard_is_shard_unavailable() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
     let (throttle_tx, _throttle_rx) = watch::channel(false);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let ack_waiters = Arc::new(Semaphore::new(1));
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(1);
+    let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
     handle_publish_message(
         &broker,
         &publish_ctx,
@@ -743,9 +509,7 @@ async fn handle_publish_message_unservable_shard_is_shard_unavailable() {
         &throttle_tx,
         &ack_timeout_state,
         &cancel_tx,
-        &ack_waiters,
-        &ack_waiter_tx,
-        Duration::from_millis(10),
+        &commit_acks,
         "t1".to_string(),
         "ns".to_string(),
         "stream".to_string(),
