@@ -6,11 +6,11 @@ description: "The felixctl command: publish, subscribe, read caches, see where s
 `felixctl` is Felix's command-line tool. It publishes to and reads from
 streams, reads, writes and watches cache keys, shows which broker owns each
 shard, lists tenants, namespaces, streams, caches, brokers and shard
-assignments, and runs load tests. Every command prints readable text by
+assignments, manages RBAC policies and role assignments, and runs load tests. Every command prints readable text by
 default and JSON with `--json`.
 
 Its data-plane commands use only the public API of the Rust client
-(`felix-client`); the listing commands use the control plane's REST API.
+(`felix-client`); the control-plane commands use its REST API.
 
 ## Install
 
@@ -279,6 +279,40 @@ every page is read. `tenant ls` needs a token allowed `tenant.manage` on the
 whole cluster; the rest need the matching manage or view permission for the
 tenant, or `node.view` for nodes and shards.
 
+## RBAC
+
+```bash
+felixctl rbac policy ls
+felixctl rbac policy ls --subject role:reader --json
+felixctl rbac policy add role:reader stream:t1/payments/* stream.subscribe
+felixctl rbac policy add role:alice-session cache:t1/default/sessions/user:alice cache.read
+felixctl rbac policy add role:users cache:t1/default/sessions/user:* cache.write
+felixctl rbac policy rm role:reader stream:t1/payments/* stream.subscribe
+felixctl rbac grouping ls --role role:reader
+felixctl rbac grouping add p:alice role:reader
+felixctl rbac grouping add 'group:https://idp.example#ops' role:reader
+felixctl rbac grouping rm p:alice role:reader --yes
+```
+
+A policy lets a subject, usually a role, take an action on an object. A
+grouping assigns a user, or an IdP group, to a role. The commands act on the
+current tenant and need a control-plane token with `rbac.view`,
+`rbac.policy.manage` or `rbac.assignment.manage` over the objects involved.
+A change reaches brokers in the next token the principal is issued.
+
+`policy add` checks the object against the
+[object grammar](/features/security/#rbac-object-grammar-and-delegation)
+before sending it, and stops with status 2 and the reason when it does not
+fit: an object for another tenant, a `*` over a named stream, a cache key with
+a `*` anywhere but the end, or a key object with an action other than
+`cache.read` or `cache.write`. An object of a kind felixctl does not know is
+sent as is. Action names, and whether the token may grant the rule, are left
+to the control plane, which answers a refusal with status 4 and its message.
+
+`rm` removes one rule, named exactly as `ls` prints it, and exits with status
+5 when there is none. It asks first on a terminal, and needs `--yes`
+anywhere else.
+
 ## Benchmarks
 
 `felixctl bench` runs the scenarios of `felix-loadgen`, the instrument behind
@@ -328,7 +362,7 @@ felixctl man --out-dir ~/.local/share/man/man1
 
 ## Not yet
 
-Control-plane writes (creating streams and caches, moving shards, draining and
-deregistering brokers, RBAC), consumer groups, counters and state reads are
+Control-plane writes other than RBAC (creating streams and caches, moving
+shards, draining and deregistering brokers), consumer groups, counters and state reads are
 planned. Release binaries and packages are not published yet. See
 [issue #872](https://github.com/GetFelix/felix/issues/872).

@@ -1,5 +1,6 @@
 //! Read-only control-plane commands over its REST API: `tenant`,
-//! `namespace`, `stream`, `cache ls|info`, `node` and `shard`.
+//! `namespace`, `stream`, `cache ls|info`, `node` and `shard`, and the HTTP
+//! client the writing commands share.
 //!
 //! Resources are handled as JSON values rather than typed copies of the
 //! control plane's models, so a field the control plane adds shows up in
@@ -116,6 +117,40 @@ impl Api {
             ));
         }
         serde_json::from_str(&body).mark(Exit::Server, format!("GET {path} answered non-JSON"))
+    }
+
+    /// Send `body` as JSON with `method`, for writes answered with no body
+    /// worth reading. 404 is [`Exit::NotFound`], any other refusal
+    /// [`Exit::Server`] with the control plane's message.
+    pub(crate) async fn send_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &Value,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}{path}", self.base);
+        let mut request = self.http.request(method.clone(), &url).json(body);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.mark(
+            Exit::Connection,
+            format!("reach the control plane at {}", self.base),
+        )?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = response.text().await.unwrap_or_default();
+        let exit = if status == reqwest::StatusCode::NOT_FOUND {
+            Exit::NotFound
+        } else {
+            Exit::Server
+        };
+        Err(fail(
+            exit,
+            format!("{method} {path}: {status}: {}", error_message(&text)),
+        ))
     }
 
     /// GET every page of a listing, following `next_cursor`.

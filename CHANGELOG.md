@@ -12,6 +12,15 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl rbac policy ls|add|rm` and `felixctl rbac grouping ls|add|rm` list,
+  grant and revoke the current tenant's RBAC policies and role assignments
+  through the control plane (#1005). `policy add` checks the object against
+  the RBAC grammar first, including cache key and key-prefix objects and their
+  `cache.read`/`cache.write`-only rule, and stops with status 2 and the reason;
+  action names and delegation scope are left to the control plane, whose
+  refusal is printed with status 4. `rm` asks on a terminal and needs `--yes`
+  elsewhere, and exits 5 when the rule does not exist. `felix-cluster` adds
+  `Credentials::rbac_admin_token`.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it

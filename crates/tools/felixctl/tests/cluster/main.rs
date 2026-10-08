@@ -11,6 +11,7 @@ mod bench;
 mod contexts;
 mod control_plane;
 mod data_plane;
+mod rbac;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

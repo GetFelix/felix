@@ -257,3 +257,5 @@ Examples:
   [auth.md](../auth.md#narrowing-by-pairs).
 - Rules can be removed as well as added (`DELETE .../rbac/policies`,
   `DELETE .../rbac/groupings`), under the same scope rules as adding them.
+- `felixctl rbac policy|grouping ls|add|rm` wraps these endpoints, and checks
+  a policy object against the grammar above before sending it.
