@@ -338,6 +338,7 @@ tenant exists.
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}`, from a `t` token |
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}`, from a `t` token |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}`, from a `t` token |
+| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | `stream.manage` and `cache.manage` over every item in the batch, from a `t` token |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` |
 
 ```http
@@ -387,6 +388,11 @@ Content-Type: application/json
   "replication_factor": 3, "consistency": "Quorum" }
 ```
 
+Creating a stream or cache that already exists with the same configuration
+answers `200` with the existing one, so a create is safe to retry. A different
+configuration under the same name is `409`. A stream's `routing` counts only
+when the request names it.
+
 A tenant admin's token already carries the manage actions: exchange expands
 `tenant.manage:tenant:t1` to `ns.manage:namespace:t1/*`,
 `stream.manage:stream:t1/*/*` and `cache.manage:cache:t1/*/*`. Listings return
@@ -410,6 +416,41 @@ admin. The feeds are what brokers seed from, and take the broker's own
 credential (`FELIX_NODE_TOKEN`), the same one that reads the shard-assignment
 watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
+
+#### Creating several at once
+
+`POST /v1/tenants/{t}/namespaces/{ns}/resources` creates up to 256 streams and
+caches in one namespace, all of them or none. Each item has the body its own
+create endpoint takes.
+
+```http
+POST /v1/tenants/t1/namespaces/room-42/resources
+Content-Type: application/json
+
+{ "streams": [ { "stream": "chat", "kind": "Stream", "shards": 1,
+                 "retention": { "max_age_seconds": null, "max_size_bytes": null },
+                 "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true } ],
+  "caches":  [ { "cache": "cursors", "display_name": "Cursors" },
+               { "cache": "board", "display_name": "Board" } ] }
+```
+
+| Answer | When | Created |
+| --- | --- | --- |
+| `201` | at least one item was new | the new items |
+| `200` | every item already existed as asked | nothing |
+| `400` | empty, over 256 items, an invalid item, or a name given twice | nothing |
+| `403` | the token lacks the manage action over any one item | nothing |
+| `404` | the tenant or namespace does not exist | nothing |
+| `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
+| `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
+
+A success lists every item in request order with `"status": "created"` or
+`"unchanged"`, so a caller that failed part-way sends the same batch again.
+Permission is checked for every item before anything is read. The new items
+are written in one Postgres transaction, or one Raft log entry, so a concurrent
+create of the same name cannot leave part of a batch behind. See
+[Creating streams and caches together](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#creating-streams-and-caches-together)
+for the details.
 
 ### Internal Bootstrap API (Day-0)
 

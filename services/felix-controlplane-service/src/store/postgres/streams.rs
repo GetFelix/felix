@@ -132,18 +132,20 @@ pub(super) async fn stream_routings(
 
 pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> StoreResult<Stream> {
     let mut tx = store.pool.begin().await?;
+    super::ensure_namespace(&mut tx, &stream.tenant_id, &stream.namespace).await?;
+    insert_stream(&mut tx, &stream).await?;
+    tx.commit().await?;
+    metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
+    store.refresh_counts().await?;
+    Ok(stream)
+}
 
-    let ns_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM namespaces WHERE tenant_id = $1 AND namespace = $2)",
-    )
-    .bind(&stream.tenant_id)
-    .bind(&stream.namespace)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !ns_exists {
-        return Err(StoreError::NotFound("namespace".into()));
-    }
-
+/// The row and its `Created` change, inside the caller's transaction.
+/// `Conflict` when the stream exists.
+pub(super) async fn insert_stream(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    stream: &Stream,
+) -> StoreResult<()> {
     let insert = sqlx::query(
         r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
@@ -161,11 +163,14 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
     .bind(stream.durable)
     .bind(stream.region.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await;
     if let Err(err) = insert {
         if is_unique_violation(&err) {
-            return Err(StoreError::Conflict("stream exists".into()));
+            return Err(StoreError::Conflict(format!(
+                "stream {} exists",
+                stream.stream
+            )));
         }
         return Err(StoreError::Unexpected(err.into()));
     }
@@ -177,15 +182,10 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
     .bind(&stream.stream)
-    .bind(serde_json::to_value(&stream).ok())
-    .execute(&mut *tx)
-    .await
-    ?;
-
-    tx.commit().await?;
-    metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
-    store.refresh_counts().await?;
-    Ok(stream)
+    .bind(serde_json::to_value(stream).ok())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn patch_stream(

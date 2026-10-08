@@ -85,8 +85,9 @@ pub(crate) async fn list_streams(
     request_body = StreamCreateRequest,
     responses(
         (status = 201, description = "Stream created", body = Stream),
+        (status = 200, description = "Stream already exists with this configuration; nothing changed", body = Stream),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Stream already exists, or `jump_hash` routing was asked for before the fleet finalized it", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Stream already exists with a different configuration, or `jump_hash` routing was asked for before the fleet finalized it", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_stream(
@@ -96,19 +97,52 @@ pub(crate) async fn create_stream(
     Json(body): Json<StreamCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_stream_manage(&state, &tenant_id, &headers, &namespace, &body.stream).await?;
+    validate_stream_request(&body)?;
+    ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
+    let asked = body.routing;
+    let finalized = jump_hash_finalized(&state).await?;
+    let stream = new_stream(tenant_id, namespace, body, finalized)?;
+    match state.store.create_stream(stream.clone()).await {
+        Ok(created) => Ok((StatusCode::CREATED, Json(created))),
+        Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
+            Ok(existing) if same_stream(&existing, &stream, asked) => {
+                Ok((StatusCode::OK, Json(existing)))
+            }
+            Ok(_) | Err(StoreError::NotFound(_)) => Err(api_conflict(
+                "conflict",
+                "stream already exists with a different configuration",
+            )),
+            Err(err) => Err(api_internal("failed to fetch stream", &err)),
+        },
+        Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
+        Err(err) => Err(api_internal("failed to create stream", &err)),
+    }
+}
+
+/// The checks a create request must pass before anything is read.
+pub(crate) fn validate_stream_request(body: &StreamCreateRequest) -> Result<(), ApiError> {
     validate_identifier("stream", &body.stream).map_err(|err| api_validation_error(&err))?;
     body.retention
         .validate()
         .map_err(|err| api_validation_error(&err))?;
-    ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
-    let region = match body.region {
-        Some(region) if region.trim().is_empty() => {
-            return Err(api_validation_error("region must not be empty when set"));
-        }
-        region => region,
-    };
-    let routing = creation_routing(&state, body.routing).await?;
-    let stream = Stream {
+    if body
+        .region
+        .as_ref()
+        .is_some_and(|region| region.trim().is_empty())
+    {
+        return Err(api_validation_error("region must not be empty when set"));
+    }
+    Ok(())
+}
+
+/// The stream a validated request creates, with its routing resolved.
+pub(crate) fn new_stream(
+    tenant_id: String,
+    namespace: String,
+    body: StreamCreateRequest,
+    jump_hash_finalized: bool,
+) -> Result<Stream, ApiError> {
+    Ok(Stream {
         tenant_id,
         namespace,
         stream: body.stream,
@@ -119,44 +153,73 @@ pub(crate) async fn create_stream(
         consistency: body.consistency,
         delivery: body.delivery,
         durable: body.durable,
-        region,
-        routing,
+        region: body.region,
+        routing: creation_routing(body.routing, jump_hash_finalized)?,
+    })
+}
+
+/// Whether creating `wanted` again would leave `existing` as it is, which
+/// makes the create a no-op rather than a conflict.
+///
+/// Routing counts only when the caller asked for one. Left to the server it
+/// depends on fleet state, so a retry after a finalize would otherwise
+/// conflict with the stream the first attempt made.
+pub(crate) fn same_stream(
+    existing: &Stream,
+    wanted: &Stream,
+    routing_asked: Option<StreamRouting>,
+) -> bool {
+    let routing = match routing_asked {
+        Some(_) => wanted.routing,
+        None => existing.routing,
     };
-    match state.store.create_stream(stream.clone()).await {
-        Ok(created) => Ok((StatusCode::CREATED, Json(created))),
-        Err(StoreError::Conflict(_)) => Err(api_conflict("conflict", "stream already exists")),
-        Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
-        Err(err) => Err(api_internal("failed to create stream", &err)),
+    *existing
+        == Stream {
+            routing,
+            ..wanted.clone()
+        }
+}
+
+pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
+    StreamKey {
+        tenant_id: stream.tenant_id.clone(),
+        namespace: stream.namespace.clone(),
+        stream: stream.stream.clone(),
     }
 }
 
-/// The mapping a new stream gets: jump hash once the fleet has finalized
-/// `jump_hash_routing`, modulo before.
+/// Whether the fleet has finalized `jump_hash_routing`.
 ///
 /// Read before the create rather than in the same transaction. A finalize that
 /// lands in between only means this stream gets modulo, which every broker
 /// serves; the reverse cannot happen because finalizing is one-way and, once
 /// done, refuses any broker that could not serve jump hash.
-async fn creation_routing(
-    state: &AppState,
-    asked: Option<StreamRouting>,
-) -> Result<StreamRouting, ApiError> {
-    if asked == Some(StreamRouting::Modulo) {
-        return Ok(StreamRouting::Modulo);
-    }
+pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiError> {
     let feature = felix_common::fleet::JUMP_HASH_ROUTING.name();
-    let enabled = state
+    Ok(state
         .store
         .enabled_fleet_features()
         .await
         .map_err(|ref err| api_internal("read the enabled fleet features", err))?
-        .contains(feature);
-    match (asked, enabled) {
+        .contains(feature))
+}
+
+/// The mapping a new stream gets: jump hash once the fleet has finalized
+/// `jump_hash_routing`, modulo before.
+fn creation_routing(
+    asked: Option<StreamRouting>,
+    finalized: bool,
+) -> Result<StreamRouting, ApiError> {
+    match (asked, finalized) {
+        (Some(StreamRouting::Modulo), _) => Ok(StreamRouting::Modulo),
         (_, true) => Ok(StreamRouting::JumpHash),
         (None, false) => Ok(StreamRouting::Modulo),
         (Some(_), false) => Err(api_conflict(
             "not_finalized",
-            &format!("routing jump_hash needs the {feature} fleet feature to be finalized"),
+            &format!(
+                "routing jump_hash needs the {} fleet feature to be finalized",
+                felix_common::fleet::JUMP_HASH_ROUTING.name()
+            ),
         )),
     }
 }
@@ -267,7 +330,7 @@ pub(crate) async fn delete_stream(
     }
 }
 
-fn stream_object(tenant_id: &str, namespace: &str, stream: &str) -> ParsedObject {
+pub(crate) fn stream_object(tenant_id: &str, namespace: &str, stream: &str) -> ParsedObject {
     ParsedObject::Stream {
         tenant_id: tenant_id.to_string(),
         namespace: Segment::Exact(namespace.to_string()),
