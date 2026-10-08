@@ -10,14 +10,15 @@ use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
-use crate::log::{AppendRecord, AppendResult, RecordMark};
+use crate::log::{AppendRecord, AppendResult, Offset, RecordMark};
 use crate::segment::SegmentWriter;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 impl DiskLog {
     /// Roll if needed, then assign offsets and write the batch, if `condition`
-    /// holds; `None`, and nothing written, when it does not. With `order`, the
-    /// batch's range is claimed there as soon as its offsets are assigned.
+    /// holds; `Err` with the log's tail, and nothing written, when it does
+    /// not. With `order`, the batch's range is claimed there as soon as its
+    /// offsets are assigned.
     ///
     /// The work runs on the log's append thread. A batch whose caller gives
     /// up before the thread starts on it is skipped. Once started it is
@@ -30,7 +31,7 @@ impl DiskLog {
         records: Vec<AppendRecord>,
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
-    ) -> Result<Option<Written>> {
+    ) -> Result<std::result::Result<Written, Offset>> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
         }
@@ -57,12 +58,12 @@ impl DiskLog {
                     let kept =
                         appender.append_now(&records, &digests, condition, order.as_ref(), gone);
                     let (reply, index) = match kept {
-                        Ok(Some(kept)) => (
-                            Ok(Some((kept.written, kept.prepare_roll))),
+                        Ok(Ok(kept)) => (
+                            Ok(Ok((kept.written, kept.prepare_roll))),
                             (!kept.index.is_empty())
                                 .then(|| (kept.index, kept.segment, Arc::clone(&appender))),
                         ),
-                        Ok(None) => (Ok(None), None),
+                        Ok(Err(tail)) => (Ok(Err(tail)), None),
                         Err(err) => (Err(err), None),
                     };
                     (Ok((reply, records, appender)), index)
@@ -83,8 +84,9 @@ impl DiskLog {
         let (appended, records, appender) = appended;
         drop((records, appender));
         let appended = appended?;
-        let Some((written, prepare_roll)) = appended else {
-            return Ok(None);
+        let (written, prepare_roll) = match appended {
+            Ok(appended) => appended,
+            Err(tail) => return Ok(Err(tail)),
         };
 
         // Start the replacement while the current segment still has room,
@@ -132,7 +134,7 @@ impl DiskLog {
             *inner.roll_task.lock() = Some(handle);
         }
 
-        Ok(Some(written))
+        Ok(Ok(written))
     }
 }
 
@@ -179,17 +181,19 @@ pub(super) enum WriteIf {
         sequence: u64,
     },
     /// The batch must start at exactly this offset.
-    At(crate::log::Offset),
+    At(Offset),
 }
 
 impl LogInner {
     /// The append itself, on the log's append thread: roll if the batch will
     /// not fit, then encode the batch and give it its place under `segments`,
     /// write it without that lock, and take it in under the lock again.
-    /// `None` when `condition` does not hold or the caller gave up before the
-    /// thread got to it;
-    /// otherwise the batch, and whether the segment has crossed the early-roll
-    /// threshold.
+    /// `Err` with the tail when `condition` does not hold or the caller gave
+    /// up before the thread got to it; otherwise the batch, and whether the
+    /// segment has crossed the early-roll threshold.
+    ///
+    /// The tail is read under the same lock the condition was checked under,
+    /// so a refusal reports the tail it was refused against.
     fn append_now(
         &self,
         records: &[AppendRecord],
@@ -197,10 +201,10 @@ impl LogInner {
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
         gone: &dyn Fn() -> bool,
-    ) -> Result<Option<Kept>> {
+    ) -> Result<std::result::Result<Kept, Offset>> {
         let _appends = self.append_lock.lock();
         if gone() {
-            return Ok(None);
+            return Ok(Err(self.segments.read().tail_offset()));
         }
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
@@ -227,7 +231,7 @@ impl LogInner {
             WriteIf::At(offset) => segments.tail_offset() == offset,
         };
         if !holds {
-            return Ok(None);
+            return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
         let staged = segments.active_mut().stage(records)?;
@@ -258,7 +262,7 @@ impl LogInner {
         };
         let turn = order.map(|order| order.reserve_owned(first_offset, last_offset + 1));
         self.hold_append_at(HoldAt::Reply);
-        Ok(Some(Kept {
+        Ok(Ok(Kept {
             written: Written { pending, turn },
             prepare_roll,
             index,

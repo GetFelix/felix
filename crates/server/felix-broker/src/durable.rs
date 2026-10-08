@@ -213,6 +213,28 @@ impl StreamLog {
     }
 
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
+    /// `expected`. `Err` with the log's tail, and nothing written or claimed,
+    /// otherwise. The check is made where the offsets are assigned, so it is
+    /// atomic with the claim.
+    // One parameter per part of a record, as `begin_append_marked` has.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_append_if(
+        &self,
+        expected: Offset,
+        payloads: &[Bytes],
+        marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let records = records(payloads, marks, publishers, timestamp_micros)?;
+        self.log
+            .append_claimed_at(expected, &records, order)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// [`Self::begin_append_marked`], only if the batch starts at exactly
     /// `first_offset`. `None`, and nothing written, otherwise.
     pub async fn begin_append_marked_at(
         &self,

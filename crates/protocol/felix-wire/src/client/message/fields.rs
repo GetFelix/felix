@@ -57,14 +57,16 @@ pub enum AckMode {
     PerBatch,
 }
 
-/// Why a `publish_idempotent` was not appended.
+/// Why a `publish_idempotent`, `publish_if` or conditional `commit` was not
+/// appended.
 ///
 /// Each names a different remedy, which is why they are not one string. A
 /// gap means the producer skipped ahead and must not continue as if it had
 /// not; an unknown producer means this broker holds nothing to check against
 /// and the producer must start again with a new id; an expired sequence is a
-/// re-send from further back than the broker remembers; and not-leader means
-/// the batch went to a broker that does not hold the shard's sequences.
+/// re-send from further back than the broker remembers; an offset mismatch
+/// means another write landed first; and not-leader means the batch went to
+/// a broker that does not lead the shard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishRefusalReason {
@@ -87,6 +89,15 @@ pub enum PublishRefusalReason {
     /// offered `FEATURE_SEQUENCE_REUSED`; any other client is answered as if
     /// it had re-sent the batch held.
     SequenceReused,
+    /// A `publish_if` or conditional `commit` expected the shard's next
+    /// offset to be something else. Nothing was written and no offset was
+    /// consumed. `tail` is the next offset as the broker checked it,
+    /// including any record a promotion wrote, so it is where a writer that
+    /// still owns the shard tries again.
+    OffsetMismatch {
+        /// The shard's next offset.
+        tail: u64,
+    },
     /// This broker does not lead the shard, and only the leader holds the
     /// sequences; the batch has to go to the broker named here.
     NotLeader {

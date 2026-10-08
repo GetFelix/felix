@@ -149,15 +149,47 @@ A batch the broker appends once however many times it arrives. Always
 acknowledged, with `publish_ok` or `publish_refused`. `sequence` counts this
 producer's batches on the shard from zero, one per batch whatever its size.
 
+### PublishIf
+```
+{ "type": "publish_if", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "expected_offset": <u64>, "request_id": <u64> }
+```
+A batch appended only if it would start at exactly `expected_offset`, the next
+offset of the shard `key` routes to (shard 0 without a key). The check is made
+where the broker assigns offsets, under the same lock, so of two `publish_if`
+expecting the same offset exactly one is written. Answered with `publish_ok`
+carrying the batch's first offset once it is durable (on a majority for a
+`Quorum` stream), or `publish_refused` with `offset_mismatch` and nothing
+written. Always acknowledged.
+
+A refused batch consumes no offset and holds up no later publish. The tail is
+the raw log tail, so it counts the generation-start record a new leader
+writes: after a failover a writer's expected offset is stale even with no
+rival, and the refusal tells it where to resume. An empty batch and a stream
+with no log are refused with `error` (`invalid_request`).
+
+Not forwarded: a broker that does not lead the shard answers `not_leader` to a
+client that offered `FEATURE_REDIRECT`, as it does for `commit`. Sent on its
+own bidirectional stream, outside the publish pipeline, and only to a broker
+that advertised `FEATURE_PUBLISH_CONDITIONAL`. It is a message of its own
+rather than a field on `publish_batch` because an older broker ignores unknown
+fields and would append unconditionally.
+
+An answer lost in transit cannot be retried blindly: the retry is refused by
+the write it repeats. The writer reads the shard at `expected_offset` to learn
+whether its batch landed. See [Conditional writes](semantics.md#conditional-writes).
+
 ### PublishRefused (server -> client)
 ```
 { "type": "publish_refused", "request_id": <u64>, "reason": <reason>, "message": "<string>" }
 ```
 Where `reason` is one of `{"sequence_gap": {"expected": <u64>}}`,
-`"unknown_producer"`, `"sequence_expired"`, `"sequence_reused"`, or
+`"unknown_producer"`, `"sequence_expired"`, `"sequence_reused"`,
+`{"offset_mismatch": {"tail": <u64>}}`, or
 `{"not_leader": {"node_id": "<string>", "addr": "<host:port, optional>"}}`.
-Only ever sent in answer to a `publish_idempotent`, and `"sequence_reused"` only
-to a client that offered `FEATURE_SEQUENCE_REUSED`.
+Sent in answer to a `publish_idempotent`, a `publish_if`, or a `commit` that
+carried `expected_offset`. `"sequence_reused"` goes only to a client that
+offered `FEATURE_SEQUENCE_REUSED`, and `offset_mismatch` only in answer to a
+conditional write. `tail` is the shard's next offset as the broker checked it.
 
 ### Subscribe
 ```
@@ -722,7 +754,7 @@ empty value.
   "stream": "<string>", "entity_key": "<base64>", "event": "<base64>",
   "changes": [ { "op": "put", "key": "<string>", "value": "<base64>" },
                { "op": "delete", "key": "<string>" } ],
-  "request_id": <u64> }
+  "request_id": <u64>, "expected_offset": <u64, optional> }
 ```
 
 Appends `event` and applies `changes` to the shard of `stream` that
@@ -732,6 +764,15 @@ the shard answers `not_leader` to a client that offered `FEATURE_REDIRECT`,
 and never forwards a commit. A cluster member refuses one until the fleet has
 finalized `atomic_commit`. Sent only to a broker that advertised
 `FEATURE_ATOMIC_COMMIT`. Semantics in [`atomic-commit.md`](atomic-commit.md).
+
+`expected_offset` makes the commit conditional, the same check `publish_if`
+makes: it is written only if it would land at exactly that offset, so nothing
+was appended to the shard since the writer saw its tail. Refused, it is
+answered with `publish_refused` and `offset_mismatch`, and neither its event
+nor its state is written. The check is on the whole shard, not on the keys the
+commit writes. Sent only to a broker that advertised
+`FEATURE_PUBLISH_CONDITIONAL`: an older one ignores the field and would commit
+unconditionally. Absent, the frame is the one every client sent before.
 
 ### CommitOk (server -> client)
 ```
@@ -1510,6 +1551,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
+| `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. See [PublishIf](#publishif) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

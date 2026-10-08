@@ -270,6 +270,31 @@ impl DiskLog {
         Ok(written.claimed())
     }
 
+    /// [`DiskLog::append_claimed`], only if the batch would start at exactly
+    /// `first_offset`. `Err` with the log's tail, and nothing written or
+    /// claimed, when it would start anywhere else.
+    ///
+    /// The check is made where offsets are assigned, under the same lock, so
+    /// two writers expecting the same offset cannot both pass it. A refused
+    /// batch consumes no offset and claims no range, so it holds up no later
+    /// append.
+    pub async fn append_claimed_at(
+        &self,
+        first_offset: Offset,
+        records: &[AppendRecord],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            Some(order),
+        )
+        .await?;
+        Ok(written.map(append::Written::claimed))
+    }
+
     /// [`DiskLog::append_pending`], only if the batch would start at exactly
     /// `first_offset`. `None`, and nothing written, when the tail is anywhere
     /// else.
@@ -291,7 +316,7 @@ impl DiskLog {
             None,
         )
         .await?;
-        Ok(written.map(|written| written.pending))
+        Ok(written.ok().map(|written| written.pending))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
@@ -321,7 +346,7 @@ impl DiskLog {
             Some(order),
         )
         .await?;
-        Ok(written.map(append::Written::claimed))
+        Ok(written.ok().map(append::Written::claimed))
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync

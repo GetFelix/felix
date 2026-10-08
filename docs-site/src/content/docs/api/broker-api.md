@@ -245,6 +245,42 @@ publisher
 The Rust client uses this frame for every publish once the broker advertises
 it, so `publish` and `publish_batch` already take this path.
 
+### Conditional Publish
+
+Appends a batch only if it would start at exactly `expected_offset`, the
+shard's next offset. Sent only to a broker that advertised
+`FEATURE_PUBLISH_CONDITIONAL`.
+
+```json
+{
+  "type": "publish_if",
+  "tenant_id": "acme",
+  "namespace": "games",
+  "stream": "match-7",
+  "payloads": ["<base64>"],
+  "expected_offset": 120,
+  "request_id": 9
+}
+```
+
+`key` is optional and routes the batch like `publish_batch`. Written, the
+answer is `publish_ok` with `offset`, once the batch is durable. Refused, it is
+`publish_refused` with `{"offset_mismatch": {"tail": <u64>}}`, and nothing was
+written. A broker that does not lead the shard answers `not_leader`. `commit`
+takes the same optional `expected_offset`.
+
+```rust
+use felix_client::ConditionalWrite;
+
+match client
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], 120)
+    .await?
+{
+    ConditionalWrite::Written { offset } => assert_eq!(offset, 120),
+    ConditionalWrite::Refused { tail } => println!("the shard is at {tail}"),
+}
+```
+
 ### Publish Pipeline Configuration
 
 Broker-side tuning for publish pipeline:

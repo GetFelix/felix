@@ -1,4 +1,5 @@
-//! Atomic commits and state reads on the control stream.
+//! Atomic commits, conditional publishes and state reads on the control
+//! stream.
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -7,26 +8,30 @@ use felix_wire::{Message, StateChange};
 
 use super::authz::authorize_stream;
 use super::{Ctx, Session, Step};
+use crate::serving::commit_ops::NotWritten;
 use crate::serving::quic::handlers::cache_watch::WatchResponder;
 use crate::serving::quic::handlers::publish::{PublishContext, resolve_shard};
 use crate::shards::routing::{Dispatch, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
-/// The shard a request names: a stream and the entity key that picks the
-/// shard.
+/// The shard a request names: a stream and the key that picks the shard,
+/// shard 0 without one.
 pub(super) struct Target {
     pub(super) tenant_id: String,
     pub(super) namespace: String,
     pub(super) stream: String,
-    pub(super) entity_key: Bytes,
+    pub(super) entity_key: Option<Bytes>,
 }
 
+// One parameter per field of the message it answers.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn commit(
     cx: &Ctx<'_>,
     session: &mut Session,
     target: Target,
     event: Bytes,
     changes: Vec<StateChange>,
+    expected_offset: Option<u64>,
     request_id: u64,
 ) -> Result<Step> {
     if !authorize_stream(
@@ -50,9 +55,10 @@ pub(super) async fn commit(
             &target.tenant_id,
             &target.namespace,
             &target.stream,
-            &target.entity_key,
+            target.entity_key.as_deref().unwrap_or_default(),
             event,
             changes,
+            expected_offset,
             session
                 .auth_ctx
                 .as_ref()
@@ -61,11 +67,77 @@ pub(super) async fn commit(
         .await
         {
             Ok(offset) => Message::CommitOk { request_id, offset },
-            Err(err) => err.prefixed("commit not served").into_message(),
+            Err(err) => not_written(err, request_id, "commit not served"),
         },
     };
     responder(cx).send(answer).await?;
     Ok(Step::Next)
+}
+
+/// A `publish_if`: answered on this stream once the batch is durable, or
+/// refused with the tail. Not queued behind the stream's other publishes,
+/// because its answer depends on the tail and not on their order.
+pub(super) async fn publish_if(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    target: Target,
+    payloads: Vec<Vec<u8>>,
+    expected_offset: u64,
+    request_id: u64,
+) -> Result<Step> {
+    if !authorize_stream(
+        session.auth_ctx.as_ref(),
+        &target.tenant_id,
+        Action::StreamPublish,
+        &target.namespace,
+        &target.stream,
+        Some(request_id),
+        cx.authz_ctx,
+    )
+    .await?
+    {
+        return Ok(Step::Close(false));
+    }
+    let answer = match redirect(cx.publish_ctx, session.peer_features, &target) {
+        Some(answer) => answer,
+        None => match crate::serving::commit_ops::publish_at(
+            cx.broker,
+            cx.publish_ctx,
+            &target.tenant_id,
+            &target.namespace,
+            &target.stream,
+            target.entity_key.as_deref(),
+            payloads.into_iter().map(Bytes::from).collect(),
+            expected_offset,
+            session
+                .auth_ctx
+                .as_ref()
+                .and_then(|auth| auth.publisher.as_ref()),
+        )
+        .await
+        {
+            Ok(offset) => Message::PublishOk {
+                request_id,
+                offset: Some(offset),
+            },
+            Err(err) => not_written(err, request_id, "publish not served"),
+        },
+    };
+    responder(cx).send(answer).await?;
+    Ok(Step::Next)
+}
+
+/// A conditional write's refusal names the tail; any other failure is the
+/// error it always was.
+fn not_written(err: NotWritten, request_id: u64, context: &str) -> Message {
+    match err {
+        NotWritten::OffsetMismatch { tail } => Message::PublishRefused {
+            request_id,
+            reason: felix_wire::PublishRefusalReason::OffsetMismatch { tail },
+            message: format!("the shard's next offset is {tail}"),
+        },
+        NotWritten::Refused(err) => err.prefixed(context).into_message(),
+    }
 }
 
 pub(super) async fn state_get(
@@ -96,7 +168,7 @@ pub(super) async fn state_get(
             &target.tenant_id,
             &target.namespace,
             &target.stream,
-            &target.entity_key,
+            target.entity_key.as_deref().unwrap_or_default(),
             &key,
         )
         .await
@@ -139,7 +211,7 @@ fn redirect(publish_ctx: &PublishContext, peer_features: u32, target: &Target) -
             &target.tenant_id,
             &target.namespace,
             &target.stream,
-            Some(&target.entity_key),
+            target.entity_key.as_deref(),
         ),
         kind: ShardKind::Stream,
     };

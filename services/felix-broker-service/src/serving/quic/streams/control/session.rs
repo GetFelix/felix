@@ -124,6 +124,10 @@ pub(super) async fn authenticate(
                                 None => 0,
                             }
                             | felix_wire::FEATURE_ATOMIC_COMMIT
+                            // A broker without durable storage has no
+                            // offsets to compare, so it refuses every
+                            // one; it still knows the request.
+                            | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | match publish_ctx.client_endpoints {
                                 Some(_) => {
                                     felix_wire::FEATURE_TOPOLOGY

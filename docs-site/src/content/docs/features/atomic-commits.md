@@ -51,6 +51,32 @@ flowchart LR
     R --> V[state view: order-42 at version N]
 ```
 
+## A commit at an expected offset
+
+`commit_if` takes one more argument, the offset the commit must land at: the
+shard's next. It is written only if nothing was appended to the shard since
+the writer saw that offset, and refused otherwise with the shard's tail and
+nothing written, neither the event nor the state.
+
+```rust
+use felix_client::{CommitOp, ConditionalWrite};
+
+let answer = cluster
+    .commit_if("acme", "games", b"match-7", vec![
+        CommitOp::publish("match-events", r#"{"tick":120}"#),
+        CommitOp::put("match-events", "score", r#"{"red":3,"blue":1}"#),
+    ], next)
+    .await?;
+if let ConditionalWrite::Refused { tail } = answer {
+    // Someone else wrote, or a failover moved the tail. Re-read from `tail`.
+}
+```
+
+This is a compare-and-set on the whole shard, not on a key: any write to the
+shard, including a plain publish, refuses it. A per-key version check is not
+built yet ([#1051](https://github.com/GetFelix/felix/issues/1051)). The same
+check on a plain publish is [`publish_if`](/features/pubsub/#conditional-publishes).
+
 ## What atomic covers, and what it does not
 
 A commit is atomic because it is one record in one shard's log. Storage,

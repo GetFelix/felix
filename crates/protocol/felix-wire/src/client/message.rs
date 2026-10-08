@@ -364,11 +364,39 @@ pub enum Message {
         producer_id: u64,
         sequence: u64,
     },
-    /// A `publish_idempotent` the broker would not append, with a reason the
-    /// producer can act on rather than prose it would have to parse.
+    /// A batch appended only if it would start at exactly `expected_offset`:
+    /// the shard's next offset, so nothing else was appended since the
+    /// writer last saw the tail.
     ///
-    /// Only ever sent to a client that offered `FEATURE_IDEMPOTENT_PRODUCER`,
-    /// which it did by sending `publish_idempotent` at all.
+    /// Answered with `publish_ok` carrying the batch's first offset, or
+    /// `publish_refused` with `offset_mismatch` and the tail, having written
+    /// nothing. Always acknowledged. Not forwarded: a broker that does not
+    /// lead the shard answers `not_leader`. Sent only to a broker that
+    /// advertised `FEATURE_PUBLISH_CONDITIONAL`.
+    PublishIf {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_vec")]
+        payloads: Vec<Vec<u8>>,
+        /// Routes the batch like `PublishBatch.key`. The expected offset is
+        /// the tail of the shard the key routes to.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::client::message::base64_serde::base64_option_bytes"
+        )]
+        key: Option<Bytes>,
+        expected_offset: u64,
+        request_id: u64,
+    },
+    /// A `publish_idempotent`, `publish_if` or conditional `commit` the
+    /// broker would not append, with a reason the writer can act on rather
+    /// than prose it would have to parse.
+    ///
+    /// Only ever sent to a client that offered `FEATURE_IDEMPOTENT_PRODUCER`
+    /// or `FEATURE_PUBLISH_CONDITIONAL`, which it did by sending one of those
+    /// requests at all.
     PublishRefused {
         request_id: u64,
         reason: PublishRefusalReason,
@@ -759,6 +787,14 @@ pub enum Message {
         #[serde(default)]
         changes: Vec<StateChange>,
         request_id: u64,
+        /// Commit only if the record would land at exactly this offset, the
+        /// shard's next: a compare-and-set on the whole shard. Refused with
+        /// `publish_refused` and `offset_mismatch`, having written nothing.
+        /// Sent only to a broker that advertised
+        /// `FEATURE_PUBLISH_CONDITIONAL`; absent is the commit every client
+        /// sent before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_offset: Option<u64>,
     },
     /// The commit is durable (on a `Quorum` stream, on a majority) at
     /// `offset`, which is also the version of every key it wrote.

@@ -170,6 +170,18 @@ then it dominates: waking all of them makes the work per commit grow with the
 number in flight, so throughput falls as load rises. Measured at
 [storage-performance.md](storage-performance.md#8-releasing-a-commit-turn-wakes-one-publisher-not-all-of-them).
 
+### A conditional append
+
+`publish_if`, and a commit with an expected offset, append only if the batch
+would start at exactly that offset. The log checks the tail on its append
+thread, under the lock that assigns offsets, and claims the batch's range in
+the commit sequencer in the same step (`DiskLog::append_claimed_at`). A batch
+that fails the check is never staged: it writes nothing, consumes no offset,
+and reserves no range, so nothing behind it waits on a turn that will not
+come. The refusal reports the tail read under that lock. A follower storing a
+leader's batch at the leader's offsets uses the same check without the claim
+(`append_pending_at`).
+
 The append happens **before** fanout and **before** the acknowledgement. The
 alternative is unrecoverable: a record delivered to subscribers and acknowledged
 to the publisher but lost in a crash is a silent hole in a log that consumers

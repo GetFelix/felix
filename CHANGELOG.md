@@ -12,6 +12,23 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A write can be made only at the offset its writer expects, on a broker
+  advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
+  `publish_if` appends a batch only if it would start at `expected_offset`, the
+  shard's next; `commit` takes the same optional `expected_offset` as a
+  compare-and-set on the whole shard. The check is made where the log assigns
+  offsets, under the same lock, so of two writers at one offset exactly one is
+  written. A refusal is `publish_refused` with the new `offset_mismatch` reason
+  and the shard's tail; it writes nothing, consumes no offset and holds up no
+  later publish. The tail counts a new leader's generation-start record, so a
+  writer's expected offset goes stale on failover. Served by the shard's
+  leader only: a non-leader answers `not_leader`. An in-memory stream refuses
+  it. A commit without `expected_offset` is byte-identical to before.
+  felix-client adds `publish_if` and `commit_if` on `Client` and
+  `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
+  `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,
+  `publish_batch_at` and `commit_to_handle_at`. Per-key version
+  preconditions are #1051.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
@@ -152,6 +169,10 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
+  `expected_offset` field, and `PublishRefusalReason` and
+  `felix_broker::BrokerError` have new variants, so struct literals and
+  exhaustive matches need updating.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only
