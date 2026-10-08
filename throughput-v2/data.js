@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791439239308,
+  "lastUpdate": 1791439611288,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24752,6 +24752,58 @@ window.BENCHMARK_DATA = {
             "range": "1979.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 831423.95\nmean: 832184.37\nstdev: 1979.52\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d23ba70608a1512fb44f198ada44a3d53888d205",
+          "message": "feat(wire,broker,client): read a bounded range of a stream without subscribing (#1018) (#1054)\n\nA broker advertising FEATURE_STREAM_READ (0x2000_0000) answers stream_read\nwith stream_records: one page of a durable stream shard's committed records,\nfrom `from` and stopping before an optional `end`, with the next_offset to\ncontinue from. No subscriber is registered and the read never waits.\n\n- Broker::read_range reads with one read_from per page. It stops at the\n  committed mark on a Quorum shard and, under FsyncMode::OnCommit, at the\n  durable offset, so a record written but not synced is never returned.\n  next_offset steps over generation-start records.\n- Pages are capped at FELIX_DURABLE_MAX_RECORDS_PER_READ records and 4 MiB of\n  payload. A start below retention or past the tail gets the same\n  subscribe_cursor_error a subscribe does.\n- Needs stream.subscribe; only the shard's leader answers, redirecting a client\n  that offered FEATURE_REDIRECT.\n- Client::read and ClusterClient::read return a StreamPage.\n\nFrames to clients that never send the request are unchanged, and\nORIGINAL_V1_FLAGS is untouched. An end on Subscribe is #1053.\n\nSpec-Unaffected: a read-only request that serves what a subscriber may already read, below the committed mark; the lease, replication and quorum paths are unchanged.",
+          "timestamp": "2026-10-07T22:57:08-07:00",
+          "tree_id": "123f104138964825cb9bc1a45badade352c3c9a6",
+          "url": "https://github.com/GetFelix/felix/commit/d23ba70608a1512fb44f198ada44a3d53888d205"
+        },
+        "date": 1791439610509,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342426.91,
+            "range": "8298.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342426.91\nmean: 346705.04\nstdev: 8298.06\ncv: 2.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342426.91,
+            "range": "8298.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342426.91\nmean: 346705.04\nstdev: 8298.06\ncv: 2.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81032.06,
+            "range": "388.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81032.06\nmean: 80977.99\nstdev: 388.74\ncv: 0.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810320.63,
+            "range": "3887.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810320.63\nmean: 809779.87\nstdev: 3887.40\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
