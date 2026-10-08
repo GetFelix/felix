@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791482707773,
+  "lastUpdate": 1791488414516,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25428,6 +25428,58 @@ window.BENCHMARK_DATA = {
             "range": "9971.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 841666.35\nmean: 841211.33\nstdev: 9971.07\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28b69e6bc3d235179483f167c5466e5cbfcaac1f",
+          "message": "feat(replication): keep a ballot with each accepted generation (#1009) (#1061)\n\n* feat(replication): keep a ballot with each accepted generation (#1009)\n\nA replica now remembers whom it accepted its generation from, by the node\nid the peer gave in its Hello, and refuses a fence, batch, bootstrap,\nrebuild or tail fetch from any other node at that generation. A broker\nwill not lead a generation it already accepted from another node. The\nballot is a new `ballot` file, fsynced before anything from that leader is\nanswered and reloaded on open. Offered as the BALLOTS peer capability with\nthe fence.\n\nThe TLA+ model gains Ballots, Elections and OneLeaderPerGeneration, with\nFelixShardElect.cfg and two configurations that must fail without the\nrule: FelixShardElectNoBallot.cfg and FelixShardElectStaleSet.cfg.\n\nPart of #1009.\n\n* fix(wire): move BALLOTS to peer bit 1 << 6 (#1009)\n\n1 << 5 is RECORD_TIMES in #1057.\n\n* feat(replication): fence every change of leader, not only a promotion (#1009)\n\nA move's cut-over, a failover naming a move's destination, a cancelled\nmove's hand-back and a new generation of a shard the broker already leads\nnow wait in fencing like a promotion, so a leader the control plane did not\nknow about is refused and what it acknowledged is taken before the shard\nserves. A write that arrives while the shard fences is held instead of\nrefused.\n\nThe TLA+ model gains FenceEveryChange, with FelixShardElectHandoff.cfg and\nFelixShardElectHandoffUnfenced.cfg.\n\nPart of #1009.\n\n* fix(replication): open the next generation of a served shard without the fence (#1009)\n\nFencing every generation a broker starts leading at also caught the one\nright after a generation it is serving, which a move's staging or a follower\nreplacement step gives it. A leader cut off from a majority of the new set\nthen sat in fencing, skipped by replication passes, and sent no report at\nthe new generation, so placement could not finish the step and the\nseating_a_replacement_keeps_what_the_old_set_acknowledged cluster test timed\nout. Each assignment write raises the generation by one, so nobody led in\nbetween; the model's Regenerate opens it unfenced too. A generation that\nskips one is still fenced.\n\nPart of #1009.\n\n* test(cluster): a fenced cut-over cut off from its followers stays closed (#1009)\n\nWith majority_ack there is no lease fallback, so a move's destination that\ncannot reach any follower at the cut-over never gets its fence: it does not\nserve, moves no mark and sends no report, as the model's fenced CutOver has\nit. a_move_cut_short_by_kills_leaves_no_replica_halted waited for that\nreport. It now checks that the destination reports nothing, that the shard\nwaits for a broker holding the log once both are killed, and that everyone\nrejoins with nothing halted when they return, sharing that tail with the\nlease-mode test.\n\nPart of #1009.\n\n* ci(formal): fit the TLA+ check in its hour again (#1009)\n\nFelixShardElectHandoff takes 61 minutes on a CI runner (48.7M distinct\nstates), longer than a formal job may run, so it moves to the by-hand set\nbeside FelixShardFencedAckTwoPromotions. FelixShardElectHandoffLeaders is\nthe same move, cancel and election without the write and runs on every\npull request; FelixShardElectHandoffUnfenced is now its twin.\n\nThe shard weights were stale: the longest configurations had grown to 25-31\nminutes while weighted 20-35, so jobs packed by them ran past the hour. They\nnow come from this branch's CI times, and the check runs on seven jobs, about\nforty minutes each, for the same runner time.\n\nPart of #1009.\n\n* ci(formal): check the configurations too big for CI nightly (#1009)\n\nFelixShardElectHandoff and the five configurations already run only by\nhand (FencedAckTwoPromotions, FencedAckSeatLonger, FencedAckMove,\nFencedAckStagedMove, FencedAckMoveCancel) now run every night, one job each\nwith a 150-minute limit, in the TLA+ walks workflow beside the walks. A\nfailure shows as a failed nightly run, as a walk's does. Not on pull\nrequests; dispatch still runs them on a branch.\n\nPart of #1009.",
+          "timestamp": "2026-10-08T12:36:22-07:00",
+          "tree_id": "a0f80af4d8a53401c98ee7ba169d3bca08d1af19",
+          "url": "https://github.com/GetFelix/felix/commit/28b69e6bc3d235179483f167c5466e5cbfcaac1f"
+        },
+        "date": 1791488413632,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 338134.46,
+            "range": "7697.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338134.46\nmean: 335703.91\nstdev: 7697.67\ncv: 2.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 338134.46,
+            "range": "7697.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338134.46\nmean: 335703.91\nstdev: 7697.67\ncv: 2.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81456.73,
+            "range": "482.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81456.73\nmean: 81396.62\nstdev: 482.63\ncv: 0.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814567.25,
+            "range": "4826.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814567.25\nmean: 813966.18\nstdev: 4826.25\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
