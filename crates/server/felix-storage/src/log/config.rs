@@ -124,6 +124,27 @@ pub struct LogConfig {
     /// rather than by what is retained. The active segment of every open log
     /// is always open and does not count.
     pub max_open_sealed_segments: usize,
+    /// Copy sealed segments to an object store. `None` (the default) copies
+    /// nothing.
+    ///
+    /// Copies are made on the retention timer. With this set, retention
+    /// deletes a segment only once its copy is verified and recorded in the
+    /// shard's offload manifest, so a segment past the bounds is never lost
+    /// for want of a copy; it waits for one. Without a retention bound
+    /// nothing is deleted and the store holds a second copy. Reads below the
+    /// local head still report `Trimmed`. See `docs/durable-storage.md`.
+    ///
+    /// Compaction's trimming honours it too, but the broker sets it only for
+    /// stream logs.
+    pub offload: Option<OffloadTarget>,
+}
+
+/// Where offloaded segments go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OffloadTarget {
+    /// A directory, through `object_store`'s local filesystem backend. Each
+    /// object is fsynced, with its directories, before it is recorded.
+    LocalDir(std::path::PathBuf),
 }
 
 /// The bounds retention deletes a log's oldest segments by. Either, both or
@@ -173,7 +194,8 @@ impl LogConfig {
                 "retention_age must be greater than zero; omit it to disable retention",
             ));
         }
-        if retention.is_set() && self.retention_check_interval.is_zero() {
+        if (retention.is_set() || self.offload.is_some()) && self.retention_check_interval.is_zero()
+        {
             return Err(StorageError::InvalidConfig(
                 "retention_check_interval must be greater than zero",
             ));
@@ -264,6 +286,7 @@ impl Default for LogConfig {
             retention_age: None,
             retention_check_interval: Duration::from_secs(60),
             max_open_sealed_segments: 256,
+            offload: None,
         }
     }
 }

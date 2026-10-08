@@ -38,6 +38,7 @@ use std::path::Path;
 
 use super::durable_mark::{self, DurableMark};
 use super::now_micros;
+use super::offload::Manifest;
 use super::segments::SealedEntry;
 use crate::io::{create_dir_all_durable, sync_dir};
 use crate::log::{LogConfig, Offset, RecordMark, SegmentDescriptor, SegmentId};
@@ -71,7 +72,12 @@ struct OpenedSealed {
 }
 
 /// Open, validate and repair every segment for one shard.
-pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Result<Recovered> {
+pub(super) fn recover_shard(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    offloaded: &Manifest,
+) -> Result<Recovered> {
     let started = std::time::Instant::now();
     // The directory entry itself must be durable, or a crash could lose a shard
     // that already reported successful writes.
@@ -104,7 +110,7 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
             active_marks: Vec::new(),
         },
         Some((active_id, sealed_ids)) => {
-            match recover_existing(dir, label, config, mark, sealed_ids, *active_id) {
+            match recover_existing(dir, label, config, mark, offloaded, sealed_ids, *active_id) {
                 Err(StorageError::Corruption(detail)) => {
                     let Some(retired) = unsealed_retired(
                         dir, label, config, mark, sealed_ids, *active_id, &detail,
@@ -117,7 +123,7 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
                     }
                     let ids = discover_segment_ids(dir)?;
                     let (active_id, sealed_ids) = ids.split_last().expect("the retired segment");
-                    recover_existing(dir, label, config, mark, sealed_ids, *active_id)?
+                    recover_existing(dir, label, config, mark, offloaded, sealed_ids, *active_id)?
                 }
                 recovered => recovered?,
             }
@@ -571,6 +577,7 @@ fn recover_existing(
     label: &str,
     config: &LogConfig,
     mark: Option<DurableMark>,
+    offloaded: &Manifest,
     sealed_ids: &[SegmentId],
     active_id: SegmentId,
 ) -> Result<Recovered> {
@@ -587,6 +594,14 @@ fn recover_existing(
         // segment file was deleted or replaced out from under us.
         if let Some(expected) = expected_base
             && expected != opened.entry.descriptor.base_offset
+            && !drop_offloaded_below(
+                dir,
+                label,
+                offloaded,
+                &mut sealed,
+                expected,
+                opened.entry.descriptor.base_offset,
+            )?
         {
             return Err(gap_error(
                 label,
@@ -612,6 +627,14 @@ fn recover_existing(
     )?;
     if let Some(expected) = expected_base
         && expected != outcome.header.base_offset
+        && !drop_offloaded_below(
+            dir,
+            label,
+            offloaded,
+            &mut sealed,
+            expected,
+            outcome.header.base_offset,
+        )?
     {
         return Err(gap_error(
             label,
@@ -665,6 +688,42 @@ fn recover_existing(
         index_rebuilds,
         active_marks,
     })
+}
+
+/// Accept a gap at `[expected, found)` that offload explains, by deleting the
+/// segments below it.
+///
+/// Offload copies oldest first and records each copy before its local file
+/// goes, so a gap the manifest covers, above segments it also records, is an
+/// unlink that landed out of order. Every record below `found` has a verified
+/// copy, and the log resumes at `found`. Anything short of that is still the
+/// damage `gap_error` reports.
+fn drop_offloaded_below(
+    dir: &Path,
+    label: &str,
+    offloaded: &Manifest,
+    sealed: &mut Vec<SealedEntry>,
+    expected: Offset,
+    found: Offset,
+) -> Result<bool> {
+    if found < expected
+        || !offloaded.covers(expected, found)
+        || !sealed
+            .iter()
+            .all(|entry| offloaded.records(&entry.descriptor))
+    {
+        return Ok(false);
+    }
+    for entry in sealed.drain(..) {
+        tracing::warn!(
+            shard = label,
+            segment = entry.descriptor.id,
+            "removing a segment below a gap the offload manifest covers"
+        );
+        remove_segment_files(dir, entry.descriptor.id)?;
+        sync_dir(dir)?;
+    }
+    Ok(true)
 }
 
 /// Validate one sealed segment and prepare it for reads.

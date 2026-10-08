@@ -32,7 +32,8 @@ fn record(payload: &str) -> AppendRecord {
 
 /// Write `count` records through a real `SegmentSet`, rolling as configured.
 fn populate(dir: &TempDir, count: usize) -> u64 {
-    let recovered = recover_shard(dir.path(), "t/ns/s/0", &config()).expect("recover");
+    let recovered =
+        recover_shard(dir.path(), "t/ns/s/0", &config(), &Manifest::default()).expect("recover");
     let mut set = crate::disk_log::segments::SegmentSet::new(
         dir.path().to_path_buf(),
         "t/ns/s/0".into(),
@@ -51,7 +52,7 @@ fn populate(dir: &TempDir, count: usize) -> u64 {
 }
 
 fn reopen(dir: &TempDir) -> Result<Recovered> {
-    recover_shard(dir.path(), "t/ns/s/0", &config())
+    recover_shard(dir.path(), "t/ns/s/0", &config(), &Manifest::default())
 }
 
 /// Reproduce the on-disk state left by a crash while a rollover was
@@ -556,6 +557,7 @@ fn corruption_in_a_sealed_segment_fails_loudly() {
             verify_all_on_open: true,
             ..config()
         },
+        &Manifest::default(),
     )
     .expect_err("sealed corruption");
     let StorageError::Corruption(detail) = err else {

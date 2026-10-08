@@ -113,17 +113,44 @@ impl LogInner {
     /// The segment lock is held only to take the chosen segments out of the
     /// list. Choosing them may read a cold record per segment for its age, and
     /// deleting them is a syscall per file; appends wait on neither.
+    ///
+    /// With offload on, the copies are made first, and a failed copy does not
+    /// stop the deletions after it: retention deletes only recorded segments,
+    /// and the error is returned once it is done.
     pub(super) async fn sweep_retention(self: Arc<Self>) -> Result<RetentionOutcome> {
+        let offloaded = self.offload_pass().await;
+        match &offloaded {
+            Ok(outcome) if outcome.segments > 0 => tracing::info!(
+                shard = %self.label,
+                segments = outcome.segments,
+                bytes = outcome.bytes,
+                "offloaded segments"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(shard = %self.label, error = %err, "offload pass failed"),
+        }
+        // A test stop stands for a crash, after which nothing else runs.
+        #[cfg(test)]
+        if let (Some(offloader), Err(_)) = (&self.offloader, &offloaded)
+            && offloader.faults.stopped()
+        {
+            return offloaded.map(|_| RetentionOutcome::default());
+        }
         let inner = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || {
+        let retained = tokio::task::spawn_blocking(move || -> Result<RetentionOutcome> {
             let mut outcome = RetentionOutcome::default();
             let bounds = *inner.retention_bounds.lock();
             if !bounds.is_set() {
                 outcome.base_offset = inner.segments.read().base_offset();
                 return Ok(outcome);
             }
+            // Held until the unlinks are done: see `LogInner::manifest`.
+            let manifest = inner.manifest.lock();
             let plan = inner.segments.read().retention_plan();
-            let chosen = plan.choose(bounds, now_micros(), &inner.label)?;
+            let mut chosen = plan.choose(bounds, now_micros(), &inner.label)?;
+            if inner.offloader.is_some() {
+                inner.keep_offloaded_prefix(&manifest, &mut chosen);
+            }
             let removed = {
                 let mut segments = inner.segments.write();
                 let removed = segments.remove_head(&chosen)?;
@@ -143,7 +170,14 @@ impl LogInner {
                 crate::io::sync_dir(&inner.dir).map_err(StorageError::Io)?;
                 outcome.segments_deleted += 1;
                 outcome.bytes_reclaimed += descriptor.size_bytes;
+                #[cfg(test)]
+                if let Some(offloader) = &inner.offloader {
+                    offloader
+                        .faults
+                        .stop(super::offload::test_hooks::Stop::Unlinked)?;
+                }
             }
+            drop(manifest);
             if !removed.is_empty() {
                 metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
                     .increment(outcome.segments_deleted as u64);
@@ -154,7 +188,28 @@ impl LogInner {
             Ok(outcome)
         })
         .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
+        offloaded.map(|_| retained)
+    }
+
+    /// Cut `chosen` back to the segments, from the head, whose copy the
+    /// manifest records. The rest wait for a copy.
+    fn keep_offloaded_prefix(
+        &self,
+        manifest: &super::offload::Manifest,
+        chosen: &mut Vec<crate::log::SegmentId>,
+    ) {
+        let descriptors = self.segments.read().descriptors();
+        let recorded = chosen
+            .iter()
+            .take_while(|id| {
+                descriptors
+                    .iter()
+                    .find(|descriptor| descriptor.id == **id)
+                    .is_some_and(|descriptor| manifest.records(descriptor))
+            })
+            .count();
+        chosen.truncate(recorded);
     }
 
     /// Delete the sealed head segments that hold only offsets below `before`.
@@ -170,14 +225,18 @@ impl LogInner {
     ) -> Result<Vec<crate::log::SegmentDescriptor>> {
         let inner = Arc::clone(&self);
         tokio::task::spawn_blocking(move || {
+            let manifest = inner.manifest.lock();
             let removed = {
                 let mut segments = inner.segments.write();
                 let active = segments.active().id();
+                let offload = inner.offloader.is_some();
                 let chosen: Vec<_> = segments
                     .descriptors()
                     .into_iter()
                     .take_while(|descriptor| {
-                        descriptor.id != active && descriptor.last_offset < before
+                        descriptor.id != active
+                            && descriptor.last_offset < before
+                            && (!offload || manifest.records(descriptor))
                     })
                     .map(|descriptor| descriptor.id)
                     .collect();

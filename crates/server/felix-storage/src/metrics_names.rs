@@ -75,6 +75,14 @@ pub const RETENTION_BASE_OFFSET: &str = "felix_storage_retention_base_offset";
 /// persistently non-zero value means the log is growing unbounded.
 pub const RETENTION_FAILURES_TOTAL: &str = "felix_storage_retention_failures_total";
 
+/// Sealed segments copied to the object store, verified and recorded.
+pub const OFFLOAD_SEGMENTS_TOTAL: &str = "felix_storage_offload_segments_total";
+/// Bytes copied to the object store.
+pub const OFFLOAD_BYTES_TOTAL: &str = "felix_storage_offload_bytes_total";
+/// Segment offloads that failed. The segment stays local and the next pass
+/// retries it; retention cannot delete it until one succeeds.
+pub const OFFLOAD_FAILURES_TOTAL: &str = "felix_storage_offload_failures_total";
+
 /// Records returned by range reads.
 pub const READ_RECORDS_TOTAL: &str = "felix_storage_read_records_total";
 /// Payload bytes returned by range reads.
