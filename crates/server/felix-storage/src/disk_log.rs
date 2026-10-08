@@ -9,6 +9,7 @@
 //! * `sync`      — fsync policy and group commit.
 //! * `durable_mark` — how far the active segment is known to be synced.
 //! * `retention` — deleting the oldest segments once a bound is exceeded.
+//! * `offload`   — copying sealed segments to an object store first.
 //! * `epochs`    — where each leadership generation began.
 //! * `replica_state` — the highest generation accepted, and the commit offset.
 //! * `producers` — each idempotent producer's place, derived from the records.
@@ -46,6 +47,7 @@ mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
 pub(crate) mod fuzzing;
+mod offload;
 mod producers;
 mod provider;
 mod recovery;
@@ -430,6 +432,7 @@ impl DiskLog {
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             let commit = operation.commit_offset.load(Ordering::Acquire);
@@ -441,6 +444,7 @@ impl DiskLog {
                 });
             }
             segments.check_open()?;
+            operation.forget_all_offloaded(&mut manifest)?;
             let rewound = (|| {
                 segments.reset_to(base_offset)?;
                 segments.active_mut().sync()?;
@@ -473,6 +477,7 @@ impl DiskLog {
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             segments.check_open()?;
@@ -497,6 +502,7 @@ impl DiskLog {
             if offset == tail {
                 return Ok(());
             }
+            operation.forget_offloaded_from(&mut manifest, offset)?;
             let rewound = operation.cut_suffix(&mut segments, offset);
             operation.poison_after_rewind(rewound)
         })
@@ -690,6 +696,9 @@ impl DiskLog {
     async fn stop_background(&self) -> Result<()> {
         // Retention first: it must not start deleting while the rest of
         // shutdown is flushing, and it has nothing to finish on the way out.
+        if let Some(offloader) = &self.inner.offloader {
+            offloader.halt();
+        }
         let retention = self.inner.retention.lock().take();
         if let Some(retention) = retention {
             retention.shutdown().await;
@@ -724,7 +733,15 @@ impl DiskLog {
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
             recovery::place_empty_shard(&dir, &label, &config, base_offset)?;
         }
-        let recovered = recovery::recover_shard(&dir, &label, &config)?;
+        // Before recovery, which needs it to tell a segment that was
+        // offloaded from one that was lost.
+        let manifest = offload::manifest::load(&dir)?;
+        let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
+        let offloader = config
+            .offload
+            .as_ref()
+            .map(|target| offload::Offloader::open(target, &dir))
+            .transpose()?;
         if recovered.truncated_bytes > 0 {
             tracing::warn!(
                 shard = %label,
@@ -775,6 +792,8 @@ impl DiskLog {
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
             retention_bounds: Mutex::new(config.retention()),
+            manifest: Mutex::new(manifest),
+            offloader,
             epochs: Mutex::new(epochs),
             accepted_generation: AtomicU64::new(replica.accepted_generation),
             commit_offset: AtomicU64::new(replica.commit_offset),
@@ -837,7 +856,7 @@ impl DiskLog {
             *inner.syncer.lock() = Some(syncer);
         }
 
-        if config.retention().is_set() {
+        if config.retention().is_set() || inner.offloader.is_some() {
             inner.start_retention()?;
         }
 
@@ -960,6 +979,9 @@ impl AppendOnlyLog for DiskLog {
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {
+                // Before the append lock: an offload pass takes it before
+                // the segment lock, and so must everything else.
+                let mut manifest = operation.manifest.lock();
                 let _appends = operation.append_lock.lock();
                 let mut segments = operation.segments.write();
                 let commit = operation.commit_offset.load(Ordering::Acquire);
@@ -967,6 +989,9 @@ impl AppendOnlyLog for DiskLog {
                     return Err(StorageError::BelowCommit { offset, commit });
                 }
                 segments.check_open()?;
+                // The copies go first: one that outlived a crash would
+                // describe records the log no longer has.
+                operation.forget_offloaded_from(&mut manifest, offset)?;
                 let rewound = operation.cut_suffix(&mut segments, offset);
                 operation.poison_after_rewind(rewound)
             })
@@ -1048,6 +1073,14 @@ struct LogInner {
     /// The bounds retention enforces, which [`DiskLog::set_retention`] may
     /// change after the log opens.
     retention_bounds: Mutex<crate::log::Retention>,
+    /// Which sealed segments have a verified copy in the object store.
+    ///
+    /// Lock order: this, then `append_lock`, then `segments`. Held by
+    /// whatever unlinks or cuts segments, so a copy cannot be recorded for a
+    /// segment on its way out, or forgotten for one about to be unlinked.
+    manifest: Mutex<offload::Manifest>,
+    /// `None` unless `LogConfig::offload` is set.
+    offloader: Option<offload::Offloader>,
     /// Where each leadership generation began, for repairing a divergence.
     ///
     /// Its own lock rather than living under `segments`: it is read and written

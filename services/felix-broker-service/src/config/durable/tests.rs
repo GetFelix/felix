@@ -16,6 +16,7 @@ const VARS: &[&str] = &[
     "FELIX_DURABLE_PREALLOCATE",
     "FELIX_DURABLE_VERIFY_ALL_ON_OPEN",
     "FELIX_DURABLE_REPAIR_CHECKSUM_TAIL",
+    "FELIX_DURABLE_OFFLOAD_DIR",
 ];
 
 /// Every caller is `#[serial]`, which is what actually keeps these apart
@@ -280,6 +281,37 @@ fn the_summary_names_the_durability_policy() {
             let summary = config.summary();
             assert!(summary.contains("/tmp/felix"), "{summary}");
             assert!(summary.contains("acknowledgement"), "{summary}");
+        },
+    );
+}
+
+#[serial]
+#[test]
+fn offload_is_off_unless_a_directory_is_set_and_reaches_only_stream_logs() {
+    with_env(&[("FELIX_DURABLE_STORAGE_DIR", "/var/lib/felix")], || {
+        let config = DurableStorageConfig::from_env()
+            .expect("config")
+            .expect("enabled");
+        assert_eq!(config.offload_dir, None);
+        assert_eq!(config.stream_log().offload, None);
+    });
+    with_env(
+        &[
+            ("FELIX_DURABLE_STORAGE_DIR", "/var/lib/felix"),
+            ("FELIX_DURABLE_OFFLOAD_DIR", "/mnt/cold"),
+        ],
+        || {
+            let config = DurableStorageConfig::from_env()
+                .expect("config")
+                .expect("enabled");
+            assert_eq!(
+                config.log.offload, None,
+                "caches and counters do not offload"
+            );
+            assert_eq!(
+                config.stream_log().offload,
+                Some(OffloadTarget::LocalDir(PathBuf::from("/mnt/cold")))
+            );
         },
     );
 }

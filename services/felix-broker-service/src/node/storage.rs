@@ -24,7 +24,7 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     let durable_storage = match &durable_config {
         Some(durable) => {
             tracing::info!(config = %durable.summary(), "opening durable stream storage");
-            let storage = DurableStorage::open(&durable.root, durable.log.clone())
+            let storage = DurableStorage::open(&durable.root, durable.stream_log())
                 .with_context(|| format!("open durable storage at {}", durable.root.display()))?;
             Some(storage)
         }

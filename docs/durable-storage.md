@@ -650,6 +650,11 @@ To repair a gap left by a deletion, by hand:
 
 The records you delete are ones the interrupted sweep was already removing.
 
+A shard with offloaded segments does not need this. When the offload manifest
+covers the gap and records a copy of every segment below it, recovery deletes
+those segments itself and opens with its base at `found`. See
+[Tiered storage: offload](#tiered-storage-offload).
+
 ## Configuration
 
 Durability is opt-in. With `FELIX_DURABLE_STORAGE_DIR` unset the broker is
@@ -675,6 +680,7 @@ cursors.
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
 | `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |
 | `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` | `67108864` | I/O budget for cache and counter compaction, per store; `0` is unlimited |
+| `FELIX_DURABLE_OFFLOAD_DIR` | unset | Copy stream logs' sealed segments to this directory before retention deletes them; see [Tiered storage: offload](#tiered-storage-offload) |
 
 Invalid combinations fail at startup, not at the first publish.
 
@@ -755,6 +761,8 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_recovery_duration_seconds` | startup cost |
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
+| `felix_storage_offload_segments_total`, `felix_storage_offload_bytes_total` | segments and bytes copied to the object store, verified and recorded |
+| `felix_storage_offload_failures_total` | copies that failed; while one keeps failing, retention cannot delete that segment or any after it |
 
 The first two together answer the question that actually comes up: *is durability
 the bottleneck?* If sync dominates append, the fsync policy is the cost.
@@ -830,12 +838,12 @@ fail rather than print the wrong numbers.
   are deleted from the head, `base_offset` rises, and offsets below it report
   `Trimmed` (storage) or `CursorTooOld` (broker) rather than a short read. See
   [Retention](#retention) below.
-- **No tiered storage.** [`tiered.rs`](../crates/server/felix-storage/src/tiered.rs) is
-  still trait scaffolding: `TieredStore`, `OffloadedSegment`, `ColdCacheConfig`
-  and `RetentionPolicy` are declared, and nothing implements them. There is no
-  hot/cold split, no offload, and no cold-tier read path; every read comes from
-  local segments. See [Tiered storage](#tiered-storage-what-is-already-in-place)
-  below for what the log already provides for it.
+- **Offload, but no cold reads.** With `FELIX_DURABLE_OFFLOAD_DIR` set, sealed
+  segments are copied to a directory through `object_store`'s local backend,
+  and retention deletes only segments with a verified copy. Nothing reads the
+  copies yet: below the local head a read still returns `Trimmed`. There is no
+  cloud backend and no cold cache. See
+  [Tiered storage: offload](#tiered-storage-offload) below.
 
 ## Retention
 
@@ -983,29 +991,87 @@ Current builds never create either directory.
 > `a_shard_left_mid_swap_by_an_older_build_keeps_every_sum` run a port of the
 > old swap, stop it after each step, and reopen.
 
-## Tiered storage: what is already in place
+## Tiered storage: offload
 
-Tiering is not built. The log is shaped so that adding it means adding a tier
-rather than reworking the log:
+Offload is the first part of tiered storage
+([#172](https://github.com/GetFelix/felix/issues/172)). It copies sealed
+segments to an object store, and it makes retention wait for a copy before it
+deletes a segment. It is off by default. `FELIX_DURABLE_OFFLOAD_DIR` turns it
+on for stream logs (`LogConfig::offload` in the library). Cache, counter and
+consumer group logs never offload. The only backend so far is a directory,
+through the `object_store` crate's local filesystem backend.
+
+A pass runs on the retention timer (`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`),
+before retention, and the timer runs whenever offload is on, with or without a
+retention bound. For each sealed segment that has no recorded copy, oldest
+first, the pass:
+
+1. uploads the segment's bytes to `<shard directory name>/<base offset>-<segment id>.segment`
+   under the offload directory, computing their CRC-32 as it reads them;
+2. fsyncs the object and the directories above it, then reads it back and
+   checks its size and CRC-32;
+3. adds an entry to the shard's `offload.manifest` and fsyncs it (see
+   `docs/storage-format.md`).
+
+Retention then picks segments as it always has, and deletes only the leading
+run of them that the manifest records. A segment with no copy stays, and so
+does every segment after it. With no retention bound nothing is deleted and the
+offload directory holds a second copy. Reads below the local head still return
+`Trimmed`: nothing reads the copies yet.
+
+**Crash safety.** A segment's local file is unlinked only after its copy is
+verified and the manifest entry recording it is on disk. A crash after the
+upload and before the manifest leaves the local segment and an unrecorded
+object, which the next pass replaces. A crash after the manifest and before the
+unlink leaves both, and the next pass unlinks it. A crash after the unlink
+leaves the recorded copy. So every record is in the local log or in a recorded,
+verified copy, at every point. A recorded copy is never rewritten: only
+segments without a recorded copy are uploaded.
+
+**Recovery.** The manifest is authoritative, like `replica`: a manifest that
+does not decode fails the open. A gap in the local chain is still corruption,
+with one exception. If the manifest covers the gap and records a copy of every
+local segment below it, recovery deletes those segments and the log opens with
+its base at the end of the gap. Every record below that base has a verified
+copy.
+
+**Truncation and reset.** A truncation drops the manifest entries holding
+offsets at or after the cut, and a reset drops them all. The manifest is
+written before the log is cut, so an entry never outlives the records it
+describes. The objects stay in the store, unrecorded.
+
+**Cost.** A pass reads each segment twice, once to upload it and once to verify
+the copy, in 8 MiB chunks, so its memory does not grow with segment size. The
+manifest is rewritten whole for every copy it records.
+
+> `retention_with_offload_deletes_only_recorded_segments`,
+> `a_copy_that_fails_verification_is_not_recorded_and_its_segment_stays`:
+> retention waits for a verified copy.
+> `a_crash_after_the_upload_and_before_the_manifest_keeps_the_segment`,
+> `a_crash_after_the_manifest_and_before_the_unlink_keeps_both` and
+> `a_crash_after_the_unlink_leaves_a_recorded_copy`: a crash at each step
+> loses nothing, and a pass afterwards finishes the job.
+> `a_power_loss_at_any_offload_step_loses_nothing`: the same under a simulated
+> power loss (Linux only).
+> `recovery_accepts_a_head_gap_the_manifest_covers` and
+> `recovery_still_refuses_a_gap_the_manifest_does_not_cover`.
+> `truncation_forgets_the_copies_it_cuts_into`.
+
+Still to come: a cold read path (ranged reads of a copy, using its index),
+a bound on a local cold cache, cloud backends, and tail latency numbers for
+cold reads. The manifest records each copy's oldest and newest record
+timestamps, so a time lookup can narrow to one copy before it reads any.
+
+The log was already shaped for this:
 
 - **Sealed segments are immutable and self-describing.** Once sealed, a segment
   is fsynced, trimmed to exactly its contents, and never written again, so it is
-  safe to copy to object storage while the log keeps running.
-- **`AppendOnlyLog::seal` already returns the offload unit.** `SealedSegment {
-  descriptor, checksum }` maps directly onto `OffloadedSegment`: the descriptor
-  carries the offset and byte ranges, and the CRC-32 over the whole file is what
-  makes a round trip through a remote tier verifiable.
-- **Reads already route per segment.** `SegmentSet::read` walks segments in
-  offset order and asks each one for its share of the range, under a single
-  shared budget. A cold tier slots in as another source at that seam; nothing
-  above it needs to change: not `read_range`, the trimmed-offset error, or the
-  byte and record bounds.
+  safe to copy while the log keeps running.
+- **Reads already route per segment.** A read is planned as a list of spans,
+  one per segment, under a single shared budget. A cold copy can be another
+  kind of span; nothing above it needs to change: not `read_range`, the
+  trimmed-offset error, or the byte and record bounds.
 - **`StorageError::Trimmed` already distinguishes "gone" from "not yet".** A
   reader asking for an offset that has left local storage gets a distinct,
-  actionable error rather than an empty range, which is exactly the signal a
-  cold-tier fetch would hang off.
-
-The open questions tiering still has to answer (when a segment becomes cold, how
-much local cache to keep, and what a cold read costs in tail latency) are design
-work, not refactoring. Tracked as
-[#172](https://github.com/GetFelix/felix/issues/172).
+  actionable error rather than an empty range, which is the signal a cold
+  read will hang off.

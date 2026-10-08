@@ -128,6 +128,9 @@ libc = "0.2"
 io-uring = "0.7"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
+# Tiered storage offload. Only the local filesystem backend so far; cloud
+# backends are features added when they are wired up.
+object_store = { version = "0.14", default-features = false, features = ["fs"] }
 opentelemetry = "0.33.0"
 opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["grpc-tonic", "trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.33.0", features = ["rt-tokio"] }

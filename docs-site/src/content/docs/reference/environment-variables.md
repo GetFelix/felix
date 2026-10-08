@@ -1833,6 +1833,29 @@ export FELIX_DURABLE_RETENTION_INTERVAL_SECONDS="300"
 never lands on a publish. A longer interval means disk usage overshoots the
 bound for longer between passes.
 
+### `FELIX_DURABLE_OFFLOAD_DIR`
+
+**Description**: Copy each stream log's sealed segments to this directory, and
+let retention delete a segment locally only once its copy has been read back,
+checked by size and CRC-32, and recorded in the shard's `offload.manifest`.
+Copies are made on the retention timer (`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`),
+which runs whenever this is set, with or without a retention bound. Unset means
+no offload, which is the default. Cache, counter and consumer group logs never
+offload.
+
+**Type**: Directory path
+
+**Default**: unset (no offload)
+
+**Example**:
+```bash
+export FELIX_DURABLE_OFFLOAD_DIR="/mnt/felix-cold"
+```
+
+**Note**: Nothing reads the copies yet. A read below the local head still
+reports `CursorTooOld`. The directory is written through the `object_store`
+crate's local filesystem backend; other backends are not wired up.
+
 ### `FELIX_DURABLE_INDEX_SPACING_BYTES`
 
 **Description**: Bytes of segment data between sparse index entries. A read

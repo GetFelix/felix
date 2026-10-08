@@ -6,6 +6,7 @@ mod append_and_read;
 mod commit;
 mod durability;
 mod generation_start;
+mod offload;
 mod placed_at_a_base_offset;
 #[cfg(target_os = "linux")]
 mod power_loss;

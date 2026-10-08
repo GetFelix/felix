@@ -3,7 +3,7 @@
 
 mod config;
 
-pub use config::{FsyncMode, LogConfig, Retention};
+pub use config::{FsyncMode, LogConfig, OffloadTarget, Retention};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -221,7 +221,7 @@ pub struct SealedSegment {
 }
 
 /// The offset and byte range one segment covers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentDescriptor {
     pub id: SegmentId,
     pub base_offset: Offset,

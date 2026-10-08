@@ -390,11 +390,13 @@ printing wrong numbers.
 - **Retention is off by default.** A stream's own `retention` bounds its shard
   logs, and a bound it leaves unset comes from `FELIX_DURABLE_RETENTION_BYTES`
   or `FELIX_DURABLE_RETENTION_SECONDS`. A patch takes effect without a restart.
-- **No tiered storage.** `TieredStore` and its companions are declared traits
-  with no implementation. There is no hot/cold split and no cold-tier read path;
-  every read comes from local segments. Sealed segments are immutable and carry
-  a whole-file checksum, and reads already route per segment, so a cold tier
-  can slot in at that seam when it is built.
+- **Offload, but no cold reads.** With `FELIX_DURABLE_OFFLOAD_DIR` set, a
+  stream log's sealed segments are copied to that directory, checked by size
+  and CRC-32, and recorded in a per-shard `offload.manifest` before retention
+  may delete them. A crash at any step leaves the local segment or a recorded
+  copy. Nothing reads the copies yet, so a read below the local head is still
+  `Trimmed`, and the only backend is a local directory. See
+  `docs/durable-storage.md`, "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

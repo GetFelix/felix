@@ -71,6 +71,7 @@ a segment) should be rejected on its first four bytes rather than misparsed.
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
     producers                                ← producer snapshot, when any producer wrote here
+    offload.manifest                         ← segments copied to the object store, once offload has run
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -425,6 +426,41 @@ alone: they trim segments in place and never replace the directory.
 A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see
 `docs/replication-design.md`, "Divergence and truncation".
+
+## `offload.manifest`: segments with a copy in the object store
+
+A stream shard whose broker runs with offload on (see `docs/durable-storage.md`,
+"Tiered storage: offload") holds an `offload.manifest`: one entry per sealed
+segment with a verified copy in the object store, ordered by base offset.
+
+```text
+ 0   4  magic        u32  "FLOF"
+ 4   2  version      u16
+ 6   2  reserved     u16
+ 8   4  count        u32  entries that follow
+12      entries, each:
+         0   8  segment id      u64
+         8   8  base offset     u64
+        16   8  last offset     u64  inclusive
+        24   8  size            u64  bytes in the object, the segment's valid bytes
+        32   8  oldest          u64  timestamp_micros of the first record
+        40   8  newest          u64  timestamp_micros of the last record
+        48   4  checksum        u32  crc32 over the object's bytes
+        52   2  key length      u16
+        54   n  key             UTF-8 object key
+ end-4   4  crc          u32  crc32 over every byte before it
+```
+
+Entries never overlap. Gaps between them are allowed: a segment retention
+deleted while offload was off was never copied. Written through a temporary,
+an fsync, a rename and a directory sync, and always before the local segment it
+records is unlinked.
+
+**This file is authoritative.** Once a segment's local file is gone, the entry
+is the only record that its records still exist, so a manifest that is present
+and does not decode fails the open. Absent reads as empty. A truncation drops
+the entries holding offsets at or after the cut, and a reset drops them all,
+both before any segment is touched.
 
 ## `producers`: the producer snapshot
 
