@@ -77,6 +77,12 @@ impl Client {
     /// [`Client::group_nack`]; a record neither finished nor handed back is
     /// redelivered once the broker's visibility timeout lapses.
     ///
+    /// A record can be polled once it is written. A publish acknowledged on
+    /// enqueue (a `Leader` stream with `ack_on_commit` off) may not be yet, so
+    /// a poll right after that ack can miss it; the next one gets it. Publish
+    /// with [`crate::ClientConfig::ack_on_commit`] when a poll must see every
+    /// acknowledged record.
+    ///
     /// Only the broker that leads the shard can serve its groups, because the
     /// claim and the acknowledgement have to reach the same place. Polling any
     /// other broker is refused rather than answered emptily.

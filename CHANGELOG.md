@@ -30,6 +30,15 @@ for what the current release guarantees.
   `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
   `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
   field.
+- `felix-loadgen --scenario subscribe` (#980): subscribers only, at the live
+  tail, counting deliveries for `--duration-secs` while another generator
+  publishes. `--fanout` subscriptions are spread over `--concurrency` cluster
+  clients, every shard of a sharded stream is read, and the run reports
+  delivered events and `delivered_throughput_msg_s`, offset gaps (records
+  dropped) and, with `--stamp-send-time`, delivery latency. It reports no
+  publish throughput, since it publishes nothing. `ingest --stamp-send-time`
+  writes the wall-clock send time into each payload's first 8 bytes for it;
+  that latency compares two machines' clocks, so it needs them in sync.
 - Nightly builds. `nightly.yml` builds the newest green commit on main through
   `release.yml` once a day, smoke-tests the images with a publish and
   subscribe, and publishes to GitHub only: images as `nightly` and
@@ -105,6 +114,9 @@ for what the current release guarantees.
   `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
 
 ### Fixed
+- JSON numbers survive a decode and re-encode exactly. serde_json's default
+  float parser could land a long literal one ulp off, so an extension body the
+  broker passed on carried a different number. Nightly fuzzing found it.
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.
@@ -132,6 +144,12 @@ for what the current release guarantees.
   the control plane's), and that a clock step and `Quorum` with
   `majority_ack` are not exposed. A cluster test pins that a `Leader` stream
   refuses writes on a lapsed lease after `majority_ack` is finalized. (#1008)
+- A publish acknowledged on enqueue (a `Leader` stream with `ack_on_commit`
+  off, the default) is not readable until it is written, so a group poll,
+  history read or replay sent right after the ack can miss it. Stated in the
+  semantics and queues pages and on `Client::group_poll`. The end-to-end group
+  tests in `cache_durability` now publish with commit acks; they assumed
+  otherwise and failed intermittently. (#1025)
 
 ## [0.6.0-preview.2] - 2026-10-04
 

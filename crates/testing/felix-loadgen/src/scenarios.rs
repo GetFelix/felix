@@ -16,12 +16,14 @@ mod pubsub;
 mod queue;
 mod retained;
 mod round_trips;
+mod subscribe;
 mod watch;
 
 pub use ingest::IngestOptions;
+pub use subscribe::SubscribeOptions;
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use felix_client::ClientConfig;
@@ -105,6 +107,12 @@ pub enum Scenario {
         stream: String,
         options: IngestOptions,
     },
+    /// Subscribers only, at the live tail, for a fixed time. Something else
+    /// publishes.
+    Subscribe {
+        stream: String,
+        options: SubscribeOptions,
+    },
 }
 
 /// Run one scenario and return its `LOADGEN_JSON` object. The prose lines are
@@ -123,6 +131,9 @@ pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Val
         Scenario::Queue { stream } => queue::queue(common, stream).await,
         Scenario::Retained { cache } => retained::retained(common, cache).await,
         Scenario::Ingest { stream, options } => ingest::ingest(common, stream, options).await,
+        Scenario::Subscribe { stream, options } => {
+            subscribe::subscribe(common, stream, options).await
+        }
     }
 }
 
@@ -150,6 +161,24 @@ fn is_retriable_transient(err: &anyhow::Error) -> bool {
     text.contains("stream not found")
         || text.contains("cannot be subscribed")
         || text.contains("queue full")
+}
+
+/// `--start-at` as a local monotonic instant, converted once so every task
+/// waits for the same moment. A time already past means now.
+fn start_instant(start_at: Option<SystemTime>, scenario: &str) -> Instant {
+    match start_at {
+        Some(at) => match at.duration_since(SystemTime::now()) {
+            Ok(wait) => Instant::now() + wait,
+            Err(late) => {
+                eprintln!(
+                    "{scenario}: --start-at passed {:?} ago; starting now",
+                    late.duration()
+                );
+                Instant::now()
+            }
+        },
+        None => Instant::now(),
+    }
 }
 
 fn scope(common: &Common, cache: &str) -> (String, String, String) {
