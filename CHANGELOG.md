@@ -338,6 +338,13 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A `Quorum` publish no longer waits out an unreachable follower when the
+  other follower already holds the record but is still answering an earlier
+  replication pass (#1080). The pass waiting for a majority had shipped only to
+  the unreachable one, and the busy follower's answer reached the driver, not
+  that pass, so the mark stayed put until the peer request timed out (5 s by
+  default, past most publish timeouts). The answer now ends that wait and the
+  next pass counts it.
 - The docs no longer list `DropOld` as a working overflow policy (#1019). It is
   accepted at the broker, writer-lane and client stages but behaves as
   `DropNew` at each: the arriving batch is dropped, not the oldest. The status

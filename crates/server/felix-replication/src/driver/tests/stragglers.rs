@@ -40,6 +40,40 @@ impl PeerRequester for SlowPeer {
     }
 }
 
+/// Every request to a node waits that node's current delay, which a test can
+/// change between appends; everyone else stores at once.
+#[derive(Default)]
+struct ShiftingPeer {
+    delays: std::sync::Mutex<Map<&'static str, Duration>>,
+}
+
+impl ShiftingPeer {
+    fn delay(&self, node: &'static str, by: Duration) {
+        self.delays.lock().expect("lock").insert(node, by);
+    }
+}
+
+impl PeerRequester for ShiftingPeer {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let InternalMessage::ReplicateRecords(batch) = message else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        let delay = self.delays.lock().expect("lock").get(node_id).copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
 fn driver(
     slow: &'static str,
     broker: &Arc<Broker>,
@@ -47,8 +81,24 @@ fn driver(
     marks: &Arc<QuorumMarks>,
     routes_changed: &Arc<tokio::sync::Notify>,
 ) -> Replication {
-    spawn(
+    driver_with(
         Arc::new(SlowPeer { slow }),
+        broker,
+        router,
+        marks,
+        routes_changed,
+    )
+}
+
+fn driver_with<R: PeerRequester + Send + Sync + 'static>(
+    requester: Arc<R>,
+    broker: &Arc<Broker>,
+    router: &Arc<ShardRouter>,
+    marks: &Arc<QuorumMarks>,
+    routes_changed: &Arc<tokio::sync::Notify>,
+) -> Replication {
+    spawn(
+        requester,
         Arc::clone(broker),
         Arc::clone(router),
         Arc::new(Unfenced),
@@ -147,6 +197,51 @@ async fn a_follower_beyond_the_majority_holds_no_later_mark() {
     assert!(
         prompt(&marks, 0, 4, 4).await,
         "the mark for a later record waited on the slow follower",
+    );
+    driver.stop().await;
+}
+
+/// **A busy follower's answer completes a majority the pass is waiting on.**
+/// Follower b is still answering an earlier pass when a record lands, so the
+/// next pass ships only to c, which has stopped answering. b's answer, which
+/// covers the record, reaches the driver rather than that pass; the mark must
+/// move on it instead of waiting out c.
+#[tokio::test(start_paused = true)]
+async fn a_busy_followers_answer_moves_a_mark_the_pass_waits_on() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(ShiftingPeer::default());
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &Arc::default(),
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // c makes the majority for this one, and b's exchange is still under way
+    // when the next record lands.
+    peers.delay("broker-b", Duration::from_secs(1));
+    append(&broker, 0).await;
+    assert!(
+        prompt(&marks, 0, 4, 4).await,
+        "c's answer did not move the mark"
+    );
+
+    peers.delay("broker-c", SLOW);
+    append(&broker, 0).await;
+    let watched = watch_key(&key());
+    let reached = tokio::time::timeout(Duration::from_secs(10), async {
+        while marks.offset(&watched, 4) < Some(5) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        reached.is_ok(),
+        "the mark waited on the unresponsive follower while the busy one held the record",
     );
     driver.stop().await;
 }

@@ -472,7 +472,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let Some(state) = self.states.get_mut(&key) else {
             return;
         };
-        if state.running.is_some() {
+        if let Some(next_wanted) = &state.running {
+            // The pass under way may be waiting for a majority this answer
+            // completes; see the wait in `replicate_shard`.
+            next_wanted.notify_one();
             state.held.push(answered);
             return;
         }
