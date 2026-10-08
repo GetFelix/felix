@@ -95,7 +95,7 @@ pub(crate) fn spawn_broker(
         );
     let kafka_addr = if config.kafka {
         let port = ports::free_tcp_except(|port| port == metrics_addr.port())?.port();
-        let advertise = format!("{}:{port}", ports::docker_host());
+        let advertise = format!("{}:{port}", crate::container::host());
         command
             .env("FELIX_KAFKA_LISTEN", format!("0.0.0.0:{port}"))
             .env("FELIX_KAFKA_ADVERTISE_ADDR", &advertise)

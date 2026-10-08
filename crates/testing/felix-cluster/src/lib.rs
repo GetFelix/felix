@@ -37,6 +37,7 @@
 pub mod client;
 mod cluster;
 mod config;
+pub mod container;
 pub mod controlplane;
 pub mod credentials;
 mod fault;

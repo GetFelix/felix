@@ -218,7 +218,7 @@ start record or the read round, and exist to show that piece is load-bearing.
 If one of them stopped finding its violation, the check would fail.
 
 CI runs TLC over every configuration on each code change (`task tla:check`,
-about half an hour on a four-core runner; it needs Java or Docker). Model
+about half an hour on a four-core runner; it needs Java, Docker or Podman). Model
 checking shows the spec is consistent, not that it still describes the code,
 so CI also runs
 `scripts/check_spec_pairing.py`: a change to code the model covers must change

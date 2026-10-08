@@ -1,5 +1,11 @@
 version: "3"
 
+vars:
+  # docker or podman, or empty when neither answers. CONTAINER_ENGINE in the
+  # environment overrides it. Exported to the tests that run containers too.
+  CONTAINER_ENGINE:
+    sh: scripts/container_engine.sh
+
 tasks:
   fmt:
     cmds: ["cargo fmt --all"]
@@ -41,9 +47,10 @@ tasks:
       - |
         # With a database, the store's Postgres tests run too; they are behind
         # a feature so a plain `cargo test` never needs one.
+        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
           cargo test --workspace --features felix-controlplane-service/pg-tests
-        elif docker version >/dev/null 2>&1; then
+        elif [ -n "$CONTAINER_ENGINE" ]; then
           FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo test --workspace --features felix-controlplane-service/pg-tests
         else
           cargo test --workspace
@@ -61,17 +68,19 @@ tasks:
   pg:up:
     cmds:
       - |
-        if docker version >/dev/null 2>&1; then
-          docker inspect felix-pg-tests >/dev/null 2>&1 || docker run -d --rm \
+        engine="{{.CONTAINER_ENGINE}}"
+        if [ -n "$engine" ]; then
+          # Fully qualified, so Podman does not have to resolve a short name.
+          "$engine" inspect felix-pg-tests >/dev/null 2>&1 || "$engine" run -d --rm \
             --name felix-pg-tests -e POSTGRES_PASSWORD=postgres -p 55432:5432 \
-            postgres:16-alpine
+            docker.io/library/postgres:16-alpine
         else
-          echo "task: [pg:up] skipping postgres container (docker unavailable)"
+          echo "task: [pg:up] skipping postgres container (no docker or podman)"
         fi
   pg:down:
     # `-v` so the anonymous data volume goes with it. Without that the volumes
     # accumulate even though the containers do not.
-    cmds: ["docker rm -f -v felix-pg-tests >/dev/null 2>&1 || true"]
+    cmds: ['{{if .CONTAINER_ENGINE}}{{.CONTAINER_ENGINE}} rm -f -v felix-pg-tests >/dev/null 2>&1 || true{{end}}']
   pg:sweep:
     desc: Remove Postgres test containers and volumes an interrupted run left behind.
     cmds:
@@ -80,10 +89,15 @@ tasks:
         # they start `felix-test-pg-*` precisely so this can tell them from a
         # Postgres someone is running themselves. `-v` takes the data volume
         # with the container; those are what actually accumulate.
-        stray="$(docker ps -aq --filter name=felix-test-pg- 2>/dev/null || true)"
+        engine="{{.CONTAINER_ENGINE}}"
+        if [ -z "$engine" ]; then
+          echo "no docker or podman"
+          exit 0
+        fi
+        stray="$("$engine" ps -aq --filter name=felix-test-pg- 2>/dev/null || true)"
         if [ -n "$stray" ]; then
           echo "removing $(echo "$stray" | wc -l | tr -d ' ') stray test container(s)"
-          echo "$stray" | xargs docker rm -f -v >/dev/null 2>&1 || true
+          echo "$stray" | xargs "$engine" rm -f -v >/dev/null 2>&1 || true
         else
           echo "no stray test containers"
         fi
@@ -91,7 +105,7 @@ tasks:
         # only, so nothing in use is in scope — but this is the one step that
         # can touch a volume Felix did not create, so it is opt-in rather than
         # part of `task test`.
-        docker volume ls -qf dangling=true 2>/dev/null | head -100 | xargs -r docker volume rm >/dev/null 2>&1 || true
+        "$engine" volume ls -qf dangling=true 2>/dev/null | head -100 | xargs -r "$engine" volume rm >/dev/null 2>&1 || true
   coverage:
     cmds:
       # Same reason as `test`: felix-cluster's loadgen integration test shells
@@ -108,9 +122,10 @@ tasks:
           echo "task: [coverage] skipping pg:down/pg:up (CI detected)"
         fi
       - |
+        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
           FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
-        elif docker version >/dev/null 2>&1; then
+        elif [ -n "$CONTAINER_ENGINE" ]; then
           FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
         else
           cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
@@ -132,9 +147,10 @@ tasks:
           echo "task: [coverage:demos] skipping pg:down/pg:up (CI detected)"
         fi
       - |
+        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
           FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
-        elif docker version >/dev/null 2>&1; then
+        elif [ -n "$CONTAINER_ENGINE" ]; then
           FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
         else
           cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
@@ -226,7 +242,7 @@ tasks:
       - "python3 scripts/check_public_docs_refs.py"
   tla:check:
     desc: "Model-check the lease, replication and promotion protocol (docs/formal) with TLC"
-    # Java or Docker; the TLA+ tools are fetched once, pinned, into target/tla.
+    # Java, Docker or Podman; the TLA+ tools are fetched once, pinned, into target/tla.
     # Each configuration declares whether it must pass or which invariant it
     # must violate, so a finding cannot quietly turn into a pass.
     cmds:

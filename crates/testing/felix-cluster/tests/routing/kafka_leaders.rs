@@ -1,8 +1,9 @@
 //! A Kafka client reading a stream whose shards are led by different
 //! brokers, and following a shard when its leader changes.
 //!
-//! kcat runs from the `edenhill/kcat:1.7.1` image, so this needs Docker;
-//! without it the test says so and returns.
+//! kcat runs from the `edenhill/kcat:1.7.1` image, so this needs Docker or
+//! Podman (see `felix_cluster::container`); without one the test says so and
+//! returns.
 //!
 //! Run with `cargo test -p felix-cluster --test routing kafka_leaders::`.
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,14 +11,15 @@ use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec, wait};
+use felix_cluster::{Cluster, ClusterConfig, StreamSpec, container, wait};
 use serial_test::serial;
 use tokio::process::Command;
 
 const STREAM: &str = "orders";
 const SHARDS: u32 = 3;
 const PER_SHARD: usize = 3;
-const KCAT_IMAGE: &str = "edenhill/kcat:1.7.1";
+// Fully qualified: Podman may refuse a short name it has to guess at.
+const KCAT_IMAGE: &str = "docker.io/edenhill/kcat:1.7.1";
 /// Each kcat is a container start plus a consume; a hang should fail the
 /// test rather than stall the suite.
 const KCAT_BOUND: Duration = Duration::from_secs(90);
@@ -351,15 +353,15 @@ fn sasl(cluster: &Cluster, bootstrap: &str, args: &[&str]) -> Vec<String> {
     all
 }
 
-/// Whether Docker can run the kcat image.
+/// Whether the container engine can run the kcat image.
 async fn kcat_available() -> bool {
-    let ok = Command::new("docker")
+    let ok = Command::new(container::engine())
         .args(["run", "--rm", KCAT_IMAGE, "-V"])
         .output()
         .await
         .is_ok_and(|out| out.status.success());
     if !ok {
-        eprintln!("skipping: docker cannot run {KCAT_IMAGE}");
+        eprintln!("skipping: {} cannot run {KCAT_IMAGE}", container::engine());
     }
     ok
 }
@@ -371,19 +373,19 @@ async fn kcat(args: Vec<String>) -> Output {
         std::process::id(),
         RUNS.fetch_add(1, Ordering::Relaxed)
     );
-    let mut command = Command::new("docker");
+    let mut command = Command::new(container::engine());
     command.args(["run", "--rm", "--name", &name]);
-    // Docker Desktop reaches the host through host.docker.internal, which is
-    // what the brokers advertise; on Linux the container shares loopback.
+    // In a VM the container reaches the host through the engine's host alias,
+    // which is what the brokers advertise; on Linux it shares loopback.
     if cfg!(target_os = "linux") {
         command.args(["--network", "host"]);
     }
     command.arg(KCAT_IMAGE).args(&args).kill_on_drop(true);
     match tokio::time::timeout(KCAT_BOUND, command.output()).await {
-        Ok(output) => output.expect("run docker"),
+        Ok(output) => output.expect("run the container engine"),
         Err(_) => {
-            // Killing the docker CLI leaves the container running.
-            let _ = Command::new("docker")
+            // Killing the engine's CLI leaves the container running.
+            let _ = Command::new(container::engine())
                 .args(["rm", "-f", &name])
                 .output()
                 .await;

@@ -104,7 +104,7 @@ cited tests and `FELIX_*` variable names still exist.
 
 ```bash
 task lint            # fmt check, workspace clippy -D warnings, per-crate feature checks
-task test            # the workspace tests, with Postgres when Docker is available
+task test            # the workspace tests, with Postgres when Docker or Podman is available
 task docs:evidence   # doc citations and env-var names
 task demo:check      # if you changed a public API the standalone demos use
 ```

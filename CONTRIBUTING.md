@@ -50,7 +50,8 @@ like "drafted with Claude Code, reviewed and tested by me" is enough.
 
 - `cargo build --workspace` builds everything.
 - `task test` runs the full test suite (spins up Postgres locally if Docker
-  is available).
+  or Podman is available; `CONTAINER_ENGINE=podman` forces Podman). See
+  [Docker or Podman](docs-site/src/content/docs/getting-started/containers.md).
 - `task lint` runs `cargo fmt --check` and `cargo clippy -D warnings`. Both
   must pass in CI.
 - See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together
