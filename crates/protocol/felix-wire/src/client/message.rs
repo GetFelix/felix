@@ -69,6 +69,16 @@ pub enum Message {
         /// implements none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_features: Option<u32>,
+        /// Extended feature bits, from `KNOWN_FEATURES_HI`: the second word of
+        /// the feature set, once the first ran out.
+        ///
+        /// A separate field rather than a wider `client_features` because an
+        /// older broker decodes that as a `u32`, and a value past it would fail
+        /// the whole `Auth`. Sent with `FEATURE_EXTENDED` set in
+        /// `client_features`, and only when non-zero: see
+        /// [`offer_features`](crate::offer_features).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_features_hi: Option<u32>,
     },
     /// Successful auth, carrying the broker's supported frame-flag bits.
     ///
@@ -90,6 +100,14 @@ pub enum Message {
         /// so a client must never send one speculatively.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_features: Option<u32>,
+        /// Extended feature bits this broker implements, the mirror of
+        /// `Auth.client_features_hi`.
+        ///
+        /// Sent only to a client that set `FEATURE_EXTENDED`, and only when
+        /// non-zero, so any other client's `AuthOk` is unchanged: see
+        /// [`answer_features`](crate::answer_features).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_features_hi: Option<u32>,
         /// Every port this broker's client-facing listeners are bound to,
         /// when it has more than one.
         ///

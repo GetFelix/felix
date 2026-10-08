@@ -94,6 +94,7 @@ async fn auth_answer(
             token: auth.token.clone(),
             client_flags,
             client_features,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -212,6 +213,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
             token: auth.token.clone(),
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(felix_wire::FEATURE_PUBLISH_PIPELINE),
+            client_features_hi: None,
         },
     )
     .await?;

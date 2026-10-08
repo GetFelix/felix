@@ -360,3 +360,19 @@ fn every_feature_bit_is_distinct_and_known() {
         "KNOWN_FEATURES and this list disagree"
     );
 }
+
+/// The marker takes the last bit of the first word and is never offered by
+/// accident: it is set only alongside an extended word.
+#[test]
+fn the_extended_marker_is_the_last_bit_and_not_a_known_feature() {
+    assert_eq!(crate::FEATURE_EXTENDED, 0x8000_0000);
+    assert_eq!(crate::KNOWN_FEATURES & crate::FEATURE_EXTENDED, 0);
+    assert_eq!(
+        crate::offer_features(crate::KNOWN_FEATURES, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
+    assert_eq!(
+        crate::offer_features(crate::FEATURE_TOPOLOGY, 4),
+        (crate::FEATURE_TOPOLOGY | crate::FEATURE_EXTENDED, Some(4))
+    );
+}

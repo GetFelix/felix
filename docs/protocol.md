@@ -1566,6 +1566,41 @@ supported. Silence means no.
 A broker advertises a feature only when it can actually answer it. A broker with
 no cluster behind it has no topology to report, and advertises `0`.
 
+### Extended feature word
+
+The feature set is a `u32`. Its last bit, `0x8000_0000` (`FEATURE_EXTENDED`),
+is not a feature: it says a second word follows. Features past the first word travel in `client_features_hi` on `auth`
+and `server_features_hi` on `auth_ok`, both `u32`, bit 0 of the second word
+being bit 32 of the set:
+
+```json
+{"type":"auth","tenant_id":"t1","token":"...","client_flags":25,"client_features":2147483649,"client_features_hi":1}
+{"type":"auth_ok","server_flags":25,"server_features":2147483649,"server_features_hi":1}
+```
+
+The rules:
+
+- A peer sets `FEATURE_EXTENDED` and sends its `_hi` word only when that word
+  is non-zero. A client offers every extended bit it knows, so setting the
+  marker also says it reads `server_features_hi`.
+- A broker sends `server_features_hi`, with `FEATURE_EXTENDED` in
+  `server_features`, only to a client that set `FEATURE_EXTENDED`, and only
+  when it serves an extended feature.
+- A reader counts a `_hi` word only when the first word carries
+  `FEATURE_EXTENDED`. Absent means none, as for the first word.
+
+So a peer that knows no extended feature exchanges the frames it always did.
+A second field, rather than a wider `client_features`, is what keeps an old
+broker working: it decodes the field as a `u32`, and a value past `2^32 - 1`
+would fail the whole `auth`, which a client cannot avoid because it does not
+know the broker's age until the answer comes back. An unknown field it simply
+ignores.
+
+No feature lives in the second word yet. The Rust constants are
+`FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
+`offer_features`, `answer_features` and `peer_features_hi` applying the rules
+above.
+
 ## Error codes
 
 A client that offers `FEATURE_ERROR_CODES` in `auth` gets a typed `code` and a
