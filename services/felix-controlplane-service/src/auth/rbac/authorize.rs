@@ -89,10 +89,13 @@ pub enum ParsedObject {
         namespace: Segment,
         stream: Segment,
     },
+    /// A cache, or with `key` set, only some of its keys. A key scope needs an
+    /// exact namespace and cache.
     Cache {
         tenant_id: String,
         namespace: Segment,
         cache: Segment,
+        key: Option<KeyScope>,
     },
     /// One consumer group of a stream. Only group actions mean anything here;
     /// the broker decides how it combines with stream grants.
@@ -108,6 +111,18 @@ pub enum ParsedObject {
 pub enum Segment {
     Exact(String),
     Any,
+}
+
+/// The keys a cache object is limited to: the fourth segment of
+/// `cache:{tenant}/{ns}/{cache}/{key}`.
+///
+/// `Prefix` is a literal string prefix, so `user:1*` covers `user:10` too.
+/// A key grant never holds a `*` anywhere but the end, or the key would be a
+/// pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyScope {
+    Exact(String),
+    Prefix(String),
 }
 
 pub fn parse_permission(raw: &str, tenant_id: &str) -> Result<ParsedPermission, String> {
@@ -130,6 +145,7 @@ pub fn parse_permission(raw: &str, tenant_id: &str) -> Result<ParsedPermission, 
 /// - `namespace:{tenant_id}/{namespace}`
 /// - `stream:{tenant_id}/{namespace}/{stream}`
 /// - `cache:{tenant_id}/{namespace}/{cache}`
+/// - `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`
 /// - `group:{tenant_id}/{namespace}/{stream}/{group}`
 pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> {
     if raw == "tenant:*" {
@@ -188,15 +204,28 @@ pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> 
         });
     }
     if let Some(rest) = raw.strip_prefix("cache:") {
-        let (tid, ns, cache) = split3(rest)?;
+        // Cache names cannot hold `/`, so everything after the third one is
+        // the key, which can.
+        let (cache_part, key) = match rest.match_indices('/').nth(2) {
+            Some((at, _)) => (&rest[..at], Some(&rest[at + 1..])),
+            None => (rest, None),
+        };
+        let (tid, ns, cache) = split3(cache_part)?;
         if tid != tenant_id {
             return Err("cache object tenant mismatch".to_string());
         }
         let (namespace, cache) = parse_leaf_segments(ns, cache)?;
+        let key = key.map(parse_key_scope).transpose()?;
+        if key.is_some() && (namespace == Segment::Any || cache == Segment::Any) {
+            // Same reasoning as a wildcard namespace over a named leaf: a
+            // grant across caches should not look like a single-key grant.
+            return Err("a cache key object must name its namespace and cache".to_string());
+        }
         return Ok(ParsedObject::Cache {
             tenant_id: tid.to_string(),
             namespace,
             cache,
+            key,
         });
     }
 
@@ -294,13 +323,20 @@ pub fn object_within_scope(scope: &ParsedObject, target: &ParsedObject) -> bool 
                 tenant_id: st,
                 namespace: sns,
                 cache: scache,
+                key: skey,
             },
             ParsedObject::Cache {
                 tenant_id: tt,
                 namespace: tns,
                 cache: tcache,
+                key: tkey,
             },
-        ) => st == tt && segment_contains(sns, tns) && segment_contains(scache, tcache),
+        ) => {
+            st == tt
+                && segment_contains(sns, tns)
+                && segment_contains(scache, tcache)
+                && key_scope_contains(skey.as_ref(), tkey.as_ref())
+        }
         (ParsedObject::Tenant { tenant_id: s }, ParsedObject::Group { tenant_id: t, .. }) => s == t,
         (
             ParsedObject::Namespace {
@@ -388,6 +424,7 @@ pub fn narrow_object(granted: &ParsedObject, requested: &ParsedObject) -> Option
                     tenant_id,
                     namespace: Segment::Any,
                     cache,
+                    key,
                 },
                 ParsedObject::Namespace {
                     tenant_id: requested_tenant,
@@ -397,6 +434,7 @@ pub fn narrow_object(granted: &ParsedObject, requested: &ParsedObject) -> Option
                 tenant_id: tenant_id.clone(),
                 namespace: namespace.clone(),
                 cache: cache.clone(),
+                key: key.clone(),
             },
             _ => return None,
         }
@@ -433,11 +471,19 @@ pub fn format_object(object: &ParsedObject) -> String {
             tenant_id,
             namespace,
             cache,
-        } => format!(
-            "cache:{tenant_id}/{}/{}",
-            segment(namespace),
-            segment(cache)
-        ),
+            key,
+        } => {
+            let key = match key {
+                None => String::new(),
+                Some(KeyScope::Exact(key)) => format!("/{key}"),
+                Some(KeyScope::Prefix(prefix)) => format!("/{prefix}*"),
+            };
+            format!(
+                "cache:{tenant_id}/{}/{}{key}",
+                segment(namespace),
+                segment(cache)
+            )
+        }
         ParsedObject::Group {
             tenant_id,
             namespace,
@@ -458,8 +504,15 @@ pub fn validate_new_rule_allowed(
     tenant_id: &str,
     rule: &PolicyRule,
 ) -> Result<ParsedObject, String> {
-    canonical_action(&rule.action).ok_or_else(|| "unknown action".to_string())?;
+    let action = canonical_action(&rule.action).ok_or_else(|| "unknown action".to_string())?;
     let parsed = parse_object(&rule.object, tenant_id)?;
+    // Only data access is per key; anything else on a key would be a rule
+    // the broker never consults.
+    if matches!(parsed, ParsedObject::Cache { key: Some(_), .. })
+        && !matches!(action, ACTION_CACHE_READ | ACTION_CACHE_WRITE)
+    {
+        return Err("a cache key object only takes cache.read or cache.write".to_string());
+    }
     if caller_scopes
         .iter()
         .any(|scope| object_within_scope(scope, &parsed))
@@ -522,6 +575,42 @@ fn parse_segment(raw: &str, allow_star: bool) -> Result<Segment, String> {
         return Err("invalid object segment".to_string());
     }
     Ok(Segment::Exact(raw.to_string()))
+}
+
+/// A key is a literal or a literal prefix ending in the one `*`. A bare `*`
+/// is refused: that is the whole cache, which has its own spelling.
+fn parse_key_scope(raw: &str) -> Result<KeyScope, String> {
+    let (literal, prefix) = match raw.strip_suffix('*') {
+        Some(prefix) => (prefix, true),
+        None => (raw, false),
+    };
+    if literal.is_empty() {
+        return Err("a cache key object must name a key or a non-empty prefix; \
+             grant the whole cache without a key segment"
+            .to_string());
+    }
+    if literal.contains('*') {
+        return Err("a cache key may only end in `*`, which makes it a prefix".to_string());
+    }
+    Ok(if prefix {
+        KeyScope::Prefix(literal.to_string())
+    } else {
+        KeyScope::Exact(literal.to_string())
+    })
+}
+
+/// No key scope is the whole cache, which contains every key scope.
+fn key_scope_contains(scope: Option<&KeyScope>, target: Option<&KeyScope>) -> bool {
+    match (scope, target) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(KeyScope::Exact(scope)), Some(KeyScope::Exact(target))) => scope == target,
+        (Some(KeyScope::Exact(_)), Some(KeyScope::Prefix(_))) => false,
+        (
+            Some(KeyScope::Prefix(scope)),
+            Some(KeyScope::Exact(target) | KeyScope::Prefix(target)),
+        ) => target.starts_with(scope.as_str()),
+    }
 }
 
 fn segment_contains(scope: &Segment, target: &Segment) -> bool {

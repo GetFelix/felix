@@ -21,6 +21,19 @@ for what the current release guarantees.
   reported `unchanged`, so a batch can be sent again after a failure. Under
   Raft this is metadata level 5; the endpoint answers `503` until every
   control-plane member runs a release that has it.
+- Cache grants can name a key or a key prefix (#966). A fourth segment on a
+  cache object, `cache:{tenant}/{ns}/{cache}/{key}` or `.../{prefix}*`, limits
+  `cache.read` or `cache.write` to that key, or to keys starting with the
+  prefix (a plain string prefix: `user:1*` covers `user:10`). The broker checks
+  get, put, delete, conditional writes, counters and key watches against the
+  key, a prefix watch against its prefix, and a forwarded op again at the
+  owner. Grants without a key segment still cover the whole cache. The control
+  plane refuses a key with `*` anywhere but the end, a bare `*`, a wildcard
+  namespace or cache under a key, and any other action on a key object; token
+  exchange narrows a whole-cache grant to a key hint. No wire change. Mixed
+  versions fail closed: an older broker refuses requests a key grant would
+  allow. `felix-authz` adds `PermissionMatcher::allows_cache_keys` and
+  `CacheKeys`; the control plane's `ParsedObject::Cache` gains a `key` field.
 - Token exchange can narrow by action and resource pairs (#968).
   `permissions: ["stream.subscribe:stream:t1/ns/a", "stream.publish:stream:t1/ns/b"]`
   narrows each pair on its own against the grants with exactly that action,

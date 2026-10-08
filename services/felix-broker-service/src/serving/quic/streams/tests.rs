@@ -19,6 +19,7 @@
 mod ack_waiter;
 mod control_auth;
 mod control_cache;
+mod control_cache_keys;
 mod control_lifecycle;
 mod end_to_end;
 mod error_codes;
