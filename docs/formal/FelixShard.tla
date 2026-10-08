@@ -1239,6 +1239,8 @@ Reseat(v, o, views) ==
 \* generation.
 GrowSet(v, d, views) ==
     /\ Grow
+    \* Short of the factor, which is odd: a full set does not grow.
+    /\ Cardinality(ReplicaSet) % 2 = 0
     /\ moves < MaxMoves
     /\ joining = {}
     /\ d \in out
@@ -1274,32 +1276,42 @@ Decide(v, f, views) ==
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-Step ==
-    \/ Tick /\ UNCHANGED counterVars
-    \/ \E b \in Brokers :
-        \/ /\ \/ SendHeartbeat(b)
-              \/ AcceptHeartbeat(b)
-              \/ LoseHeartbeat(b)
-              \/ StepDown(b)
-              \/ Admit(b)
-              \/ Resend(b)
-              \/ Claim(b)
-              \/ Commit(b)
-              \/ AckQuorum(b)
-              \/ Report(b)
-              \/ ObserveFence(b)
-              \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
-           /\ UNCHANGED counterVars
-        \/ OpenForWrites(b)
-        \/ Decide(Now, b, cpView)
-        \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-        \/ CommitCounter(b)
-        \/ AckCounters(b)
-        \/ \E f \in Brokers : ShipCounter(b, f) \/ AnswerCounterFence(b, f)
-    \/ LoseReport /\ UNCHANGED counterVars
-    \/ \E p \in Planners : Snapshot(p) /\ UNCHANGED counterVars
+quietVars == << counterVars, heard >>
 
-Next == (Step /\ UNCHANGED heard) \/ (DeliverReport /\ UNCHANGED counterVars)
+\* Every action is its own disjunct, with what it leaves alone conjoined
+\* inside it. TLC splits a next-state relation only at disjunctions and
+\* constant `\E`, and its simulation mode picks an action before a successor:
+\* folded into one action, a walk would pick among successor states, and
+\* Tick's clock choices would crowd out everything else.
+Next ==
+    \/ Tick /\ UNCHANGED quietVars
+    \/ \E b \in Brokers :
+        \/ SendHeartbeat(b) /\ UNCHANGED quietVars
+        \/ AcceptHeartbeat(b) /\ UNCHANGED quietVars
+        \/ LoseHeartbeat(b) /\ UNCHANGED quietVars
+        \/ StepDown(b) /\ UNCHANGED quietVars
+        \/ Admit(b) /\ UNCHANGED quietVars
+        \/ Resend(b) /\ UNCHANGED quietVars
+        \/ Claim(b) /\ UNCHANGED quietVars
+        \/ Commit(b) /\ UNCHANGED quietVars
+        \/ AckQuorum(b) /\ UNCHANGED quietVars
+        \/ Report(b) /\ UNCHANGED quietVars
+        \/ ObserveFence(b) /\ UNCHANGED quietVars
+        \/ \E f \in Brokers :
+            \/ Ship(b, f) /\ UNCHANGED quietVars
+            \/ LearnHwm(b, f) /\ UNCHANGED quietVars
+            \/ AnswerFence(b, f) /\ UNCHANGED quietVars
+            \/ ShipCounter(b, f) /\ UNCHANGED heard
+            \/ AnswerCounterFence(b, f) /\ UNCHANGED heard
+        \/ OpenForWrites(b) /\ UNCHANGED heard
+        \/ Decide(Now, b, cpView) /\ UNCHANGED heard
+        \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
+           /\ UNCHANGED heard
+        \/ CommitCounter(b) /\ UNCHANGED heard
+        \/ AckCounters(b) /\ UNCHANGED heard
+    \/ LoseReport /\ UNCHANGED quietVars
+    \/ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
+    \/ DeliverReport /\ UNCHANGED counterVars
 
 Spec == Init /\ [][Next]_vars
 

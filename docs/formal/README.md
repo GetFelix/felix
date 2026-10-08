@@ -742,6 +742,18 @@ The walks carry no `SYMMETRY`: simulation stores no states, so it buys nothing.
 `Tick` draws each clock from its drift window rather than from `0..MaxTime`,
 which gives the same clocks and keeps a tick cheap at time to 40.
 
+`Next` lists every action as its own disjunct. TLC's simulation mode picks an
+enabled action and then one of its successors, but it splits `Next` into
+actions only at disjunctions and constant `\E`. With everything in one
+conjunction, a walk picked uniformly among successor states, and with drift
+`Tick` has up to 81 of them. The walks ticked time to its bound within a few
+dozen steps and spent the rest with time stopped, where no lease lapses after
+a replacement is seated, so the spares twin found nothing.
+
+`GrowSet` only grows a set short of the factor. Without that guard, a walk
+with two spares grew the set to four, and with no spare left it never
+replaced a follower again.
+
 ```bash
 TLA_SIM_MINUTES=10 scripts/check_tla.sh --simulate FelixShardWalkSpares
 ```
