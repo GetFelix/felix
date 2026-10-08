@@ -472,6 +472,13 @@ for what the current release guarantees.
   semantics and queues pages and on `Client::group_poll`. The end-to-end group
   tests in `cache_durability` now publish with commit acks; they assumed
   otherwise and failed intermittently. (#1025)
+- Corrected four replication claims. Counter adds on a `Quorum` cache wait for
+  a majority like puts and deletes; the log-backed cache stays Partial for its
+  in-memory key index (#1073). A `Quorum` publish with no reachable majority
+  is not refused up front: it waits, then fails with `quorum_timeout`. Under
+  `majority_ack` a move's destination cut off from its followers at the
+  cut-over waits for a majority instead of opening on the lease. A promoted
+  leader's fence retries back off from 200 ms to 2 s. (#1074)
 
 ## [0.6.0-preview.2] - 2026-10-04
 

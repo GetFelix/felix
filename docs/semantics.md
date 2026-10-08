@@ -60,12 +60,13 @@ reached the disk.
 | `Quorum` | A majority of the replica set, leader included, has it durably | None within the replica set |
 
 `Quorum` waits. A publish is not acknowledged until the leader can show a
-majority holds the record; if no majority is reachable it is **refused**, with
-an error that says this broker cannot vouch for the write rather than one that
-claims it failed.
+majority holds the record. There is no up-front refusal: with no majority
+reachable it waits up to `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s by default),
+then fails with `quorum_timeout`, an error that says this broker cannot vouch
+for the write rather than one that claims it failed.
 
 > `a_quorum_publish_without_a_majority_is_refused`: freeze every follower and
-> the publish is refused rather than acknowledged.
+> the publish fails rather than being acknowledged.
 > `a_frozen_follower_does_not_block_a_quorum`: losing a *minority* does not
 > stop it, which is the case `Quorum` exists to tolerate.
 > `a_quorum_acknowledged_record_survives_its_leader`: the acknowledged record
