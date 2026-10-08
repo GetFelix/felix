@@ -11,8 +11,11 @@
 //!   `FELIX_*` variables over the chosen profile.
 //! - `connect`: TLS, addresses and the client configuration.
 //! - `publish`, `subscribe`, `cache`, `topology`: the data-plane commands.
+//! - `group`, `counter`: consumer groups and counters, through the brokers.
 //! - `controlplane`: the REST client and the read-only commands.
 //! - `manage`: the control-plane writes, and confirming destructive ones.
+//! - `rbac`: listing, granting and revoking RBAC policies and role
+//!   assignments.
 //! - `inspect`: operators' read-only views of what the brokers hold.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
@@ -24,12 +27,15 @@ mod cli;
 mod connect;
 mod context;
 mod controlplane;
+mod counter;
 mod error;
+mod group;
 mod help;
 mod inspect;
 mod manage;
 mod output;
 mod publish;
+mod rbac;
 mod subscribe;
 mod topology;
 
@@ -88,12 +94,15 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Sub(args) => subscribe::run(args, &settings, out).await,
         Command::Cache(command) => cache::run(command, &settings, out).await,
         Command::Topology(args) => topology::run(args, &settings, out).await,
+        Command::Group(command) => group::run(command, &settings, out).await,
+        Command::Counter(command) => counter::run(command, &settings, out).await,
         Command::Tenant(command) => controlplane::tenant(command, &settings, out).await,
         Command::Namespace(command) => controlplane::namespace(command, &settings, out).await,
         Command::Stream(command) => controlplane::stream(command, &settings, out).await,
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
         Command::Placement(command) => manage::placement(command, &settings, out).await,
+        Command::Rbac(command) => rbac::run(command, &settings, out).await,
         Command::Inspect(command) => inspect::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
         Command::Context(_) | Command::Completions(_) | Command::Man(_) => {

@@ -232,6 +232,10 @@ Write-time protections:
 
 This blocks privilege escalation when delegating namespace or stream admins.
 
+`felixctl rbac` lists, adds and removes policies and groupings over the same
+API, and checks an object against this grammar before sending it. See
+[felixctl](/getting-started/felixctl/#rbac).
+
 #### Cluster scope
 
 `cluster:*` covers broker membership (which brokers exist, whether they are

@@ -1,6 +1,6 @@
 //! The control plane's REST API, and the read-only commands over it:
 //! `tenant`, `namespace`, `stream`, `cache ls|info`, `node` and `shard`
-//! listings and lookups. The writes are in `manage`.
+//! listings and lookups. The writes are in `manage` and `rbac`.
 //!
 //! Resources are handled as JSON values rather than typed copies of the
 //! control plane's models, so a field the control plane adds shows up in
@@ -131,7 +131,7 @@ impl Api {
 
     /// Send one request. A non-2xx answer is an error: 404 is
     /// [`Exit::NotFound`], anything else [`Exit::Server`].
-    async fn send(
+    pub(crate) async fn send(
         &self,
         method: reqwest::Method,
         path: &str,

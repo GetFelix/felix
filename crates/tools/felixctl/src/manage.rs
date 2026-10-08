@@ -407,7 +407,7 @@ pub(crate) fn changes(before: &Value, after: &Value) -> Vec<String> {
 }
 
 /// Go ahead only with `--yes`, or when someone at a terminal says yes.
-fn ask(question: &str, confirm: Confirm) -> anyhow::Result<()> {
+pub(crate) fn ask(question: &str, confirm: Confirm) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let interactive = stdin.is_terminal();
     confirm_with(question, confirm, interactive, || {

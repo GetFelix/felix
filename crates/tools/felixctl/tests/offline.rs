@@ -39,6 +39,8 @@ fn help_works_both_ways_for_every_command() {
         "sub",
         "cache",
         "topology",
+        "group",
+        "counter",
         "tenant",
         "namespace",
         "stream",
@@ -55,6 +57,31 @@ fn help_works_both_ways_for_every_command() {
         assert!(by_help.status.success(), "help {command} failed");
         assert_eq!(stdout(&by_flag), stdout(&by_help), "{command}");
         assert!(stdout(&by_flag).contains("Examples:"), "{command}");
+    }
+}
+
+#[test]
+fn a_destructive_group_command_off_a_terminal_needs_yes() {
+    let home = tempfile::tempdir().unwrap();
+    // stdin is not a terminal here, so nothing can be asked. The refusal
+    // comes before any broker is contacted; port 9 would not answer anyway.
+    for args in [
+        &["group", "rm", "orders", "billing"][..],
+        &[
+            "group",
+            "dead-letters",
+            "discard",
+            "orders",
+            "billing",
+            "0:3",
+        ],
+    ] {
+        let mut args = args.to_vec();
+        args.extend(["--brokers", "127.0.0.1:9", "--tenant", "t1", "--token", "x"]);
+        let output = felixctl(home.path(), &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--yes"), "{stderr}");
     }
 }
 

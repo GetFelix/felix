@@ -232,6 +232,21 @@ impl IdempotentProducer {
             .context("the producer's task failed before it finished")
     }
 
+    /// [`Self::close`], giving up after `timeout`. The producer's task is then
+    /// stopped where it is: nothing more is sent or re-sent, and a batch it
+    /// had already sent may or may not land.
+    pub async fn close_within(self, timeout: std::time::Duration) -> Result<()> {
+        drop(self.requests);
+        let mut driver = self.driver;
+        match tokio::time::timeout(timeout, &mut driver).await {
+            Ok(joined) => joined.context("the producer's task failed before it finished"),
+            Err(_) => {
+                driver.abort();
+                anyhow::bail!("the producer had not finished after {timeout:?}, so it was stopped")
+            }
+        }
+    }
+
     /// Hand a call to the driver and wait for its answer: the offsets of the
     /// batches it sent, in order.
     async fn submit(
