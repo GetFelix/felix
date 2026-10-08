@@ -2,7 +2,7 @@
 
 The command-line tool for [Felix](https://github.com/GetFelix/felix). It
 publishes to and reads from streams, reads, writes and watches cache keys,
-shows which broker owns each shard, lists what the control plane knows, and
+works consumer groups and counters, shows which broker owns each shard, lists what the control plane knows, and
 runs load tests.
 
 ```bash
@@ -13,6 +13,7 @@ felixctl context add local --brokers 127.0.0.1:5000 --tenant t1 \
 felixctl pub orders 'hello'
 felixctl sub orders --from earliest --count 10
 felixctl cache get users alice
+felixctl group poll orders billing
 felixctl topology orders
 felixctl stream ls
 felixctl bench latency orders
@@ -45,7 +46,8 @@ documentation.
 
 ## How it is built
 
-The data-plane commands (`pub`, `sub`, `cache get|put|del|watch`, `topology`)
+The data-plane commands (`pub`, `sub`, `cache get|put|del|watch`, `group`,
+`counter`, `topology`)
 use only `felix-client`'s public API, which makes this crate a check that the
 API is enough to build tools on. The control-plane commands use the REST API.
 `bench` links `felix-loadgen` and runs its scenarios in process, so its

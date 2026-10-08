@@ -7,6 +7,9 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::counter::CounterCommand;
+use crate::group::GroupCommand;
+
 /// Printed by `felixctl` with no arguments.
 pub(crate) const OVERVIEW: &str = "\
 felixctl: publish, subscribe, read caches and inspect a Felix cluster.
@@ -19,6 +22,7 @@ Get started:
 
 Commands:
   Data plane     pub, sub, cache get|put|del|watch, topology
+  Groups         group, counter
   Control plane  tenant, namespace, stream, cache ls|info, node, shard
   Tools          context, bench, completions
 
@@ -189,6 +193,34 @@ pub(crate) enum Command {
   felixctl topology orders --json"
     )]
     Topology(TopologyArgs),
+
+    /// Create, inspect and move consumer groups; claim and settle records
+    #[command(
+        subcommand,
+        long_about = "Work with consumer groups: create, describe, seek and delete them, \
+                      claim records with poll, and settle them with ack, nack, extend and \
+                      dead-letters.\n\n\
+                      A group keeps a cursor on each shard of its stream, with that \
+                      shard's leader. A record is named by its claim, SHARD:OFFSET, which \
+                      poll prints with the delivery attempt added.",
+        after_long_help = "Examples:
+  felixctl group create orders billing --from earliest
+  felixctl group poll orders billing --max 5
+  felixctl group ack orders billing 0:15:1
+  felixctl group describe orders billing"
+    )]
+    Group(GroupCommand),
+
+    /// Read and add to counters
+    #[command(
+        subcommand,
+        long_about = "Read a counter's sum, or add a signed delta to it. Counters live in a \
+                      cache, beside its keys.",
+        after_long_help = "Examples:
+  felixctl counter add stats page-views 1
+  felixctl counter get stats page-views"
+    )]
+    Counter(CounterCommand),
 
     /// List and inspect tenants (control plane)
     #[command(

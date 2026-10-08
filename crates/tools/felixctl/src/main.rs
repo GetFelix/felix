@@ -11,6 +11,8 @@
 //!   `FELIX_*` variables over the chosen profile.
 //! - `connect`: TLS, addresses and the client configuration.
 //! - `publish`, `subscribe`, `cache`, `topology`: the data-plane commands.
+//! - `group`, `counter`: consumer groups and counters, through the brokers.
+//! - `confirm`: the prompt before a destructive command, and `--yes`.
 //! - `controlplane`: the read-only REST commands.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
@@ -19,10 +21,13 @@
 mod bench;
 mod cache;
 mod cli;
+mod confirm;
 mod connect;
 mod context;
 mod controlplane;
+mod counter;
 mod error;
+mod group;
 mod help;
 mod output;
 mod publish;
@@ -84,6 +89,8 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Sub(args) => subscribe::run(args, &settings, out).await,
         Command::Cache(command) => cache::run(command, &settings, out).await,
         Command::Topology(args) => topology::run(args, &settings, out).await,
+        Command::Group(command) => group::run(command, &settings, out).await,
+        Command::Counter(command) => counter::run(command, &settings, out).await,
         Command::Tenant(command) => controlplane::tenant(command, &settings, out).await,
         Command::Namespace(command) => controlplane::namespace(command, &settings, out).await,
         Command::Stream(command) => controlplane::stream(command, &settings, out).await,

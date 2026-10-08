@@ -12,6 +12,16 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl group` and `felixctl counter` (#1005). `group create|describe|seek|rm`
+  manage a consumer group on every shard of a stream, or on `--shard`.
+  `group poll` claims records and prints each with its claim,
+  `SHARD:OFFSET:ATTEMPTS`, which `group ack`, `nack` (with `--delay-ms`),
+  `extend` and `dead-letters add` take. `group dead-letters ls|redrive|discard`
+  work the dead-letter list. `group rm`, `dead-letters discard` and a `seek`
+  that moves a cursor back over finished records ask `[y/N]` at a terminal and
+  need `--yes` elsewhere. `counter get|add` read and add to counters. All go
+  through `ClusterClient`. felix-client now re-exports `GroupRecord`, which
+  `group_extend` takes.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it

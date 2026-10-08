@@ -1,10 +1,11 @@
 ---
 title: "felixctl"
-description: "The felixctl command: publish, subscribe, read caches, see where shards live, list what the control plane knows, and run benchmarks."
+description: "The felixctl command: publish, subscribe, read caches, work consumer groups and counters, see where shards live, list what the control plane knows, and run benchmarks."
 ---
 
 `felixctl` is Felix's command-line tool. It publishes to and reads from
-streams, reads, writes and watches cache keys, shows which broker owns each
+streams, reads, writes and watches cache keys, claims and settles records for
+consumer groups, reads and adds to counters, shows which broker owns each
 shard, lists tenants, namespaces, streams, caches, brokers and shard
 assignments, and runs load tests. Every command prints readable text by
 default and JSON with `--json`.
@@ -236,6 +237,78 @@ felixctl cache info users
 not set. `cache put` reads the value from stdin when none is given. A watch
 prints `key<TAB>value`, or `(deleted)`, per change.
 
+## Consumer groups
+
+```bash
+felixctl group create orders billing --from earliest
+felixctl group poll orders billing --max 5
+felixctl group ack orders billing 0:15:1
+felixctl group nack orders billing 0:16:1 --delay-ms 30000
+felixctl group extend orders billing 0:17:1 --for-ms 60000
+felixctl group describe orders billing
+felixctl group seek orders billing latest
+felixctl group rm orders billing --yes
+```
+
+A group keeps a cursor on each shard of its stream, held by that shard's
+leader. `create`, `describe`, `seek` and `rm` act on every shard unless
+`--shard` names one; `poll` asks each shard in turn until it has `--max`
+records, waiting up to `--wait-ms` on each.
+
+`poll` prints each record as `CLAIM<TAB>payload`. The claim is
+`SHARD:OFFSET:ATTEMPTS`, and it is what the settling commands take: `ack`
+finishes a record, `nack` hands it back (after `--delay-ms`, if given), and
+`extend` keeps the claim standing longer. `extend` needs the attempt count,
+because the broker refuses to extend a record that has been handed out again
+since. The others accept `SHARD:OFFSET` as well.
+
+```
+$ felixctl group poll orders billing --max 2
+0:15:1	{"id": 1}
+0:16:1	{"id": 2}
+$ felixctl group describe orders billing
+SHARD  COMMITTED  TAIL  LAG  IN_FLIGHT  OWED  DEAD_LETTERS
+0      15         40    25   2          0     0
+1      -          12    12   0          0     0
+```
+
+`COMMITTED` is `-` on a shard where the group has no cursor yet; a poll there
+starts at the beginning of the log. `IN_FLIGHT` and `OWED` are the leader's
+memory and start from zero after a leader change.
+
+Dead letters are records the group gave up on. The records stay in the log;
+the group lists their offsets.
+
+```bash
+felixctl group dead-letters ls orders billing
+felixctl group dead-letters add orders billing 0:17:2       # give up on a claimed record
+felixctl group dead-letters redrive orders billing 0:17     # deliver it again
+felixctl group dead-letters discard orders billing 0:17 --yes
+```
+
+`create`, `seek`, `rm`, `redrive` and `discard` need a broker token allowed
+`group.manage` (or `stream.manage`) on the stream; the rest need
+`group.consume` (or `stream.subscribe`).
+
+Three commands ask before acting, because they cannot be taken back: `rm`,
+`dead-letters discard`, and a `seek` that moves any shard's cursor back over
+records the group has finished. At a terminal they ask `[y/N]`; anywhere else,
+they need `--yes` and exit with status 2 without it. A seek to an offset needs
+`--shard` on a stream with more than one shard, since offsets are per shard.
+
+## Counters
+
+```bash
+felixctl counter add stats page-views 1
+felixctl counter add stats stock -3
+felixctl counter get stats page-views
+```
+
+A counter lives in a cache, beside its keys. `add` prints the sum including
+the add and is sent once: a failure is not retried, because the broker may
+already have applied it. `get` exits with status 5 for a counter that has
+never been written.
+
 ## Topology
 
 ```bash
@@ -302,7 +375,7 @@ against a cluster you are allowed to load.
 ## Output and exit status
 
 Text is for reading; `--json` is for scripts. With `--json`, single results
-are one JSON object, `sub` and `cache watch` print one object per line, and an
+are one JSON object, `sub`, `cache watch` and `group poll` print one object per line, and an
 error goes to stderr as `{"error": "...", "exit": N}`.
 
 | Status | Meaning |
@@ -329,6 +402,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 ## Not yet
 
 Control-plane writes (creating streams and caches, moving shards, draining and
-deregistering brokers, RBAC), consumer groups, counters and state reads are
-planned. Release binaries and packages are not published yet. See
+deregistering brokers, RBAC) and state reads are planned. Release binaries and packages are not published yet. See
 [issue #872](https://github.com/GetFelix/felix/issues/872).
