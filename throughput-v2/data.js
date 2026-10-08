@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791496655864,
+  "lastUpdate": 1791501473488,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25688,6 +25688,58 @@ window.BENCHMARK_DATA = {
             "range": "106848.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1543040.06\nmean: 1519972.49\nstdev: 106848.76\ncv: 7.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b067a02a7842136baf048ca0ecd91b8adbc709d9",
+          "message": "build: run containers with Docker or Podman (#1083)\n\nTasks and the kcat tests pick the engine through CONTAINER_ENGINE or by\nasking docker, then podman. Images are named fully qualified so Podman\ndoes not have to resolve short names. A docs page covers setup and the\nplaces the two engines differ.",
+          "timestamp": "2026-10-08T16:13:17-07:00",
+          "tree_id": "3b567c65de055e80ffc8be25cfa0c1e0d304b708",
+          "url": "https://github.com/GetFelix/felix/commit/b067a02a7842136baf048ca0ecd91b8adbc709d9"
+        },
+        "date": 1791501472785,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342750.19,
+            "range": "7618.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342750.19\nmean: 341302.98\nstdev: 7618.04\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342750.19,
+            "range": "7618.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342750.19\nmean: 341302.98\nstdev: 7618.04\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80544.93,
+            "range": "418.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80544.93\nmean: 80467.51\nstdev: 418.16\ncv: 0.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805449.26,
+            "range": "4181.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805449.26\nmean: 804675.07\nstdev: 4181.60\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
