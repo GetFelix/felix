@@ -304,6 +304,15 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Containers run under Docker or Podman. `scripts/container_engine.sh` picks
+  the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
+  answers) for `task test`, `task coverage`, `task pg:*` and `task
+  tla:check`; the kcat tests read the same variable and run
+  `host.containers.internal` under Podman. Dockerfiles, the control plane's
+  compose file and the docs name images fully qualified
+  (`docker.io/library/...`). A new docs page, Docker or Podman, covers setup
+  and the differences. `felix_cluster::ports::docker_host` is now
+  `felix_cluster::container::host`.
 - `felix_replication::promotion::Outcome::Pending` is a struct variant
   carrying `why` and `took`, the replicas that took the fence in that
   attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`

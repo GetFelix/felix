@@ -52,6 +52,9 @@ docker run --rm --user "$(id -u):$(id -g)" \
   ghcr.io/getfelix/felixctl:0.6.0-preview.2 stream ls
 ```
 
+With rootless Podman, use `--userns=keep-id` in place of `--user`, so the
+container runs as your uid.
+
 Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
 
 A preview tag is never `latest`.

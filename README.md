@@ -186,6 +186,10 @@ is kept current per capability. Trust it when another page disagrees.
 
 ## Getting Started
 
+You need Rust 1.97.1 and [Task](https://taskfile.dev). Docker or Podman is
+optional: `task test` uses one to run the Postgres tests (see
+[Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
+
 Build the workspace:
 
 ```bash

@@ -60,6 +60,7 @@ export default defineConfig({
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
             { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Installation', slug: 'getting-started/installation' },
+            { label: 'Docker or Podman', slug: 'getting-started/containers' },
           ],
         },
         {

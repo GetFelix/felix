@@ -871,7 +871,7 @@ trace is the record.
 ## Running it
 
 ```bash
-task tla:check          # java or docker; fetches the TLA+ tools once, pinned
+task tla:check          # java, docker or podman; fetches the TLA+ tools once, pinned
 task tla:walk           # the long random walks, TLA_SIM_MINUTES each
 ```
 

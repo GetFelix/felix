@@ -23,7 +23,8 @@
 # the same way, and TLC's full output is kept under target/tla/walk/ so a
 # trace survives the run. Sampling, not proof: a pass means nothing was found.
 #
-# Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
+# Needs Java 11+ on PATH, or Docker or Podman (CONTAINER_ENGINE picks one;
+# see scripts/container_engine.sh). The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
 set -euo pipefail
 
@@ -84,13 +85,13 @@ tlc() {
   if command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then
     (cd "$SPEC_DIR" && ${limit[@]+"${limit[@]}"} java -XX:+UseParallelGC -jar "../../$JAR" \
       -metadir "$scratch" "${flags[@]}") || status=$?
-  elif command -v docker >/dev/null 2>&1; then
-    docker run --rm \
+  elif engine="$(scripts/container_engine.sh)" && [ -n "$engine" ]; then
+    "$engine" run --rm \
       -v "$PWD/$SPEC_DIR:/spec" -v "$PWD/$JAR:/tla2tools.jar" -v "$scratch:/scratch" \
-      -w /spec eclipse-temurin:21-jre ${limit[@]+"${limit[@]}"} java -XX:+UseParallelGC -jar /tla2tools.jar \
+      -w /spec docker.io/library/eclipse-temurin:21-jre ${limit[@]+"${limit[@]}"} java -XX:+UseParallelGC -jar /tla2tools.jar \
       -metadir /scratch "${flags[@]}" || status=$?
   else
-    echo "check_tla.sh needs java or docker" >&2
+    echo "check_tla.sh needs java, docker or podman" >&2
     exit 1
   fi
   # The larger configurations leave gigabytes in it, one run after another.
