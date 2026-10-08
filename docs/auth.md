@@ -236,7 +236,10 @@ Example:
    covers: asking for `stream:t1/payments/orders` out of a
    `stream:t1/payments/*` grant yields the one stream. A resource outside every
    grant, or one that is not an RBAC object, yields nothing; the filter never
-   widens.
+   widens. The two filters combine as a cross product: every kept action on
+   every kept resource. `permissions` names `action:object` pairs instead and
+   narrows each one separately, so one token can subscribe to one stream and
+   publish to another. See [Narrowing by pairs](#narrowing-by-pairs).
 7) A Felix access token is minted for the requested `audience`, along with a
    refresh token, and both are returned.
 
@@ -249,6 +252,54 @@ token. Each JWKS URL is therefore re-fetched at most once every 30 seconds;
 concurrent misses wait for the one fetch in progress, and a miss inside the
 window is refused without contacting the IdP. A key the IdP rotates in is
 accepted within 30 seconds of its first use. Fetches time out after 10 seconds.
+
+### Narrowing by pairs
+
+`permissions` is a list of `action:object` strings, in the grammar RBAC
+policies use. For each pair, the control plane takes every granted permission
+with exactly that action and narrows its object to what the pair names, by the
+same rule `resources` uses. The token holds the union of the results.
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+With `stream.subscribe` and `stream.publish` granted on `stream:t1/rooms/*`,
+this token holds exactly the two pairs. A pair can never add to what RBAC
+grants:
+
+- An action the principal is not granted yields nothing. Matching is exact on
+  the action string, so a `stream.manage` grant does not answer a
+  `stream.publish` pair.
+- A pair broader than the grant keeps the grant as it is. Asking for
+  `stream.subscribe:namespace:t1/rooms` with only `stream:t1/rooms/a` granted
+  yields `stream:t1/rooms/a`.
+- Pairs do not borrow from each other. With subscribe granted on `a` and
+  publish on `b`, asking for publish on `a` and subscribe on `b` yields nothing
+  and the exchange answers `403`.
+
+`permissions` must be sent with `"requested": []` and without a non-empty
+`resources`; anything else is a `400`, as is a pair that does not parse or
+names an unknown action. The empty `requested` is there for control planes
+that predate `permissions`. Such an instance ignores the field it does not
+know, and without `requested: []` it would mint the principal's full rights.
+With it, it narrows to nothing and refuses with `403`. The refresh record
+stores `requested: []` next to the pairs for the same reason, so an older
+instance refreshing the chain refuses instead of widening it.
+
+Under the Raft store the pairs are a metadata version 5 field. Until every
+control-plane member reports that version, an exchange or dev token with
+`permissions` is refused with `409` before anything is written; exchanges
+without it are unaffected.
+
+A pair's object can be anything an RBAC policy object can be, and it is
+narrowed by the same containment rules the broker checks against.
 
 ## Staying authenticated: refresh
 
@@ -286,8 +337,8 @@ The group claims presented at exchange are recorded on the refresh token,
 because group-derived grants cannot be recomputed without them. They are claims
 to re-check, not permissions to reuse.
 
-So is the exchange's narrowing: its `requested` actions, `resources` hints and
-`audience`. A refresh applies the same narrowing to current RBAC, so a narrowed
+So is the exchange's narrowing: its `requested` actions, `resources` hints,
+`permissions` pairs and `audience`. A refresh applies the same narrowing to current RBAC, so a narrowed
 token's refresh token never yields more than the narrowed token did, and the
 chain keeps its audience for life. Asking a refresh for a different audience is
 a `400`; exchange again for the other one. A refresh token issued before the
@@ -622,7 +673,10 @@ Content-Type: application/json
 ```
 
 All three fields are optional. `audience` is `felix-broker` (the default) or
-`felix-controlplane`; anything else is `400`.
+`felix-controlplane`; anything else is `400`. To name action and resource
+pairs instead, send `"permissions": ["stream.subscribe:stream:t1/rooms/a", ...]`
+with `"requested": []`, as described in
+[Narrowing by pairs](#narrowing-by-pairs).
 
 Response:
 

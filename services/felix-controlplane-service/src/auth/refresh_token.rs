@@ -67,6 +67,11 @@ pub struct Narrowing {
     /// Resource hints the token was limited to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Vec<String>>,
+    /// `action:object` pairs the token was limited to, if any. When set, it
+    /// replaces `requested` and `resources`, and `requested` is stored as
+    /// `[]` so a control plane that predates this field refreshes to nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
     /// The audience the exchange minted for. A refresh keeps it.
     pub audience: String,
 }

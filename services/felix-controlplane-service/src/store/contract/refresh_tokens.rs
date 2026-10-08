@@ -33,8 +33,12 @@ fn token(token_id: &str, family_id: &str) -> RefreshToken {
 
 fn narrowing() -> Narrowing {
     Narrowing {
-        requested: Some(vec!["stream.publish".to_string()]),
-        resources: Some(vec!["stream:refresh-t/payments/orders".to_string()]),
+        requested: Some(Vec::new()),
+        resources: None,
+        permissions: Some(vec![
+            "stream.publish:stream:refresh-t/payments/orders".to_string(),
+            "stream.subscribe:stream:refresh-t/payments/audit".to_string(),
+        ]),
         audience: "felix-controlplane".to_string(),
     }
 }

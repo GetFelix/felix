@@ -419,6 +419,7 @@ async fn a_refresh_keeps_the_exchanges_narrowing_and_audience() {
     record.narrowing = Some(Narrowing {
         requested: Some(vec!["stream.publish".to_string()]),
         resources: Some(vec!["stream:t1/payments/orders".to_string()]),
+        permissions: None,
         audience: "felix-broker".to_string(),
     });
     store.insert_refresh_token(record).await.expect("insert");

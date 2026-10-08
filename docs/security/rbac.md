@@ -251,5 +251,9 @@ Examples:
   that itself starts with `group:` cannot stand in for the bare group of the
   same name. Migrating bare `group:<name>` groupings is covered in
   [auth.md](../auth.md#upgrading-to-scoped-groups-and-audiences).
+- A token exchange can narrow what these rules grant but never add to it.
+  Its `permissions` pairs use the same `action:object` grammar as a rule, and
+  each is cut down to the grants with exactly its action. See
+  [auth.md](../auth.md#narrowing-by-pairs).
 - Rules can be removed as well as added (`DELETE .../rbac/policies`,
   `DELETE .../rbac/groupings`), under the same scope rules as adding them.

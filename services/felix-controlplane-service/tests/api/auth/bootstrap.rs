@@ -645,3 +645,87 @@ async fn dev_tokens_are_not_served_unless_enabled() {
     let response = app.oneshot(minted).await.expect("dev token");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// **Pair narrowing end to end:** a token that reads one stream and writes
+/// another, whose refresh keeps exactly that, and that cannot ask for more
+/// than RBAC grants.
+#[tokio::test]
+async fn a_dev_token_narrowed_by_pairs_keeps_them_across_a_refresh() {
+    let (_store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+    let app = build_bootstrap_router_with_dev_tokens(state.clone()).into_service();
+    let initialize = post(
+        "/internal/bootstrap/tenants/t1/initialize",
+        "secret",
+        json!({
+            "display_name": "Tenant One",
+            "idp_issuers": [],
+            "initial_admin_principals": ["p:admin"],
+            "policies": [
+                { "subject": "role:member", "object": "stream:t1/rooms/*", "action": "stream.subscribe" },
+                { "subject": "role:member", "object": "stream:t1/rooms/*", "action": "stream.publish" }
+            ],
+            "groupings": [ { "user": "p:dev", "role": "role:member" } ]
+        }),
+    );
+    let response = app.clone().oneshot(initialize).await.expect("initialize");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mint = |body: serde_json::Value| {
+        app.clone().oneshot(post(
+            "/internal/bootstrap/tenants/t1/dev-token",
+            "secret",
+            body,
+        ))
+    };
+    let wanted = [
+        "stream.publish:stream:t1/rooms/b",
+        "stream.subscribe:stream:t1/rooms/a",
+    ];
+    let response = mint(json!({
+        "principal": "p:dev",
+        "requested": [],
+        "permissions": wanted,
+    }))
+    .await
+    .expect("dev token");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = read_json(response).await;
+    let mut perms = token_perms(payload["felix_token"].as_str().expect("token"));
+    perms.sort();
+    assert_eq!(perms, wanted);
+
+    let refresh = Request::builder()
+        .method("POST")
+        .uri("/v1/tenants/t1/token/refresh")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "refresh_token": payload["refresh_token"] }).to_string(),
+        ))
+        .expect("request");
+    let response = felix_controlplane_service::api::build_router(state)
+        .into_service::<Body>()
+        .oneshot(refresh)
+        .await
+        .expect("refresh");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = read_json(response).await;
+    let mut perms = token_perms(payload["felix_token"].as_str().expect("token"));
+    perms.sort();
+    assert_eq!(perms, wanted, "the refresh changed the narrowing");
+
+    // Without `requested: []` an older control plane would ignore the pairs.
+    let response = mint(json!({ "principal": "p:dev", "permissions": wanted }))
+        .await
+        .expect("dev token");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // An action RBAC does not grant leaves nothing.
+    let response = mint(json!({
+        "principal": "p:dev",
+        "requested": [],
+        "permissions": ["stream.manage:stream:t1/rooms/a"],
+    }))
+    .await
+    .expect("dev token");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}

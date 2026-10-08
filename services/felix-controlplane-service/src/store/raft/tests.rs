@@ -603,3 +603,59 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// A member before pair narrowing would drop `permissions` from a refresh
+/// record and refresh the chain by `requested: []` alone. The record is
+/// refused until every member has the level; one without pairs is not held up.
+#[tokio::test]
+async fn pair_narrowing_waits_for_every_member() {
+    use crate::auth::refresh_token::Narrowing;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 4).await;
+    let record = |permissions: Option<Vec<String>>| {
+        let (mut record, _) = crate::auth::refresh::issue(
+            "t1",
+            "p:dev",
+            Vec::new(),
+            None,
+            1,
+            Duration::from_secs(60),
+        );
+        record.narrowing = Some(Narrowing {
+            requested: Some(Vec::new()),
+            resources: None,
+            permissions,
+            audience: "felix-broker".to_string(),
+        });
+        record
+    };
+    let pairs = Some(vec!["stream.publish:stream:t1/rooms/a".to_string()]);
+
+    let refused = store.insert_refresh_token(record(pairs.clone())).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .insert_refresh_token(record(None))
+        .await
+        .expect("a record without pairs");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .insert_refresh_token(record(pairs.clone()))
+        .await
+        .is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pairs still refused after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
