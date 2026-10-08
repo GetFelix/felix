@@ -440,7 +440,7 @@ the log if that report names no follower that does. A move's destination cut
 off from its followers at the cut-over is now in that position, where before
 it served unfenced. `FelixShardElectHandoff.cfg` checks the cut-over and the
 hand-back fenced, with replicas electing themselves (`FenceEveryChange` in the
-model); it runs by hand, and `FelixShardElectHandoffLeaders.cfg`, without the
+model); it runs nightly, and `FelixShardElectHandoffLeaders.cfg`, without the
 write, runs on every pull request.
 
 Evidence, each a leader from before the change sending a batch after it to a

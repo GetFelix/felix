@@ -271,7 +271,7 @@ for what the current release guarantees.
   is unchanged: when a replica does not offer the fence the shard opens on
   the lease as before. `felix_broker_promotions_opened_total{path}` now counts
   every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
-  `FelixShardElectHandoff.cfg` (passes; an hour, so by hand),
+  `FelixShardElectHandoff.cfg` (passes; an hour, so nightly),
   `FelixShardElectHandoffLeaders.cfg` (the same without a write, per PR) and
   `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
   leader at an elected generation). The CI model check now runs on seven jobs, filled
