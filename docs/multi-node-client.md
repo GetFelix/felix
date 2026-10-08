@@ -360,7 +360,8 @@ shard is answered with a redirect naming the one that does. `ClusterClient::subs
 and the single-shard group calls (`ClusterClient::group_poll`, `group_poll_wait`,
 `group_ack`, `group_nack`, `group_dead_letters`, `group_discard`,
 `group_redrive`, `group_seek`, `group_create`, `group_describe`,
-`group_delete`) follow it, up to three hops, never revisiting a broker within
+`group_delete`, `group_poll_with`, `group_extend`, `group_nack_after`,
+`group_dead_letter`) follow it, up to three hops, never revisiting a broker within
 one attempt, because a cluster mid-rebalance can otherwise bounce a client
 between two brokers that disagree. The group calls remember which broker served
 each shard and go straight there next time, until a call against it fails. This

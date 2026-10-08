@@ -34,8 +34,12 @@ pub(crate) struct GroupTracker {
     in_flight: BTreeMap<u64, Instant>,
     /// The same claims ordered by when they lapse, so finding the lapsed ones
     /// costs what lapsed rather than everything in flight. Kept in step with
-    /// `in_flight` by `hand_out` and `take_in_flight`, the only two writers.
+    /// `in_flight` by `hold`, `take_in_flight` and `expire`, the only writers.
     lapses: BTreeSet<(Instant, u64)>,
+    /// Offsets in `in_flight` that a consumer nacked with a delay. Held only
+    /// so they are owed later; nobody holds the claim, so it cannot be
+    /// extended.
+    delayed: BTreeSet<u64>,
     /// Acknowledged, but above an offset that is not. Held until the run below
     /// them closes, because the cursor can only move over a contiguous prefix:
     /// advancing past a gap would drop a record nobody has finished.
@@ -84,6 +88,7 @@ impl GroupTracker {
             inherited_below: None,
             in_flight: BTreeMap::new(),
             lapses: BTreeSet::new(),
+            delayed: BTreeSet::new(),
             acked_ahead: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
@@ -305,6 +310,52 @@ impl GroupTracker {
         self.redeliver.insert(offset);
     }
 
+    /// Give one offset back, to be owed again at `deadline` rather than at
+    /// once. It keeps a place in flight until then, so it counts against the
+    /// in-flight cap, and its attempt was counted when it was handed out.
+    pub(crate) fn nack_after(&mut self, offset: u64, deadline: Instant) {
+        if offset < self.committed || self.acked_ahead.contains(&offset) {
+            return;
+        }
+        self.take_in_flight(offset);
+        self.redeliver.remove(&offset);
+        self.hold(offset, deadline);
+        self.delayed.insert(offset);
+    }
+
+    /// Move the claim on `offset` to lapse at `deadline` instead. Returns
+    /// whether it was moved.
+    ///
+    /// Only for the delivery that made the claim, the `attempts`th: once a
+    /// claim lapses the record can be handed out again, and the new claim is
+    /// someone else's to extend. A delayed nack is not a claim either.
+    pub(crate) fn extend(
+        &mut self,
+        offset: u64,
+        attempts: u32,
+        now: Instant,
+        deadline: Instant,
+    ) -> bool {
+        self.expire(now);
+        if self.attempts(offset) != attempts || self.delayed.contains(&offset) {
+            return false;
+        }
+        let Some(&lapses) = self.in_flight.get(&offset) else {
+            return false;
+        };
+        self.lapses.remove(&(lapses, offset));
+        self.hold(offset, deadline);
+        true
+    }
+
+    /// Whether `offset` is still to be finished: handed out and unsettled, or
+    /// owed. Below the cursor only a redriven record is.
+    pub(crate) fn in_play(&self, offset: u64) -> bool {
+        self.in_flight.contains_key(&offset)
+            || self.redeliver.contains(&offset)
+            || (offset >= self.committed && !self.acked_ahead.contains(&offset))
+    }
+
     /// Put a record the group gave up on back in play, its attempt count reset.
     ///
     /// The cursor is *not* moved backwards. It has already passed this offset,
@@ -387,6 +438,7 @@ impl GroupTracker {
         {
             self.lapses.pop_first();
             self.in_flight.remove(&offset);
+            self.delayed.remove(&offset);
             self.release_holder(offset);
             self.redeliver.insert(offset);
         }
@@ -410,12 +462,18 @@ impl GroupTracker {
         }
         // A redelivery replaces the claim it was owed under, if one stands.
         self.take_in_flight(offset);
-        self.in_flight.insert(offset, deadline);
-        self.lapses.insert((deadline, offset));
+        self.hold(offset, deadline);
         if let Some(holder) = holder {
             self.holders.insert(offset, holder.clone());
         }
         *self.attempts.entry(offset).or_insert(0) += 1;
+    }
+
+    /// Keep `offset` in flight until `deadline`. Any earlier entry in
+    /// `lapses` is the caller's to remove.
+    fn hold(&mut self, offset: u64, deadline: Instant) {
+        self.in_flight.insert(offset, deadline);
+        self.lapses.insert((deadline, offset));
     }
 
     /// Record `consumer` as a member, and make its reservation if this poll
@@ -504,6 +562,7 @@ impl GroupTracker {
     /// Drop the claim on `offset`, returning whether there was one.
     fn take_in_flight(&mut self, offset: u64) -> bool {
         self.release_holder(offset);
+        self.delayed.remove(&offset);
         match self.in_flight.remove(&offset) {
             Some(deadline) => {
                 self.lapses.remove(&(deadline, offset));

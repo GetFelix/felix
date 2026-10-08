@@ -1214,6 +1214,41 @@ group now owes fails with `stale_claim`. `ClusterClient` has the same calls per
 shard, and `group_create_stream`, `group_seek_stream`, `group_describe_stream`
 and `group_delete_stream` for every shard of a stream.
 
+A consumer can also manage each claim itself on a broker that advertises
+`FEATURE_GROUP_CLAIM_CONTROL` (`Client::supports_group_claim_control`):
+
+```rust
+use std::time::Duration;
+use felix_client::GroupPollOptions;
+
+// Claims from this poll stand for five minutes instead of the broker's default.
+let options = GroupPollOptions {
+    visibility: Some(Duration::from_secs(300)),
+    ..Default::default()
+};
+let records = client
+    .group_poll_with("acme", "prod", "jobs", 0, "fulfilment", 10, &options)
+    .await?;
+
+for record in &records {
+    // Still working: keep the claim for another minute.
+    client
+        .group_extend("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(60))
+        .await?;
+    // Back off before the next try,
+    client
+        .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record.offset, Duration::from_secs(30))
+        .await?;
+    // or give up on it now: it is listed as a dead letter and can be redriven.
+    // client.group_dead_letter("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?;
+}
+```
+
+An extension is refused with `stale_claim` once the claim has lapsed and the
+record has been handed out again. The client refuses a delay or a visibility
+to a broker without the bit, which would ignore it. `ClusterClient` has the
+same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`.
+
 ### What a group needs
 
 - **Durable storage on the broker.** A group's position lives in a log, so a

@@ -273,6 +273,22 @@ fn group_admin_is_a_new_feature_bit_and_disturbs_nothing() {
     assert!(!crate::supports_feature(0, crate::FEATURE_GROUP_ADMIN));
 }
 
+#[test]
+fn group_claim_control_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_GROUP_CLAIM_CONTROL;
+    assert_eq!(crate::FEATURE_GROUP_CLAIM_CONTROL & others, 0);
+    // A broker that serves groups from before these requests does not serve
+    // them, and would ignore `delay_ms` and `visibility_ms`.
+    assert!(!crate::supports_feature(
+        crate::FEATURE_CONSUMER_GROUP | crate::FEATURE_GROUP_ADMIN,
+        crate::FEATURE_GROUP_CLAIM_CONTROL
+    ));
+    assert!(!crate::supports_feature(
+        0,
+        crate::FEATURE_GROUP_CLAIM_CONTROL
+    ));
+}
+
 /// **Every feature bit is its own.** The per-bit tests above mask a bit out of
 /// `KNOWN_FEATURES`, which two constants sharing a value pass. This lists them
 /// all, so a new bit given a value already in use fails here.
@@ -326,6 +342,10 @@ fn every_feature_bit_is_distinct_and_known() {
         (
             "FEATURE_RECORD_TIMESTAMPS",
             crate::FEATURE_RECORD_TIMESTAMPS,
+        ),
+        (
+            "FEATURE_GROUP_CLAIM_CONTROL",
+            crate::FEATURE_GROUP_CLAIM_CONTROL,
         ),
     ];
     let mut seen = 0u32;

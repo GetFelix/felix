@@ -105,17 +105,20 @@ pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreRes
 
 pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreResult<Cache> {
     let mut tx = store.pool.begin().await?;
-    let ns_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM namespaces WHERE tenant_id = $1 AND namespace = $2)",
-    )
-    .bind(&cache.tenant_id)
-    .bind(&cache.namespace)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !ns_exists {
-        return Err(StoreError::NotFound("namespace".into()));
-    }
+    super::ensure_namespace(&mut tx, &cache.tenant_id, &cache.namespace).await?;
+    insert_cache(&mut tx, &cache).await?;
+    tx.commit().await?;
+    metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
+    store.refresh_counts().await?;
+    Ok(cache)
+}
 
+/// The row and its `Created` change, inside the caller's transaction.
+/// `Conflict` when the cache exists.
+pub(super) async fn insert_cache(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cache: &Cache,
+) -> StoreResult<()> {
     let insert = sqlx::query(
         r#"INSERT INTO caches (tenant_id, namespace, cache, display_name, shards, replication_factor, consistency)
                VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -127,11 +130,14 @@ pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreRe
     .bind(cache.shards as i32)
     .bind(cache.replication_factor as i32)
     .bind(consistency_to_str(&cache.consistency))
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await;
     if let Err(err) = insert {
         if is_unique_violation(&err) {
-            return Err(StoreError::Conflict("cache exists".into()));
+            return Err(StoreError::Conflict(format!(
+                "cache {} exists",
+                cache.cache
+            )));
         }
         return Err(StoreError::Unexpected(err.into()));
     }
@@ -143,15 +149,10 @@ pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreRe
     .bind(&cache.tenant_id)
     .bind(&cache.namespace)
     .bind(&cache.cache)
-    .bind(serde_json::to_value(&cache).ok())
-    .execute(&mut *tx)
-    .await
-    ?;
-
-    tx.commit().await?;
-    metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
-    store.refresh_counts().await?;
-    Ok(cache)
+    .bind(serde_json::to_value(cache).ok())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn patch_cache(

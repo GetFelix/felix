@@ -28,6 +28,7 @@ mod codec;
 mod namespaces;
 mod nodes;
 mod refresh_tokens;
+mod resources;
 mod shards;
 mod streams;
 mod tenants;
@@ -299,6 +300,10 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         caches::cache_changes(self, since).await
+    }
+
+    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+        resources::create_resources(self, streams, caches).await
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
@@ -735,6 +740,27 @@ async fn begin_consistent_read(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+/// `NotFound` unless the namespace exists, checked inside the caller's
+/// transaction.
+async fn ensure_namespace(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    namespace: &str,
+) -> StoreResult<()> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM namespaces WHERE tenant_id = $1 AND namespace = $2)",
+    )
+    .bind(tenant_id)
+    .bind(namespace)
+    .fetch_one(&mut **tx)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(StoreError::NotFound("namespace".into()))
+    }
 }
 
 fn is_unique_violation(err: &sqlx::Error) -> bool {

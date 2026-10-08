@@ -38,3 +38,15 @@ fn lag_counts_from_the_cursor_or_the_start() {
         10
     );
 }
+
+/// **A delayed nack or a chosen visibility is refused by a broker that
+/// predates them.** It would ignore the field and nack at once, or claim for
+/// its own timeout, without saying so.
+#[test]
+fn claim_control_needs_the_broker_to_advertise_it() {
+    let without = felix_wire::KNOWN_FEATURES & !felix_wire::FEATURE_GROUP_CLAIM_CONTROL;
+
+    let refused = require_claim_control(without).expect_err("refused");
+    assert!(refused.to_string().contains("cannot extend a claim"));
+    require_claim_control(felix_wire::KNOWN_FEATURES).expect("supported");
+}

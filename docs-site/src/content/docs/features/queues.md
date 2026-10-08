@@ -172,12 +172,97 @@ groups it runs. See [Security](/features/security/).
 - A group untouched for ten minutes (or twice the visibility timeout, if that
   is longer) has its in-memory state dropped and rebuilt from disk on its next
   request. That redelivers anything it still had in flight and restarts attempt
-  counts, the same as a leader change.
+  counts, the same as a leader change. A group with a claim or a delayed nack
+  still standing is kept until it lapses.
 
 Group state survives a leader failover. The position and the dead-letter list
 replicate beside the shard's records, so a promoted leader resumes where the
 group had got to, lists the records that were set aside, serves a redrive, and
 still owes any record an operator redrove before the failover.
+
+## Long work, backoff, and giving up yourself
+
+The visibility timeout and the attempt bound are the broker's defaults. A
+consumer can take each decision for itself, record by record, on a broker that
+advertises `FEATURE_GROUP_CLAIM_CONTROL`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Claimed: poll, for its visibility
+    Claimed --> Claimed: extend
+    Claimed --> Owed: claim lapses, or nack
+    Claimed --> Delayed: nack with a delay
+    Delayed --> Owed: delay passes
+    Owed --> Claimed: next poll, one more attempt
+    Claimed --> Finished: ack
+    Claimed --> DeadLetter: dead_letter
+    Owed --> DeadLetter: out of attempts
+    DeadLetter --> Owed: redrive
+    DeadLetter --> [*]: discard
+    Finished --> [*]
+```
+
+**Claim for longer, or shorter, from the start.** `GroupPollOptions::visibility`
+sets how long that poll's claims stand, instead of
+`FELIX_GROUP_VISIBILITY_TIMEOUT_MS`.
+
+**Extend a claim you are still working on.** A worker calling a slow downstream
+heartbeats instead of letting the claim lapse:
+
+```rust
+use std::time::Duration;
+
+let stands = client
+    .group_extend("t1", "default", "jobs", 0, "workers", &record, Duration::from_secs(60))
+    .await?;
+```
+
+The claim then stands for the returned duration from now. The extension is for
+the delivery you hold: once the claim has lapsed and the record has gone out
+again, it is refused with `stale_claim`, even if this worker is still running.
+The record belongs to the group by then, and extending someone else's claim
+would keep it from the group if that consumer died.
+
+**Back off before a retry.** `group_nack_after` hands the record back to be
+owed again only once the delay has passed:
+
+```rust
+client
+    .group_nack_after("t1", "default", "jobs", 0, "workers", record.offset, Duration::from_secs(30))
+    .await?;
+```
+
+While it waits, the record holds a place under `FELIX_GROUP_MAX_IN_FLIGHT`, so
+a group cannot park more than that. Nobody holds it, so it cannot be extended,
+and a member that restarts does not reclaim it. Its redelivery counts as an
+attempt as usual.
+
+**Give up yourself.** When the consumer knows a record will never succeed,
+`group_dead_letter` lists it as a dead letter of the group and finishes it,
+exactly as the broker does at `FELIX_GROUP_MAX_ATTEMPTS`: written to the
+dead-letter log first, so a crash in between leaves it listed and owed rather
+than gone. `group_redrive` and `group_discard` work on it as on any other.
+A record already finished is refused and not listed.
+
+All three need `group.consume`, like an ack, and like an ack they are taken for
+whatever the group has in play, from any consumer of the group: claims do not
+yet say who holds them. Extensions and delays are the leader's memory, so a
+failover hands those records out from the group's durable position, sooner
+than asked. A consumer dead letter is durable and replicates with the shard.
+The broker caps visibility, extensions and delays at
+`FELIX_GROUP_MAX_VISIBILITY_MS`. The same calls are on `ClusterClient` and on
+`ShardedGroup` (`extend`, `nack_after`, `dead_letter`).
+
+The client refuses a delay or a visibility to a broker without the feature bit,
+rather than sending it: an older broker ignores both fields, and would nack at
+once or claim for its own timeout without a word.
+
+> `an_extended_claim_outlasts_the_visibility_timeout`,
+> `an_extend_after_the_record_was_handed_out_again_is_refused`,
+> `a_delayed_nack_is_redelivered_after_the_delay`,
+> `a_consumer_dead_letter_is_listed_finished_and_redrivable`,
+> `a_tracker_with_a_standing_claim_is_not_evicted`,
+> `a_consumer_extends_delays_and_dead_letters_its_claims`.
 
 ## Creating, moving and deleting a group
 
@@ -249,6 +334,7 @@ out.
 | `FELIX_GROUP_MAX_ATTEMPTS` | `5` | Deliveries before a record is dead-lettered. |
 | `FELIX_GROUP_MAX_WAIT_MS` | `30000` | Cap on how long a polling client may ask the broker to wait. |
 | `FELIX_GROUP_MAX_IN_FLIGHT` | `10000` | Most records one group may have handed out and unsettled on a shard. Keeps one consumer that never answers from claiming the whole backlog. |
+| `FELIX_GROUP_MAX_VISIBILITY_MS` | `43200000` | Cap on a poll's chosen visibility, a claim extension, and a nack delay. Never below `FELIX_GROUP_VISIBILITY_TIMEOUT_MS`. |
 
 Groups need durable storage: without `FELIX_DURABLE_STORAGE_DIR` the broker does
 not advertise the feature at all, because a position lost on every restart would

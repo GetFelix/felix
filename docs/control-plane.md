@@ -435,6 +435,7 @@ and a request against it answers `401` whatever the token says.
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}` | tenant `t` |
+| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | both of the above, over every item in the batch | tenant `t` |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` | any tenant |
 | `/v1/tenants/{t}/idp-issuers[/{issuer}]`, `/v1/tenants/{t}/signing-keys[/...]`, `POST /v1/tenants/{t}/refresh-tokens/revoke` | `tenant.manage` over `tenant:{t}` | tenant `t` |
 | `GET /v1/tenants/{t}/rbac/{policies,groupings}` | `rbac.view` | tenant `t` |
@@ -466,6 +467,62 @@ broker's does: bootstrap an operator tenant with a policy granting
 `tenant.manage`, `node.view` and `node.manage` over `cluster:*` to a role,
 assign the operator principal to it, and exchange an IdP token. No tenant admin
 can write those rules afterwards, because no tenant scope contains `cluster:*`.
+
+### Creating streams and caches together
+
+`POST /v1/tenants/{t}/namespaces/{ns}/resources` creates a namespace's streams
+and caches in one request, all of them or none:
+
+```http
+POST /v1/tenants/t1/namespaces/room-42/resources
+
+{ "streams": [ { "stream": "chat", "kind": "Stream", "shards": 1, ... } ],
+  "caches":  [ { "cache": "cursors", "display_name": "Cursors" },
+               { "cache": "board", "display_name": "Board" } ] }
+```
+
+Each item has the body its single create endpoint takes. The checks run in
+this order, and any failure creates nothing:
+
+1. The batch holds 1 to 256 items, or `400`.
+2. The token carries `stream.manage` or `cache.manage` over every item, or
+   `403`. This runs before anything is read, so a refusal says nothing about
+   what exists.
+3. Every item is valid and no name appears twice, or `400`.
+4. The namespace exists, or `404`.
+5. Each item either does not exist yet or exists with the same configuration.
+   Otherwise `409` naming the items that differ.
+
+The answer lists every item in request order with `"status": "created"` or
+`"unchanged"`. It is `201` when anything was created and `200` when everything
+already existed as asked, so a caller that died part-way, or never saw the
+answer, sends the same batch again.
+
+"The same configuration" compares what the request would store, after its
+defaults: a cache's `shards: 0` and an omitted `shards` both mean one. A
+stream's `routing` counts only when the request names it, because when left
+to the server it depends on whether the fleet has finalized
+`jump_hash_routing`, and a retry across a finalize would otherwise conflict
+with the stream its first attempt made. The single create endpoints use the
+same comparison, so creating a stream or cache that already exists as asked
+answers `200` with it, and `409` only when it differs.
+
+The new items are written by one store operation. Under Postgres that is one
+transaction, so a unique-key violation on any row, including one a concurrent
+create committed first, rolls the whole batch back. Under Raft it is one log
+entry (`create_resources`), applied whole or refused whole on every member.
+When a concurrent create of the same name wins the race, the batch looks
+again, up to three times: a winner with the same configuration becomes
+`unchanged`, and one with a different configuration is a `409`.
+
+Brokers read the catalog through the stream and cache feeds, which are
+separate. Each item gets its own `Created` change, so a broker can see a
+batch's streams one poll before its caches, but it never sees an item from a
+batch that failed.
+
+Under Raft the batch needs metadata level 5 on every member. Until the whole
+group runs a release that has it, the endpoint answers `503` with code
+`upgrade_in_progress`, and the single create endpoints keep working.
 
 ### Listing and pagination
 

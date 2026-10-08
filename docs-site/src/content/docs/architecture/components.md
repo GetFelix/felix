@@ -357,7 +357,9 @@ has capacity for more work.
   empty polls
 - `group_ack(…, offset)`: finish a record
 - `group_nack(…, offset)`: hand one back for immediate redelivery, rather than
-  waiting out the visibility timeout
+  waiting out the visibility timeout, or with `delay_ms` only after a delay
+- `group_extend(…, offset, attempts, extend_ms)` / `group_dead_letter(…, offset)`:
+  keep a claim standing while the work goes on, or give up on the record
 - `group_dead_letters(…)` / `group_discard(…, offset)` / `group_redrive(…, offset)`:
   list what the group gave up on, drop one, or put one back in play
 - `group_seek(…, start, if_new)` / `group_describe(…)` / `group_delete(…)`:

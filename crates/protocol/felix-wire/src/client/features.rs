@@ -288,6 +288,17 @@ pub const FEATURE_CACHE_CONDITIONAL: u32 = 0x0200_0000;
 /// counterpart is the frame flag `FLAG_EVENT_BATCH_TIMESTAMPS`.
 pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
 
+/// A consumer controls its own claims: `group_extend` keeps a claim
+/// standing, `group_dead_letter` gives up on a record, `delay_ms` on
+/// `group_nack` owes a record again only after a delay, and `visibility_ms`
+/// on `group_poll` sets how long that poll's claims stand.
+///
+/// Advertised by a *broker*. A client checks it before sending `delay_ms` or
+/// `visibility_ms`, not only before the new requests: an older broker ignores
+/// an unknown field, so it would nack at once or claim for its own timeout,
+/// and say nothing.
+pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -315,7 +326,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_GROUP_PUBLISHER
     | FEATURE_GROUP_ADMIN
     | FEATURE_CACHE_CONDITIONAL
-    | FEATURE_RECORD_TIMESTAMPS;
+    | FEATURE_RECORD_TIMESTAMPS
+    | FEATURE_GROUP_CLAIM_CONTROL;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

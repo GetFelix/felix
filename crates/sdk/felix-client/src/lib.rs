@@ -72,7 +72,7 @@ pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
 pub use cache::{
     CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
 };
-pub use client::{Client, GroupInfo, GroupMember, GroupPosition};
+pub use client::{Client, GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
 pub use cluster::{
     ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,

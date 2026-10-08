@@ -23,6 +23,36 @@ for what the current release guarantees.
   authenticates per stream. A refused publish or cache request still ends the
   stream it came on, so a gateway should build a new identity after one.
   `ClusterClient` does not offer it yet.
+- A consumer can manage its own claims on a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
+  claim standing while the work goes on, answered with `group_extended`; it
+  names the delivery by `offset` and `attempts`, so once the claim lapses and
+  the record goes out again it is refused with `stale_claim`. `delay_ms` on
+  `group_nack` makes the record owed only after a delay, holding a place under
+  the in-flight cap until then. `group_dead_letter` lists a record as a dead
+  letter and finishes it, written to the dead-letter log first as when the
+  broker gives up, so `group_redrive` works on it. `visibility_ms` on
+  `group_poll` sets how long that poll's claims stand. All need
+  `group.consume`. Durations are capped by the new
+  `FELIX_GROUP_MAX_VISIBILITY_MS` (12 hours, never below the visibility
+  timeout). Both new fields are left out at zero, so nacks and polls that do
+  not use them are byte-identical to before. A group's in-flight state is no
+  longer evicted while a claim stands. felix-client adds `group_poll_with` and
+  `GroupPollOptions`, `group_extend`, `group_nack_after`, `group_dead_letter`
+  and `supports_group_claim_control` on `Client` and `ClusterClient`, and
+  `extend`, `nack_after` and `dead_letter` on `ShardedGroup`. Breaking for
+  callers of felix-broker's `GroupReader::poll_below`, which takes the claims'
+  visibility, and for code matching felix-wire's `GroupPoll` and `GroupNack`,
+  which gain fields.
+- Streams and caches can be created together, all or none (#967).
+  `POST /v1/tenants/{t}/namespaces/{ns}/resources` takes up to 256 stream and
+  cache create bodies and writes the new ones in one Postgres transaction or
+  one Raft log entry. A missing permission, an invalid item, a name given
+  twice, or an item that already exists with a different configuration fails
+  the whole batch and creates nothing. An item that already exists as asked is
+  reported `unchanged`, so a batch can be sent again after a failure. Under
+  Raft this is metadata level 5; the endpoint answers `503` until every
+  control-plane member runs a release that has it.
 - Cache grants can name a key or a key prefix (#966). A fourth segment on a
   cache object, `cache:{tenant}/{ns}/{cache}/{key}` or `.../{prefix}*`, limits
   `cache.read` or `cache.write` to that key, or to keys starting with the
@@ -133,6 +163,11 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Creating a stream or cache that already exists with the same configuration
+  answers `200` with the existing one instead of `409` (#967). A different
+  configuration under the same name is still `409`. A stream's `routing` only
+  counts when the request names it. A caller that took `409` to mean "already
+  there" should accept `200` as well.
 - Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
   `claim_batch_idempotent` and `commit_to_handle` take the publisher;
   `ResumedSubscription::backlog` is a `Vec<RingRecord>`; `AppendRecord` and

@@ -15,7 +15,7 @@ mod discovery;
 mod groups;
 mod identity;
 
-pub use groups::{GroupInfo, GroupMember, GroupPosition};
+pub use groups::{GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
 mod publish;
 mod subscribe;
 

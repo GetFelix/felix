@@ -134,6 +134,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(api::caches::delete_cache),
         )
         .route(
+            "/v1/tenants/{tenant_id}/namespaces/{namespace}/resources",
+            axum::routing::post(api::resources::create_resources),
+        )
+        .route(
             "/v1/caches/snapshot",
             axum::routing::get(api::caches::cache_snapshot),
         )

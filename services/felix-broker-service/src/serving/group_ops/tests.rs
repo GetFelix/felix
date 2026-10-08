@@ -56,6 +56,7 @@ async fn claimed_one() -> (Leader, PublishContext) {
         1,
         Duration::ZERO,
         None,
+        None,
     )
     .await
     .expect("served before the move");
@@ -78,7 +79,12 @@ async fn an_ack_after_the_fence_is_refused() {
     let (mut leader, publish_ctx) = claimed_one().await;
     leader.fence_move(&leader::stream_key(DURABLE));
 
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack(Duration::ZERO),
+        Settle::Nack(Duration::from_secs(5)),
+        Settle::DeadLetter,
+    ] {
         assert!(
             settle(
                 &leader.broker,
@@ -94,7 +100,7 @@ async fn an_ack_after_the_fence_is_refused() {
             )
             .await
             .is_err(),
-            "a settle (finish: {finish}) landed after the fence closed"
+            "a settle ({finish:?}) landed after the fence closed"
         );
     }
     assert_eq!(committed(&leader).await, None, "the cursor moved");
@@ -108,7 +114,12 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
     let lease = leader.hold_lease();
     lease.surrender();
 
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack(Duration::ZERO),
+        Settle::Nack(Duration::from_secs(5)),
+        Settle::DeadLetter,
+    ] {
         let refused = settle(
             &leader.broker,
             &publish_ctx,
@@ -126,7 +137,7 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
         assert_eq!(
             refused.code(),
             &felix_wire::ErrorCode::ShardUnavailable,
-            "finish: {finish}"
+            "{finish:?}"
         );
     }
     assert_eq!(committed(&leader).await, None, "the cursor moved");
@@ -142,7 +153,7 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("renewed");
@@ -173,7 +184,7 @@ async fn a_claim_from_before_the_move_is_still_settled() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("the pre-move claim is settled");
@@ -199,7 +210,12 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
         )
         .await
         .expect("publish");
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack(Duration::ZERO),
+        Settle::Nack(Duration::from_secs(5)),
+        Settle::DeadLetter,
+    ] {
         for (offset, code, retry) in [
             (
                 2,
@@ -229,7 +245,7 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
             assert_eq!(
                 (refused.code(), refused.retry()),
                 (&code, retry),
-                "offset {offset}, finish: {finish}"
+                "offset {offset}, {finish:?}"
             );
         }
     }
@@ -280,6 +296,7 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
             10,
             Duration::ZERO,
             None,
+            None,
         )
         .await
         .expect("poll")
@@ -313,6 +330,7 @@ async fn a_poll_after_the_fence_is_refused() {
             GROUP,
             1,
             Duration::ZERO,
+            None,
             None,
         )
         .await
@@ -379,6 +397,7 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
         1,
         Duration::ZERO,
         None,
+        None,
     )
     .await
     .expect("poll");
@@ -399,6 +418,7 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
                 GROUP,
                 1,
                 Duration::from_secs(5),
+                None,
                 None,
             )
             .await
@@ -437,6 +457,7 @@ fn waiting_poll(
             10,
             Duration::from_secs(60),
             NEVER,
+            None,
             None,
         )
         .await
@@ -495,6 +516,7 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         10,
         Duration::ZERO,
         None,
+        None,
     )
     .await
     .expect("poll");
@@ -512,7 +534,7 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         0,
         GROUP,
         0,
-        false,
+        Settle::Nack(Duration::ZERO),
     )
     .await
     .expect("nack");
@@ -543,7 +565,7 @@ async fn a_poll_at_the_cap_is_woken_by_an_ack() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("ack");
@@ -588,6 +610,7 @@ async fn a_restarted_member_reclaims_what_it_held() {
                 1,
                 Duration::ZERO,
                 Some(&member),
+                None,
             )
             .await
             .expect("poll")

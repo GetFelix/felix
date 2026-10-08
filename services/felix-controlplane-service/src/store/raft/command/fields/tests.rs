@@ -498,6 +498,10 @@ fn commands() -> Vec<MetaCommand> {
         },
         MetaCommand::RegisterNodeInFleet { node: node() },
         MetaCommand::FinalizeFleetFeature { feature: s("f") },
+        MetaCommand::CreateResources {
+            streams: vec![stream()],
+            caches: vec![cache()],
+        },
     ]
 }
 
@@ -552,6 +556,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::CheckpointHeartbeats { .. } => "checkpoint_heartbeats",
         MetaCommand::RegisterNodeInFleet { .. } => "register_node_in_fleet",
         MetaCommand::FinalizeFleetFeature { .. } => "finalize_fleet_feature",
+        MetaCommand::CreateResources { .. } => "create_resources",
     }
 }
 
