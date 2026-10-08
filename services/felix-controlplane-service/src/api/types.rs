@@ -127,6 +127,43 @@ impl Default for CacheCreateRequest {
     }
 }
 
+/// Streams and caches to create in one namespace, all or none.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Default)]
+pub struct ResourceBatchRequest {
+    #[serde(default)]
+    pub streams: Vec<StreamCreateRequest>,
+    #[serde(default)]
+    pub caches: Vec<CacheCreateRequest>,
+}
+
+/// Every item of a batch, in request order, with what the batch did to it.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct ResourceBatchResponse {
+    pub streams: Vec<BatchStream>,
+    pub caches: Vec<BatchCache>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BatchStream {
+    pub status: BatchItemStatus,
+    pub stream: Stream,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BatchCache {
+    pub status: BatchItemStatus,
+    pub cache: Cache,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchItemStatus {
+    /// The batch created it.
+    Created,
+    /// It already existed with the same configuration and was left alone.
+    Unchanged,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct TenantListResponse {
     pub items: Vec<Tenant>,

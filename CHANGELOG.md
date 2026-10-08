@@ -33,6 +33,15 @@ for what the current release guarantees.
   callers of felix-broker's `GroupReader::poll_below`, which takes the claims'
   visibility, and for code matching felix-wire's `GroupPoll` and `GroupNack`,
   which gain fields.
+- Streams and caches can be created together, all or none (#967).
+  `POST /v1/tenants/{t}/namespaces/{ns}/resources` takes up to 256 stream and
+  cache create bodies and writes the new ones in one Postgres transaction or
+  one Raft log entry. A missing permission, an invalid item, a name given
+  twice, or an item that already exists with a different configuration fails
+  the whole batch and creates nothing. An item that already exists as asked is
+  reported `unchanged`, so a batch can be sent again after a failure. Under
+  Raft this is metadata level 5; the endpoint answers `503` until every
+  control-plane member runs a release that has it.
 - Cache grants can name a key or a key prefix (#966). A fourth segment on a
   cache object, `cache:{tenant}/{ns}/{cache}/{key}` or `.../{prefix}*`, limits
   `cache.read` or `cache.write` to that key, or to keys starting with the
@@ -143,6 +152,11 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Creating a stream or cache that already exists with the same configuration
+  answers `200` with the existing one instead of `409` (#967). A different
+  configuration under the same name is still `409`. A stream's `routing` only
+  counts when the request names it. A caller that took `409` to mean "already
+  there" should accept `200` as well.
 - Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
   `claim_batch_idempotent` and `commit_to_handle` take the publisher;
   `ResumedSubscription::backlog` is a `Vec<RingRecord>`; `AppendRecord` and

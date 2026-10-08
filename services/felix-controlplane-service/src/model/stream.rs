@@ -12,7 +12,7 @@ pub struct StreamKey {
     pub stream: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct Stream {
     pub tenant_id: String,
     pub namespace: String,
@@ -112,7 +112,7 @@ pub struct StreamPatchRequest {
 /// How long, and how much of, a durable stream's log each broker keeps. A
 /// bound left unset is the broker's own (`FELIX_DURABLE_RETENTION_SECONDS`,
 /// `FELIX_DURABLE_RETENTION_BYTES`).
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct RetentionPolicy {
     pub max_age_seconds: Option<u64>,
     pub max_size_bytes: Option<u64>,
@@ -142,20 +142,20 @@ impl RetentionPolicy {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub enum StreamKind {
     Stream,
     Queue,
     Cache,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub enum ConsistencyLevel {
     Leader,
     Quorum,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub enum DeliveryGuarantee {
     AtMostOnce,
     AtLeastOnce,

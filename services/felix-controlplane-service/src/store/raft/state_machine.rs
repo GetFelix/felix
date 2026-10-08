@@ -196,6 +196,11 @@ impl MetadataStateMachine {
                     fleet,
                 })
             }
+            MetaCommand::CreateResources { streams, caches } => store
+                .create_resources(streams, caches)
+                .await
+                .map(|()| MetaResponse::Unit)
+                .map_err(Into::into),
             MetaCommand::FinalizeFleetFeature { feature } => store
                 .finalize_fleet_feature(&feature)
                 .await

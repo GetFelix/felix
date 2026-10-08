@@ -298,6 +298,21 @@ impl ControlPlaneStore for RaftStore {
         self.local().cache_changes(since).await
     }
 
+    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+        self.propose(MetaCommand::CreateResources { streams, caches })
+            .await
+            .map(|_| ())
+    }
+
+    async fn create_resources_ready(&self) -> bool {
+        let needs = MetaCommand::CreateResources {
+            streams: Vec::new(),
+            caches: Vec::new(),
+        }
+        .version();
+        self.handle.cluster_version().await >= needs
+    }
+
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
         self.register_node_in_fleet(node)
             .await

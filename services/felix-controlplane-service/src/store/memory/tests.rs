@@ -258,3 +258,11 @@ async fn backend_health_and_identity() {
     assert!(!store.is_durable());
     assert_eq!(store.backend_name(), "memory");
 }
+
+/// The same suite Postgres runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_resources_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::resources::run_resources_contract(store.clone()).await;
+    crate::store::contract::resources::run_resources_race_contract(store, 200).await;
+}
