@@ -243,6 +243,7 @@ impl Client {
         // Every stream negotiates with the same broker, so any stream's answer
         // is the broker's answer.
         let server_features = negotiated.server_features;
+        let server_features_hi = negotiated.server_features_hi;
         for node in dedup(&nodes) {
             node.learn_listeners(addr, &negotiated.listener_ports);
         }
@@ -333,6 +334,7 @@ impl Client {
             event_node,
             worker_connections,
             server_features,
+            server_features_hi,
             publish_workers: Arc::new(publish_workers),
             publish_stream_hasher: ahash::RandomState::new(),
             publish_shard_streams,

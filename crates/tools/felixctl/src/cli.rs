@@ -21,6 +21,7 @@ Commands:
   Data plane     pub, sub, cache get|put|del|watch, topology
   Control plane  tenant, namespace, stream, cache ls|info|create|set|rm,
                  node, shard, placement
+  Operators      inspect shard
   Tools          context, bench, completions
 
 Run `felixctl help <command>` or `felixctl <command> --help` for details.
@@ -272,6 +273,21 @@ pub(crate) enum Command {
   felixctl placement abandon orders 2 --yes"
     )]
     Placement(PlacementCommand),
+
+    /// Look at a cluster's live state, read-only (operators)
+    #[command(
+        subcommand,
+        long_about = "Look at what the brokers themselves hold, read-only. Each answer is \
+                      one broker's own view; felixctl asks every broker that has a part in \
+                      what is shown.\n\n\
+                      Needs a broker token allowed node.view on cluster:*. A broker too old \
+                      to answer is reported, not guessed at.",
+        after_long_help = "Examples:
+  felixctl inspect shard orders --shard 3
+  felixctl inspect shard acme/default/orders
+  felixctl inspect shard sessions --cache --json"
+    )]
+    Inspect(InspectCommand),
 
     /// Run a load test against the cluster
     #[command(
@@ -739,6 +755,40 @@ pub(crate) enum RoutingArg {
     Modulo,
     /// Jump consistent hashing
     JumpHash,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum InspectCommand {
+    /// One shard's live state: its assignment and every replica's own view
+    #[command(
+        long_about = "Show one shard as its brokers see it: the generation and leader, \
+                      whether the leader serves and why not, the fence a promoted leader \
+                      waits on, its lease, the tail and commit mark, and each replica's \
+                      position and state.\n\n\
+                      The assignment comes from the control plane when a control-plane URL \
+                      is configured, else from the broker connected to. Every broker in it \
+                      is then asked directly; one that cannot be reached is listed under \
+                      unreachable rather than described. Without --shard, every shard of \
+                      the stream is shown.",
+        after_long_help = "Examples:
+  felixctl inspect shard orders --shard 3
+  felixctl inspect shard acme/default/orders
+  felixctl inspect shard sessions --cache --shard 0 --json"
+    )]
+    Shard(InspectShardArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InspectShardArgs {
+    /// Stream (or, with --cache, cache) name, or TENANT/NAMESPACE/NAME for
+    /// another tenant's
+    pub(crate) name: String,
+    /// Only this shard
+    #[arg(long, value_name = "N")]
+    pub(crate) shard: Option<u32>,
+    /// NAME is a cache, not a stream
+    #[arg(long)]
+    pub(crate) cache: bool,
 }
 
 #[derive(Debug, Args)]

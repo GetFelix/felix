@@ -498,13 +498,14 @@ impl ShardLifecycle {
         }
     }
 
-    /// Record that the driver could not open the log.
-    pub fn open_failed(&mut self, key: &ShardKey, generation: u64) {
+    /// Record that the driver could not open the log, and why.
+    pub fn open_failed(&mut self, key: &ShardKey, generation: u64, error: String) {
         if let Some(shard) = self.shards.get(key)
             && shard.phase == Phase::Opening
             && shard.generation == generation
         {
             self.set(key, Phase::Failed, generation, shard.draining);
+            self.fence.record_open_error(key, error);
         }
     }
 
@@ -594,6 +595,7 @@ impl ShardLifecycle {
         } else if phase != Phase::Opening {
             self.fence.promotion_settled(key);
         }
+        self.fence.record_phase(key, phase, generation);
         let previous = self.shards.get(key).map(|shard| shard.phase);
         self.shards.insert(
             key.clone(),
@@ -1293,7 +1295,10 @@ pub async fn apply(
             }
             Err(err) => {
                 mm::record_open_failure();
-                lifecycle.lock().await.open_failed(&key, generation);
+                lifecycle
+                    .lock()
+                    .await
+                    .open_failed(&key, generation, format!("{err:#}"));
                 tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,

@@ -31,6 +31,14 @@ The broker and the control plane each serve Prometheus text on their own
 metrics endpoint (`metrics_bind` on the broker; `/metrics`, plus `/live` and
 `/ready` for probes).
 
+The broker's metrics listener is plain HTTP with no authentication. It
+carries counts and the listings below (`/replication/halted`,
+`/backup/offsets`), which name tenants, streams and brokers, and nothing that
+changes state. Keep it on an internal network that only Prometheus and your
+operators reach. Anything that needs a principal, such as a shard's live state
+from `felixctl inspect`, goes over the authenticated client listener instead;
+see [Diagnosing a cluster](/deployment/diagnosing/).
+
 ```yaml
 # prometheus.yml
 scrape_configs:

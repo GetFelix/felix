@@ -13,6 +13,7 @@
 //! - `publish`, `subscribe`, `cache`, `topology`: the data-plane commands.
 //! - `controlplane`: the REST client and the read-only commands.
 //! - `manage`: the control-plane writes, and confirming destructive ones.
+//! - `inspect`: operators' read-only views of what the brokers hold.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
@@ -25,6 +26,7 @@ mod context;
 mod controlplane;
 mod error;
 mod help;
+mod inspect;
 mod manage;
 mod output;
 mod publish;
@@ -92,6 +94,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
         Command::Placement(command) => manage::placement(command, &settings, out).await,
+        Command::Inspect(command) => inspect::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
         Command::Context(_) | Command::Completions(_) | Command::Man(_) => {
             unreachable!("handled above")

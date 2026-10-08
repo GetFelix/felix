@@ -99,7 +99,8 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 ```
 
-**Endpoints** (no authentication):
+**Endpoints** (no authentication, so bind it to an internal address or keep
+the port behind a network policy):
 - `/live`: always `ok` while the process runs
 - `/ready`: `ok`, or 503 `draining` once shutdown starts
 - `/metrics`: Prometheus metrics

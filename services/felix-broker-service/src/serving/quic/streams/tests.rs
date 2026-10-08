@@ -24,6 +24,7 @@ mod end_to_end;
 mod error_codes;
 mod frame_source;
 mod idempotent_producer;
+mod inspect;
 mod pipeline;
 mod uni;
 mod writer;
@@ -219,6 +220,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         }
     });
     PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

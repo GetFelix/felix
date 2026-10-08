@@ -3,6 +3,10 @@
 //! prefix silently stops matching wildcards.
 use crate::{CacheScope, GroupName, Namespace, StreamName, TenantId};
 
+/// `cluster:*`, the cluster itself. Outside every tenant, and the only
+/// cluster object there is: a grant on it is spelled exactly this way.
+pub const CLUSTER_RESOURCE: &str = "cluster:*";
+
 /// `tenant:{id}`
 pub fn tenant_resource(tenant_id: &TenantId) -> String {
     format!("tenant:{}", tenant_id.as_str())

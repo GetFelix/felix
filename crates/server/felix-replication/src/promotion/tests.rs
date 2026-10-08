@@ -374,7 +374,12 @@ async fn without_a_majority_the_shard_stays_closed() {
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
-    assert!(matches!(outcome, Outcome::Pending(_)), "{outcome:?}");
+    let Outcome::Pending { took, why } = outcome else {
+        panic!("{outcome:?}");
+    };
+    // Who is missing is what an operator inspecting the shard reads.
+    assert!(took.is_empty(), "{took:?}");
+    assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
 }
 
 /// **Once the followers decide acknowledgements, no shard opens on the

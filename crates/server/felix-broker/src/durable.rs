@@ -124,6 +124,24 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// One stream shard's log if this broker has it open, without opening it.
+    pub fn opened_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_shard(&key)?;
+        Some(StreamLog { log })
+    }
+
     /// Close one stream shard's log, for a shard this broker no longer holds.
     ///
     /// Every [`StreamLog`] already handed out for it fails from here on; the
