@@ -57,6 +57,10 @@ const FAILURES_BEFORE_RECONNECT: u32 = 3;
 /// Sends of one idempotent batch before its value is recorded as unknown.
 const IDEMPOTENT_ATTEMPTS: u32 = 3;
 
+/// How long a client that is stopping waits for the publishes it already
+/// sent to be answered.
+const SETTLE_SENDS_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How long a read with no known tail waits for one more record.
 const READ_IDLE: Duration = Duration::from_millis(500);
 
@@ -478,6 +482,24 @@ impl Client<'_> {
             failures = if ok { 0 } else { failures + 1 };
             let think = self.rng.between(Duration::ZERO, Duration::from_millis(20));
             tokio::time::sleep(think).await;
+        }
+        // A publish whose call timed out is still sent: the producer's task
+        // keeps re-sending its batch, and the client's writer keeps what it
+        // queued. Left running, a value recorded as unknown can land after
+        // the final read, and a subscriber catching up is then delivered a
+        // record the final log does not hold.
+        let settled = tokio::time::timeout(SETTLE_SENDS_TIMEOUT, async {
+            if let Some(producer) = producer {
+                let _ = producer.close().await;
+            }
+            let _ = cluster.finish().await;
+        })
+        .await;
+        if settled.is_err() {
+            println!(
+                "client {}: publishes still in flight after {SETTLE_SENDS_TIMEOUT:?}",
+                self.process
+            );
         }
     }
 
