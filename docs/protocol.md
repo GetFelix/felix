@@ -1815,6 +1815,12 @@ advertises the bit too, so a client can tell "no code applies" from "this broker
 predates codes". That includes a refused `auth`: the broker reads the offer
 before answering it.
 
+Some refusals end the stream, such as a forbidden request or a cache request
+naming a cache the broker does not have. The broker writes the `error` before
+it finishes the stream, so a client reading the stream gets the error and then
+the end. A stream that ends with no answer is a broker that went away, not a
+refusal.
+
 The code says what happened; the retry class says what the client may do. They
 travel separately so that a code the client does not know is still actionable:
 unlike an unknown frame flag, an unknown code MUST NOT fail the frame. A client

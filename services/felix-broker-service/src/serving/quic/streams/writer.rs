@@ -51,6 +51,10 @@ const MAX_ACK_MESSAGE_BYTES: usize = 512;
 // is taken, so this bounds a write's size, never adds a wait.
 const WRITE_BATCH_MAX: usize = 64;
 
+// How long a cancelled stream may spend writing what was already queued. A
+// peer that stopped reading must not hold the task.
+const CANCEL_FLUSH_LIMIT: Duration = Duration::from_secs(1);
+
 // Drains outgoing responses, updates depth counters, and handles shutdown on error.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_writer_loop(
@@ -73,8 +77,22 @@ pub(super) async fn run_writer_loop(
             .blocked_since()
             .map(|since| tokio::time::Instant::from_std(since + stall_limit));
         tokio::select! {
+            biased;
             changed = cancel_rx_writer.changed() => {
                 if changed.is_err() || *cancel_rx_writer.borrow() {
+                    // A handler that refuses a request queues the error and
+                    // then ends the stream, which cancels. The error has to go
+                    // out before the finish, or the client sees only the close.
+                    flush_queued(
+                        &mut send,
+                        &mut out_ack_rx,
+                        &ack_order,
+                        &mut ready,
+                        &mut chunks,
+                        &error_codes,
+                        &out_ack_depth_worker,
+                    )
+                    .await;
                     break;
                 }
             }
@@ -124,6 +142,32 @@ pub(super) async fn run_writer_loop(
         }
     }
     let _ = send.finish();
+}
+
+/// Write the answers already queued, without waiting for more, within
+/// [`CANCEL_FLUSH_LIMIT`].
+async fn flush_queued(
+    send: &mut SendStream,
+    out_ack_rx: &mut mpsc::Receiver<Outgoing>,
+    ack_order: &AckOrder,
+    ready: &mut Vec<Outgoing>,
+    chunks: &mut Vec<Bytes>,
+    error_codes: &ErrorCodeSupport,
+    out_ack_depth_worker: &Arc<AtomicUsize>,
+) {
+    while let Ok(outgoing) = out_ack_rx.try_recv() {
+        ack_order.release(outgoing, ready);
+        decrement_depth(
+            out_ack_depth_worker,
+            &GLOBAL_ACK_DEPTH,
+            "felix_broker_out_ack_depth",
+        );
+    }
+    let _ = tokio::time::timeout(
+        CANCEL_FLUSH_LIMIT,
+        write_ready(send, ready, chunks, error_codes),
+    )
+    .await;
 }
 
 async fn sleep_until_or_never(deadline: Option<tokio::time::Instant>) {

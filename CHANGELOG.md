@@ -436,6 +436,11 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A request the broker refuses and then closes the stream for, such as a
+  group describe without permission, reaches the client as the broker's coded
+  error (#1078). The broker's response writer could see the stream's
+  cancellation before the queued error and finish the stream without it, so the
+  client reported "the broker closed the group stream" instead of `forbidden`.
 - A `Quorum` publish no longer waits out an unreachable follower when the
   other follower already holds the record but is still answering an earlier
   replication pass (#1080). The pass waiting for a majority had shipped only to
