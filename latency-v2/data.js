@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791496652762,
+  "lastUpdate": 1791501470206,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -32604,6 +32604,72 @@ window.BENCHMARK_DATA = {
             "range": "540.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2025.00\nmean: 2090.00\nstdev: 540.91\ncv: 25.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b067a02a7842136baf048ca0ecd91b8adbc709d9",
+          "message": "build: run containers with Docker or Podman (#1083)\n\nTasks and the kcat tests pick the engine through CONTAINER_ENGINE or by\nasking docker, then podman. Images are named fully qualified so Podman\ndoes not have to resolve short names. A docs page covers setup and the\nplaces the two engines differ.",
+          "timestamp": "2026-10-08T16:13:17-07:00",
+          "tree_id": "3b567c65de055e80ffc8be25cfa0c1e0d304b708",
+          "url": "https://github.com/GetFelix/felix/commit/b067a02a7842136baf048ca0ecd91b8adbc709d9"
+        },
+        "date": 1791501466748,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.20\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 253,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 253.00\nmean: 255.80\nstdev: 8.29\ncv: 3.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 322,
+            "range": "595.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 322.00\nmean: 638.40\nstdev: 595.79\ncv: 93.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 216.00\nstdev: 1.41\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 443,
+            "range": "20.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 443.00\nmean: 439.00\nstdev: 20.55\ncv: 4.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 630,
+            "range": "179.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 630.00\nmean: 722.80\nstdev: 179.90\ncv: 24.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
