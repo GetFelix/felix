@@ -98,5 +98,6 @@ pub use tls::{
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
-    PublishRefusalReason, RetryClass, ShardKind, ShardOwner, StartPosition, StreamRecord,
+    GroupRecord, PublishRefusalReason, RetryClass, ShardKind, ShardOwner, StartPosition,
+    StreamRecord,
 };
