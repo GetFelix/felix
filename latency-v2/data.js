@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791439236744,
+  "lastUpdate": 1791439607694,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31416,6 +31416,72 @@ window.BENCHMARK_DATA = {
             "range": "885.99",
             "unit": "us",
             "extra": "trials: 5\nmedian: 698.00\nmean: 1150.00\nstdev: 885.99\ncv: 77.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d23ba70608a1512fb44f198ada44a3d53888d205",
+          "message": "feat(wire,broker,client): read a bounded range of a stream without subscribing (#1018) (#1054)\n\nA broker advertising FEATURE_STREAM_READ (0x2000_0000) answers stream_read\nwith stream_records: one page of a durable stream shard's committed records,\nfrom `from` and stopping before an optional `end`, with the next_offset to\ncontinue from. No subscriber is registered and the read never waits.\n\n- Broker::read_range reads with one read_from per page. It stops at the\n  committed mark on a Quorum shard and, under FsyncMode::OnCommit, at the\n  durable offset, so a record written but not synced is never returned.\n  next_offset steps over generation-start records.\n- Pages are capped at FELIX_DURABLE_MAX_RECORDS_PER_READ records and 4 MiB of\n  payload. A start below retention or past the tail gets the same\n  subscribe_cursor_error a subscribe does.\n- Needs stream.subscribe; only the shard's leader answers, redirecting a client\n  that offered FEATURE_REDIRECT.\n- Client::read and ClusterClient::read return a StreamPage.\n\nFrames to clients that never send the request are unchanged, and\nORIGINAL_V1_FLAGS is untouched. An end on Subscribe is #1053.\n\nSpec-Unaffected: a read-only request that serves what a subscriber may already read, below the committed mark; the lease, replication and quorum paths are unchanged.",
+          "timestamp": "2026-10-07T22:57:08-07:00",
+          "tree_id": "123f104138964825cb9bc1a45badade352c3c9a6",
+          "url": "https://github.com/GetFelix/felix/commit/d23ba70608a1512fb44f198ada44a3d53888d205"
+        },
+        "date": 1791439603878,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 177.20\nstdev: 0.84\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 241.60\nstdev: 1.14\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 362,
+            "range": "399.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 362.00\nmean: 521.00\nstdev: 399.48\ncv: 76.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "8.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 215.60\nstdev: 8.68\ncv: 4.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 432,
+            "range": "245.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 432.00\nmean: 545.20\nstdev: 245.47\ncv: 45.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 826,
+            "range": "692.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 826.00\nmean: 1040.80\nstdev: 692.47\ncv: 66.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
