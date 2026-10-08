@@ -116,7 +116,8 @@ there is no translation table to keep durable. The high watermark is the shard
 log's tail. The log start offset is the oldest retained offset, and retention
 raises it. A fetch below the log start or past the tail gets
 `OFFSET_OUT_OF_RANGE` and the client applies its `auto.offset.reset`.
-Offset-for-time is a binary search over the records' append timestamps.
+Offset-for-time is a binary search over the records' append timestamps, the
+same search the native `offset_for_time` request uses.
 
 **Records.** The value is the Felix payload. There is no key and there are no
 headers. The timestamp is the broker's append time in milliseconds, reported as

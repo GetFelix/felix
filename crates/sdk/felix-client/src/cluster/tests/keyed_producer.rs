@@ -44,6 +44,7 @@ async fn each_shard_has_its_own_sequence() -> Result<()> {
         build_client_config_with_overrides(cert, 1)?,
     )
     .await?;
+    let client = Arc::new(client);
     let producer = client.idempotent_producer().await?;
     let (a, b) = keys_on_two_shards();
 
@@ -102,6 +103,7 @@ async fn a_batch_in_doubt_is_not_re_sent_under_another_key() -> Result<()> {
         build_client_config_with_overrides(cert, 1)?,
     )
     .await?;
+    let client = Arc::new(client);
     let producer = client.idempotent_producer().await?;
     let first = Bytes::from_static(b"key-0");
     let shard = felix_wire::routing::shard_for(STREAM_SHARDS, Some(first.as_ref()));
@@ -145,6 +147,7 @@ async fn a_cluster_keyed_batch_goes_out_on_its_shards_stream() -> Result<()> {
         build_client_config_with_overrides(cert, 1)?,
     )
     .await?;
+    let cluster = Arc::new(cluster);
     let producer = cluster.idempotent_producer().await?;
     let shard = |key: &Bytes| felix_wire::routing::shard_for(STREAM_SHARDS, Some(key.as_ref()));
     let (a, b) = keys_on_two_shards();

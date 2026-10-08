@@ -10,7 +10,8 @@ use felix_wire::routing::{ShardRouting, shard_for_routing};
 use tokio::task::JoinSet;
 
 use super::connect::client;
-use super::{Common, is_retriable_transient};
+use super::framing::{SEND_TIME, stamp_send_time};
+use super::{Common, is_retriable_transient, start_instant};
 use crate::stats::{Samples, fmt_us, report};
 
 /// The `ingest`-only flags.
@@ -27,6 +28,10 @@ pub struct IngestOptions {
     /// Start publishing at this wall-clock time, so generators on separate
     /// machines overlap for the whole run instead of starting seconds apart.
     pub start_at: Option<SystemTime>,
+    /// Put the wall-clock send time, Unix micros, in each payload's first 8
+    /// bytes, so a `subscribe` run in another process can report delivery
+    /// latency.
+    pub stamp_send_time: bool,
 }
 
 /// Where an ingest publisher writes.
@@ -84,11 +89,15 @@ pub(crate) async fn ingest(
     stream: &str,
     opts: &IngestOptions,
 ) -> Result<serde_json::Value> {
-    let IngestOptions { in_flight, .. } = *opts;
+    let IngestOptions {
+        in_flight,
+        stamp_send_time: stamp,
+        ..
+    } = *opts;
     let publishers = common.concurrency.max(1);
     let per = (common.total / publishers).max(1);
     let batch = common.batch.max(1);
-    let payload_bytes = common.payload_bytes.max(1);
+    let payload_bytes = common.payload_bytes.max(if stamp { SEND_TIME } else { 1 });
 
     // Readiness pre-flight on one connection, so a cold routing snapshot does
     // not land inside the measured window (same discipline as `pubsub`).
@@ -119,21 +128,7 @@ pub(crate) async fn ingest(
         key_names(&pf, common, stream, opts).await
     };
 
-    // Wall clock to the local monotonic clock once, so every publisher waits
-    // for the same instant.
-    let started = match opts.start_at {
-        Some(at) => match at.duration_since(SystemTime::now()) {
-            Ok(wait) => Instant::now() + wait,
-            Err(late) => {
-                eprintln!(
-                    "ingest: --start-at passed {:?} ago; starting now",
-                    late.duration()
-                );
-                Instant::now()
-            }
-        },
-        None => Instant::now(),
-    };
+    let started = start_instant(opts.start_at, "ingest");
     let deadline = opts.duration.map(|d| started + d);
     let mut tasks = Vec::new();
     for p in 0..publishers {
@@ -176,7 +171,15 @@ pub(crate) async fn ingest(
                     .then(|| key_names[(p * 1_000_003 + batches) % key_names.len()].clone());
                 batches += 1;
                 if in_flight == 0 {
-                    let send = send(&publisher, &target, key, &template, this, AckMode::None);
+                    let send = send(
+                        &publisher,
+                        &target,
+                        key,
+                        &template,
+                        this,
+                        AckMode::None,
+                        stamp,
+                    );
                     match until(deadline, send).await {
                         Some(r) => {
                             tally.retries += r?;
@@ -206,8 +209,16 @@ pub(crate) async fn ingest(
                     (publisher.clone(), target.clone(), template.clone());
                 pending.spawn(async move {
                     let started = Instant::now();
-                    let r =
-                        send(&publisher, &target, key, &template, this, AckMode::PerBatch).await?;
+                    let r = send(
+                        &publisher,
+                        &target,
+                        key,
+                        &template,
+                        this,
+                        AckMode::PerBatch,
+                        stamp,
+                    )
+                    .await?;
                     Ok::<_, anyhow::Error>((r, started.elapsed(), this))
                 });
             }
@@ -298,6 +309,7 @@ pub(crate) async fn ingest(
         "throughput_mb_s": mb_s,
         "per_publisher_msg_s": msg_s / publishers as f64,
         "in_flight": in_flight,
+        "stamp_send_time": stamp,
         "duration_s": secs,
         "batch_ack_latency_us": ack.map(|p| serde_json::json!({
             "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us,
@@ -307,6 +319,8 @@ pub(crate) async fn ingest(
 
 /// Publish a batch of `count` copies of `template`, retrying the transient
 /// refusals [`is_retriable_transient`] names. Returns how many retries it took.
+/// With `stamp`, each attempt carries the time it was sent, not the time the
+/// first attempt was.
 async fn send(
     publisher: &Publisher,
     target: &Target,
@@ -314,12 +328,19 @@ async fn send(
     template: &[u8],
     count: usize,
     ack: AckMode,
+    stamp: bool,
 ) -> Result<u64> {
     let mut retries = 0u64;
     loop {
-        let payloads: Vec<Vec<u8>> = std::iter::repeat_with(|| template.to_vec())
-            .take(count)
-            .collect();
+        let payloads: Vec<Vec<u8>> = std::iter::repeat_with(|| {
+            let mut body = template.to_vec();
+            if stamp {
+                stamp_send_time(&mut body);
+            }
+            body
+        })
+        .take(count)
+        .collect();
         let result = match &key {
             Some(key) => {
                 publisher

@@ -25,20 +25,28 @@
 //! something a re-send can mend. A forgotten producer is not started
 //! again under a new id here: whether its last batch landed is exactly what
 //! the shard can no longer say, so the caller has to decide.
+//!
+//! The cursors belong to one task the producer spawns, and a call is a
+//! request to it. That is what makes a dropped call harmless: the task still
+//! learns what happened to the batch, so a cursor never points at a sequence
+//! whose fate was lost with a future.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_wire::routing::ShardRouting;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::client::Client;
 use crate::cluster::{Attempt, ClusterClient, Next, Retrying};
 use crate::{PublishRefusalReason, PublishRefused};
+
+/// Publishes that can wait for the driver before a caller waits to submit.
+const QUEUED: usize = 32;
 
 /// A producer whose batches are appended once, however many times they are
 /// sent. See the module documentation.
@@ -48,43 +56,40 @@ use crate::{PublishRefusalReason, PublishRefused};
 /// sequence has to be. A batch
 /// of any size takes one sequence. [`Self::publish_batches`] keeps several
 /// batches of one call in flight at once.
-pub struct IdempotentProducer<'a> {
-    source: Source<'a>,
+///
+/// The producer owns its client and sends from a task of its own, in the
+/// order calls were made. A call hands its batches to that task and waits
+/// for the answer, so dropping the call's future does not stop the publish:
+/// the batches still go out under their sequences and the producer stays
+/// usable. Dropping the producer lets the publishes already handed to it
+/// finish; [`Self::close`] waits for them.
+pub struct IdempotentProducer {
     producer_id: u64,
-    /// Set when a publish future was dropped between sending a batch and
-    /// learning what happened to it. See [`Self::publish_batch`].
-    ///
-    /// Producer-wide rather than per stream, which is exactly as coarse as the
-    /// cursor lock already is: publishes on this producer serialise behind that
-    /// lock whatever stream they are for.
-    in_doubt: AtomicBool,
-    /// Per shard, because that is what the leader numbers. An unkeyed batch
-    /// is shard 0's.
-    cursors: Mutex<HashMap<ShardKey, Cursor>>,
-    /// The broker a refusal named as the leader of a shard, kept so the next
-    /// batch goes straight there rather than being refused again.
-    leaders: Mutex<HashMap<ShardKey, Arc<Client>>>,
-    /// Each keyed stream's width and mapping, asked once.
-    widths: Mutex<HashMap<StreamKey, (u32, ShardRouting)>>,
+    requests: mpsc::Sender<Request>,
+    driver: JoinHandle<()>,
 }
 
-impl<'a> IdempotentProducer<'a> {
-    pub(crate) fn for_client(client: &'a Client, producer_id: u64) -> Self {
-        Self::new(Source::Single(client), producer_id)
+impl IdempotentProducer {
+    pub(crate) fn for_client(client: Arc<Client>, producer_id: u64) -> Self {
+        Self::start(Source::Single(client), producer_id)
     }
 
-    pub(crate) fn for_cluster(cluster: &'a ClusterClient, producer_id: u64) -> Self {
-        Self::new(Source::Cluster(cluster), producer_id)
+    pub(crate) fn for_cluster(cluster: Arc<ClusterClient>, producer_id: u64) -> Self {
+        Self::start(Source::Cluster(cluster), producer_id)
     }
 
-    fn new(source: Source<'a>, producer_id: u64) -> Self {
-        Self {
+    fn start(source: Source, producer_id: u64) -> Self {
+        let (requests, queued) = mpsc::channel(QUEUED);
+        let driver = Driver {
             source,
             producer_id,
-            in_doubt: AtomicBool::new(false),
-            cursors: Mutex::new(HashMap::new()),
             leaders: Mutex::new(HashMap::new()),
             widths: Mutex::new(HashMap::new()),
+        };
+        Self {
+            producer_id,
+            requests,
+            driver: tokio::spawn(driver.run(queued)),
         }
     }
 
@@ -126,14 +131,15 @@ impl<'a> IdempotentProducer<'a> {
     /// log), or when an earlier call had already settled this batch and
     /// nothing was sent.
     ///
-    /// **Cancelling this stops the producer.** Dropping the future between
-    /// sending a batch and learning what happened to it leaves the sequence in
-    /// doubt: the batch may have been appended under it, and the cursor still
-    /// points at it. Since the broker answers a remembered sequence from memory
-    /// *without appending*, reusing it would discard a different batch and
-    /// report success — so the next call refuses instead, and the producer has
-    /// to be replaced. Do not race this against a timeout; a producer is cheap
-    /// to re-initialise and silently dropped records are not cheap at all.
+    /// **Dropping this future does not cancel the publish.** Once handed to
+    /// the producer the batch is sent and answered whether or not anyone is
+    /// waiting, so racing this against a timeout is safe, but the batch may
+    /// still land after the timeout fires: do not publish it again. If it
+    /// ends in doubt with nobody waiting, the producer re-sends it under the
+    /// same sequence before the next batch on that shard, and that next call
+    /// fails without sending if the re-send fails too. The future is only
+    /// dropped before the hand-off while the producer's queue is full, and
+    /// then nothing was sent.
     pub async fn publish_batch(
         &self,
         tenant_id: &str,
@@ -142,7 +148,7 @@ impl<'a> IdempotentProducer<'a> {
         payloads: Vec<Vec<u8>>,
     ) -> Result<Option<u64>> {
         let offsets = self
-            .publish_batches_at(tenant_id, namespace, stream, None, vec![payloads])
+            .submit(tenant_id, namespace, stream, None, vec![payloads])
             .await?;
         Ok(offsets.first().copied().flatten())
     }
@@ -184,7 +190,7 @@ impl<'a> IdempotentProducer<'a> {
         payloads: Vec<Vec<u8>>,
     ) -> Result<Option<u64>> {
         let offsets = self
-            .publish_batches_at(tenant_id, namespace, stream, Some(key), vec![payloads])
+            .submit(tenant_id, namespace, stream, Some(key), vec![payloads])
             .await?;
         Ok(offsets.first().copied().flatten())
     }
@@ -204,7 +210,7 @@ impl<'a> IdempotentProducer<'a> {
     /// same order, and carry more after them. A call that starts with
     /// anything else is refused without sending. The other
     /// rules of [`Self::publish_batch`] apply unchanged, including that
-    /// cancelling the call stops the producer.
+    /// dropping the call's future does not cancel it.
     pub async fn publish_batches(
         &self,
         tenant_id: &str,
@@ -212,14 +218,23 @@ impl<'a> IdempotentProducer<'a> {
         stream: &str,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<()> {
-        self.publish_batches_at(tenant_id, namespace, stream, None, batches)
+        self.submit(tenant_id, namespace, stream, None, batches)
             .await
             .map(|_| ())
     }
 
-    /// [`Self::publish_batches`], returning the offsets of the batches this
-    /// call sent, in order.
-    async fn publish_batches_at(
+    /// Wait for every publish already handed to this producer to be
+    /// answered, then stop it.
+    pub async fn close(self) -> Result<()> {
+        drop(self.requests);
+        self.driver
+            .await
+            .context("the producer's task failed before it finished")
+    }
+
+    /// Hand a call to the driver and wait for its answer: the offsets of the
+    /// batches it sent, in order.
+    async fn submit(
         &self,
         tenant_id: &str,
         namespace: &str,
@@ -227,30 +242,143 @@ impl<'a> IdempotentProducer<'a> {
         routing_key: Option<Bytes>,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<Vec<Option<u64>>> {
-        let shard = self
-            .shard_for(tenant_id, namespace, stream, routing_key.as_deref())
-            .await?;
-        let key = (
-            tenant_id.to_string(),
-            namespace.to_string(),
-            stream.to_string(),
-            shard,
-        );
-        if self.in_doubt.load(Ordering::Acquire) {
-            anyhow::bail!(
-                "a publish on this producer was cancelled before the broker answered, \
-                 so its sequence may or may not have been appended. Reusing that \
-                 sequence would have the broker answer the new batch from memory \
-                 without appending it, and report success — so this producer will not \
-                 publish again. Call producer_init for a fresh producer id; the batch \
-                 in doubt is the only one whose fate is unknown.",
-            );
+        let (answer, answered) = oneshot::channel();
+        let request = Request {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            routing_key,
+            batches,
+            answer,
+        };
+        self.requests
+            .send(request)
+            .await
+            .map_err(|_| anyhow::anyhow!("this producer's task has stopped; nothing was sent"))?;
+        answered.await.map_err(|_| {
+            anyhow::anyhow!(
+                "this producer's task stopped before the batch was answered, so it may or may \
+                 not have been appended; call producer_init for a fresh producer"
+            )
+        })?
+    }
+}
+
+/// One call, as handed to the driver.
+struct Request {
+    tenant_id: String,
+    namespace: String,
+    stream: String,
+    routing_key: Option<Bytes>,
+    batches: Vec<Vec<Vec<u8>>>,
+    answer: oneshot::Sender<Result<Vec<Option<u64>>>>,
+}
+
+/// The task that sends a producer's batches and owns its sequences.
+///
+/// Only it moves a cursor, and it finishes every call it takes whether or not
+/// the caller still waits, so a cursor never points at a batch whose outcome
+/// was lost with a dropped future.
+struct Driver {
+    source: Source,
+    producer_id: u64,
+    /// The broker a refusal named as the leader of a shard, kept so the next
+    /// batch goes straight there rather than being refused again.
+    leaders: Mutex<HashMap<ShardKey, Arc<Client>>>,
+    /// Each keyed stream's width and mapping, asked once.
+    widths: Mutex<HashMap<StreamKey, (u32, ShardRouting)>>,
+}
+
+impl Driver {
+    /// Serve calls in the order they were made until the producer is dropped
+    /// and its queue is empty.
+    async fn run(self, mut requests: mpsc::Receiver<Request>) {
+        // Per shard, because that is what the leader numbers. An unkeyed
+        // batch is shard 0's.
+        let mut cursors: HashMap<ShardKey, Cursor> = HashMap::new();
+        while let Some(request) = requests.recv().await {
+            let Request {
+                tenant_id,
+                namespace,
+                stream,
+                routing_key,
+                batches,
+                answer,
+            } = request;
+            let shard = match self
+                .shard_for(&tenant_id, &namespace, &stream, routing_key.as_deref())
+                .await
+            {
+                Ok(shard) => shard,
+                Err(err) => {
+                    let _ = answer.send(Err(err));
+                    continue;
+                }
+            };
+            let key = (tenant_id, namespace, stream, shard);
+            let result = self
+                .publish_on_shard(&mut cursors, &key, routing_key, batches)
+                .await;
+            // Nobody heard that these are in doubt, so nobody will re-send
+            // them; the next call on the shard does it instead.
+            if answer.send(result).is_err()
+                && let Some(Cursor::InDoubt { abandoned, .. }) = cursors.get_mut(&key)
+            {
+                *abandoned = true;
+            }
         }
-        // Held for the whole publish: the sequence is only meaningful if the
-        // batches carrying consecutive numbers are sent in that order.
-        let mut cursors = self.cursors.lock().await;
+    }
+
+    /// Settle any batches on the shard left in doubt with nobody waiting,
+    /// then publish the call's.
+    async fn publish_on_shard(
+        &self,
+        cursors: &mut HashMap<ShardKey, Cursor>,
+        key: &ShardKey,
+        routing_key: Option<Bytes>,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> Result<Vec<Option<u64>>> {
+        if let Some(Cursor::InDoubt {
+            abandoned: true,
+            routing_key: pending_key,
+            batches: pending,
+            settled,
+            ..
+        }) = cursors.get_mut(key)
+        {
+            let (pending_key, pending) = (pending_key.clone(), pending.clone());
+            // A re-send of exactly the batches in doubt; a settled prefix
+            // from their own call would be mistaken for part of it.
+            settled.clear();
+            let resent = self
+                .publish_batches_at(cursors, key, pending_key, pending)
+                .await;
+            if let Err(err) = resent {
+                if let Some(Cursor::InDoubt { abandoned, .. }) = cursors.get_mut(key) {
+                    *abandoned = true;
+                }
+                return Err(err.context(
+                    "an earlier batch on this shard, whose caller stopped waiting, is still in \
+                     doubt and was re-sent without an answer, so this one was not sent",
+                ));
+            }
+        }
+        self.publish_batches_at(cursors, key, routing_key, batches)
+            .await
+    }
+
+    /// The call's batches under the shard's next sequences, or the batches in
+    /// doubt again. Returns the offsets of the batches this call sent, in
+    /// order.
+    async fn publish_batches_at(
+        &self,
+        cursors: &mut HashMap<ShardKey, Cursor>,
+        key: &ShardKey,
+        routing_key: Option<Bytes>,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> Result<Vec<Option<u64>>> {
         let mut batches = batches;
-        let (first, doubted) = match cursors.get(&key) {
+        let (first, doubted) = match cursors.get(key) {
             None => (0, Vec::new()),
             Some(Cursor::Next(sequence)) => (*sequence, Vec::new()),
             Some(Cursor::InDoubt {
@@ -258,6 +386,7 @@ impl<'a> IdempotentProducer<'a> {
                 routing_key: pending_key,
                 batches: pending,
                 settled,
+                ..
             }) => {
                 // Another key on the same shard is a different record, however
                 // alike the payloads, and the leader would answer it from
@@ -297,27 +426,23 @@ impl<'a> IdempotentProducer<'a> {
         if batches.is_empty() {
             return Ok(Vec::new());
         }
-        // Armed across the send and disarmed the instant it answers: between
-        // those two points the caller's future may be dropped, and that is the
-        // window where the cursor and the broker can disagree.
-        let cancelled = InDoubtOnCancel::armed(&self.in_doubt);
-        let (acked, result) = self.send(&key, routing_key.as_ref(), &batches, first).await;
-        cancelled.disarm();
+        let (acked, result) = self.send(key, routing_key.as_ref(), &batches, first).await;
         let settled = first + acked.len() as u64;
         match result {
             Ok(()) if doubted.is_empty() => {
-                cursors.insert(key, Cursor::Next(settled));
+                cursors.insert(key.clone(), Cursor::Next(settled));
                 Ok(acked)
             }
             // A shorter call than the run in doubt settles its prefix only.
             Ok(()) => {
                 cursors.insert(
-                    key,
+                    key.clone(),
                     Cursor::InDoubt {
                         sequence: settled,
                         routing_key,
                         batches: doubted,
                         settled: Vec::new(),
+                        abandoned: false,
                     },
                 );
                 Ok(acked)
@@ -340,10 +465,11 @@ impl<'a> IdempotentProducer<'a> {
                             routing_key,
                             batches: unsettled,
                             settled: batches,
+                            abandoned: false,
                         }
                     }
                 };
-                cursors.insert(key, cursor);
+                cursors.insert(key.clone(), cursor);
                 Err(err)
             }
         }
@@ -360,7 +486,7 @@ impl<'a> IdempotentProducer<'a> {
         batches: &[Vec<Vec<u8>>],
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        match self.source {
+        match &self.source {
             Source::Single(client) => {
                 self.send_via(client, key, routing_key, batches, first)
                     .await
@@ -494,7 +620,7 @@ impl<'a> IdempotentProducer<'a> {
             Ok(addr) => addr,
             Err(err) => return (acked, Err(err)),
         };
-        let leader: Arc<Client> = match self.source {
+        let leader: Arc<Client> = match &self.source {
             Source::Single(_) => {
                 return (
                     acked,
@@ -533,7 +659,7 @@ impl<'a> IdempotentProducer<'a> {
         // Under a ClusterClient every publish names its shard, so each shard
         // can have its own stream. A plain Client's do not, so its producer
         // stays on the pool with the rest of that client's publishes.
-        let publisher = match self.source {
+        let publisher = match &self.source {
             Source::Cluster(_) => client.shard_publisher(),
             Source::Single(_) => match client.publisher().await {
                 Ok(publisher) => publisher,
@@ -580,7 +706,7 @@ impl<'a> IdempotentProducer<'a> {
         let (shards, routing) = match known {
             Some(width) => width,
             None => {
-                let client = match self.source {
+                let client = match &self.source {
                     Source::Single(client) => {
                         client.stream_routing(tenant_id, namespace, stream).await
                     }
@@ -627,9 +753,9 @@ fn starts_alike(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> bool {
 
 /// Where a producer's batches go: one broker, or whichever a cluster client
 /// is using, with the shard's leader remembered once a refusal names it.
-enum Source<'a> {
-    Single(&'a Client),
-    Cluster(&'a ClusterClient),
+enum Source {
+    Single(Arc<Client>),
+    Cluster(Arc<ClusterClient>),
 }
 
 /// Where a producer stands on one stream.
@@ -647,43 +773,8 @@ enum Cursor {
         /// The batches of the failing call that were acknowledged, so the
         /// same call made again re-sends only the rest.
         settled: Vec<Vec<Vec<u8>>>,
+        /// Their caller stopped waiting before it heard they were in doubt.
+        abandoned: bool,
     },
     Ended(PublishRefused),
-}
-
-/// Marks the producer in doubt unless the publish that armed it finished.
-///
-/// A cancelled publish is the one case the sequence mechanism cannot absorb.
-/// Everything else about it is built so a re-send is safe *because the number
-/// did not move* — but that holds only while the client knows whether the
-/// number was used. Drop the future mid-send and it does not: the batch may
-/// have been appended under that sequence, and the cursor still points at it.
-///
-/// The next batch would then go out under a spent number, and the broker's
-/// contract is to answer a remembered sequence from memory *without appending*
-/// — so a caller publishing different records would be told `Ok` and lose them
-/// with nothing reported anywhere. Refusing afterwards is the only honest
-/// answer, and this is what notices.
-struct InDoubtOnCancel<'p> {
-    flag: &'p AtomicBool,
-    armed: bool,
-}
-
-impl<'p> InDoubtOnCancel<'p> {
-    fn armed(flag: &'p AtomicBool) -> Self {
-        Self { flag, armed: true }
-    }
-
-    /// The publish was answered, so the cursor is right either way.
-    fn disarm(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for InDoubtOnCancel<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.flag.store(true, Ordering::Release);
-        }
-    }
 }

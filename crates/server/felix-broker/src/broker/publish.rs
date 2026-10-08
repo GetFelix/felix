@@ -150,6 +150,7 @@ impl Broker {
             handle: handle.clone(),
             payloads: payloads.to_vec(),
             publisher: publisher.cloned(),
+            timestamp_micros: None,
             commit: None,
             durable: None,
             sample,
@@ -170,15 +171,23 @@ impl Broker {
             // assigns the offsets, so a publish cancelled before this returns
             // still releases it.
             let order = &handle.state.commit_sequencer;
+            // Taken here rather than in the log so live delivery reports the
+            // time replay will read back.
+            let timestamp_micros = crate::durable::append_time_now();
+            claimed.timestamp_micros = Some(timestamp_micros);
             let publishers = match publisher {
                 Some(publisher) => vec![Some(publisher.clone()); payloads.len()],
                 None => Vec::new(),
             };
             let (pending, turn) = match append {
-                Append::Plain => durable.begin_append(payloads, &publishers, order).await?,
+                Append::Plain => {
+                    durable
+                        .begin_append(payloads, &publishers, timestamp_micros, order)
+                        .await?
+                }
                 Append::Marked(marks) => {
                     durable
-                        .begin_append_marked(payloads, marks, &publishers, order)
+                        .begin_append_marked(payloads, marks, &publishers, timestamp_micros, order)
                         .await?
                 }
                 Append::Commit(record) => {
@@ -187,6 +196,7 @@ impl Broker {
                             std::slice::from_ref(record),
                             &[RecordMark::Commit],
                             &publishers,
+                            timestamp_micros,
                             order,
                         )
                         .await?
@@ -195,7 +205,14 @@ impl Broker {
                     producer_id,
                     sequence,
                 } => match durable
-                    .continue_batch(producer_id, sequence, payloads, &publishers, order)
+                    .continue_batch(
+                        producer_id,
+                        sequence,
+                        payloads,
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
                     .await?
                 {
                     Some(claimed) => claimed,
@@ -530,6 +547,8 @@ pub struct ClaimedPublish {
     payloads: Vec<Bytes>,
     /// Who published the batch, as its subscribers are told.
     publisher: Option<Bytes>,
+    /// When a durable batch was appended. `None` on an in-memory stream.
+    timestamp_micros: Option<u64>,
     /// A commit's state updates; `payloads` is then its one event.
     commit: Option<Arc<[crate::commit::StateOp]>>,
     durable: Option<ClaimedDurable>,

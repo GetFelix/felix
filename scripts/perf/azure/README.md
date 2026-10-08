@@ -128,6 +128,13 @@ The `shapes` step of each driver crosses payload (`SHAPE_PAYLOADS`, 256 1024
 An acked cell is what a client that waits for its acks gets; on a durable
 stream with `FELIX_ACK_ON_COMMIT=1` that is the durable rate.
 
+For read-heavy runs, put `--scenario subscribe` on one generator and `ingest`
+on another with the same `--start-at` and `--duration-secs`. The subscribe row
+carries only delivered numbers (`delivered_throughput_msg_s`, `gaps`); the
+publish rate is the ingest row's `throughput_msg_s`. Pass `--stamp-send-time`
+to both for delivery latency, which is only meaningful with the generators'
+clocks in sync.
+
 Session C runs its steps twice: under the lease, then after its `lease-free`
 step finalizes `generation_start`, `majority_ack` and `lease_free_reads` (cells
 tagged `-lf`). Finalizing is one-way, so a re-run of the lease cells needs a

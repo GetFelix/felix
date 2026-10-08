@@ -81,3 +81,13 @@ fn the_publisher_flag_is_new_and_not_in_the_frozen_set() {
         0
     );
 }
+
+#[test]
+fn the_timestamps_flag_is_new_and_not_in_the_frozen_set() {
+    let others = crate::KNOWN_FLAGS & !crate::FLAG_EVENT_BATCH_TIMESTAMPS;
+    assert_eq!(crate::FLAG_EVENT_BATCH_TIMESTAMPS & others, 0);
+    assert_eq!(
+        crate::ORIGINAL_V1_FLAGS & crate::FLAG_EVENT_BATCH_TIMESTAMPS,
+        0
+    );
+}

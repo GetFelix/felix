@@ -88,6 +88,7 @@ Field definitions:
   | `0x0800` | `EVENT_BATCH_SKIPPED` | Modifier on `0x0020`: the batch also carries a `skipped_before` count of offsets before it that hold no event |
   | `0x1000` | `BINARY_PUBLISH_ACK_OFFSET` | Modifier on `0x0010`: a successful ack ends with the offset of the batch's first record. Offered by a client, it also lets `publish_ok` carry `offset` |
   | `0x2000` | `EVENT_BATCH_PUBLISHER` | Modifier on `0x0002` or `0x0004`: the batch carries the principal that published its events. See [Event batch publisher](#event-batch-publisher) |
+  | `0x4000` | `EVENT_BATCH_TIMESTAMPS` | Modifier on `0x0002` or `0x0004`: each event is preceded by its record's append time. See [Event batch timestamps](#event-batch-timestamps) |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
   frame carrying any bit it does not recognise rather than masking it off (see
@@ -340,7 +341,8 @@ hand-backs or lapsed claims free room.
 ```
 { "type": "group_records",
   "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number>,
-                "skipped_before": <number>?, "publisher": "<principal>"? }],
+                "skipped_before": <number>?, "publisher": "<principal>"?,
+                "timestamp_micros": <number>? }],
   "request_id": <number> }
 ```
 
@@ -362,6 +364,10 @@ reports it, so for that client an absent field means `0`.
 stored one (see [Event batch publisher](#event-batch-publisher)). It is sent
 only to a client that offered `FEATURE_GROUP_PUBLISHER`, and left out when the
 record has none.
+
+`timestamp_micros` is when the record was appended, in microseconds since the
+Unix epoch (see [Event batch timestamps](#event-batch-timestamps)). It is sent
+only to a client that offered `FEATURE_RECORD_TIMESTAMPS`.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```
@@ -688,6 +694,37 @@ Reads `key` in the state of the shard `entity_key` routes to. Answered with
 `version` is the offset of the commit that wrote `value`. `as_of` is the
 offset of the last commit the answer reflects: every commit at or below it,
 and none after. A null `value` is a key never written or deleted.
+
+### OffsetForTime
+```
+{ "type": "offset_for_time", "tenant_id": "<string>", "namespace": "<string>",
+  "stream": "<string>", "shard": <u32>, "at_micros": <u64>, "request_id": <u64> }
+```
+
+Asks for the first offset on one shard of a durable stream whose record was
+appended at or after `at_micros` (microseconds since the Unix epoch). Answered
+with `offset_value`. Needs `stream.subscribe`, since the answer is a place to
+subscribe from. Only the shard's leader answers; any other broker answers
+`not_leader` to a client that offered `FEATURE_REDIRECT`, and an error
+otherwise. An in-memory stream stores no times and is answered with an error.
+Sent only to a broker that advertised `FEATURE_RECORD_TIMESTAMPS`.
+
+The broker binary-searches the shard's append times below the point a
+subscriber may read to, the committed mark on a `Quorum` stream. That assumes
+times rise with the offset. They are the leading broker's clock at append, so
+if that clock steps back, or a new leader's clock is behind the old one's, the
+answer is near the first such record rather than exactly it. Kafka's
+`ListOffsets` by time has the same caveat, and the Kafka listener uses the same
+search.
+
+### OffsetValue (server -> client)
+```
+{ "type": "offset_value", "offset": <u64|absent>, "request_id": <u64> }
+```
+
+`offset` is left out when no readable record is that recent: subscribe at
+`latest` to wait for one. A time older than every record the shard still holds
+answers with the oldest.
 
 ### StreamShards
 ```
@@ -1405,6 +1442,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it. See [Event batch publisher](#event-batch-publisher) |
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
+| `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1791,6 +1829,41 @@ Where the publisher comes from:
   `publisher_principal` fleet feature, and on a broker outside a cluster with
   `FELIX_RECORD_PUBLISHERS=true`. Records written before then have no
   publisher, and neither do records from a connection with no principal.
+
+## Event batch timestamps
+
+When `flags & 0x4000 != 0`, every event in the batch is preceded by the time
+its record was appended, a `u64` of microseconds since the Unix epoch, before
+the event's length:
+
+```
+...                      # subscription id, offset, skip and publisher fields
+u32 count
+repeat count times:
+  u64 timestamp_micros   # with 0x4000
+  u32 len
+  u8[len] payload
+```
+
+One per event rather than one per batch, because a batch read from history can
+hold records of several publishes. The broker stamps one time per publish
+batch, at append, so every record of a publish has the same time and live
+delivery reports exactly what a replay reads back. The bit is independent of
+`0x0020`.
+
+A client opts in by offering `0x4000` in `client_flags`. The broker sets it
+only for a client that offered it, and only on a batch whose records have
+stored times: in-memory streams store none, so their batches never carry it.
+Every other batch is byte-identical to the frame without the bit. The JSON
+`event` and `event_batch` messages never carry a time. Consumer groups report
+the same value as `timestamp_micros` on a `GroupRecord`, under
+`FEATURE_RECORD_TIMESTAMPS`, and `offset_for_time` searches the same values.
+
+The time is the clock of the broker that led the shard when the record was
+written, not the publisher's. A follower stamps the records it replicates with
+its own clock, so after a failover the times a new leader reports for records
+it inherited are its own append times, normally later than the old leader's by
+the replication delay.
 
 ## ALPN
 

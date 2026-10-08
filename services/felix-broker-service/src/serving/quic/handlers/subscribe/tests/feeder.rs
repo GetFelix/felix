@@ -76,6 +76,7 @@ async fn spawn_feeder(flush_delay: Duration) -> Result<Harness> {
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
         publisher_enabled: false,
+        timestamps_enabled: false,
     };
     let feeder = tokio::spawn(run_lane_feeder(
         event_rx,
@@ -305,6 +306,7 @@ async fn feed_to_the_end(
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
         publisher_enabled: false,
+        timestamps_enabled: false,
     };
     let feeder = tokio::spawn(run_lane_feeder(
         event_rx,

@@ -891,3 +891,133 @@ async fn quic_subscribe_reports_the_publisher_to_a_client_that_asked() -> Result
     server_task.abort();
     Ok(())
 }
+
+/// A subscriber that asked gets each record's append time, the same live and
+/// on a resume from disk, and can find an offset by time. One that did not
+/// gets the events it always got.
+#[tokio::test]
+#[serial]
+async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(storage)
+            // Smaller than the record count, so the resume reads disk too.
+            .with_log_capacity(2)?,
+    );
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "inputs",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let mut asking = build_client_config(cert.clone(), &auth)?;
+    asking.timestamps = true;
+    let asking = Client::connect(addr, "localhost", asking).await?;
+    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    assert!(plain.supports_offset_for_time());
+    let mut told = asking.subscribe("t1", "default", "inputs").await?;
+    let mut untold = plain.subscribe("t1", "default", "inputs").await?;
+
+    const TOTAL: usize = 5;
+    let before = felix_broker::append_time_now();
+    let publisher = plain.publisher().await?;
+    for i in 0..TOTAL {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                "inputs",
+                format!("tick-{i}").into_bytes(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+        // Apart enough that each publish gets a time of its own.
+        tokio::time::sleep(Duration::from_millis(3)).await;
+    }
+    let after = felix_broker::append_time_now();
+    let mut times = Vec::new();
+    for _ in 0..TOTAL {
+        let event = timeout(Duration::from_secs(5), told.next_event())
+            .await??
+            .expect("event");
+        let time = event.timestamp_micros.expect("a time");
+        assert!((before..=after).contains(&time), "{time} outside the run");
+        times.push(time);
+        let event = timeout(Duration::from_secs(5), untold.next_event())
+            .await??
+            .expect("event");
+        assert_eq!(event.timestamp_micros, None);
+    }
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
+
+    let mut resumed = asking
+        .subscribe_from(
+            "t1",
+            "default",
+            "inputs",
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await?;
+    for (offset, time) in times.iter().enumerate() {
+        let event = timeout(Duration::from_secs(5), resumed.next_event())
+            .await??
+            .expect("event");
+        assert_eq!(
+            (event.offset, event.timestamp_micros),
+            (Some(offset as u64), Some(*time))
+        );
+    }
+
+    let lookup = |at| plain.offset_for_time("t1", "default", "inputs", 0, at);
+    assert_eq!(lookup(0).await?, Some(0));
+    assert_eq!(lookup(times[2]).await?, Some(2));
+    assert_eq!(lookup(times[2] + 1).await?, Some(3));
+    assert_eq!(lookup(after + 1_000_000).await?, None);
+
+    drop((told, untold, resumed));
+    server_task.abort();
+    Ok(())
+}

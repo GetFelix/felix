@@ -76,6 +76,7 @@ fn message_cache_operations() {
                 attempts: 1,
                 skipped_before: 0,
                 publisher: None,
+                timestamp_micros: None,
             },
             crate::GroupRecord {
                 offset: 9,
@@ -83,6 +84,7 @@ fn message_cache_operations() {
                 attempts: 3,
                 skipped_before: 1,
                 publisher: None,
+                timestamp_micros: None,
             },
         ],
         request_id: 42,
@@ -406,6 +408,7 @@ fn a_group_record_with_nothing_skipped_omits_the_field() {
         attempts: 1,
         skipped_before: 0,
         publisher: None,
+        timestamp_micros: None,
     };
     let json = serde_json::to_string(&record).expect("encode");
     assert!(!json.contains("skipped_before"), "{json}");
@@ -415,6 +418,66 @@ fn a_group_record_with_nothing_skipped_omits_the_field() {
     };
     let json = serde_json::to_string(&skipped).expect("encode");
     assert!(json.contains("\"skipped_before\":2"), "{json}");
+}
+
+/// A group record without a time is byte for byte the record an older
+/// client gets, and a time round-trips for one that asked.
+#[test]
+fn a_group_record_time_is_left_out_unless_set() {
+    let record = crate::GroupRecord {
+        offset: 7,
+        payload: Bytes::from_static(b"one"),
+        attempts: 1,
+        skipped_before: 0,
+        publisher: None,
+        timestamp_micros: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&record).expect("encode"),
+        r#"{"offset":7,"payload":"b25l","attempts":1}"#
+    );
+    let timed = crate::GroupRecord {
+        timestamp_micros: Some(1_700_000_000_000_000),
+        ..record
+    };
+    let json = serde_json::to_string(&timed).expect("encode");
+    assert!(
+        json.contains("\"timestamp_micros\":1700000000000000"),
+        "{json}"
+    );
+    let back: crate::GroupRecord = serde_json::from_str(&json).expect("decode");
+    assert_eq!(back, timed);
+}
+
+#[test]
+fn offset_for_time_round_trips() {
+    for message in [
+        Message::OffsetForTime {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 1,
+            at_micros: 1_700_000_000_000_000,
+            request_id: 3,
+        },
+        Message::OffsetValue {
+            offset: Some(12),
+            request_id: 3,
+        },
+        Message::OffsetValue {
+            offset: None,
+            request_id: 4,
+        },
+    ] {
+        let frame = message.encode().expect("encode");
+        assert_eq!(Message::decode(frame).expect("decode"), message);
+    }
+    let json = serde_json::to_string(&Message::OffsetValue {
+        offset: None,
+        request_id: 4,
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"type":"offset_value","request_id":4}"#);
 }
 
 #[test]

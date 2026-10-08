@@ -377,6 +377,39 @@ consumer group agree, and it stores one only once enabled: by finalizing the
 `FELIX_RECORD_PUBLISHERS=true` on a single broker. See
 [Event batch publisher](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-publisher).
 
+#### When an event was written
+
+A subscriber that offers `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets each
+event's append time, in microseconds since the Unix epoch, on every batch from
+a durable stream. A consumer that offers `FEATURE_RECORD_TIMESTAMPS` gets it as
+`timestamp_micros` on each group record. Live delivery and replay report the
+same time, because the broker stamps it once, when it appends the publish
+batch. It is the leading broker's clock, not the publisher's. In-memory
+streams store no time and send none. See
+[Event batch timestamps](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-timestamps).
+
+#### Starting from a time
+
+To replay from a point in time, ask for the offset first and subscribe at it:
+
+```json
+{ "type": "offset_for_time", "tenant_id": "acme", "namespace": "prod",
+  "stream": "events", "shard": 0, "at_micros": 1767225600000000, "request_id": 9 }
+```
+
+```json
+{ "type": "offset_value", "offset": 48210, "request_id": 9 }
+```
+
+The answer is the first offset on that shard appended at or after
+`at_micros`. `offset` is absent when nothing that recent is committed yet, so
+subscribe at `latest`; a time older than the shard's oldest record answers with
+that record. It needs `stream.subscribe`, only the shard's leader answers, and
+the broker must advertise `FEATURE_RECORD_TIMESTAMPS`. The lookup is a binary
+search over append times, so if the leader's clock stepped back the answer is
+close to the right record rather than exactly it. See
+[OffsetForTime](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#offsetfortime).
+
 **Event stream lifecycle**:
 
 ```mermaid
