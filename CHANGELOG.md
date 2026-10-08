@@ -31,6 +31,15 @@ for what the current release guarantees.
   `resume` and `abandon` drive placement. Deletes, drains and deregistrations
   ask on a terminal and need `--yes` anywhere else, stopping with status 2
   without it; `placement abandon` never asks and always needs `--yes`.
+- `felixctl rbac policy ls|add|rm` and `felixctl rbac grouping ls|add|rm` list,
+  grant and revoke the current tenant's RBAC policies and role assignments
+  through the control plane (#1005). `policy add` checks the object against
+  the RBAC grammar first, including cache key and key-prefix objects and their
+  `cache.read`/`cache.write`-only rule, and stops with status 2 and the reason;
+  action names and delegation scope are left to the control plane, whose
+  refusal is printed with status 4. `rm` asks on a terminal and needs `--yes`
+  elsewhere, and exits 5 when the rule does not exist. `felix-cluster` adds
+  `Credentials::rbac_admin_token`.
 - A subscriber can choose its own broker-side queue capacity on a broker
   advertising `FEATURE_SUBSCRIBE_QUEUE` (`0x4000_0000`) (#1019). `subscribe`
   takes an optional `queue_capacity`, counted in published batches; the broker

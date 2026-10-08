@@ -3,8 +3,9 @@
 The command-line tool for [Felix](https://github.com/GetFelix/felix). It
 publishes to and reads from streams, reads, writes and watches cache keys,
 shows which broker owns each shard, works consumer groups and counters,
-creates, changes and deletes what the control plane manages, moves shards and
-drains brokers, and runs load tests.
+creates, changes and deletes what the control plane manages, manages RBAC
+policies and role assignments, moves shards and drains brokers, and runs load
+tests.
 
 ```bash
 cargo install felixctl --version 0.6.0-preview.2

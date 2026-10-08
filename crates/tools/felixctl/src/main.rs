@@ -14,6 +14,8 @@
 //! - `group`, `counter`: consumer groups and counters, through the brokers.
 //! - `controlplane`: the REST client and the read-only commands.
 //! - `manage`: the control-plane writes, and confirming destructive ones.
+//! - `rbac`: listing, granting and revoking RBAC policies and role
+//!   assignments.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
@@ -31,6 +33,7 @@ mod help;
 mod manage;
 mod output;
 mod publish;
+mod rbac;
 mod subscribe;
 mod topology;
 
@@ -97,6 +100,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
         Command::Placement(command) => manage::placement(command, &settings, out).await,
+        Command::Rbac(command) => rbac::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
         Command::Context(_) | Command::Completions(_) | Command::Man(_) => {
             unreachable!("handled above")
