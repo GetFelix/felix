@@ -98,7 +98,7 @@ async fn broker_at(generation: u64) -> (Arc<Broker>, TempDir) {
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log")
-        .accept_generation(generation)
+        .accept_generation(generation, None)
         .await
         .expect("accept");
     (broker, dir)
@@ -125,11 +125,14 @@ impl Replica {
     async fn fenced_at(&self, generation: u64) {
         let answer = self
             .handler
-            .fence(Fence {
-                correlation_id: 1,
-                shard: shard_at(generation),
-                log: ReplicaLog::Stream,
-            })
+            .fence(
+                None,
+                Fence {
+                    correlation_id: 1,
+                    shard: shard_at(generation),
+                    log: ReplicaLog::Stream,
+                },
+            )
             .await;
         assert!(
             matches!(answer, InternalMessage::FenceOk(_)),
@@ -184,7 +187,7 @@ impl PeerRequester for Replicas {
             });
         }
         let answer = match message {
-            InternalMessage::Fence(fence) => replica.handler.fence(fence).await,
+            InternalMessage::Fence(fence) => replica.handler.fence(None, fence).await,
             other => panic!("a read round sent {:?}", other.kind()),
         };
         let mut open = self.open.subscribe();
@@ -326,7 +329,7 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
                 .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
                 .await
                 .expect("log")
-                .accept_generation(generation)
+                .accept_generation(generation, None)
                 .await
                 .expect("accept");
         }
@@ -356,11 +359,14 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
         &nodes(),
     );
     let answer = ReplicaHandler::new(broker, router)
-        .fence(Fence {
-            correlation_id: 1,
-            shard: shard_at(LEADING),
-            log: ReplicaLog::Cache,
-        })
+        .fence(
+            None,
+            Fence {
+                correlation_id: 1,
+                shard: shard_at(LEADING),
+                log: ReplicaLog::Cache,
+            },
+        )
         .await;
     assert!(
         matches!(&answer, InternalMessage::ReplicateError(err) if err.code == felix_wire::internal::ErrorCode::FencedEpoch),

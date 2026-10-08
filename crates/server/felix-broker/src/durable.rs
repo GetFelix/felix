@@ -563,14 +563,20 @@ impl StreamLog {
         self.log.accepted_generation()
     }
 
-    /// Accept a leader at `generation`; a raised one is on disk on return.
+    /// The leader that generation was accepted from, if one was named.
+    pub fn accepted_leader(&self) -> Option<std::sync::Arc<str>> {
+        self.log.accepted_leader()
+    }
+
+    /// Accept `leader` at `generation`; a raised one is on disk on return.
     /// See `DiskLog::accept_generation`.
     pub async fn accept_generation(
         &self,
         generation: u64,
+        leader: Option<&str>,
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
-            .accept_generation(generation)
+            .accept_generation(generation, leader)
             .await
             .map_err(BrokerError::from)
     }

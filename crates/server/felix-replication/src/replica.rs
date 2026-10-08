@@ -82,7 +82,11 @@ impl ReplicaHandler {
     /// keeping, and the leader's copy is the one the majority holds. The
     /// records go, the generation history goes with them, and the answer is
     /// where the new copy begins.
-    pub async fn rebuild(&self, request: ReplicateRebuild) -> InternalMessage {
+    pub async fn rebuild(
+        &self,
+        sender: Option<&str>,
+        request: ReplicateRebuild,
+    ) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let log_kind = match request.log {
             ReplicaLog::Stream => felix_broker::LogKind::Stream,
@@ -96,7 +100,13 @@ impl ReplicaHandler {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, request.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                request.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -122,7 +132,7 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+            accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
             return refusal;
         }
@@ -278,6 +288,7 @@ impl ReplicaHandler {
 
     pub async fn bootstrap(
         &self,
+        sender: Option<&str>,
         request: ReplicateBootstrap,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
@@ -288,7 +299,13 @@ impl ReplicaHandler {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, request.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                request.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -318,7 +335,7 @@ impl ReplicaHandler {
         };
 
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+            accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
             return refusal;
         }
@@ -395,6 +412,7 @@ impl ReplicaHandler {
 
     pub async fn apply(
         &self,
+        sender: Option<&str>,
         batch: ReplicateRecords,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
@@ -423,7 +441,13 @@ impl ReplicaHandler {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, batch.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                batch.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -453,7 +477,7 @@ impl ReplicaHandler {
         };
 
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, batch.shard.generation).await
+            accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
             return refusal;
         }
@@ -728,7 +752,7 @@ impl ReplicaHandler {
     /// their own, so the fence covers them without a request each. A
     /// promoted cache leader fences the counter log as well, after the cache
     /// log, for where it ends: the answer is the counter log's.
-    pub async fn fence(&self, request: Fence) -> InternalMessage {
+    pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = match request.log {
@@ -779,7 +803,7 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, generation)
+            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
             .await
         {
             return refusal;
@@ -813,9 +837,10 @@ impl ReplicaHandler {
             }
         }
         // A fence at the generation already accepted changes nothing here: it
-        // is the leader confirming it still leads, once per read round.
+        // is the leader confirming it still leads, once per read round. From
+        // any other node it is refused below, by the ballot.
         let confirming = log.accepted_generation() == generation;
-        if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation).await {
+        if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
         // Read after the generation is on disk: a batch from the old leader
@@ -854,7 +879,7 @@ impl ReplicaHandler {
     ///
     /// Only for a leader at exactly the generation this replica last
     /// accepted, which is the one that fenced it.
-    pub async fn fetch(&self, request: ReplicateFetch) -> InternalMessage {
+    pub async fn fetch(&self, sender: Option<&str>, request: ReplicateFetch) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = match request.log {
@@ -898,12 +923,15 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, generation)
+            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
             .await
         {
             return refusal;
         }
         let accepted = log.accepted_generation();
+        if let Some(refusal) = refuse_other_leader(&log, correlation_id, &key, generation, sender) {
+            return refusal;
+        }
         if accepted != generation {
             let code = if accepted > generation {
                 ErrorCode::FencedEpoch
@@ -975,13 +1003,15 @@ impl ReplicaHandler {
     }
 
     /// Refuse a sender to one of a shard's other logs once the shard's own
-    /// log has accepted a newer leader, which is where a fence is kept.
+    /// log has accepted a newer leader, or another leader at the sender's
+    /// generation, which is where a fence is kept.
     async fn check_shard_fence(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         let own = match log_kind {
             felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => return None,
@@ -994,6 +1024,9 @@ impl ReplicaHandler {
             .broker
             .shard_log(own, &key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await?;
+        if let Some(refusal) = refuse_other_leader(&log, correlation_id, key, generation, sender) {
+            return Some(refusal);
+        }
         let accepted = log.accepted_generation();
         (accepted > generation).then(|| {
             metrics::record_replicated(metrics::OUTCOME_FENCED);
@@ -1055,19 +1088,30 @@ impl ReplicaHandler {
     }
 }
 
-/// Refuse a sender older than a leader this log already accepted, and persist
-/// a newer one before anything it sends is stored or acknowledged.
+/// Refuse a sender older than a leader this log already accepted, or another
+/// node at the generation it accepted, and persist a newer one, with its
+/// ballot, before anything it sends is stored or acknowledged.
 ///
 /// The routing view in `check_role` is rebuilt after a restart and may lag;
 /// this is what still refuses a leader this broker has seen superseded.
+/// `sender` is the node id the peer gave in its `Hello`, or `None` when this
+/// broker does not keep ballots, and then only the generation is checked.
 async fn accept_sender(
     log: &felix_broker::StreamLog,
     correlation_id: u64,
     key: &felix_router::ShardKey,
     generation: u64,
+    sender: Option<&str>,
 ) -> Option<InternalMessage> {
-    match log.accept_generation(generation).await {
+    match log.accept_generation(generation, sender).await {
         Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
+        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+            correlation_id,
+            key,
+            generation,
+            &leader,
+            sender,
+        )),
         Ok(GenerationCheck::Superseded { accepted }) => {
             tracing::warn!(
                 stream = %key.stream,
@@ -1096,6 +1140,52 @@ async fn accept_sender(
             ))
         }
     }
+}
+
+/// Refuse `sender` at `generation` when this log accepted that generation
+/// from another leader. Read only: a fetch and a shard's other logs take no
+/// ballot of their own here.
+fn refuse_other_leader(
+    log: &felix_broker::StreamLog,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    let sender_id = sender?;
+    if log.accepted_generation() != generation {
+        return None;
+    }
+    let leader = log.accepted_leader()?;
+    (*leader != *sender_id)
+        .then(|| promised_elsewhere(correlation_id, key, generation, &leader, sender))
+}
+
+/// A second node claiming a generation this replica accepted from another.
+/// Answered as fenced: whichever of the two reads it must not count this
+/// replica, and the control plane never names two, so one of them is stale.
+fn promised_elsewhere(
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    leader: &str,
+    sender: Option<&str>,
+) -> InternalMessage {
+    tracing::warn!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation,
+        promised = leader,
+        sender = sender.unwrap_or_default(),
+        "refusing a second leader at a generation this replica accepted from another",
+    );
+    metrics::record_replicated(metrics::OUTCOME_FENCED);
+    refused(
+        correlation_id,
+        ErrorCode::FencedEpoch,
+        0,
+        format!("this broker accepted generation {generation} from {leader}"),
+    )
 }
 
 /// Where a batch from a leader at `generation` must start for every record

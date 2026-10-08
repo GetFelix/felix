@@ -183,7 +183,7 @@ felix_broker_replication_rebuilding         # halted followers the leader is reb
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
 felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
-felix_broker_promotions_opened_total       # by path: fenced (a majority took the new leader's generation) or lease
+felix_broker_promotions_opened_total       # every new leadership, by path: fenced (a majority took the new leader's generation) or lease
 felix_broker_promotion_truncated_total      # a promoted leader dropped its own records a replica's newer log superseded
 felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary

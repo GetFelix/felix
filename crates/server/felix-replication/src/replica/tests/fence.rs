@@ -39,16 +39,20 @@ async fn a_fence_is_on_disk_before_it_is_answered() {
         let broker = broker_on(dir.path());
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
-            .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+            .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
             .await;
-        taken(&handler.fence(fence(5)).await);
+        taken(&handler.fence(SENDER, fence(5)).await);
     }
 
     // Restarted, and the routing view still says generation 4.
     let broker = broker_on(dir.path());
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     let answer = handler
-        .apply(batch(4, 1, &["late"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 1, &["late"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
@@ -65,18 +69,22 @@ async fn an_older_leader_is_refused_after_the_fence() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
-    taken(&handler.fence(fence(5)).await);
+    taken(&handler.fence(SENDER, fence(5)).await);
 
     let next = handler
-        .apply(batch(4, 2, &["c"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 2, &["c"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(refusal(&next).code, ErrorCode::FencedEpoch);
 
     let gap = handler
-        .apply(batch(4, 9, &["far"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 9, &["far"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(
         refusal(&gap).code,
@@ -86,6 +94,7 @@ async fn an_older_leader_is_refused_after_the_fence() {
 
     let bootstrap = handler
         .bootstrap(
+            SENDER,
             ReplicateBootstrap {
                 correlation_id: 1,
                 shard: batch(4, 0, &[]).shard,
@@ -97,12 +106,15 @@ async fn an_older_leader_is_refused_after_the_fence() {
     assert_eq!(refusal(&bootstrap).code, ErrorCode::FencedEpoch);
 
     let rebuild = handler
-        .rebuild(ReplicateRebuild {
-            correlation_id: 1,
-            shard: batch(4, 0, &[]).shard,
-            log: ReplicaLog::Stream,
-            base_offset: 0,
-        })
+        .rebuild(
+            SENDER,
+            ReplicateRebuild {
+                correlation_id: 1,
+                shard: batch(4, 0, &[]).shard,
+                log: ReplicaLog::Stream,
+                base_offset: 0,
+            },
+        )
         .await;
     assert_eq!(refusal(&rebuild).code, ErrorCode::FencedEpoch);
 
@@ -142,10 +154,11 @@ async fn the_shards_other_logs_are_fenced_with_it() {
     );
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
     handler
         .bootstrap(
+            SENDER,
             ReplicateBootstrap {
                 correlation_id: 1,
                 shard: batch(4, 0, &[]).shard,
@@ -156,6 +169,7 @@ async fn the_shards_other_logs_are_fenced_with_it() {
         .await;
     let before = handler
         .apply(
+            SENDER,
             batch(4, 0, &["cursor"]),
             felix_broker::LogKind::GroupCursors,
         )
@@ -165,10 +179,14 @@ async fn the_shards_other_logs_are_fenced_with_it() {
         "{before:?}"
     );
 
-    taken(&handler.fence(fence(5)).await);
+    taken(&handler.fence(SENDER, fence(5)).await);
 
     let after = handler
-        .apply(batch(4, 1, &["moved"]), felix_broker::LogKind::GroupCursors)
+        .apply(
+            SENDER,
+            batch(4, 1, &["moved"]),
+            felix_broker::LogKind::GroupCursors,
+        )
         .await;
     assert_eq!(refusal(&after).code, ErrorCode::FencedEpoch);
 }
@@ -182,12 +200,13 @@ async fn the_answer_carries_the_log_end_and_the_commit_offset() {
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
         .apply(
+            SENDER,
             committed(4, 0, &["a", "b", "c"], 2),
             felix_broker::LogKind::Stream,
         )
         .await;
 
-    let ok = taken(&handler.fence(fence(5)).await);
+    let ok = taken(&handler.fence(SENDER, fence(5)).await);
 
     assert_eq!(ok.correlation_id, 9);
     assert_eq!(ok.log_end, 3);
@@ -205,7 +224,7 @@ async fn an_empty_replica_answers_with_an_empty_log() {
         .expect("open");
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
 
-    let ok = taken(&handler.fence(fence(5)).await);
+    let ok = taken(&handler.fence(SENDER, fence(5)).await);
 
     assert_eq!(
         (ok.log_end, ok.commit_offset, ok.last_generation),
@@ -221,15 +240,15 @@ async fn a_fence_older_than_the_accepted_generation_is_refused() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
-    taken(&handler.fence(fence(6)).await);
+    taken(&handler.fence(SENDER, fence(6)).await);
 
     assert_eq!(
-        refusal(&handler.fence(fence(5)).await).code,
+        refusal(&handler.fence(SENDER, fence(5)).await).code,
         ErrorCode::FencedEpoch
     );
-    assert_eq!(taken(&handler.fence(fence(6)).await).log_end, 1);
+    assert_eq!(taken(&handler.fence(SENDER, fence(6)).await).log_end, 1);
 }
 
 /// A replica whose routing view already has a newer generation than the
@@ -239,11 +258,11 @@ async fn a_fence_behind_the_routing_view_is_refused() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
     handler
-        .apply(batch(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(6, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     assert_eq!(
-        refusal(&handler.fence(fence(5)).await).code,
+        refusal(&handler.fence(SENDER, fence(5)).await).code,
         ErrorCode::FencedEpoch
     );
 }
@@ -256,10 +275,13 @@ async fn a_fence_names_the_shards_own_log() {
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
 
     let answer = handler
-        .fence(Fence {
-            log: ReplicaLog::GroupCursors,
-            ..fence(5)
-        })
+        .fence(
+            SENDER,
+            Fence {
+                log: ReplicaLog::GroupCursors,
+                ..fence(5)
+            },
+        )
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Malformed);
 }
@@ -283,21 +305,26 @@ async fn only_the_leader_that_fenced_the_replica_reads_its_tail() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 0, &["a", "b", "c"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
     assert_eq!(
-        refusal(&handler.fetch(fetch(5, 1)).await).code,
+        refusal(&handler.fetch(SENDER, fetch(5, 1)).await).code,
         ErrorCode::StaleRoute,
         "a leader that has not fenced this replica read its log",
     );
-    taken(&handler.fence(fence(5)).await);
+    taken(&handler.fence(SENDER, fence(5)).await);
     assert_eq!(
-        refusal(&handler.fetch(fetch(4, 1)).await).code,
+        refusal(&handler.fetch(SENDER, fetch(4, 1)).await).code,
         ErrorCode::FencedEpoch
     );
 
-    let InternalMessage::ReplicateRecords(records) = handler.fetch(fetch(5, 1)).await else {
+    let InternalMessage::ReplicateRecords(records) = handler.fetch(SENDER, fetch(5, 1)).await
+    else {
         panic!("expected the records");
     };
     assert_eq!(records.first_offset, 1);
@@ -317,9 +344,18 @@ struct OverTheWire(ReplicaHandler);
 #[async_trait::async_trait]
 impl crate::peer::PeerRequestHandler for OverTheWire {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        self.handle_from(None, request).await
+    }
+
+    async fn handle_from(
+        &self,
+        peer: Option<Arc<str>>,
+        request: InternalMessage,
+    ) -> InternalMessage {
+        let sender = peer.as_deref();
         match request {
-            InternalMessage::Fence(fence) => self.0.fence(fence).await,
-            InternalMessage::ReplicateFetch(fetch) => self.0.fetch(fetch).await,
+            InternalMessage::Fence(fence) => self.0.fence(sender, fence).await,
+            InternalMessage::ReplicateFetch(fetch) => self.0.fetch(sender, fetch).await,
             other => panic!("unexpected {:?}", other.kind()),
         }
     }
@@ -349,7 +385,9 @@ async fn a_long_tail_is_fetched_over_the_transport() {
         })
         .collect();
     marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[]);
-    let answer = handler.apply(marked, felix_broker::LogKind::Stream).await;
+    let answer = handler
+        .apply(SENDER, marked, felix_broker::LogKind::Stream)
+        .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -455,7 +493,11 @@ async fn a_cache_shards_counter_log_answers_the_fence_and_the_fetch() {
     let broker = cache_broker(dir.path());
     let handler = ReplicaHandler::new(Arc::clone(&broker), cache_router(4));
     let stored = handler
-        .apply(batch(4, 0, &["d1", "d2"]), felix_broker::LogKind::Counters)
+        .apply(
+            SENDER,
+            batch(4, 0, &["d1", "d2"]),
+            felix_broker::LogKind::Counters,
+        )
         .await;
     assert!(
         matches!(stored, InternalMessage::ReplicateOk(_)),
@@ -468,20 +510,26 @@ async fn a_cache_shards_counter_log_answers_the_fence_and_the_fetch() {
 
     taken(
         &handler
-            .fence(Fence {
-                log: ReplicaLog::Cache,
-                ..fence(5)
-            })
+            .fence(
+                SENDER,
+                Fence {
+                    log: ReplicaLog::Cache,
+                    ..fence(5)
+                },
+            )
             .await,
     );
-    let ok = taken(&handler.fence(counters(5)).await);
+    let ok = taken(&handler.fence(SENDER, counters(5)).await);
     assert_eq!((ok.log_end, ok.last_generation), (2, 4));
 
     let InternalMessage::ReplicateCounterRecords(records) = handler
-        .fetch(felix_wire::internal::ReplicateFetch {
-            log: ReplicaLog::Counters,
-            ..fetch(5, 1)
-        })
+        .fetch(
+            SENDER,
+            felix_wire::internal::ReplicateFetch {
+                log: ReplicaLog::Counters,
+                ..fetch(5, 1)
+            },
+        )
         .await
     else {
         panic!("expected the counter log's records");
@@ -490,17 +538,24 @@ async fn a_cache_shards_counter_log_answers_the_fence_and_the_fetch() {
     assert_eq!(
         refusal(
             &handler
-                .fetch(felix_wire::internal::ReplicateFetch {
-                    log: ReplicaLog::Counters,
-                    ..fetch(4, 1)
-                })
+                .fetch(
+                    SENDER,
+                    felix_wire::internal::ReplicateFetch {
+                        log: ReplicaLog::Counters,
+                        ..fetch(4, 1)
+                    }
+                )
                 .await
         )
         .code,
         ErrorCode::FencedEpoch
     );
     let late = handler
-        .apply(batch(4, 2, &["late"]), felix_broker::LogKind::Counters)
+        .apply(
+            SENDER,
+            batch(4, 2, &["late"]),
+            felix_broker::LogKind::Counters,
+        )
         .await;
     assert_eq!(refusal(&late).code, ErrorCode::FencedEpoch);
 }
@@ -514,18 +569,24 @@ async fn a_counter_fence_older_than_the_cache_fence_is_refused() {
     let handler = ReplicaHandler::new(Arc::clone(&broker), cache_router(4));
     taken(
         &handler
-            .fence(Fence {
-                log: ReplicaLog::Cache,
-                ..fence(6)
-            })
+            .fence(
+                SENDER,
+                Fence {
+                    log: ReplicaLog::Cache,
+                    ..fence(6)
+                },
+            )
             .await,
     );
 
     let answer = handler
-        .fence(Fence {
-            log: ReplicaLog::Counters,
-            ..fence(5)
-        })
+        .fence(
+            SENDER,
+            Fence {
+                log: ReplicaLog::Counters,
+                ..fence(5)
+            },
+        )
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
 }
@@ -543,6 +604,7 @@ async fn a_dropped_cache_suffix_leaves_no_trace_in_the_index() {
     let second = cache_put("k", "v2");
     let stored = old
         .apply(
+            SENDER,
             batch(4, 0, &[&first, &second]),
             felix_broker::LogKind::Cache,
         )
@@ -566,7 +628,11 @@ async fn a_dropped_cache_suffix_leaves_no_trace_in_the_index() {
     let other = cache_put("other", "x");
     let new = ReplicaHandler::new(Arc::clone(&broker), cache_router(5));
     let stored = new
-        .apply(batch(5, 0, &[&first, &other]), felix_broker::LogKind::Cache)
+        .apply(
+            SENDER,
+            batch(5, 0, &[&first, &other]),
+            felix_broker::LogKind::Cache,
+        )
         .await;
     assert!(
         matches!(stored, InternalMessage::ReplicateOk(_)),
@@ -575,4 +641,114 @@ async fn a_dropped_cache_suffix_leaves_no_trace_in_the_index() {
 
     assert_eq!(read("k").await.as_deref(), Some(&b"v1"[..]));
     assert_eq!(read("other").await.as_deref(), Some(&b"x"[..]));
+}
+
+/// **One leader per generation.** Two nodes claiming the same generation is
+/// what a ballot exists to stop: the second is refused a fence, a batch and a
+/// read of the log, so it cannot count this replica toward a majority.
+/// `Ballots` in `docs/formal/FelixShard.tla`.
+#[tokio::test]
+async fn a_fence_from_a_second_leader_at_the_same_generation_is_refused() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+    let other = Some("broker-c");
+    taken(&handler.fence(SENDER, fence(5)).await);
+
+    assert_eq!(
+        refusal(&handler.fence(other, fence(5)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    let answer = handler
+        .apply(
+            other,
+            batch(5, 0, &["theirs"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    assert_eq!(
+        refusal(&handler.fetch(other, fetch(5, 0)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    // The shard's other logs keep the ballot through the shard's own.
+    let answer = handler
+        .apply(
+            other,
+            batch(5, 0, &["cursor"]),
+            felix_broker::LogKind::GroupCursors,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+
+    // The leader it promised is still answered.
+    taken(&handler.fence(SENDER, fence(5)).await);
+    let answer = handler
+        .apply(
+            SENDER,
+            batch(5, 0, &["ours"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(held(&broker).await, vec!["ours"]);
+}
+
+/// **The ballot survives a restart.** It is on disk before the fence is
+/// answered, so a replica that crashes straight after still refuses the
+/// other node, though nothing in memory remembers whom it answered.
+#[tokio::test]
+async fn a_ballot_is_on_disk_before_the_fence_is_answered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        taken(&handler.fence(SENDER, fence(5)).await);
+    }
+
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    assert_eq!(
+        refusal(&handler.fence(Some("broker-c"), fence(5)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    taken(&handler.fence(SENDER, fence(5)).await);
+}
+
+/// The ballot names the node the transport says sent the fence: two brokers
+/// dialling with different node ids at one generation, and only the first
+/// is answered.
+#[tokio::test]
+async fn the_ballot_names_the_peer_that_said_hello() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    let config = crate::peer::PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        ..Default::default()
+    };
+    let server =
+        crate::peer::PeerServer::bind(LOCAL.to_string(), &config, Arc::new(OverTheWire(handler)))
+            .expect("bind");
+    let addr = server.local_addr().expect("addr");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    tokio::spawn(server.serve(shutdown.clone()));
+
+    let first =
+        crate::peer::PeerPool::new("broker-a".to_string(), config.clone(), shutdown.clone())
+            .expect("pool");
+    let second =
+        crate::peer::PeerPool::new("broker-c".to_string(), config, shutdown.clone()).expect("pool");
+    let answer = first
+        .request(LOCAL, addr, InternalMessage::Fence(fence(5)))
+        .await
+        .expect("fence");
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let answer = second
+        .request(LOCAL, addr, InternalMessage::Fence(fence(5)))
+        .await
+        .expect("fence");
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    shutdown.cancel();
 }

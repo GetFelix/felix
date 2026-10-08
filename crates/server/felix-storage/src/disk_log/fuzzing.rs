@@ -5,6 +5,7 @@
 //! rewritten to fit. That is what gets the bytes past the CRC and into the
 //! parsing behind it.
 
+use super::ballot::Ballot;
 use super::durable_mark::{DurableMark, MARK_LEN};
 use super::epochs::{EPOCH_ENTRY_LEN, EPOCH_HEADER_LEN, EpochMap};
 use super::producers::{self, SNAPSHOT_HEADER_LEN};
@@ -24,6 +25,14 @@ pub(crate) fn sidecars(data: &[u8]) {
     for bytes in [data.to_vec(), with_crc(data, replica_crc, 0..replica_crc)] {
         if let Some(state) = ReplicaState::decode(&bytes) {
             assert_eq!(ReplicaState::decode(&state.encode()), Some(state));
+        }
+    }
+
+    // The ballot's CRC closes the file, wherever its length puts the end.
+    let ballot_crc = data.len().saturating_sub(4);
+    for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
+        if let Some(ballot) = Ballot::decode(&bytes) {
+            assert_eq!(Ballot::decode(&ballot.encode()), Some(ballot));
         }
     }
 

@@ -195,7 +195,7 @@ impl Replica {
         let handler =
             ReplicaHandler::new(Arc::clone(&self.broker), router_for(node_id, generation));
         let answer = handler
-            .apply(batch(generation, first_offset, values), log)
+            .apply(None, batch(generation, first_offset, values), log)
             .await;
         assert!(
             matches!(answer, InternalMessage::ReplicateOk(_)),
@@ -260,8 +260,8 @@ impl PeerRequester for Replicas {
             .expect("lock")
             .push((node_id.to_string(), message.kind()));
         match message {
-            InternalMessage::Fence(fence) => Ok(replica.handler.fence(fence).await),
-            InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(fetch).await),
+            InternalMessage::Fence(fence) => Ok(replica.handler.fence(None, fence).await),
+            InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(None, fetch).await),
             other => panic!("the promoted leader sent {:?}", other.kind()),
         }
     }
@@ -352,7 +352,7 @@ async fn a_promoted_leader_opens_once_a_majority_took_its_generation() {
         if accepted(&replicas.get(id).broker).await == PROMOTED {
             let answer =
                 ReplicaHandler::new(Arc::clone(&replicas.get(id).broker), router_for(id, 4))
-                    .apply(batch(4, 1, &["late"]), felix_broker::LogKind::Stream)
+                    .apply(None, batch(4, 1, &["late"]), felix_broker::LogKind::Stream)
                     .await;
             assert!(
                 matches!(&answer, InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch),
@@ -578,7 +578,7 @@ impl PeerRequester for ShipTo<'_> {
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => Ok(self
                 .handler
-                .apply(batch, felix_broker::LogKind::Stream)
+                .apply(None, batch, felix_broker::LogKind::Stream)
                 .await),
             other => panic!("the leader sent {:?}", other.kind()),
         }

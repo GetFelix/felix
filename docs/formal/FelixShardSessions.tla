@@ -117,12 +117,12 @@ BeginCommit(b) ==
 ConfirmCommit(b, f) ==
     /\ ReadConfirm = "round"
     /\ committing[b] /\ f \notin cvotes[b]
-    /\ promised[f] <= cgen[b]
-    /\ promised' = [promised EXCEPT ![f] = cgen[b]]
+    /\ MayPromise(f, b, cgen[b])
+    /\ Promise(f, b, cgen[b])
     /\ cvotes' = [cvotes EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    handoffVars, fencing, answered, confirmed, heard, counterVars >>
+                    handoffVars, fencing, answered, confirmed, opened, heard, counterVars >>
     /\ UNCHANGED << snext, sdel, committing, cgen, ctop, commits, staleGroup >>
 
 CommitConfirmed(b) ==

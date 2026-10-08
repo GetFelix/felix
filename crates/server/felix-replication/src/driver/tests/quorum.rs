@@ -502,7 +502,7 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log")
-        .accept_generation(5)
+        .accept_generation(5, None)
         .await
         .expect("accept a newer leader");
     let marks = follower_ack_marks();

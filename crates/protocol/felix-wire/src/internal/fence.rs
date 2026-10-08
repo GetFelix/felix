@@ -48,6 +48,11 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateRecords::times`]: super::ReplicateRecords::times
     pub const RECORD_TIMES: Self = Self(1 << 5);
+    /// Keeps a ballot with each accepted generation, naming the leader it was
+    /// accepted from by the node id that leader gave in its `Hello`, and
+    /// refuses a fence, a batch or a fetch from any other node at that
+    /// generation.
+    pub const BALLOTS: Self = Self(1 << 6);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

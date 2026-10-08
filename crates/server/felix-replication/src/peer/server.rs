@@ -39,6 +39,19 @@ pub trait PeerRequestHandler: Send + Sync + 'static {
     /// protocol has no "no answer" outcome, and a requester that gets none has
     /// to wait out its timeout.
     async fn handle(&self, request: InternalMessage) -> InternalMessage;
+
+    /// Answer one request from `peer`, the node id it gave in its `Hello`.
+    /// `None` when this broker does not keep ballots, or the peer has not
+    /// said who it is. Handlers that do not care who asked need not
+    /// implement it.
+    async fn handle_from(
+        &self,
+        peer: Option<Arc<str>>,
+        request: InternalMessage,
+    ) -> InternalMessage {
+        let _ = peer;
+        self.handle(request).await
+    }
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -311,6 +324,10 @@ async fn serve_connection(
 ) {
     // Read once: the chain does not change for the life of a connection.
     let peer_certs = tls.as_ref().and_then(|_| connection.peer_certificates());
+    // Who the peer said it is, for every stream it opens after its `Hello`.
+    // The pool waits for `HelloOk` before it sends anything else, so no
+    // request on this connection arrives before this is set.
+    let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -330,6 +347,7 @@ async fn serve_connection(
         let stream_connection = connection.clone();
         let app = app.clone();
         let offered = offered.clone();
+        let identity = Arc::clone(&identity);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (mut send, mut recv) = stream;
@@ -406,6 +424,7 @@ async fn serve_connection(
                             return;
                         }
                         tracing::debug!(peer = %hello.node_id, "internal peer connected");
+                        *identity.lock() = Some(Arc::from(hello.node_id.as_str()));
                         // A plain `Hello` is a peer that predates the bits, so
                         // it can do none of it, and is answered as it expects.
                         offered.known.record(
@@ -439,7 +458,14 @@ async fn serve_connection(
                     // stays one request at a time, as the requester expects.
                     request => {
                         let handler = Arc::clone(&handler);
-                        match app.spawn(async move { handler.handle(request).await }).await {
+                        // Ballots name a leader by this identity, so it goes
+                        // to the handler only when this broker keeps them.
+                        let peer = offered
+                            .capabilities
+                            .contains(PeerCapabilities::BALLOTS)
+                            .then(|| identity.lock().clone())
+                            .flatten();
+                        match app.spawn(async move { handler.handle_from(peer, request).await }).await {
                             Ok(response) => response,
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
