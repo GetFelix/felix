@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791495695424,
+  "lastUpdate": 1791496655864,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25636,6 +25636,58 @@ window.BENCHMARK_DATA = {
             "range": "36773.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1648794.68\nmean: 1646248.61\nstdev: 36773.05\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5edb7edfebd564b6f57927368e34afa10451069d",
+          "message": "fix(replication): let a busy follower's answer complete the majority a pass waits on (#1080) (#1081)\n\nA pass waiting for a majority only listened to the followers it launched.\nWhen the follower that held the record was still busy with an earlier pass's\nexchange, its answer went to the driver and sat there while the pass waited\nout the other, unreachable follower's request timeout. A pass with a busy\nvoting follower now also stops waiting once the next pass is wanted, and an\nexchange ending under a running pass asks for the next one.\n\nCloses #1080",
+          "timestamp": "2026-10-08T14:44:23-07:00",
+          "tree_id": "eae381e65bf949f5e0b52f7e68743942fe95a892",
+          "url": "https://github.com/GetFelix/felix/commit/5edb7edfebd564b6f57927368e34afa10451069d"
+        },
+        "date": 1791496655267,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 680364.01,
+            "range": "10569.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 680364.01\nmean: 675441.66\nstdev: 10569.72\ncv: 1.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 680364.01,
+            "range": "10569.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 680364.01\nmean: 675441.66\nstdev: 10569.72\ncv: 1.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154304.01,
+            "range": "10684.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154304.01\nmean: 151997.25\nstdev: 10684.87\ncv: 7.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1543040.06,
+            "range": "106848.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1543040.06\nmean: 1519972.49\nstdev: 106848.76\ncv: 7.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
