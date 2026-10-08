@@ -829,6 +829,7 @@ advertised its bit.
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`, answered with `cache_condition_result`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time` with `offset_value`. Offered by a client that reads `timestamp_micros` on a group record; the field is sent only to a client that offered it |
 | `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
+| `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. A client checks it before sending `expected_offset`, since an older broker ignores it and would commit unconditionally |
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing |
 
 `0x8000_0000` is `FEATURE_EXTENDED`, not a feature: it says a second feature

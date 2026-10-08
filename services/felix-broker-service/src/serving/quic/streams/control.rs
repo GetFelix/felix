@@ -932,6 +932,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 event,
                 changes,
                 request_id,
+                expected_offset,
             } => {
                 commit::commit(
                     &cx,
@@ -940,10 +941,35 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     event,
                     changes,
+                    expected_offset,
+                    request_id,
+                )
+                .await?
+            }
+            Message::PublishIf {
+                tenant_id,
+                namespace,
+                stream,
+                payloads,
+                key,
+                expected_offset,
+                request_id,
+            } => {
+                commit::publish_if(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key: key,
+                    },
+                    payloads,
+                    expected_offset,
                     request_id,
                 )
                 .await?
@@ -963,7 +989,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     key,
                     request_id,

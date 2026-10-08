@@ -359,6 +359,10 @@ fn every_feature_bit_is_distinct_and_known() {
             "FEATURE_GROUP_CLAIM_CONTROL",
             crate::FEATURE_GROUP_CLAIM_CONTROL,
         ),
+        (
+            "FEATURE_PUBLISH_CONDITIONAL",
+            crate::FEATURE_PUBLISH_CONDITIONAL,
+        ),
         ("FEATURE_STREAM_READ", crate::FEATURE_STREAM_READ),
     ];
     let mut seen = 0u32;

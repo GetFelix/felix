@@ -12,6 +12,25 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A write can be made only at the offset its writer expects, on a broker
+  advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
+  `publish_if` appends a batch only if it would start at `expected_offset`, the
+  shard's next; `commit` takes the same optional `expected_offset` as a
+  compare-and-set on the whole shard. The check is made where the log assigns
+  offsets, under the same lock, so of two writers at one offset exactly one is
+  written. A refusal is `publish_refused` with the new `offset_mismatch` reason
+  and the shard's tail; it writes nothing, consumes no offset and holds up no
+  later publish. The tail counts a new leader's generation-start record, so a
+  writer's expected offset goes stale on failover. Served by the shard's
+  leader only: a non-leader answers `not_leader`. An in-memory stream refuses
+  it. A commit without `expected_offset` is byte-identical to before.
+  `publish_if` is charged against the tenant's publish quota and the ingress
+  byte budgets like any acked publish, and refused over quota the same way.
+  felix-client adds `publish_if` and `commit_if` on `Client` and
+  `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
+  `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,
+  `publish_batch_at` and `commit_to_handle_at`. Per-key version
+  preconditions are #1051.
 - A second feature word for when the `u32` feature set runs out (#1055).
   `FEATURE_EXTENDED` (`0x8000_0000`) in `client_features` or
   `server_features` says the peer sends and reads `client_features_hi` /
@@ -176,6 +195,10 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
+  `expected_offset` field, and `PublishRefusalReason` and
+  `felix_broker::BrokerError` have new variants, so struct literals and
+  exhaustive matches need updating.
 - A durable stream no longer reserves a whole 256 MiB segment of disk per
   shard when it is created (#1016). The active segment reserves 1 MiB (or a
   sixteenth of the segment size, if smaller) and doubles the reservation each

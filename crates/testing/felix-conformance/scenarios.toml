@@ -762,6 +762,34 @@ at or past it. A deleted or never-written key reads as absent, not empty.
 """
 
 [[scenario]]
+id = "commit.expected_offset_refuses_a_stale_write"
+required = false
+title = "A commit with an expected offset is refused once the shard has moved on"
+detail = """
+A commit carrying an expected offset that is no longer the shard's next is
+refused with publish_refused and offset_mismatch naming the tail, and nothing
+is written. Optional until the bindings expose conditional writes.
+"""
+
+[[scenario]]
+id = "publish_if.lands_at_the_expected_offset"
+required = false
+title = "A conditional publish at the tail is written there"
+detail = """
+publish_if with the shard's next offset is answered with publish_ok carrying
+that offset.
+"""
+
+[[scenario]]
+id = "publish_if.refused_with_the_tail"
+required = false
+title = "Of two conditional publishes at one offset, the second is refused"
+detail = """
+A second publish_if expecting the offset the first took is refused with
+publish_refused and offset_mismatch naming the new tail, and writes nothing.
+"""
+
+[[scenario]]
 id = "commit.another_stream_is_refused"
 required = true
 title = "An operation on another stream is refused before anything is sent"

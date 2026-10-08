@@ -299,6 +299,17 @@ pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
 /// and say nothing.
 pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
 
+/// The broker answers `publish_if`, and honours `expected_offset` on
+/// `commit`: a write made only if the shard's next offset is the one the
+/// writer expects, refused otherwise with `publish_refused` naming the tail.
+///
+/// Advertised by a *broker*. A client checks it before sending
+/// `expected_offset` on a commit, not only before `publish_if`: an older
+/// broker ignores an unknown field, so it would commit unconditionally and
+/// say nothing. For the same reason the conditional publish is a message of
+/// its own rather than a field on `publish_batch`.
+pub const FEATURE_PUBLISH_CONDITIONAL: u32 = 0x1000_0000;
+
 /// The broker answers `stream_read`: one page of a durable stream shard's
 /// committed records, without registering a subscriber.
 ///
@@ -335,6 +346,7 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_CACHE_CONDITIONAL
     | FEATURE_RECORD_TIMESTAMPS
     | FEATURE_GROUP_CLAIM_CONTROL
+    | FEATURE_PUBLISH_CONDITIONAL
     | FEATURE_STREAM_READ;
 
 /// Every extended feature bit this version implements: bits that travel in
