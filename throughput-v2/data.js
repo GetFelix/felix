@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791488414516,
+  "lastUpdate": 1791489913303,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25480,6 +25480,58 @@ window.BENCHMARK_DATA = {
             "range": "4826.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814567.25\nmean: 813966.18\nstdev: 4826.25\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff985a6ccba07b31385d88cfee4ef0bade54182f",
+          "message": "feat(capi): a C ABI over the Rust client for the Go and C# SDKs (#618) (#1068)\n\n* feat(capi): a C ABI over the Rust client for the Go and C# SDKs (#618)\n\nPart of #618. Adds crates/sdk/felix-capi: connect, publish and a polled\nsubscribe behind opaque handles and int32 status codes, a per-thread last\nerror, panics caught at the boundary, and a Tokio runtime owned by each\nclient. The cbindgen header is checked in and a test fails while it is\nstale. A C program built with the system cc links the shared and static\nlibraries and runs the publish/subscribe scenarios against client-fixture\nin the Python CI job.\n\n* fix(capi): read rustc's native static libs without color codes (#618)",
+          "timestamp": "2026-10-08T13:01:08-07:00",
+          "tree_id": "f8f1934bcdb931210fa529d04f708310ac3942e9",
+          "url": "https://github.com/GetFelix/felix/commit/ff985a6ccba07b31385d88cfee4ef0bade54182f"
+        },
+        "date": 1791489912480,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 421726.49,
+            "range": "20197.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 421726.49\nmean: 423686.85\nstdev: 20197.85\ncv: 4.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 421726.49,
+            "range": "20197.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 421726.49\nmean: 423686.85\nstdev: 20197.85\ncv: 4.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93680.94,
+            "range": "624.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93680.94\nmean: 93540.53\nstdev: 624.59\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 936809.35,
+            "range": "6245.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 936809.35\nmean: 935405.28\nstdev: 6245.87\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
