@@ -91,11 +91,20 @@ from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
 acked publishes may be unanswered on each stream, and their acks come back in
 the order the stream sent them. Every stream has its own window, so publishes
 stuck behind a stalled shard do not hold up the other streams on the same
-connection. A Rust `ClusterClient` also gives each shard a stream of its own,
-since it knows the shard of every publish, so a stalled shard holds up only
-its own publishes, not the stream's other shards. It keeps up to 16 such
-streams per broker (`publish_shard_streams`); shards past that share the
-pooled streams. A plain `Client` keeps each stream on one pooled stream.
+connection. The Rust client also gives each shard a stream of its own, so a
+stalled shard holds up only its own publishes, not the stream's other shards,
+and one busy stream's shards spread over the client's connections and the
+broker's listeners. It keeps up to 16 such streams per broker
+(`publish_shard_streams`); shards past that share the pooled streams.
+
+Spreading never reorders a shard. Every publish one client makes to one shard
+goes through one writer on one QUIC stream, so the shard's log holds them in
+the order the client issued them. Different shards of a stream may travel on
+different connections, which costs nothing: their order relative to each
+other was never defined. Unkeyed publishes all go to shard 0, so a stream
+published without keys, or a single-shard stream, stays on one stream and one
+connection per client. That is the price of total order; spread such a
+stream's load over several clients, or give it shards and keys.
 
 A single caller that awaits each publish before issuing the next still
 pays one round trip per publish. Batch, or publish concurrently, to amortize

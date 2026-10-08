@@ -227,6 +227,27 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A plain `Client` spreads one stream's shards over its connections, as a
+  `ClusterClient` already did (#724). Its publishers learn a stream's width
+  from the broker on the first keyed publish to it (`StreamShards`, one round
+  trip, kept for the client's life) and put each shard on a publish stream of
+  its own, placed on the least-loaded connection, so one client's hot
+  multi-shard stream no longer rides one connection and one listener. Order is
+  kept per shard: every publish a client makes to one shard still goes through
+  one writer and one QUIC stream. Unkeyed publishes are shard 0, so a stream
+  published without keys, or a single-shard stream, stays on one stream for
+  total order. A stream whose width cannot be learned keeps all its keyed
+  publishes on shard 0's stream. The writer for a key always comes from the
+  width the client keeps, never from a caller's own shard, so plain
+  publishes, a `ClusterClient` and an idempotent producer through one client
+  share a key's writer even if they disagree about the width. The kept width
+  is dropped when a publish is refused with `not_found`, so a stream deleted
+  and created with another width is routed by its new width. A
+  `ClusterClient` now asks each broker it publishes keyed records through for
+  the stream's width once. Unkeyed publishes through a plain
+  `Client` move from a pooled stream to shard 0's own, which costs one stream
+  open per stream on the first publish. `FELIX_PUB_SHARD_STREAMS` now applies
+  to plain clients too; `0` restores the old routing.
 - A follower stores the leader's append time with each record it replicates,
   instead of stamping it with its own clock, so after a failover the new
   leader reports the same record times, and `offset_for_time` gives the same

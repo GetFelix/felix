@@ -10,6 +10,7 @@ use tracing::debug;
 use super::Client;
 use super::connect::{
     WorkerSettings, note_connection, open_cache_worker, shard_streams, spawn_publish_worker,
+    stream_widths,
 };
 use crate::auth::{StaticToken, TokenProvider};
 use crate::publish::PublishAdmission;
@@ -74,6 +75,15 @@ impl Client {
             self.runtime_config,
             settings,
         );
+        let cache_request_counter = Arc::new(AtomicU64::new(1));
+        let publish_widths = stream_widths(
+            &self.event_node,
+            &credentials,
+            &auth_tenant_id,
+            server_features,
+            &cache_request_counter,
+            self.runtime_config.max_frame_bytes,
+        );
         Ok(Client {
             dialled: self.dialled,
             publish_node: Arc::clone(&self.publish_node),
@@ -85,8 +95,9 @@ impl Client {
             publish_admission: Arc::new(PublishAdmission::new(settings.publish_inflight_bytes)),
             publish_stream_hasher: ahash::RandomState::new(),
             publish_shard_streams,
+            publish_widths,
             cache_workers: vec![cache_worker],
-            cache_request_counter: AtomicU64::new(1),
+            cache_request_counter,
             cache_worker_rr: AtomicUsize::new(0),
             cache_conn_counts: Arc::clone(&self.cache_conn_counts),
             event_conn_counts: Arc::clone(&self.event_conn_counts),

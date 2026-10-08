@@ -1213,13 +1213,21 @@ holds back answers the others have committed, then fills the window and stops
 the stream. The Rust `ClusterClient` therefore sends each publish on a stream
 that carries only its shard, opened on the shard's first publish on the same
 connection. It can, because it computes the shard of every publish to pick
-the owner: keyed, unkeyed (shard 0) and idempotent alike. It keeps at most
-`publish_shard_streams` such streams per broker (16 by default); shards past
-that share the hashed pool, and a shard never changes stream while its writer
-lives, so its publishes stay in order. A plain `Client` does not know a
-stream's width, so it keeps every publish to a stream on one pooled stream.
-Nothing on the wire changes: the broker cannot tell these streams from any
-other.
+the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
+a keyed publish rides is worked out from the width the client connection
+keeps for the stream, asked for (`StreamShards`) on its first keyed publish
+to it, never from a caller's own idea of the shard, so every path through
+one client (plain publishes, a `ClusterClient`, an idempotent producer) puts
+a key on one writer. The width is kept until a publish is refused with
+`not_found`, since only a deleted stream can come back with another width;
+if it cannot be learned, every keyed publish to that stream goes on shard 0's
+stream. Each shard stream is placed on the least-loaded connection, so
+one hot stream's shards spread over the client's connections and the
+broker's listeners. A client keeps at most `publish_shard_streams` such
+streams per broker (16 by default); shards past that share the hashed pool,
+and a shard never changes stream while its writer lives, so its publishes
+stay in order. Nothing on the wire changes: the broker cannot tell these
+streams from any other.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a
