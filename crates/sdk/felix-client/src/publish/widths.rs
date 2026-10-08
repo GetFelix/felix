@@ -1,14 +1,18 @@
 //! How many shards each stream has, so a keyed publish can name its shard.
 //!
-//! A publish goes on its shard's own stream only when the client knows the
-//! shard, and for a keyed publish that takes the stream's width and mapping.
-//! Each is asked of the broker once per stream and kept for the client's
-//! life, failures included. What is kept decides which writer a key's
-//! publishes go to, so it must never change while the client lives: an
-//! answer that changed would move a shard to a second writer, and its
-//! publishes could reach the broker out of order. A stream whose width could
-//! not be learned is kept as one shard, which puts all of its keyed publishes
-//! on one writer, the same as a client that knew nothing of shards.
+//! Every keyed publish through a client gets its writer from the width the
+//! client keeps here, whoever made it: a plain publisher, a `ClusterClient`
+//! or an idempotent producer. A caller's own idea of the shard never picks
+//! the writer, so two callers that disagree about a width cannot put one key
+//! on two writers.
+//!
+//! The width is asked of the broker once per stream and kept, failures
+//! included: an answer that changed while publishes were in flight would
+//! move keys to other writers, and they could reach the broker out of order.
+//! A stream whose width could not be learned is kept as one shard, which
+//! puts all its keyed publishes on one writer. The one exception is a
+//! stream the broker reports gone (`forget`): it may come back with another
+//! width, and nothing in flight to it can land meanwhile.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -88,6 +92,14 @@ impl StreamWidths {
             })
             .await;
         felix_wire::routing::shard_for_routing(routing, shards, Some(key))
+    }
+
+    /// Drop what is kept for the stream, so its next keyed publish asks again.
+    pub(crate) fn forget(&self, tenant_id: &str, namespace: &str, stream: &str) {
+        self.known
+            .write()
+            .expect("stream widths")
+            .remove(&StreamKeyRef::new(tenant_id, namespace, stream));
     }
 
     fn cell(&self, tenant_id: &str, namespace: &str, stream: &str) -> Width {

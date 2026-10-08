@@ -260,7 +260,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Bytes],
     ) -> Result<()> {
-        let worker = self.route(tenant_id, namespace, stream, Some(0)).await?;
+        let worker = self.route(tenant_id, namespace, stream, None, None).await?;
         #[cfg(feature = "telemetry")]
         let sample = crate::telemetry::t_should_sample();
         #[cfg(not(feature = "telemetry"))]
@@ -392,44 +392,61 @@ impl Publisher {
         producer_id: u64,
         sequence: u64,
     ) -> Result<Option<u64>> {
-        let worker = self
-            .route(tenant_id, namespace, stream, Some(shard))
-            .await?;
-        if self.supports_binary_idempotent_for(key) {
-            let response_rx = self
-                .enqueue_idempotent_binary(
-                    &worker,
+        let outcome = async {
+            let worker = self
+                .route(
                     tenant_id,
                     namespace,
                     stream,
-                    key,
-                    payloads,
-                    producer_id,
-                    sequence,
+                    key.map(|key| key.as_ref()),
+                    Some(shard),
                 )
                 .await?;
-            let cancelled = CancelledAfterEnqueue::armed();
-            let answer = response_rx
+            if self.supports_binary_idempotent_for(key) {
+                let response_rx = self
+                    .enqueue_idempotent_binary(
+                        &worker,
+                        tenant_id,
+                        namespace,
+                        stream,
+                        key,
+                        payloads,
+                        producer_id,
+                        sequence,
+                    )
+                    .await?;
+                let cancelled = CancelledAfterEnqueue::armed();
+                let answer = response_rx
+                    .await
+                    .context("idempotent binary batch response dropped")?;
+                cancelled.answered();
+                return answer.map(|acked| acked.offset);
+            }
+            let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
+            let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
+            let message = Message::PublishIdempotent {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+                payloads,
+                key: key.cloned(),
+                request_id,
+                producer_id,
+                sequence,
+            };
+            self.send_message(&worker, message, AckMode::PerBatch, Some(request_id))
                 .await
-                .context("idempotent binary batch response dropped")?;
-            cancelled.answered();
-            return answer.map(|acked| acked.offset);
+                .map(|acked| acked.offset)
         }
-        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
-        let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
-        let message = Message::PublishIdempotent {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            payloads,
-            key: key.cloned(),
-            request_id,
-            producer_id,
-            sequence,
-        };
-        self.send_message(&worker, message, AckMode::PerBatch, Some(request_id))
-            .await
-            .map(|acked| acked.offset)
+        .await;
+        self.forget_width_if_gone(
+            tenant_id,
+            namespace,
+            stream,
+            key.map(|key| key.as_ref()),
+            &outcome,
+        );
+        outcome
     }
 
     /// Consecutive batches under consecutive sequences from `first_sequence`,
@@ -459,7 +476,16 @@ impl Publisher {
         producer_id: u64,
         first_sequence: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        let worker = match self.route(tenant_id, namespace, stream, Some(shard)).await {
+        let worker = match self
+            .route(
+                tenant_id,
+                namespace,
+                stream,
+                key.map(|key| key.as_ref()),
+                Some(shard),
+            )
+            .await
+        {
             Ok(worker) => worker,
             Err(err) => return (Vec::new(), Err(err)),
         };

@@ -162,9 +162,14 @@ for what the current release guarantees.
   one writer and one QUIC stream. Unkeyed publishes are shard 0, so a stream
   published without keys, or a single-shard stream, stays on one stream for
   total order. A stream whose width cannot be learned keeps all its keyed
-  publishes on shard 0's stream. A plain client's idempotent producer and its
-  other publishers now share those streams, so mixing them on one stream no
-  longer splits a shard across two writers. Unkeyed publishes through a plain
+  publishes on shard 0's stream. The writer for a key always comes from the
+  width the client keeps, never from a caller's own shard, so plain
+  publishes, a `ClusterClient` and an idempotent producer through one client
+  share a key's writer even if they disagree about the width. The kept width
+  is dropped when a publish is refused with `not_found`, so a stream deleted
+  and created with another width is routed by its new width. A
+  `ClusterClient` now asks each broker it publishes keyed records through for
+  the stream's width once. Unkeyed publishes through a plain
   `Client` move from a pooled stream to shard 0's own, which costs one stream
   open per stream on the first publish. `FELIX_PUB_SHARD_STREAMS` now applies
   to plain clients too; `0` restores the old routing.

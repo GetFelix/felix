@@ -345,10 +345,13 @@ extra round trip to authenticate it, and stays open. A client keeps at most
 `publish_shard_streams` of them per broker (16 by default,
 `FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
 
-A `ClusterClient` knows the shard of every publish. A plain `Client` asks the
-broker for a stream's width on its first keyed publish to it (one more round
-trip) and keeps the answer for its life. If it cannot get one, every keyed
-publish to that stream goes on shard 0's stream, as one writer.
+Each broker connection asks for a stream's width on its first keyed publish
+to it (one more round trip) and picks a key's stream from that answer alone,
+whoever publishes: a plain publisher, a `ClusterClient` or an idempotent
+producer. So two of them never put one key on two writers. The width is kept
+until a publish to the stream is refused with `not_found`: only a deleted
+stream can come back with another width. If the width cannot be learned,
+every keyed publish to that stream goes on shard 0's stream, as one writer.
 
 The ordering guarantee is per shard: every publish one client makes to one
 shard goes through one writer and one QUIC stream, so the shard holds them in

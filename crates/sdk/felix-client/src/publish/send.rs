@@ -67,15 +67,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> AckOutcome {
-        let worker = self
-            .route(
-                tenant_id,
-                namespace,
-                stream,
-                self.shard_of(tenant_id, namespace, stream, key, shard)
-                    .await,
-            )
-            .await?;
+        let worker = self.route(tenant_id, namespace, stream, key, shard).await?;
         let payloads_with_ts;
         let payloads = if self.inner.bench_embed_ts {
             payloads_with_ts = payloads
@@ -158,15 +150,7 @@ impl Publisher {
                 .publish_batch_binary_inner(key, shard, tenant_id, namespace, stream, &payloads)
                 .await;
         }
-        let worker = self
-            .route(
-                tenant_id,
-                namespace,
-                stream,
-                self.shard_of(tenant_id, namespace, stream, key, shard)
-                    .await,
-            )
-            .await?;
+        let worker = self.route(tenant_id, namespace, stream, key, shard).await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "telemetry")]
@@ -215,6 +199,7 @@ impl Publisher {
             .await
             .context("acked binary batch response dropped")?;
         cancelled.answered();
+        self.forget_width_if_gone(tenant_id, namespace, stream, key, &answer);
         answer
     }
 
@@ -228,13 +213,7 @@ impl Publisher {
         ack: AckMode,
     ) -> AckOutcome {
         let worker = self
-            .route(
-                tenant_id,
-                namespace,
-                stream,
-                self.shard_of(tenant_id, namespace, stream, key.as_deref(), None)
-                    .await,
-            )
+            .route(tenant_id, namespace, stream, key.as_deref(), None)
             .await?;
         let payload = maybe_append_publish_ts(payload, self.inner.bench_embed_ts);
         // Enqueue publish on the single-writer publisher task.
@@ -299,13 +278,7 @@ impl Publisher {
         ack: AckMode,
     ) -> Result<Option<u64>> {
         let worker = self
-            .route(
-                tenant_id,
-                namespace,
-                stream,
-                self.shard_of(tenant_id, namespace, stream, key.as_deref(), None)
-                    .await,
-            )
+            .route(tenant_id, namespace, stream, key.as_deref(), None)
             .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = if ack == AckMode::None {

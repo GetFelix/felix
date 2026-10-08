@@ -2,7 +2,7 @@
 //! stream a key goes on, and that the answer never changes once learned.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use felix_wire::routing::{ShardRouting, shard_for_routing};
 
@@ -17,23 +17,28 @@ struct Fixture {
     publisher: Publisher,
     learned: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
+    /// The width the broker reports.
+    width: Arc<AtomicU32>,
 }
 
 fn fixture() -> Fixture {
     let learned = Arc::new(AtomicUsize::new(0));
     let fail = Arc::new(AtomicBool::new(false));
+    let width = Arc::new(AtomicU32::new(SHARDS));
     let learn: LearnWidth = {
         let learned = Arc::clone(&learned);
         let fail = Arc::clone(&fail);
+        let width = Arc::clone(&width);
         Arc::new(move |_, _, _| {
             let learned = Arc::clone(&learned);
             let fail = Arc::clone(&fail);
+            let width = width.load(Ordering::SeqCst);
             Box::pin(async move {
                 learned.fetch_add(1, Ordering::SeqCst);
                 // Long enough for concurrent first publishes to overlap.
                 tokio::task::yield_now().await;
                 anyhow::ensure!(!fail.load(Ordering::SeqCst), "width refused");
-                Ok((SHARDS, ShardRouting::Modulo))
+                Ok((width, ShardRouting::Modulo))
             })
         })
     };
@@ -45,14 +50,14 @@ fn fixture() -> Fixture {
         },
         learned,
         fail,
+        width,
     }
 }
 
 /// The writer a publish with `key` to `stream` goes to.
 async fn writer_for(publisher: &Publisher, stream: &str, key: Option<&[u8]>) -> Arc<PublishWorker> {
-    let shard = publisher.shard_of("t", "ns", stream, key, None).await;
     match publisher
-        .route("t", "ns", stream, shard)
+        .route("t", "ns", stream, key, None)
         .await
         .expect("route")
     {
@@ -62,9 +67,14 @@ async fn writer_for(publisher: &Publisher, stream: &str, key: Option<&[u8]>) -> 
 }
 
 fn key_on(shard: u32, skip: usize) -> Vec<u8> {
+    key_of(SHARDS, shard, skip)
+}
+
+/// The `skip`th key on `shard` of a stream `shards` wide.
+fn key_of(shards: u32, shard: u32, skip: usize) -> Vec<u8> {
     (0..)
         .map(|i: u32| format!("key-{i}").into_bytes())
-        .filter(|key| shard_for_routing(ShardRouting::Modulo, SHARDS, Some(key)) == shard)
+        .filter(|key| shard_for_routing(ShardRouting::Modulo, shards, Some(key)) == shard)
         .nth(skip)
         .expect("a key on the shard")
 }
@@ -148,4 +158,81 @@ async fn round_robin_does_not_ask_the_width() {
         None
     );
     assert_eq!(learned.load(Ordering::SeqCst), 0);
+}
+
+/// The writer comes from the width the client keeps, never from the shard a
+/// caller worked out. An idempotent producer or a `ClusterClient` that
+/// believes another width still shares the plain publishes' writer for a key.
+#[tokio::test]
+async fn a_callers_own_shard_never_picks_a_second_writer() {
+    let f = fixture();
+    let key = key_on(1, 0);
+    let plain = writer_for(&f.publisher, "orders", Some(&key)).await;
+    for believed in [0, 2, 3, 7] {
+        let routed = match f
+            .publisher
+            .route("t", "ns", "orders", Some(&key), Some(believed))
+            .await
+            .expect("route")
+        {
+            Selected::Shard(worker) => worker,
+            Selected::Pooled(_) => panic!("routed to the pool"),
+        };
+        assert!(
+            Arc::ptr_eq(&plain, &routed),
+            "a caller that believed shard {believed} got a second writer for the key"
+        );
+    }
+}
+
+/// A stream deleted and created again with another width: the broker's
+/// `not_found` drops the kept width, so the new stream's shards are worked
+/// out from its own width and keys sharing a new shard share its writer.
+#[tokio::test]
+async fn a_stream_reported_gone_is_asked_its_width_again() {
+    let f = fixture();
+    writer_for(&f.publisher, "orders", Some(&key_on(1, 0))).await;
+    // Created again two shards wide. A refusal of anything else keeps the
+    // width.
+    f.width.store(2, Ordering::SeqCst);
+    let other: anyhow::Result<()> = Err(crate::error::refused(
+        "publish rejected",
+        "busy".to_string(),
+        Some(felix_wire::ErrorCode::Overloaded),
+        None,
+        None,
+    ));
+    f.publisher
+        .forget_width_if_gone("t", "ns", "orders", Some(b"k"), &other);
+    let gone: anyhow::Result<()> = Err(crate::error::refused(
+        "publish rejected",
+        "no such stream".to_string(),
+        Some(felix_wire::ErrorCode::NotFound),
+        None,
+        None,
+    ));
+    // An unkeyed publish never needed the width.
+    f.publisher
+        .forget_width_if_gone("t", "ns", "orders", None, &gone);
+    assert_eq!(f.learned.load(Ordering::SeqCst), 1);
+    writer_for(&f.publisher, "orders", Some(&key_on(1, 0))).await;
+    assert_eq!(
+        f.learned.load(Ordering::SeqCst),
+        1,
+        "width dropped too early"
+    );
+
+    f.publisher
+        .forget_width_if_gone("t", "ns", "orders", Some(b"k"), &gone);
+    // Every key on new shard 1 shares one writer, whichever old shard it
+    // was on.
+    let first = writer_for(&f.publisher, "orders", Some(&key_of(2, 1, 0))).await;
+    for skip in 1..8 {
+        let writer = writer_for(&f.publisher, "orders", Some(&key_of(2, 1, skip))).await;
+        assert!(
+            Arc::ptr_eq(&first, &writer),
+            "new shard 1 is on two writers"
+        );
+    }
+    assert_eq!(f.learned.load(Ordering::SeqCst), 2);
 }

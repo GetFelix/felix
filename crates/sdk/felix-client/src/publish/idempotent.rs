@@ -657,7 +657,7 @@ impl Driver {
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
         let publisher = client.publisher_handle();
-        publisher
+        let (acked, result) = publisher
             .publish_idempotent_pipelined(
                 &key.0,
                 &key.1,
@@ -668,7 +668,15 @@ impl Driver {
                 self.producer_id,
                 first,
             )
-            .await
+            .await;
+        publisher.forget_width_if_gone(
+            &key.0,
+            &key.1,
+            &key.2,
+            routing_key.map(|key| key.as_ref()),
+            &result,
+        );
+        (acked, result)
     }
 
     /// The shard a batch's sequence belongs to: 0 without a key, else the one

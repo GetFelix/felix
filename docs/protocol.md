@@ -1100,11 +1100,15 @@ holds back answers the others have committed, then fills the window and stops
 the stream. The Rust `ClusterClient` therefore sends each publish on a stream
 that carries only its shard, opened on the shard's first publish on the same
 connection. It can, because it computes the shard of every publish to pick
-the owner: keyed, unkeyed (shard 0) and idempotent alike. A plain `Client`
-does the same once it knows the stream's width, which it asks for
-(`StreamShards`) on its first keyed publish to the stream and keeps for its
-life; if it cannot learn it, every keyed publish to that stream goes on shard
-0's stream. Each shard stream is placed on the least-loaded connection, so
+the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
+a keyed publish rides is worked out from the width the client connection
+keeps for the stream, asked for (`StreamShards`) on its first keyed publish
+to it, never from a caller's own idea of the shard, so every path through
+one client (plain publishes, a `ClusterClient`, an idempotent producer) puts
+a key on one writer. The width is kept until a publish is refused with
+`not_found`, since only a deleted stream can come back with another width;
+if it cannot be learned, every keyed publish to that stream goes on shard 0's
+stream. Each shard stream is placed on the least-loaded connection, so
 one hot stream's shards spread over the client's connections and the
 broker's listeners. A client keeps at most `publish_shard_streams` such
 streams per broker (16 by default); shards past that share the hashed pool,
