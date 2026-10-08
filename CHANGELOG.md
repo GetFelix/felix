@@ -20,7 +20,7 @@ for what the current release guarantees.
   `ballot` file in the shard directory, fsynced before anything from that
   leader is answered and read back on open; builds without ballots ignore it,
   so rolling back still opens the shard. A new internal capability, `BALLOTS`
-  (`1 << 5`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
+  (`1 << 6`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
   turns ballots off with it. Nothing changes while the control plane names
   every leader, since it never names two at one generation; this is the
   safety layer replica elections will need. The TLA+ model gains `Ballots`,
