@@ -360,8 +360,18 @@ pub(crate) async fn run(
         } => {
             let start = start_position(*to);
             let shards = shards_for(&broker, target, start).await?;
-            let infos = describe(&broker, target).await?;
-            if seeks_backwards(start, &infos) {
+            // Describing needs group.consume, which a group.manage operator
+            // may not hold, and a refusal can reach us as a closed stream
+            // rather than `forbidden`. When the cursor can't be read, ask
+            // anyway; the seek itself reports any real failure.
+            let backwards = if confirm.yes || start == StartPosition::Latest {
+                false
+            } else {
+                describe(&broker, target)
+                    .await
+                    .map_or(true, |infos| seeks_backwards(start, &infos))
+            };
+            if backwards {
                 ask(
                     &format!(
                         "Move {} on {} back to {}? Finished records will be delivered again.",

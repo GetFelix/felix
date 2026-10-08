@@ -294,7 +294,9 @@ felixctl group dead-letters discard orders billing 0:17 --yes
 Three commands ask before acting, because they cannot be taken back: `rm`,
 `dead-letters discard`, and a `seek` that moves any shard's cursor back over
 records the group has finished. At a terminal they ask `[y/N]`; anywhere else,
-they need `--yes` and exit with status 2 without it. A seek to an offset needs
+they need `--yes` and exit with status 2 without it. `seek` reads where the
+group stands to tell; when it cannot, as with a token allowed only
+`group.manage`, it asks for any seek other than `latest`. A seek to an offset needs
 `--shard` on a stream with more than one shard, since offsets are per shard.
 
 ## Counters
