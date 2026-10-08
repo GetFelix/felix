@@ -20,7 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) use super::sealed::SealedEntry;
-use super::sealed::{SealedFiles, SealedLocator};
+use super::sealed::SealedFiles;
+pub(super) use super::sealed::SealedLocator;
 use crate::io::read_at;
 #[cfg(test)]
 use crate::log::AppendRecord;
@@ -236,6 +237,25 @@ impl SegmentSet {
                 .collect(),
             files: Arc::clone(&self.files),
         }
+    }
+
+    /// Every sealed segment, oldest first, with the generation they were
+    /// taken at, for an offload pass to copy without the lock.
+    pub(super) fn sealed_locators(&self) -> (u64, Vec<SealedLocator>) {
+        (
+            self.generation,
+            self.sealed
+                .iter()
+                .map(|entry| entry.locator(&self.dir, self.config.index_spacing_bytes))
+                .collect(),
+        )
+    }
+
+    /// Whether `descriptor` is still a sealed segment of this log.
+    pub(super) fn holds_sealed(&self, descriptor: &SegmentDescriptor) -> bool {
+        self.sealed
+            .iter()
+            .any(|entry| &entry.descriptor == descriptor)
     }
 
     /// Drop `ids` from the head of the list, stopping at the first that is no

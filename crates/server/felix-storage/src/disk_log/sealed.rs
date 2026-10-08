@@ -91,6 +91,33 @@ impl SealedLocator {
         self.descriptor.size_bytes
     }
 
+    pub(crate) fn descriptor(&self) -> &SegmentDescriptor {
+        &self.descriptor
+    }
+
+    pub(crate) fn path(&self) -> PathBuf {
+        self.dir.join(segment_file_name(self.descriptor.id))
+    }
+
+    /// Timestamp of the segment's first record. Read from just past the
+    /// header, so it needs no index.
+    pub(crate) fn oldest_timestamp(&self, label: &str) -> Result<Option<u64>> {
+        let id = self.descriptor.id;
+        let base_offset = self.descriptor.base_offset;
+        let reader = SegmentReader::open(&self.path(), id, base_offset)?;
+        let mut out = Vec::new();
+        let mut budget = ReadBudget::new(usize::MAX, 1);
+        reader.read_from_position(
+            SEGMENT_HEADER_LEN,
+            base_offset,
+            self.valid_bytes(),
+            &mut budget,
+            label,
+            &mut out,
+        )?;
+        Ok(out.first().map(|record| record.timestamp_micros))
+    }
+
     /// The segment's reader and index, opening them if the cache has neither.
     ///
     /// The open happens outside the cache lock, so a cold segment does not

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use felix_storage::log::{FsyncMode, LogConfig};
+use felix_storage::log::{FsyncMode, LogConfig, OffloadTarget};
 
 /// Durable storage settings resolved from the environment.
 #[derive(Debug, Clone)]
@@ -22,6 +22,9 @@ pub struct DurableStorageConfig {
     pub root: PathBuf,
     /// Segment, index and fsync policy passed to every log.
     pub log: LogConfig,
+    /// Where stream logs copy their sealed segments
+    /// (`FELIX_DURABLE_OFFLOAD_DIR`). `None` copies nothing.
+    pub offload_dir: Option<PathBuf>,
 }
 
 impl DurableStorageConfig {
@@ -64,7 +67,13 @@ impl DurableStorageConfig {
                 .map(Duration::from_secs)
                 .unwrap_or(LogConfig::default().retention_check_interval),
             max_open_sealed_segments: LogConfig::default().max_open_sealed_segments,
+            // Set per store: only stream logs offload. See `stream_log`.
+            offload: None,
         };
+        let offload_dir = std::env::var("FELIX_DURABLE_OFFLOAD_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
         // Fail at startup rather than at the first durable publish.
         log.validate()
             .map_err(|err| anyhow::anyhow!("invalid durable storage configuration: {err}"))?;
@@ -72,7 +81,18 @@ impl DurableStorageConfig {
         Ok(Some(Self {
             root: PathBuf::from(root),
             log,
+            offload_dir,
         }))
+    }
+
+    /// The configuration for stream logs: `log`, plus offload when it is on.
+    /// Caches, counters and consumer groups compact rather than age out, so
+    /// they keep `log` as it is.
+    pub fn stream_log(&self) -> LogConfig {
+        LogConfig {
+            offload: self.offload_dir.clone().map(OffloadTarget::LocalDir),
+            ..self.log.clone()
+        }
     }
 
     /// One-line summary for the startup log.
@@ -97,8 +117,12 @@ impl DurableStorageConfig {
                 format!(" retention={}", parts.join("/"))
             }
         };
+        let offload = match &self.offload_dir {
+            Some(dir) => format!(" offload={}", dir.display()),
+            None => String::new(),
+        };
         format!(
-            "root={} segment={}B index_spacing={}B {durability}{retention}",
+            "root={} segment={}B index_spacing={}B {durability}{retention}{offload}",
             self.root.display(),
             self.log.segment_size_bytes,
             self.log.index_spacing_bytes,

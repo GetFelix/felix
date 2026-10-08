@@ -33,6 +33,20 @@ for what the current release guarantees.
   its inspect calls now report a broker's `unsupported` answer as such.
   Diagnosing a cluster covers a subscriber missing records and one falling
   behind.
+- Stream logs can copy their sealed segments to an object store before
+  retention deletes them, the first part of tiered storage (#172). Off by
+  default; `FELIX_DURABLE_OFFLOAD_DIR` turns it on, and the only backend is a
+  directory, through the `object_store` crate's local filesystem backend. A
+  pass on the retention timer uploads each sealed segment, reads it back to
+  check size and CRC-32, and records it in a per-shard `offload.manifest`,
+  fsynced. Retention then deletes only recorded segments, so a crash at any
+  step leaves the local segment or a recorded copy. Recovery accepts a gap in
+  the local chain when the manifest covers it. Nothing reads the copies yet: a
+  read below the local head is still `Trimmed`. New metrics
+  `felix_storage_offload_segments_total`, `felix_storage_offload_bytes_total`
+  and `felix_storage_offload_failures_total`. Breaking for code that builds
+  felix-storage's `LogConfig` without `..Default::default()`: it gains
+  `offload`.
 - `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
   A broker advertising `FEATURE_INSPECT`, the first bit of the extended
   feature word (`server_features_hi` `0x1`), answers `shard_inspect` with
@@ -434,6 +448,13 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A `Quorum` publish no longer waits out an unreachable follower when the
+  other follower already holds the record but is still answering an earlier
+  replication pass (#1080). The pass waiting for a majority had shipped only to
+  the unreachable one, and the busy follower's answer reached the driver, not
+  that pass, so the mark stayed put until the peer request timed out (5 s by
+  default, past most publish timeouts). The answer now ends that wait and the
+  next pass counts it.
 - `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
   so a promoted shard waiting for its fence was counted in no phase.
 - A broker accepts a token carrying `node.view` or `node.manage`. Neither was
@@ -493,6 +514,13 @@ for what the current release guarantees.
   semantics and queues pages and on `Client::group_poll`. The end-to-end group
   tests in `cache_durability` now publish with commit acks; they assumed
   otherwise and failed intermittently. (#1025)
+- Corrected four replication claims. Counter adds on a `Quorum` cache wait for
+  a majority like puts and deletes; the log-backed cache stays Partial for its
+  in-memory key index (#1073). A `Quorum` publish with no reachable majority
+  is not refused up front: it waits, then fails with `quorum_timeout`. Under
+  `majority_ack` a move's destination cut off from its followers at the
+  cut-over waits for a majority instead of opening on the lease. A promoted
+  leader's fence retries back off from 200 ms to 2 s. (#1074)
 
 ## [0.6.0-preview.2] - 2026-10-04
 

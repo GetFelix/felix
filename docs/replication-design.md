@@ -338,7 +338,8 @@ When the fence applies:
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
-it retries every 200 ms. Every other change of leader pays a round trip to a
+it retries after 200 ms (`FENCE_RETRY`), doubling the wait with each failed
+attempt up to 2 s (`FENCE_RETRY_MAX`). Every other change of leader pays a round trip to a
 majority before it serves; a write that reaches the broker meanwhile waits
 for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
 being refused. It could not have acknowledged a `Quorum` write
@@ -432,7 +433,7 @@ shard opens on the lease, as before, and
 only promotions.
 
 The cost is the promotion's cost on more paths. A new leader that cannot
-reach a majority retries the fence on every replication pass and does not
+reach a majority retries the fence, backing off as a promotion does, and does not
 serve or report until it gets one; it does not give up or step down. The
 shard is unavailable until the leader reaches a majority, or dies and
 placement promotes from the last report, which waits for a broker holding
@@ -1576,7 +1577,14 @@ wakes the driver; then it hands their exchanges to the driver. A shard being
 handed over waits for everyone, since its fence already holds the writes and the
 drained report needs the destination's answer. Until such an exchange ends,
 its follower is not shipped to again and counts at the position it had when
-the exchange began, a floor like any follower that has not answered yet. Its auxiliary logs wait too, so they do not
+the exchange began, a floor like any follower that has not answered yet. That
+busy follower may be the one a majority needs: with three replicas, one
+follower still answering an earlier pass and the other unreachable, the pass
+has shipped to nobody who can answer. So a pass with a busy follower that
+counts also stops waiting for a majority once the next pass is wanted, and an
+exchange that ends while a pass runs asks for the next one, which counts the
+busy follower's answer instead of waiting out the unreachable one (#1080).
+Its auxiliary logs wait too, so they do not
 dial the same slow peer again. When the exchange ends, the cursor goes back and
 the shard passes again if the follower moved; one that failed waits for the
 next wake, so a peer that fails fast is not redialled in a loop. The report

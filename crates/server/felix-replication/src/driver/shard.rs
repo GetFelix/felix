@@ -492,9 +492,41 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             ));
         }
     }
-    while waiting > 0
-        && let Some((cursor, cut)) = in_flight.next().await
-    {
+    // A follower still busy with an earlier pass's exchange can be the one
+    // that makes the majority, but its answer goes to the driver, not here.
+    // Waiting only on the followers launched would then hold the mark on
+    // whichever of them is unreachable. So the wait also ends when the next
+    // pass is wanted, which the driver asks for when a busy follower answers.
+    let next_wanted = match &stragglers {
+        Stragglers::HandOff { next_wanted } if !route.draining => Some(Arc::clone(next_wanted)),
+        _ => None,
+    };
+    let mut wanted = std::pin::pin!(async move {
+        match next_wanted {
+            Some(next_wanted) => next_wanted.notified().await,
+            None => std::future::pending().await,
+        }
+    });
+    let busy_counts = positions
+        .iter()
+        .any(|cursor| busy.contains(&cursor.node_id) && counts(&cursor.node_id));
+    let mut cut_short = false;
+    while waiting > 0 {
+        let next = if busy_counts {
+            tokio::select! {
+                biased;
+                next = in_flight.next() => next,
+                () = &mut wanted => {
+                    cut_short = true;
+                    break;
+                }
+            }
+        } else {
+            in_flight.next().await
+        };
+        let Some((cursor, cut)) = next else {
+            break;
+        };
         copying |= cut;
         if counts(&cursor.node_id) {
             waiting -= 1;
@@ -573,7 +605,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // A shard being handed over waits for everyone: its fence holds the
         // writes, so no publish waits on the mark, and the drained report
         // wants the destination's answer.
-        Stragglers::HandOff { next_wanted } if !route.draining => {
+        Stragglers::HandOff { .. } if !route.draining => {
             // The followers still ship while the report is out.
             let mut report = std::pin::pin!(report);
             let reported = loop {
@@ -586,8 +618,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             };
             // Then the rest, until the next pass is wanted: a follower that
             // has not answered by then is the driver's to wait for.
-            let mut wanted = std::pin::pin!(next_wanted.notified());
-            while !in_flight.is_empty() {
+            while !in_flight.is_empty() && !cut_short {
                 tokio::select! {
                     biased;
                     Some(finished) = in_flight.next() => rest.push(finished),
