@@ -1,4 +1,5 @@
 mod cache_routing;
+mod cancelled_producer;
 mod connections;
 mod decisions;
 mod error_codes;

@@ -430,7 +430,12 @@ a lost acknowledgement lands once.
 
 Rust only: neither binding wraps this yet.
 
+The producer keeps a handle on its client, so `idempotent_producer` is called
+on an `Arc<ClusterClient>` (or `Arc<Client>`), and the producer it returns can
+be stored or moved into a task without borrowing anything.
+
 ```rust
+let cluster = Arc::new(cluster);
 let producer = cluster.idempotent_producer().await?;
 
 producer
@@ -507,15 +512,18 @@ but the leader itself: a new leader answers `UnknownProducer`, and the producer
 starts again under a new id rather than being told a batch landed that nobody
 can vouch for.
 
-:::caution[Do not race this against a timeout]
-`publish_batch` is not cancel-safe. Dropping the future mid-send leaves the sequence in doubt: the batch may
-have been appended under it, and the cursor still points at it. A broker that
-predates `sequence_reused` answers a remembered sequence *without appending*,
-so reusing it there would discard a different batch and report success; a
-current broker refuses it, but the producer cannot tell which it has.
+:::note[Dropping a publish does not cancel it]
+The producer sends from a task of its own, in the order calls were made, and a
+call only hands its batches over and waits for the answer. Dropping the call's
+future, in a `tokio::time::timeout`, a `select!` or a handler whose client hung
+up, leaves the batch going out under its sequence and the producer usable.
+Because the batch may still land after you stopped waiting, **do not publish it
+again**. If its answer is in doubt and nobody is waiting for it, the producer
+re-sends it itself before the next batch on that shard; if that re-send fails
+too, the next call fails without sending and tries again on the call after.
 
-So a cancelled publish **stops the producer**: the next call refuses and says
-why, and you take a fresh id. A producer is cheap to re-initialise.
+Dropping the producer lets what it was handed finish. `close().await` waits for
+that, which is the call to make before a process exits.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same

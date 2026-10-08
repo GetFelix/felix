@@ -126,15 +126,15 @@ struct Sender<'a> {
     stream: String,
     key: Option<bytes::Bytes>,
     count: u64,
-    mode: Mode<'a>,
+    mode: Mode,
     /// One per message sent, `None` where the broker reported no offset.
     offsets: Vec<Option<u64>>,
 }
 
-enum Mode<'a> {
+enum Mode {
     /// Through the cluster client, which routes to the owner.
     Plain(AckMode),
-    Idempotent(Box<felix_client::IdempotentProducer<'a>>),
+    Idempotent(Box<felix_client::IdempotentProducer>),
 }
 
 impl<'a> Sender<'a> {
