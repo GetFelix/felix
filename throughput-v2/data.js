@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791430502704,
+  "lastUpdate": 1791439239308,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24700,6 +24700,58 @@ window.BENCHMARK_DATA = {
             "range": "5322.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810704.80\nmean: 810306.94\nstdev: 5322.40\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44e468acdfe92f41619b345acb6ed8e0641d2568",
+          "message": "feat(storage): grow a segment's block reservation as it fills (#1016) (#1049)\n\nA new segment reserves 1 MiB (or a sixteenth of the segment size) instead\nof the whole segment, and doubles the reservation off the append path each\ntime its records pass half of it. A failed extension is logged and counted,\nnever returned. Reserving still leaves st_size alone, and a seal closes the\nreservation so a late extension cannot reserve past a trimmed file.\n\nCloses #1016",
+          "timestamp": "2026-10-07T22:56:44-07:00",
+          "tree_id": "d51a7aa5afb993b8e716e7fee54e874182f7ebd9",
+          "url": "https://github.com/GetFelix/felix/commit/44e468acdfe92f41619b345acb6ed8e0641d2568"
+        },
+        "date": 1791439238666,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359354.8,
+            "range": "11990.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359354.80\nmean: 361437.33\nstdev: 11990.31\ncv: 3.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359354.8,
+            "range": "11990.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359354.80\nmean: 361437.33\nstdev: 11990.31\ncv: 3.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83142.4,
+            "range": "197.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83142.40\nmean: 83218.44\nstdev: 197.95\ncv: 0.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 831423.95,
+            "range": "1979.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 831423.95\nmean: 832184.37\nstdev: 1979.52\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
