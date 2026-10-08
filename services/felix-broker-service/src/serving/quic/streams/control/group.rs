@@ -933,6 +933,11 @@ fn for_peer(mut records: Vec<GroupRecord>, peer_features: u32) -> Vec<GroupRecor
             record.publisher = None;
         }
     }
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_RECORD_TIMESTAMPS) {
+        for record in &mut records {
+            record.timestamp_micros = None;
+        }
+    }
     records
 }
 

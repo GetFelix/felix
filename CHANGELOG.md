@@ -25,6 +25,33 @@ for what the current release guarantees.
   versions fail closed: an older broker refuses requests a key grant would
   allow. `felix-authz` adds `PermissionMatcher::allows_cache_keys` and
   `CacheKeys`; the control plane's `ParsedObject::Cache` gains a `key` field.
+- Delivered events and group records can carry the record's append time, and
+  a client can look up an offset by time (#975). A subscriber that offers
+  `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets a `u64` of microseconds before
+  each event on batches from a durable stream, the same live and on replay. A
+  broker advertising `FEATURE_RECORD_TIMESTAMPS` (`0x400_0000`) answers
+  `offset_for_time` with `offset_value`: the first offset on a shard appended
+  at or after a time, found by the binary search the Kafka listener's
+  `ListOffsets` now shares through `StreamLog::offset_for_time`. A client that
+  offers the feature gets `timestamp_micros` on group records. Nobody else's
+  frames change, and no storage format changes. In felix-client, set
+  `ClientConfig::timestamps` and read `Event::timestamp_micros`; call
+  `Client::offset_for_time` and subscribe at the answer. Times are the leading
+  broker's clock: a follower stamps the records it replicates with its own, so
+  after a failover they shift by the replication delay. Breaking for callers of
+  felix-broker's `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
+  `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
+  field.
+- `felix-loadgen --scenario subscribe` (#980): subscribers only, at the live
+  tail, counting deliveries for `--duration-secs` while another generator
+  publishes. `--fanout` subscriptions are spread over `--concurrency` cluster
+  clients, every shard of a sharded stream is read, and the run reports
+  delivered events and `delivered_throughput_msg_s`, offset gaps (records
+  dropped) and, with `--stamp-send-time`, delivery latency. It reports no
+  publish throughput, since it publishes nothing. `ingest --stamp-send-time`
+  writes the wall-clock send time into each payload's first 8 bytes for it;
+  that latency compares two machines' clocks, so it needs them in sync.
 - Nightly builds. `nightly.yml` builds the newest green commit on main through
   `release.yml` once a day, smoke-tests the images with a publish and
   subscribe, and publishes to GitHub only: images as `nightly` and
@@ -98,11 +125,23 @@ for what the current release guarantees.
   a cache. Records a client writes are unchanged. (#976)
 - `felix_storage::StorageApi` has three new required methods (`put_if`,
   `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
+- Breaking, Rust API: `IdempotentProducer` owns its client and has no
+  lifetime parameter. `Client::idempotent_producer` and
+  `ClusterClient::idempotent_producer` take `self: &Arc<Self>`, so wrap the
+  client in an `Arc` first. The producer can now be stored or moved into a
+  task. (#977)
 
 ### Fixed
 - JSON numbers survive a decode and re-encode exactly. serde_json's default
   float parser could land a long literal one ulp off, so an extension body the
   broker passed on carried a different number. Nightly fuzzing found it.
+- Dropping an `IdempotentProducer` publish no longer ends the producer. The
+  producer sends from a task of its own and a call waits on it, so a call
+  dropped by a timeout, a `select!` or a hung-up handler still runs to its
+  answer and the next batch goes out under the next sequence. A batch left in
+  doubt with nobody waiting is re-sent by the producer, under its sequence,
+  before the next batch on that shard. Dropping the producer lets what it was
+  handed finish; `IdempotentProducer::close` waits for it. (#977)
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.
@@ -130,6 +169,12 @@ for what the current release guarantees.
   the control plane's), and that a clock step and `Quorum` with
   `majority_ack` are not exposed. A cluster test pins that a `Leader` stream
   refuses writes on a lapsed lease after `majority_ack` is finalized. (#1008)
+- A publish acknowledged on enqueue (a `Leader` stream with `ack_on_commit`
+  off, the default) is not readable until it is written, so a group poll,
+  history read or replay sent right after the ack can miss it. Stated in the
+  semantics and queues pages and on `Client::group_poll`. The end-to-end group
+  tests in `cache_durability` now publish with commit acks; they assumed
+  otherwise and failed intermittently. (#1025)
 
 ## [0.6.0-preview.2] - 2026-10-04
 

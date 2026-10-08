@@ -281,7 +281,8 @@ async fn publish_batches_and_read(
     auth: &AuthFixture,
     count: usize,
 ) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>)> {
-    let client = Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?);
     let producer = client.idempotent_producer().await?;
     let records: Vec<Vec<u8>> = (0..count)
         .map(|i| format!("record-{i}").into_bytes())

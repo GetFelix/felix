@@ -141,7 +141,8 @@ impl Client {
         let credentials = Arc::new(
             Credentials::new(auth_tenant_id.clone(), client_config.tokens()?)
                 .with_ack_on_commit(client_config.ack_on_commit)
-                .with_publishers(client_config.publishers),
+                .with_publishers(client_config.publishers)
+                .with_timestamps(client_config.timestamps),
         );
         let publish_pool_size = client_config.publish_conn_pool;
         let publish_streams_per_conn = client_config.publish_streams_per_conn;

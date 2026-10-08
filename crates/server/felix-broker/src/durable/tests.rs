@@ -126,3 +126,36 @@ async fn on_commit_is_durable_by_the_time_append_returns() {
     assert!(log.durable_offset() > result.last_offset);
     assert_eq!(log.unsynced_bytes(), 0);
 }
+
+#[tokio::test]
+async fn offset_for_time_finds_the_first_record_at_or_after_a_time() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    let order = Arc::new(CommitSequencer::new(0));
+    for (values, time) in [(&["a"][..], 100), (&["b", "c"][..], 200), (&["d"][..], 300)] {
+        let (pending, turn) = log
+            .begin_append(&payloads(values), &[], time, &order)
+            .await
+            .expect("append");
+        log.commit(&pending).await.expect("commit");
+        drop(turn);
+    }
+    let tail = log.tail_offset().await.expect("tail");
+    assert_eq!(tail, 4);
+
+    let at = |time| log.offset_for_time(time, tail);
+    assert_eq!(at(0).await.expect("search"), Some((0, 100)));
+    assert_eq!(at(100).await.expect("search"), Some((0, 100)));
+    assert_eq!(at(101).await.expect("search"), Some((1, 200)));
+    assert_eq!(at(250).await.expect("search"), Some((3, 300)));
+    assert_eq!(at(301).await.expect("search"), None);
+    // A record at or past the bound is not committed yet, so not an answer.
+    assert_eq!(log.offset_for_time(250, 3).await.expect("search"), None);
+    // Each record reads back with the time its batch was stamped with.
+    let records = log.read_from(0, usize::MAX).await.expect("read");
+    let times: Vec<u64> = records.iter().map(|r| r.timestamp_micros).collect();
+    assert_eq!(times, [100, 200, 200, 300]);
+}

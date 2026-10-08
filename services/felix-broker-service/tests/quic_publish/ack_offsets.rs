@@ -206,7 +206,8 @@ async fn a_re_sent_idempotent_batch_reports_the_original_offset() -> Result<()> 
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, commit_acked).await?;
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let batch = || vec![b"a".to_vec(), b"b".to_vec()];

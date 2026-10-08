@@ -253,7 +253,7 @@ async fn run_subscription_dispatch_task(
         #[cfg(feature = "telemetry")]
         let decode_start = crate::telemetry::t_now_if(sample);
 
-        let (payloads, base_offset, skipped_before, publisher) =
+        let (payloads, base_offset, skipped_before, publisher, timestamps) =
             if queued_frame.frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
                 match felix_wire::binary::decode_shared_event_batch(&queued_frame.frame)
                     .context("decode shared binary event batch")
@@ -273,6 +273,7 @@ async fn run_subscription_dispatch_task(
                             batch.base_offset,
                             batch.skipped_before,
                             publisher_of(batch.publisher),
+                            batch.timestamps,
                         )
                     }
                     Err(err) => {
@@ -330,6 +331,7 @@ async fn run_subscription_dispatch_task(
                             batch.base_offset,
                             batch.skipped_before,
                             publisher_of(batch.publisher),
+                            batch.timestamps,
                         )
                     }
                     Err(err) => {
@@ -385,7 +387,7 @@ async fn run_subscription_dispatch_task(
                             counters.sub_batches_in_ok.fetch_add(1, Ordering::Relaxed);
                             counters.sub_items_in_ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        (vec![Bytes::from(payload)], offset, 0, None)
+                        (vec![Bytes::from(payload)], offset, 0, None, None)
                     }
                     Message::EventBatch {
                         payloads,
@@ -404,6 +406,7 @@ async fn run_subscription_dispatch_task(
                             payloads.into_iter().map(Bytes::from).collect(),
                             base_offset,
                             0,
+                            None,
                             None,
                         )
                     }
@@ -471,6 +474,9 @@ async fn run_subscription_dispatch_task(
                     offset,
                     skipped_before: if index == 0 { skipped_before } else { 0 },
                     publisher: publisher.clone(),
+                    timestamp_micros: timestamps
+                        .as_ref()
+                        .and_then(|times| times.get(index).copied()),
                 },
                 policy,
                 queue_capacity,

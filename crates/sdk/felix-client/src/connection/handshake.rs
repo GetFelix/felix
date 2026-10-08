@@ -32,9 +32,22 @@ impl Credentials {
             // offered only when the application asks.
             features: felix_wire::KNOWN_FEATURES
                 & !felix_wire::FEATURE_ACK_ON_COMMIT
-                & !felix_wire::FEATURE_GROUP_PUBLISHER,
-            flags: felix_wire::KNOWN_FLAGS & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER,
+                & !felix_wire::FEATURE_GROUP_PUBLISHER
+                & !felix_wire::FEATURE_RECORD_TIMESTAMPS,
+            flags: felix_wire::KNOWN_FLAGS
+                & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER
+                & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS,
         }
+    }
+
+    /// Also ask for each record's append time. See
+    /// [`felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS`].
+    pub(crate) fn with_timestamps(mut self, timestamps: bool) -> Self {
+        if timestamps {
+            self.features |= felix_wire::FEATURE_RECORD_TIMESTAMPS;
+            self.flags |= felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS;
+        }
+        self
     }
 
     /// Also ask to be told who published each event. See

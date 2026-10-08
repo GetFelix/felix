@@ -113,6 +113,11 @@ pub struct ClientConfig {
     /// it adds the principal to every event batch. A broker tells a client
     /// that asked only what it recorded.
     pub publishers: bool,
+    /// Ask brokers for each record's append time:
+    /// [`crate::Event::timestamp_micros`] and the `timestamp_micros` of a
+    /// consumer-group record. Off by default, since it adds eight bytes to
+    /// every event. [`crate::Client::offset_for_time`] works either way.
+    pub timestamps: bool,
 }
 
 impl ClientConfig {
@@ -151,6 +156,7 @@ impl ClientConfig {
             client_sub_queue_capacity: DEFAULT_CLIENT_SUB_QUEUE_CAPACITY,
             ack_on_commit: false,
             publishers: false,
+            timestamps: false,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,

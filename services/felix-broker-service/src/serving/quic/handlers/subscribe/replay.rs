@@ -61,6 +61,8 @@ pub(crate) struct EventFormat {
     pub(crate) skips: bool,
     /// `FLAG_EVENT_BATCH_PUBLISHER`.
     pub(crate) publisher: bool,
+    /// `FLAG_EVENT_BATCH_TIMESTAMPS`.
+    pub(crate) timestamps: bool,
 }
 
 /// Write a resumed subscription's stored history and ring backlog.
@@ -132,7 +134,9 @@ pub(super) async fn write_replay<S: EventSink>(
             continue;
         }
         let publisher = replay.publisher(record.publisher);
-        if let Some(ready) = batch.push(offset, record.payload, replay.deliver(offset), publisher) {
+        let time = replay.timestamp(record.timestamp_micros);
+        let skipped = replay.deliver(offset);
+        if let Some(ready) = batch.push(offset, record.payload, skipped, publisher, time) {
             replay.write(&ready).await?;
         }
     }
@@ -169,6 +173,7 @@ pub(super) async fn write_replay<S: EventSink>(
             }
             let mut batch = ReplayBatch::new(max_events, max_bytes);
             let publisher = replay.publisher(envelope.publisher().cloned());
+            let time = replay.timestamp(envelope.timestamp_micros());
             for (index, payload) in envelope.payloads().iter().enumerate() {
                 let offset = envelope
                     .base_offset()
@@ -178,7 +183,8 @@ pub(super) async fn write_replay<S: EventSink>(
                     continue;
                 }
                 let skipped = replay.deliver(offset);
-                if let Some(chunk) = batch.push(offset, payload.clone(), skipped, publisher.clone())
+                if let Some(chunk) =
+                    batch.push(offset, payload.clone(), skipped, publisher.clone(), time)
                 {
                     replay.write(&chunk).await?;
                 }
@@ -216,6 +222,11 @@ impl<S: EventSink> Replay<'_, S> {
     /// The publisher to put on the wire: none unless the subscriber asked.
     fn publisher(&self, publisher: Option<bytes::Bytes>) -> Option<bytes::Bytes> {
         publisher.filter(|_| self.format.publisher)
+    }
+
+    /// Likewise the record's append time.
+    fn timestamp(&self, timestamp_micros: Option<u64>) -> Option<u64> {
+        timestamp_micros.filter(|_| self.format.timestamps)
     }
 
     /// Account for delivering the record at `offset`, returning how many
@@ -264,7 +275,10 @@ impl<S: EventSink> Replay<'_, S> {
                 self.next = record.offset;
                 let skipped = self.deliver(record.offset);
                 let publisher = self.publisher(record.publisher);
-                if let Some(ready) = batch.push(record.offset, record.payload, skipped, publisher) {
+                let time = self.timestamp(Some(record.timestamp_micros));
+                if let Some(ready) =
+                    batch.push(record.offset, record.payload, skipped, publisher, time)
+                {
                     self.write(&ready).await?;
                 }
             }
@@ -294,12 +308,14 @@ impl<S: EventSink> Replay<'_, S> {
 ///
 /// A record that follows skipped offsets starts a batch too, since the skip
 /// count describes the batch's first record, and so does one from a different
-/// publisher, since a frame names one.
+/// publisher, since a frame names one. A frame carries a time for every record
+/// or for none, so a record with a time does not join one without.
 struct ReplayBatch {
     payloads: Vec<bytes::Bytes>,
     base_offset: u64,
     skipped_before: u64,
     publisher: Option<bytes::Bytes>,
+    timestamps: Option<Vec<u64>>,
     next_offset: u64,
     bytes: usize,
     max_events: usize,
@@ -313,6 +329,7 @@ impl ReplayBatch {
             base_offset: 0,
             skipped_before: 0,
             publisher: None,
+            timestamps: None,
             next_offset: 0,
             bytes: 0,
             max_events: max_events.max(1),
@@ -327,10 +344,14 @@ impl ReplayBatch {
         payload: bytes::Bytes,
         skipped_before: u64,
         publisher: Option<bytes::Bytes>,
+        timestamp_micros: Option<u64>,
     ) -> Option<ReadyBatch> {
         let len = payload.len();
         let breaks_run = !self.payloads.is_empty()
-            && (offset != self.next_offset || skipped_before > 0 || publisher != self.publisher);
+            && (offset != self.next_offset
+                || skipped_before > 0
+                || publisher != self.publisher
+                || timestamp_micros.is_some() != self.timestamps.is_some());
         let over_bytes = !self.payloads.is_empty() && self.bytes + len > self.max_bytes;
         let ready = if breaks_run || over_bytes {
             self.take()
@@ -341,6 +362,10 @@ impl ReplayBatch {
             self.base_offset = offset;
             self.skipped_before = skipped_before;
             self.publisher = publisher;
+            self.timestamps = timestamp_micros.map(|_| Vec::new());
+        }
+        if let (Some(times), Some(time)) = (self.timestamps.as_mut(), timestamp_micros) {
+            times.push(time);
         }
         self.payloads.push(payload);
         self.next_offset = offset + 1;
@@ -362,6 +387,7 @@ impl ReplayBatch {
             base_offset: self.base_offset,
             skipped_before: std::mem::take(&mut self.skipped_before),
             publisher: self.publisher.take(),
+            timestamps: self.timestamps.take(),
             payloads: std::mem::take(&mut self.payloads),
         })
     }
@@ -376,6 +402,9 @@ pub(super) struct ReadyBatch {
     /// Who published every record in it, when the subscriber asked and the
     /// log recorded one.
     pub(super) publisher: Option<bytes::Bytes>,
+    /// Each record's append time, when the subscriber asked and the stream
+    /// stores them.
+    pub(super) timestamps: Option<Vec<u64>>,
     pub(super) payloads: Vec<bytes::Bytes>,
 }
 
@@ -407,6 +436,7 @@ pub(super) async fn write_replay_batch<S: EventSink>(
             0
         },
         publisher: batch.publisher.as_deref().filter(|_| format.publisher),
+        timestamps: batch.timestamps.as_deref().filter(|_| format.timestamps),
     };
     let frame =
         felix_wire::binary::encode_event_batch_bytes_with_meta(subscription_id, payloads, meta)?;
