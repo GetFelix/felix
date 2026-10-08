@@ -95,6 +95,7 @@ impl Subscription {
             bench_embed_ts: config.bench_embed_ts,
             start_offset: None,
             live_offset: None,
+            queue_capacity: None,
             shard_moved,
         }
     }

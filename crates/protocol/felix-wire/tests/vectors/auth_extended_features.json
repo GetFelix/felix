@@ -1,0 +1,7 @@
+{
+  "name": "auth_extended_features",
+  "payload_json": "{\"type\":\"auth\",\"tenant_id\":\"t1\",\"token\":\"demo-token\",\"client_flags\":25,\"client_features\":2147483649,\"client_features_hi\":1}",
+  "payload_hex": "7b2274797065223a2261757468222c2274656e616e745f6964223a227431222c22746f6b656e223a2264656d6f2d746f6b656e222c22636c69656e745f666c616773223a32352c22636c69656e745f6665617475726573223a323134373438333634392c22636c69656e745f66656174757265735f6869223a317d",
+  "frame_hex": "464c5831000100000000007b7b2274797065223a2261757468222c2274656e616e745f6964223a227431222c22746f6b656e223a2264656d6f2d746f6b656e222c22636c69656e745f666c616773223a32352c22636c69656e745f6665617475726573223a323134373438333634392c22636c69656e745f66656174757265735f6869223a317d",
+  "note": "client_features 2147483649 is FEATURE_TOPOLOGY (0x1) plus FEATURE_EXTENDED (0x8000_0000), which says client_features_hi is present and that this client reads server_features_hi. client_features_hi 1 is bit 32 of the feature set. A decoder that predates the extended word ignores the field and still reads client_features as a u32."
+}

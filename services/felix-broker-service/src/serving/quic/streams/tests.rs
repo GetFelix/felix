@@ -156,6 +156,7 @@ fn auth_message(fixture: &AuthFixture) -> Message {
         // answers with a plain `Ok`.
         client_flags: None,
         client_features: None,
+        client_features_hi: None,
     }
 }
 

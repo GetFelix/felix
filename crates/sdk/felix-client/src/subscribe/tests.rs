@@ -4,4 +4,5 @@
 mod decode;
 mod lag;
 mod lifecycle;
+mod queue_capacity;
 mod queue_policy;

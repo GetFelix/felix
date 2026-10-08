@@ -128,6 +128,7 @@ async fn control_loop_subscribe_returns_true() -> Result<()> {
             stream: "missing".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let (result, _messages) = run_control_loop_with_frames(
@@ -582,6 +583,7 @@ async fn control_loop_subscribe_done_true() -> Result<()> {
             stream: "missing".to_string(),
             subscription_id: None,
             shard: None,
+            queue_capacity: None,
         }))),
     ];
     let mut source = TestFrameSource::new(frames);

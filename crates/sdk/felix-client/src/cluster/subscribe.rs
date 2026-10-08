@@ -348,4 +348,30 @@ impl ClusterClient {
             .await
             .with_context(|| format!("ask how many shards {stream} has"))
     }
+
+    /// [`Client::read`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn read(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from: u64,
+        end: Option<u64>,
+        max_records: u32,
+    ) -> Result<crate::StreamPage> {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            shard,
+        );
+        self.on_group_shard(key, |client| async move {
+            client
+                .read(tenant_id, namespace, stream, shard, from, end, max_records)
+                .await
+        })
+        .await
+    }
 }

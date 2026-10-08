@@ -140,6 +140,7 @@ async fn connections_grow_to_the_ceiling_under_concurrent_load() -> Result<()> {
         subscription_id: 0,
         start_offset: None,
         live_offset: None,
+        queue_capacity: None,
     })?;
     let mut config = default_config(cert)?;
     config.publish_conn_pool = 1;
