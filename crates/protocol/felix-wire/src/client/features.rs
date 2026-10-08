@@ -310,6 +310,13 @@ pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
 /// its own rather than a field on `publish_batch`.
 pub const FEATURE_PUBLISH_CONDITIONAL: u32 = 0x1000_0000;
 
+/// The broker answers `stream_read`: one page of a durable stream shard's
+/// committed records, without registering a subscriber.
+///
+/// Advertised by a *broker*: `stream_read` is a request, and an older broker
+/// has no arm for it.
+pub const FEATURE_STREAM_READ: u32 = 0x2000_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -339,11 +346,70 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_CACHE_CONDITIONAL
     | FEATURE_RECORD_TIMESTAMPS
     | FEATURE_GROUP_CLAIM_CONTROL
-    | FEATURE_PUBLISH_CONDITIONAL;
+    | FEATURE_PUBLISH_CONDITIONAL
+    | FEATURE_STREAM_READ;
+
+/// Every extended feature bit this version implements: bits that travel in
+/// `client_features_hi` / `server_features_hi` rather than the first word.
+/// None yet.
+pub const KNOWN_FEATURES_HI: u32 = 0;
+
+/// The peer reads the other side's extended feature word.
+///
+/// The last bit of the first word, and the only way a peer learns that the
+/// `_hi` words exist: an old decoder ignores a field it does not know, so
+/// sending one costs nothing, but a peer that sends `server_features_hi` to a
+/// client that never asked changes that client's frame for nothing.
+///
+/// Set only through [`offer_features`] and [`answer_features`], which set it
+/// when there is an extended word to send. It is not in `KNOWN_FEATURES`, so a
+/// peer that knows no extended feature sends the frame it always did.
+pub const FEATURE_EXTENDED: u32 = 0x8000_0000;
 
 /// True if `features` advertises `feature`.
+///
+/// Works the same on the extended word: pass the `_hi` word and a bit from
+/// `KNOWN_FEATURES_HI`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {
     features & feature == feature
+}
+
+/// What a client puts in `client_features` and `client_features_hi` to offer
+/// `features` and the extended `features_hi`.
+///
+/// The extended word and its marker are sent only when there is something in
+/// it, so a client that knows no extended feature sends the frame it always
+/// did.
+pub fn offer_features(features: u32, features_hi: u32) -> (u32, Option<u32>) {
+    match features_hi {
+        0 => (features, None),
+        hi => (features | FEATURE_EXTENDED, Some(hi)),
+    }
+}
+
+/// What a broker puts in `server_features` and `server_features_hi`, given
+/// what it serves and the `client_features` the client offered.
+///
+/// The extended word goes only to a client that set `FEATURE_EXTENDED`. Any
+/// other client could not read it, and gets the frame it always got.
+pub fn answer_features(features: u32, features_hi: u32, peer_features: u32) -> (u32, Option<u32>) {
+    if supports_feature(peer_features, FEATURE_EXTENDED) {
+        offer_features(features, features_hi)
+    } else {
+        (features & !FEATURE_EXTENDED, None)
+    }
+}
+
+/// The extended word a peer sent, read alongside its first word.
+///
+/// Counted only when the first word carries `FEATURE_EXTENDED`; absent means
+/// none, as it does for the first word.
+pub fn peer_features_hi(features: u32, features_hi: Option<u32>) -> u32 {
+    if supports_feature(features, FEATURE_EXTENDED) {
+        features_hi.unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

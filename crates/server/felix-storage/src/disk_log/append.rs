@@ -3,7 +3,9 @@
 //!
 //! A roll can also start early, in the background, while the segment still has
 //! room (`LogConfig::rollover_threshold_percent`). A background roll that fails
-//! is terminal for the log: see [`RollState`].
+//! is terminal for the log: see [`RollState`]. The active segment's block
+//! reservation grows in the background too, but a failed extension is not
+//! terminal.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -12,6 +14,7 @@ use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
 use crate::log::{AppendRecord, AppendResult, Offset, RecordMark};
 use crate::segment::SegmentWriter;
+use crate::segment::reservation::Extension;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 impl DiskLog {
@@ -59,7 +62,7 @@ impl DiskLog {
                         appender.append_now(&records, &digests, condition, order.as_ref(), gone);
                     let (reply, index) = match kept {
                         Ok(Ok(kept)) => (
-                            Ok(Ok((kept.written, kept.prepare_roll))),
+                            Ok(Ok((kept.written, kept.prepare_roll, kept.extension))),
                             (!kept.index.is_empty())
                                 .then(|| (kept.index, kept.segment, Arc::clone(&appender))),
                         ),
@@ -84,10 +87,13 @@ impl DiskLog {
         let (appended, records, appender) = appended;
         drop((records, appender));
         let appended = appended?;
-        let (written, prepare_roll) = match appended {
+        let (written, prepare_roll, extension) = match appended {
             Ok(appended) => appended,
             Err(tail) => return Ok(Err(tail)),
         };
+        if let Some(extension) = extension {
+            Arc::clone(&inner).extend_reservation(extension);
+        }
 
         // Start the replacement while the current segment still has room,
         // so the flushes it costs never land on an append. `Idle ->
@@ -153,10 +159,12 @@ impl Written {
 }
 
 /// What [`LogInner::append_now`] kept: the batch, whether the segment has
-/// crossed the early-roll threshold, and index entries still to write.
+/// crossed the early-roll threshold, the reservation step it has earned, and
+/// index entries still to write.
 struct Kept {
     written: Written,
     prepare_roll: bool,
+    extension: Option<Extension>,
     index: crate::segment::index::UnwrittenEntries,
     segment: u64,
 }
@@ -251,6 +259,7 @@ impl LogInner {
             .fetch_add(records.len() as u64, Ordering::Relaxed);
         let durable_target = segments.tail_offset();
         let prepare_roll = segments.should_prepare_roll();
+        let extension = segments.active_mut().reservation_due();
         drop(segments);
 
         let pending = PendingAppend {
@@ -265,6 +274,7 @@ impl LogInner {
         Ok(Ok(Kept {
             written: Written { pending, turn },
             prepare_roll,
+            extension,
             index,
             segment,
         }))
@@ -346,6 +356,41 @@ impl LogInner {
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// Grow the active segment's block reservation on a blocking thread, so
+    /// the append that earned it does not wait on the call. Best effort: a
+    /// failure only means later writes allocate their own blocks, which the
+    /// write path already handles down to a full disk.
+    fn extend_reservation(self: Arc<Self>, extension: Extension) {
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            {
+                let hold = self.hold_next_extension.lock().take();
+                if let Some(release) = hold {
+                    let _ = release.recv();
+                }
+            }
+            #[cfg(test)]
+            let applied = if self.fail_extensions.load(Ordering::Acquire) {
+                Err(std::io::ErrorKind::StorageFull.into())
+            } else {
+                extension.apply()
+            };
+            #[cfg(not(test))]
+            let applied = extension.apply();
+            if let Err(err) = applied {
+                tracing::warn!(
+                    shard = %self.label,
+                    error = %err,
+                    reserve_to = extension.to(),
+                    "could not extend the active segment's block reservation; appends will allocate as they write",
+                );
+                metrics::counter!(metrics_names::SEGMENT_RESERVE_FAILED_TOTAL).increment(1);
+            }
+            #[cfg(test)]
+            self.extensions_done.fetch_add(1, Ordering::AcqRel);
+        });
     }
 
     /// Seal the active segment now, off the append path, and return the

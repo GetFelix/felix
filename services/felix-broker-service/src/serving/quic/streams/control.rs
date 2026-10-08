@@ -42,6 +42,7 @@ mod publish;
 mod record_time;
 mod responder;
 mod session;
+mod stream_read;
 mod subscribe;
 mod unsupported;
 
@@ -320,6 +321,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 token,
                 client_flags,
                 client_features,
+                // Nothing reads the extended word until a feature lives there.
+                client_features_hi: _,
             } => {
                 session::authenticate(
                     &cx,
@@ -1004,7 +1007,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 record_time::offset_for_time(
                     &cx,
                     &mut session,
-                    record_time::TimeTarget {
+                    record_time::ShardTarget {
                         tenant_id,
                         namespace,
                         stream,
@@ -1015,7 +1018,38 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::StreamRead {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                from,
+                end,
+                max_records,
+                max_bytes,
+                request_id,
+            } => {
+                stream_read::stream_read(
+                    &cx,
+                    &mut session,
+                    record_time::ShardTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                    },
+                    stream_read::ReadBounds {
+                        from,
+                        end,
+                        max_records,
+                        max_bytes,
+                    },
+                    request_id,
+                )
+                .await?
+            }
             Message::GroupRecords { .. }
+            | Message::StreamRecords { .. }
             | Message::OffsetValue { .. }
             | Message::CommitOk { .. }
             | Message::StateValue { .. }

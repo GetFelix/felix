@@ -261,6 +261,19 @@ consumer can treat a retry differently from a first attempt.
 See [Queues](/features/queues/) for dead letters, redrive, and the
 ordering rules that make the cursor safe.
 
+### Reading a range, without subscribing
+
+A subscription has no end. Replay from an offset runs on into live delivery
+until the client unsubscribes. To read a fixed slice of a durable stream, such
+as one match's events or a page of history in a UI, use a range read
+(`stream_read` on the wire, `Client::read` in Rust). It returns one page of
+committed records from a start offset, stopping before an end offset, with the
+offset to read the next page from. Nothing is registered with the stream's
+fanout, so the broker does no live work for it. A page is capped in records and
+bytes, and it never waits: once it reaches what is committed it comes back short.
+It is a request and response over JSON, one round trip per page. For bulk
+export, a subscription is still the faster path.
+
 ### Exactly-once delivery is not offered
 
 Writes can be idempotent: an idempotent producer's re-send is recognised and not

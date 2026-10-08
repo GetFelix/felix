@@ -840,6 +840,7 @@ fn group_response_id(message: &Message) -> Option<u64> {
         | Message::PublishRefused { request_id, .. }
         | Message::StateValue { request_id, .. }
         | Message::OffsetValue { request_id, .. }
+        | Message::StreamRecords { request_id, .. }
         | Message::CacheOk { request_id } => Some(*request_id),
         _ => None,
     }

@@ -441,6 +441,16 @@ impl StreamLog {
         self.log.is_poisoned().then(|| self.durable_offset())
     }
 
+    /// How far below `tail` a reader may go and see only records that will
+    /// stay. Under `FsyncMode::OnCommit` a publish completes only once its
+    /// record is synced, so a record written but not synced is not one yet.
+    pub fn readable_end(&self, tail: Offset) -> Offset {
+        match self.log.config().fsync_mode {
+            FsyncMode::OnCommit => tail.min(self.durable_offset()),
+            FsyncMode::None | FsyncMode::Periodic { .. } => tail,
+        }
+    }
+
     /// Offset the next published record will take.
     pub async fn tail_offset(&self) -> Result<Offset> {
         self.log.tail_offset().await.map_err(BrokerError::from)

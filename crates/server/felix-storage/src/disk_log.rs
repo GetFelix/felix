@@ -815,6 +815,12 @@ impl DiskLog {
             #[cfg(test)]
             hold_next_seal: Mutex::new(None),
             #[cfg(test)]
+            hold_next_extension: Mutex::new(None),
+            #[cfg(test)]
+            fail_extensions: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            extensions_done: AtomicU64::new(0),
+            #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
@@ -1144,6 +1150,16 @@ struct LogInner {
     /// until the sender is used or dropped. Taking it is the sign it got there.
     #[cfg(test)]
     hold_next_seal: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Stops the next reservation extension before it reserves anything,
+    /// until the sender is used or dropped.
+    #[cfg(test)]
+    hold_next_extension: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Makes every reservation extension fail as if the disk were full.
+    #[cfg(test)]
+    fail_extensions: std::sync::atomic::AtomicBool,
+    /// Reservation extensions that have finished, whether or not they reserved.
+    #[cfg(test)]
+    extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,
