@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791463028062,
+  "lastUpdate": 1791463313607,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25168,6 +25168,58 @@ window.BENCHMARK_DATA = {
             "range": "5468.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 995444.08\nmean: 992479.37\nstdev: 5468.92\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca94d3f1ec013af4c34e37e0427b422b5556c3e1",
+          "message": "feat(client): spread one stream's shards over a plain client's connections (#724) (#1063)\n\n* feat(client): spread one stream's shards over a plain client's connections (#724)\n\nA plain Client learns a stream's width on its first keyed publish to it and\nputs each shard on a publish stream of its own, placed on the least-loaded\nconnection, as a ClusterClient already did. Every publish to one shard keeps\none writer and one QUIC stream, so per-shard order holds; unkeyed and\nsingle-shard streams stay on one stream for total order.\n\nFELIX_PUB_SHARD_STREAMS=0 now takes effect; the env reader dropped zero.\n\n* fix(client): pick a key's writer only from the client's kept width (#724)\n\nA caller's own shard no longer chooses the writer, so a ClusterClient, an\nidempotent producer and plain publishes through one client share a key's\nwriter even when they disagree about the width. A publish refused with\nnot_found drops the kept width, so a stream recreated at another width is\nrouted by its new one.",
+          "timestamp": "2026-10-08T05:31:52-07:00",
+          "tree_id": "6d605a16f778f532055a0c44d25be20f140ba54b",
+          "url": "https://github.com/GetFelix/felix/commit/ca94d3f1ec013af4c34e37e0427b422b5556c3e1"
+        },
+        "date": 1791463312743,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 365716.64,
+            "range": "8073.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365716.64\nmean: 366798.48\nstdev: 8073.35\ncv: 2.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 365716.64,
+            "range": "8073.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365716.64\nmean: 366798.48\nstdev: 8073.35\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83836.19,
+            "range": "425.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83836.19\nmean: 83795.35\nstdev: 425.53\ncv: 0.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 838361.86,
+            "range": "4255.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 838361.86\nmean: 837953.53\nstdev: 4255.29\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
