@@ -53,6 +53,7 @@ pub mod replica;
 pub mod reporter;
 mod shard;
 mod ship;
+pub mod status;
 mod throttle;
 
 pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, RebuildBackoff, caught_up, lag_records};

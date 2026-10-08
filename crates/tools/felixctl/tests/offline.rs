@@ -47,6 +47,7 @@ fn help_works_both_ways_for_every_command() {
         "node",
         "shard",
         "placement",
+        "inspect",
         "bench",
         "completions",
     ] {
@@ -194,4 +195,26 @@ fn completions_and_man_pages_are_generated() {
     assert!(man.status.success());
     assert!(dir.join("felixctl.1").exists());
     assert!(dir.join("felixctl-cache-watch.1").exists());
+}
+
+/// A target that is neither NAME nor TENANT/NAMESPACE/NAME is a usage error,
+/// found before anything is dialled.
+#[test]
+fn inspect_refuses_a_malformed_target() {
+    let home = tempfile::tempdir().unwrap();
+    let output = felixctl(
+        home.path(),
+        &[
+            "inspect",
+            "shard",
+            "acme/orders",
+            "--brokers",
+            "127.0.0.1:1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("TENANT/NAMESPACE/NAME"),
+        "{output:?}"
+    );
 }

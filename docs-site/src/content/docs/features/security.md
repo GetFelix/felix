@@ -207,6 +207,7 @@ After bootstrap, admin actions require explicit Felix permissions:
 - Tenant catalog (create, list, delete): `tenant.manage:cluster:*`
 - Metadata feeds brokers seed from (`snapshot`, `changes`): `node.view:cluster:*`
 - Cluster membership reads: `node.view:cluster:*`
+- A broker's view of a shard (`shard_inspect`, `felixctl inspect`): `node.view:cluster:*`, presented to the broker. Only that exact grant counts; a wildcard such as `node.view:*` does not reach the cluster
 - Cluster membership writes: `node.manage:node:{node_id}` or `node.manage:cluster:*`
 
 The credential is checked before existence, so nothing about what exists can

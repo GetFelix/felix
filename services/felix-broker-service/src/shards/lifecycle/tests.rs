@@ -206,10 +206,14 @@ fn a_closed_shard_can_be_reacquired() {
 fn a_failed_open_does_not_serve() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     assert_eq!(own.phase(&key(0)), Phase::Failed);
     assert!(!own.may_serve(&key(0)));
+    // Readable without the lifecycle's lock, with the reason it failed.
+    let mirrored = own.fence().phase_of(&key(0)).expect("mirrored");
+    assert_eq!(mirrored.phase, Phase::Failed);
+    assert_eq!(mirrored.error.as_deref(), Some("disk full"));
     // Not retried on every poll: the same assignment repeating is not new
     // information, and a failure that logs each tick buries itself.
     assert_eq!(
@@ -223,7 +227,7 @@ fn a_failed_open_does_not_serve() {
 fn a_new_generation_retries_a_failed_open() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     let action = own.observe(&key(0), Some(&assigned_to("broker-a", 2)));
     assert_eq!(
@@ -235,6 +239,9 @@ fn a_new_generation_retries_a_failed_open() {
             fence: false,
         }
     );
+    // The old error goes with the phase it explained.
+    let mirrored = own.fence().phase_of(&key(0)).expect("mirrored");
+    assert_eq!((mirrored.phase, mirrored.error), (Phase::Opening, None));
 }
 
 /// A failed open never served, so losing the shard closes it without a drain.
@@ -242,7 +249,7 @@ fn a_new_generation_retries_a_failed_open() {
 fn a_failed_shard_closes_without_draining() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     assert_eq!(own.observe(&key(0), None), Action::None);
     assert_eq!(own.phase(&key(0)), Phase::Closed);

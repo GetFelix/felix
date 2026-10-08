@@ -191,6 +191,7 @@ pub(super) struct ShardTaskDeps<'a> {
     pub(super) broker: &'a Arc<Broker>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
+    pub(super) shard_status: &'a Arc<replication::status::ShardStatusBoard>,
     pub(super) fleet: &'a Arc<felix_common::fleet::FleetGate>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
@@ -210,6 +211,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         broker,
         quorum_marks,
         halted_replicas,
+        shard_status,
         fleet,
         sync_shutdown,
     } = deps;
@@ -319,6 +321,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     replication::driver::Published {
                         marks: Arc::clone(quorum_marks),
                         halted: Arc::clone(halted_replicas),
+                        status: Arc::clone(shard_status),
                     },
                     // Only a broker that is a cluster member reports: the
                     // report is about shards the control plane assigned, and a

@@ -26,6 +26,14 @@ pub enum Action {
     /// Operate a stream's consumer groups: redrive or discard a dead letter.
     /// Granted by `stream.manage` too.
     GroupManage,
+    /// Read the cluster's state: membership, assignments, and a broker's view
+    /// of a shard. Only ever granted over `cluster:*`; see
+    /// [`crate::PermissionMatcher::allows_cluster`].
+    NodeView,
+    /// Change a node's membership. Granted over `node:{id}` to a broker and
+    /// over `cluster:*` to an operator. Brokers enforce nothing with it; it is
+    /// here so a token that carries it still parses.
+    NodeManage,
 }
 
 impl Action {
@@ -46,6 +54,8 @@ impl Action {
             Action::CacheWrite => "cache.write",
             Action::GroupConsume => "group.consume",
             Action::GroupManage => "group.manage",
+            Action::NodeView => "node.view",
+            Action::NodeManage => "node.manage",
         }
     }
 
@@ -89,6 +99,8 @@ impl std::str::FromStr for Action {
             "cache.write" => Ok(Action::CacheWrite),
             "group.consume" => Ok(Action::GroupConsume),
             "group.manage" => Ok(Action::GroupManage),
+            "node.view" => Ok(Action::NodeView),
+            "node.manage" => Ok(Action::NodeManage),
             _ => Err(()),
         }
     }

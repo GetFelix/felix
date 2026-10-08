@@ -11,9 +11,9 @@ use crate::serving::quic::handlers::publish::{
 };
 
 /// Extended feature bits this broker serves, sent in `server_features_hi`.
-/// None yet; the first one also starts keeping the client's
-/// `client_features_hi`.
-const SERVED_FEATURES_HI: u32 = 0;
+/// Every one is a request the client sends, so the client's own
+/// `client_features_hi` is not kept.
+const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT;
 
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,

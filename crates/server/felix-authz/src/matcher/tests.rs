@@ -306,3 +306,40 @@ fn a_cache_wide_wildcard_does_not_reach_keys_of_other_caches() {
     assert!(may_read(&keyed, "ns", "rooms", CacheKeys::Key("a1")));
     assert!(!may_read(&keyed, "ns", "other", CacheKeys::Key("rooms/a1")));
 }
+
+/// Only `node.view:cluster:*` itself reaches the cluster: no wildcard that
+/// happens to match the string, no other action, and no tenant object.
+#[test]
+fn only_an_exact_cluster_grant_allows_cluster_actions() {
+    assert!(matcher(&["node.view:cluster:*"]).allows_cluster(Action::NodeView));
+    assert!(
+        matcher(&["stream.subscribe:stream:t1/*/*", "node.view:cluster:*"])
+            .allows_cluster(Action::NodeView)
+    );
+
+    for refused in [
+        "node.view:*",
+        "node.view:cluster*",
+        "node.view:tenant:t1",
+        "node.manage:cluster:*",
+        "stream.manage:cluster:*",
+    ] {
+        assert!(
+            !matcher(&[refused]).allows_cluster(Action::NodeView),
+            "{refused}"
+        );
+    }
+    assert!(!matcher(&[]).allows_cluster(Action::NodeView));
+}
+
+/// A token an operator also uses against the control plane carries
+/// `node.manage`; a broker must still accept it.
+#[test]
+fn node_actions_parse() {
+    let parsed = PermissionMatcher::from_strings(&[
+        "node.view:cluster:*".to_string(),
+        "node.manage:node:broker-1".to_string(),
+    ])
+    .expect("node actions parse");
+    assert_eq!(parsed.patterns().len(), 2);
+}

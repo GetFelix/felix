@@ -6,10 +6,14 @@
 
 mod base64_serde;
 mod fields;
+mod inspect;
 
 pub use fields::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, PublishRefusalReason,
     ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
+};
+pub use inspect::{
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, ShardInspection,
 };
 
 use bytes::Bytes;
@@ -1144,6 +1148,30 @@ pub enum Message {
         /// offsets that hold no record are passed over. At or past `end`
         /// when the range is done.
         next_offset: u64,
+        request_id: u64,
+    },
+
+    // Operator inspection.
+    /// Ask a broker for its own view of one shard: phase, generation, fence,
+    /// lease, tail, and as leader each replica's position. Answered with
+    /// `shard_inspect_info`. Needs `node.view:cluster:*`, and names any
+    /// tenant: the cluster scope is not a tenant's.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_INSPECT`.
+    ShardInspect {
+        tenant_id: String,
+        namespace: String,
+        /// The stream or cache. A stream and a cache may share a name, which
+        /// is why `kind` is required.
+        name: String,
+        kind: ShardKind,
+        shard: u32,
+        request_id: u64,
+    },
+    /// The answer to `shard_inspect`.
+    ShardInspectInfo {
+        /// Boxed: far larger than any other answer, and rare.
+        view: Box<ShardInspection>,
         request_id: u64,
     },
 

@@ -142,6 +142,7 @@ export default defineConfig({
             { label: 'Backup and Restore', slug: 'deployment/backup-and-restore' },
             { label: 'Graceful Shutdown', slug: 'deployment/graceful-shutdown' },
             { label: 'Upgrades & Compatibility', slug: 'deployment/upgrades' },
+            { label: 'Diagnosing a Cluster', slug: 'deployment/diagnosing' },
           ],
         },
         {

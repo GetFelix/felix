@@ -38,6 +38,7 @@ mod commit;
 mod counter;
 mod discovery;
 mod group;
+mod inspect;
 mod publish;
 mod record_time;
 mod responder;
@@ -442,6 +443,17 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     request_id,
                 )
                 .await?
+            }
+            Message::ShardInspect {
+                tenant_id,
+                namespace,
+                name,
+                kind,
+                shard,
+                request_id,
+            } => {
+                let key = inspect::target(tenant_id, namespace, name, kind, shard);
+                inspect::shard_inspect(&cx, &mut session, key, request_id).await?
             }
             Message::Subscribe {
                 tenant_id,
@@ -1077,6 +1089,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::StreamShardsView { .. }
             | Message::CacheShardsView { .. }
             | Message::ShardOwnersView { .. }
+            | Message::ShardInspectInfo { .. }
             | Message::NotLeader { .. }
             | Message::Ok => {
                 // Protocol hygiene: these message types should never arrive on the control stream

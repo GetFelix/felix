@@ -477,6 +477,51 @@ to the control plane, which answers a refusal with status 4 and its message.
 5 when there is none. It asks first on a terminal, and needs `--yes`
 anywhere else.
 
+## Inspecting a cluster
+
+`felixctl inspect` shows what the brokers themselves hold. It only reads.
+Each broker answers for itself, so felixctl asks every broker that has a part
+in the answer and puts the views together.
+
+```bash
+felixctl inspect shard orders --shard 3
+felixctl inspect shard acme/default/orders          # every shard, another tenant
+felixctl inspect shard sessions --cache --shard 0 --json
+```
+
+```
+shard       acme/default/orders/3 (stream)
+generation  42, move to broker-c staged
+leader      broker-a  not serving: fencing, 0 of 2 replicas took the fence (4 attempts, next in 2s)
+lease       held, 7.1s left
+offsets     tail 1048576  committed 1048510
+
+REPLICA   ROLE      NEXT OFFSET  LAG  FENCE  STATE
+broker-a  leader    1048576      -    -      fencing
+broker-b  follower  -            -    no     fencing
+broker-c  learner   -            -    no     fencing
+```
+
+The assignment comes from the control plane when a control-plane URL is set,
+and from the broker felixctl connected to otherwise. felixctl then asks the
+leader and every replica directly, at the client addresses the cluster
+advertises. A broker that cannot be reached is listed under `unreachable`, and
+nothing is said on its behalf. When the leader answers, each replica's row is
+the leader's account of it: the next offset it ships, the lag behind the tail,
+whether it took the fence, and its state (`shipping`, `stalled`, `copying`,
+`rebuilding`, `halted` with its reason, or `fencing`). With `--json` each
+replica also carries its own view under `own`: its phase, generation and tail.
+
+Without `--shard` every shard of the stream is shown, one block (or one JSON
+line) each. `NAME` is looked up in the configured tenant and namespace;
+`TENANT/NAMESPACE/NAME` names any other.
+
+This needs a broker token allowed `node.view` on `cluster:*`, which no tenant
+grant reaches. A broker from before this release does not answer inspection,
+and felixctl says `broker ADDR does not support inspect` rather than guessing.
+[Diagnosing a cluster](/deployment/diagnosing/) goes through what to look for,
+symptom by symptom.
+
 ## Benchmarks
 
 `felixctl bench` runs the scenarios of `felix-loadgen`, the instrument behind
@@ -527,4 +572,7 @@ felixctl man --out-dir ~/.local/share/man/man1
 ## Not yet
 
 State reads are planned, and so is a Homebrew formula. See
-[issue #1005](https://github.com/GetFelix/felix/issues/1005).
+[issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
+`felixctl inspect` is coming: subscriptions and connections, the control
+plane's placement decisions, a broker's segments read offline, and where one
+record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).

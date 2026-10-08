@@ -12,6 +12,24 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
+  A broker advertising `FEATURE_INSPECT`, the first bit of the extended
+  feature word (`server_features_hi` `0x1`), answers `shard_inspect` with
+  `shard_inspect_info`: its own view of one shard, with its phase and
+  generation, whether it serves and why not (`opening`, `fencing`, `failed`
+  with the open error, `draining`, `lease_lapsed`, `not_assigned_here`,
+  `behind_generation`), which replicas took a promoted leader's fence and
+  how many attempts it has made, its lease, tail and commit mark, and as
+  leader each follower's next offset, lag and state. It needs
+  `node.view:cluster:*` and may name any tenant. The answer is read from
+  snapshots the lifecycle and the replication driver publish (the new
+  `felix_replication::status::ShardStatusBoard`), so it takes neither's lock
+  and opens no log. felixctl asks the leader and every replica and prints a
+  table, or one JSON line per shard with `--json`; a broker that cannot be
+  reached is listed as unreachable. felix-client adds
+  `Client::inspect_shard` and `Client::supports_inspect`. A new docs page,
+  Diagnosing a cluster, goes through shard, replication, subscriber, auth
+  and startup problems by symptom.
 - `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
   SDKs (part of #618). It builds `libfelix` as a shared and a static library
   with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
@@ -286,6 +304,12 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- `felix_replication::promotion::Outcome::Pending` is a struct variant
+  carrying `why` and `took`, the replicas that took the fence in that
+  attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`
+  takes the error. `felix_wire::KNOWN_FEATURES_HI` is now `FEATURE_INSPECT`,
+  so felix-client sets `FEATURE_EXTENDED` and sends `client_features_hi` in
+  its `auth`; an older broker ignores the field.
 - Every change of a shard's leader is fenced, not only a promotion (part of
   #1009). A move's cut-over, a failover that names a move's destination, a
   cancelled move's hand-back, and a generation of a shard its leader serves
@@ -389,6 +413,11 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
+  so a promoted shard waiting for its fence was counted in no phase.
+- A broker accepts a token carrying `node.view` or `node.manage`. Neither was
+  an action it knew, so an operator token that also served the control plane
+  failed to authenticate there.
 - The docs no longer list `DropOld` as a working overflow policy (#1019). It is
   accepted at the broker, writer-lane and client stages but behaves as
   `DropNew` at each: the arriving batch is dropped, not the oldest. The status

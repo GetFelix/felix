@@ -445,6 +445,7 @@ async fn a_fenced_shard_retries_its_remainder_without_waiting_for_the_tick() {
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         // A tick long enough that reaching it would mean nothing retried.
@@ -496,6 +497,7 @@ async fn behind_driver(refusals: usize) -> (Arc<BehindFollower>, Replication, Te
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         // Reaching the tick would mean the wait did not ask for passes.

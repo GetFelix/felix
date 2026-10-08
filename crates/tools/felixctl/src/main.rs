@@ -16,6 +16,7 @@
 //! - `manage`: the control-plane writes, and confirming destructive ones.
 //! - `rbac`: listing, granting and revoking RBAC policies and role
 //!   assignments.
+//! - `inspect`: operators' read-only views of what the brokers hold.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
@@ -30,6 +31,7 @@ mod counter;
 mod error;
 mod group;
 mod help;
+mod inspect;
 mod manage;
 mod output;
 mod publish;
@@ -101,6 +103,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
         Command::Placement(command) => manage::placement(command, &settings, out).await,
         Command::Rbac(command) => rbac::run(command, &settings, out).await,
+        Command::Inspect(command) => inspect::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
         Command::Context(_) | Command::Completions(_) | Command::Man(_) => {
             unreachable!("handled above")

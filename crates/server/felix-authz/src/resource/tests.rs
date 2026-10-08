@@ -25,3 +25,8 @@ fn resource_builders() {
         "group:tenant-a/payments/orders.v1/workers"
     );
 }
+
+#[test]
+fn the_cluster_has_one_spelling() {
+    assert_eq!(CLUSTER_RESOURCE, "cluster:*");
+}

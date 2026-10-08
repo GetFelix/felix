@@ -129,6 +129,16 @@ impl Credentials {
         )
     }
 
+    /// Presented to brokers by an operator inspecting what they hold
+    /// (`shard_inspect`). Cluster scope, and nothing a tenant could grant.
+    pub fn inspector_token(&self) -> String {
+        self.mint(
+            "p:harness-inspector",
+            vec!["node.view:cluster:*".to_string()],
+            BROKER_AUDIENCE,
+        )
+    }
+
     /// Redrives and discards dead letters, which a consumer's
     /// `stream.subscribe` does not allow.
     pub fn group_operator_token(&self) -> String {

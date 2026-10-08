@@ -65,6 +65,7 @@ fn make_publish_context(buffer: usize) -> (PublishContext, TestReceiver, TestSen
 /// A context with no cluster and no budgets, feeding `scheduler`.
 pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
     PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

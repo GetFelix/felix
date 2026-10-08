@@ -85,6 +85,8 @@ pub struct Client {
     worker_settings: connect::WorkerSettings,
     /// Optional requests this broker said it implements.
     server_features: u32,
+    /// The same, from the extended feature word.
+    server_features_hi: u32,
 }
 
 #[cfg(test)]

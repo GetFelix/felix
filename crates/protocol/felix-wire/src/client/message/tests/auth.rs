@@ -223,7 +223,7 @@ fn auth_ok(features: u32, features_hi: u32, peer_features: u32) -> Message {
 fn without_extended_features_auth_and_auth_ok_are_unchanged() {
     let known = crate::KNOWN_FEATURES;
     assert_eq!(
-        json(auth(known, crate::KNOWN_FEATURES_HI)),
+        json(auth(known, 0)),
         format!(
             r#"{{"type":"auth","tenant_id":"t1","token":"demo-token","client_flags":25,"client_features":{known}}}"#
         )

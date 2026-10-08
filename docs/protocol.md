@@ -988,6 +988,79 @@ the name. Each entry is what a request for that shard would be dispatched to:
 
 Absent fields are left out rather than sent as `null`.
 
+### ShardInspect
+```
+{ "type": "shard_inspect", "tenant_id": "<string>", "namespace": "<string>",
+  "name": "<string>", "kind": "stream|cache", "shard": <u32>,
+  "request_id": <u64> }
+```
+
+Sent only to a broker that advertised `FEATURE_INSPECT` in its extended
+feature word.
+
+An operator's question: this broker's own view of one shard. It needs
+`node.view:cluster:*` and nothing else. Only a grant spelled exactly
+`cluster:*` counts; a wildcard such as `node.view:*` does not, so no grant a
+tenant admin can write reaches it. The request may name any tenant, because
+the cluster scope is no tenant's. A token without the grant gets
+`error` with code `forbidden` and the stream stays open.
+
+The broker answers from snapshots its shard lifecycle and replication driver
+publish. It never forwards the request, never opens a log that is not open
+already, and never changes anything. To see a shard from several brokers, ask
+each of them.
+
+### ShardInspectInfo (server -> client)
+```
+{ "type": "shard_inspect_info", "request_id": <u64>,
+  "view": {
+    "node_id": "<string>", "shards": <u32>,
+    "role": "leader|follower|none", "phase": "<phase>", "serving": <bool>,
+    "reason": "<reason>", "detail": "<sentence>", "generation": <u64>,
+    "assignment": { "generation": <u64>, "leader": "<node>",
+                    "replicas": ["<node>"], "draining": true,
+                    "successor": "<node>" },
+    "fence": { "took": ["<node>"], "pending": ["<node>"], "attempts": <u32>,
+               "retry_in_ms": <u64> },
+    "lease": { "held": <bool>, "remaining_ms": <u64> },
+    "tail": <u64>, "committed": <u64>, "accepted_generation": <u64>,
+    "replicas": [ { "node_id": "<node>", "role": "follower|learner",
+                    "next_offset": <u64>, "lag": <u64>, "fence": <bool>,
+                    "state": "<state>", "halted": "<reason>" } ] } }
+```
+
+Every field after `serving` is left out when it does not apply. The words are
+strings rather than a closed set, so a later broker can add one without an
+older reader failing to decode the answer.
+
+- `shards` is how many shards the stream or cache has by this broker's
+  routing, `0` when it knows nothing of it. A client inspecting a whole
+  stream asks shard 0 first and learns the count from it.
+- `role` is this broker's place in the assignment its routing holds.
+  `phase` is its shard lifecycle phase: `unassigned`, `opening`, `fencing`,
+  `active`, `draining`, `closed` or `failed`.
+- `serving` is false with a `reason` whenever this broker does not take writes
+  for the shard: `not_assigned_here` (another broker leads it), `opening`,
+  `fencing`, `failed` (`detail` carries the error the open hit), `draining`,
+  `lease_lapsed`, or `behind_generation` (it serves an older generation than
+  the assignment names).
+- `fence` is present while a promoted leader waits for its replicas to take
+  its generation: who took it in the latest attempt, who has not, how many
+  attempts in a row left the shard closed, and when the next one starts.
+- `committed` is a leader's commit mark: every record below it is held by a
+  majority. Only the leader of a `Quorum` shard has one.
+- `tail` and `accepted_generation` come from this broker's copy of the log,
+  and only when that log is open here.
+- `replicas` is a leader's view of every other replica: the next offset it
+  ships, how far behind the tail that is, and `state`, one of `shipping`,
+  `stalled`, `copying` (a move's destination), `rebuilding`, `halted` (with the
+  reason, as `/replication/halted` names it) or `fencing`. A follower answers
+  with none.
+
+The answer is bounded by the shard's replica set. A broker not in a cluster
+answers `role` `leader` and `phase` `active` for a stream or cache it holds,
+with no generation, assignment or replicas.
+
 ### CacheValue (server -> client)
 ```
 { "type": "cache_value", "key": "<string>", "value": "<base64|null>",
@@ -1635,6 +1708,12 @@ Features are advertised in the same handshake, in an optional field:
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing. See [StreamRead](#streamread) |
 | `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted value on `subscribed`. See [Subscribe](#subscribe) |
 
+Bits in the extended word (see [Extended feature word](#extended-feature-word)):
+
+| Bit (`_hi` word) | Name | Meaning |
+|---|---|---|
+| `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) |
+
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
 
@@ -1720,7 +1799,7 @@ would fail the whole `auth`, which a client cannot avoid because it does not
 know the broker's age until the answer comes back. An unknown field it simply
 ignores.
 
-No feature lives in the second word yet. The Rust constants are
+`FEATURE_INSPECT` is the first feature in the second word. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.
