@@ -3,7 +3,10 @@ title: "Troubleshooting Guide"
 ---
 
 The failures people hit, what each one means, and how to confirm it. Log lines
-and errors are quoted as the broker prints them.
+and errors are quoted as the broker prints them. For a running cluster with a
+shard that will not serve, a follower that falls behind, or a client that is
+refused, [Diagnosing a cluster](/deployment/diagnosing/) goes symptom by
+symptom with `felixctl inspect`.
 
 ## The broker will not start
 

@@ -114,6 +114,22 @@ One shard, three brokers, one control plane, discrete time.
   generation, keeping the writes it has queued and claimed, since they are
   inside its fence and land in its own log. `CancelCas` makes that write
   conditional like the others.
+- **Elections and ballots.** With `Elections`, a replica stands for leader
+  with no control-plane step: `Elect` takes the generation after the one it
+  promised, persists its own promise, fences the set it last knew and opens
+  like a promoted leader, up to `Elections` generations past the control
+  plane's. Two replicas can then pick one generation, which the control plane
+  never does. With `Ballots` each promise names the leader it was made to
+  (`ballot`), and a replica answers a fence, a batch or a read round at the
+  generation it promised only from that leader. The first leader starts with
+  its set's promise, as an elected one would. Nothing in the broker elects
+  yet; the ballot is in the code now so that a later change can.
+- **Every change fenced.** With `FenceEveryChange`, a cut-over, a cancel's
+  hand-back and a failover that names a move's destination fence and catch
+  up before they serve, as a promotion does, instead of opening at once.
+  The broker does this for every leadership it takes once every replica
+  offers the fence. `FenceEveryChange = FALSE` is the broker before it did,
+  which is safe while only the control plane picks generations.
 
 Not modelled: readers. The code bounds every reader of a `Quorum` shard by
 the quorum mark and refuses reads on a lapsed lease, so what a reader sees is
@@ -131,13 +147,14 @@ bootstrap of a follower below the leader's base.
 | --- | --- |
 | `AtMostOneServing` | No two brokers serve the shard at once. |
 | `AckedSurvive` | Whoever is serving holds every acknowledged record. |
-| `AckedHeldByLeader` | The leader at the current generation holds every acknowledged record once it may serve. `AckedSurvive` without the lease, for configurations where two brokers can serve at once. |
+| `AckedHeldByLeader` | The leader at the newest generation holds every acknowledged record once it may serve. `AckedSurvive` without the lease, for configurations where two brokers can serve at once. The newest generation is the control plane's unless a replica elected itself past it. |
 | `AckedAgree` | Two brokers never hold different acknowledged records at one offset. |
 | `AckedOnMajority` | Every acknowledged `Quorum` record is on a majority. A set of four, which a promoted replacement leads beside the three it joined, needs two, since every fence there takes three. |
 | `NoTruncationBelowHwm` | A follower never discards a record below its high-water mark. |
 | `NoStaleCommit` | No broker commits at a generation the control plane has superseded. |
 | `StagedCopyNeverDelaysAck` | A `Quorum` write the stream's own replicas would acknowledge is never held back by a destination's copy. A latency property, checked only where a destination is staged. |
 | `NoDuplicate` | No log holds one write twice. Checked where writes are re-sent. |
+| `OneLeaderPerGeneration` | No two brokers open for writes at one generation. Checked where replicas elect themselves. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 
 ## The configurations, and what each must do
@@ -156,23 +173,29 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
 | `FelixShardFencedAck.cfg` | the broker once `majority_ack` is finalized: acknowledged by follower acks at the leader's generation, no lease anywhere on the write's path and no report, the promotion fence, and the start record; no margin on either side of the lease, drifting clocks, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (13.0M distinct states, depth 31, 100 s on sixteen cores) |
-| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (36.7M distinct states, depth 36, 28.5 min on a four-core CI runner; by hand only, see below) |
+| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (36.7M distinct states, depth 36, 28.5 min on a four-core CI runner; nightly, see below) |
 | `FelixShardFencedAckTwoPromotionsStart.cfg` | the same with the start record on and one write | pass, the same invariants (28.8M distinct states, depth 36, 18.5 min on a CI runner) |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardFencedCache.cfg` | `FelixShardFencedAck.cfg` for a cache shard (`Counters`): a counter log beside the cache log, shipped, counted and fenced the same way under one promise per replica, the fence taking the counter log furthest ahead too; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `CountersHeldByLeader`, `CountersOnMajority` (not yet measured) |
 | `FelixShardFencedCacheUnfenced.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardFencedCacheNoCounterCatchUp.cfg` | the same with a fence that takes no counter log | violate `CountersHeldByLeader` |
+| `FelixShardElect.cfg` | `FelixShardFencedAck.cfg` with replicas electing themselves (`Elections = 2`) and ballots, two writes, time standing still so the control plane never promotes | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (not yet measured) |
+| `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
+| `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
+| `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (48.7M distinct states, 61 min on a four-core CI runner; nightly) |
+| `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write |
+| `FelixShardElectHandoffUnfenced.cfg` | `FelixShardElectHandoffLeaders.cfg` with the cut-over opened without the fence, no writes and no cancel | violate `OneLeaderPerGeneration`: a candidate opens at the generation after the control plane's, and the control plane cuts over to the destination at that same generation |
 | `FelixShardFencedAckAnyKept.cfg` | `FelixShardFencedAck.cfg` with a spare fourth broker outside the replica set (`Spares`), promotion of any replica however far behind (`Promotion = "any"`), and the promotion keeping the replica set, the old leader in it; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (0.48M distinct states, depth 31, 27 s on four workers; with `Drift = 1`, 39.0M distinct states in 35 min on four workers, by hand) |
 | `FelixShardFencedAckAnyReplaced.cfg` | the same with the promotion swapping the old leader for the spare (`ReplaceOnPromote`), as failover's `choose_replicas` would | violate `AckedHeldByLeader`: the new leader and the spare are a majority of the new set and open without the record the old leader and the third replica acknowledged |
 | `FelixShardFencedAckSeat.cfg` | `FelixShardFencedAckAnyKept.cfg` with one follower replacement (`MaxMoves = 1`): a spare joins beside a leaving follower at one generation, counting toward the quorum, and the leaving one goes at the next, once the newcomer holds what a majority of the set held when it joined (`SeatHoldsCopy`); one write, `L = 2`, time to 3, no start records | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.20M distinct states, depth 27, 90 s on a four-core CI runner) |
-| `FelixShardFencedAckSeatLonger.cfg` | the same with start records, `L = 4` and time to 4 | pass, the same invariants (34.9M distinct states, depth 37, 36 min on a four-core CI runner; by hand only) |
+| `FelixShardFencedAckSeatLonger.cfg` | the same with start records, `L = 4` and time to 4 | pass, the same invariants (34.9M distinct states, depth 37, 36 min on a four-core CI runner; nightly) |
 | `FelixShardFencedAckSeatEarly.cfg` | the same with the seat not waiting, as placement did when a report named the newcomer caught up before anything was counted at the joining generation | violate `AckedHeldByLeader`: a record acknowledged on the leader and the leaving follower, the newcomer seated without it, and the next leader fencing the newcomer and the lagging follower |
 | `FelixShardFencedAckGrow.cfg` | `FelixShardFencedAckSeat.cfg` with a set a failover left short of the replication factor: two brokers hold the shard and the third is a spare, and `Grow` lets placement add the spare with nobody leaving (`GrowSet`), then seat it, as a restore does. A copy joining the even set counts toward every majority that acknowledged, so a failover keeps it (`Counted`), and a follower is replaced only beside an odd set; one move, one write, `L = 2`, time to 3 | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (604K distinct states, depth 25, 21 s on a CI runner) |
-| `FelixShardFencedAckMoveShort.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement with a planned move toward a follower: fence, drained report, cut-over without the promotion fence; a failover during the move never names the destination (`PromoteDestination = FALSE`); report-read promotion, start records, one write, `L = 1`, time to 1 | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (32.7M distinct states, depth 43, 22 min on a CI runner) |
+| `FelixShardFencedAckMoveShort.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement with a planned move toward a follower: fence, drained report, cut-over without the fence (`FenceEveryChange = FALSE`); a failover during the move never names the destination (`PromoteDestination = FALSE`); report-read promotion, start records, one write, `L = 1`, time to 1 | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (32.7M distinct states, depth 43, 22 min on a CI runner) |
 | `FelixShardFencedAckStagedMoveShort.cfg` | the same from a staged move: two replicas and a destination copying outside the quorum | pass, the same invariants (25.2M distinct states, depth 43, 20 min) |
 | `FelixShardFencedAckMoveCancelShort.cfg` | the move with the operator's cancel on: the fenced leader takes the shard back without the fence | pass, the same invariants (42.2M distinct states, depth 43, 35 min) |
-| `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`, `FelixShardFencedAckMoveCancel.cfg` | the three above with `L = 2` and time to 2 | pass, the same invariants: 66.0M distinct states, depth 44, 58 min, and 54.7M, depth 44, 31 min, on a CI runner; the cancel had not finished at 54M after 25 min. By hand only |
+| `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`, `FelixShardFencedAckMoveCancel.cfg` | the three above with `L = 2` and time to 2 | pass, the same invariants: 66.0M distinct states, depth 44, 58 min, and 54.7M, depth 44, 31 min, on a CI runner; the cancel had not finished at 54M after 25 min. Nightly |
 | `FelixShardFencedAckMoveDestination.cfg` | the move with a failover free to name the destination, as placement did | violate `AckedHeldByLeader`: the destination opens as if cut over, without the fence and without a record the old leader acknowledged after its last report |
 | `FelixShardFencedAckStagedMoveDestination.cfg` | the same from a staged move | violate `AckedHeldByLeader` |
 | `FelixShardReadsRound.cfg` | `FelixShardReads.tla`: `FelixShardFencedAck.cfg`'s writes with one read, confirmed by a round of fences at the leader's generation after it takes its value (`ReadConfirm = "round"`); `L = 2`, time to 2, one write | pass `NoStaleRead`, `AckedHeldByLeader`, `AckedOnMajority` (22.1M distinct states, depth 27, 6 min on four workers) |
@@ -417,11 +440,46 @@ put without the fence, and `FelixShardFencedCacheNoCounterCatchUp.cfg`, which
 fences the counter log but does not take it, loses a counter update the old
 leader acknowledged on itself and the follower the new leader fenced.
 
+### Ballots: one leader per generation
+
+The control plane issues each generation once, so a replica has only ever
+needed to remember the generation it accepted, not whom from. A replica that
+elects itself breaks that: two followers that lose the leader together both
+pick the next generation, and before ballots a replica answered a fence at a
+generation it had already accepted as a leader confirming it still leads.
+`FelixShardElectNoBallot.cfg` lets it, and TLC finds two candidates each
+taking the third replica's answer and both opening. `FelixShardElect.cfg` keeps
+a ballot per promise and passes: a replica answers at its accepted generation
+only the leader it promised, and a candidate persists its own ballot before it
+fences, so two majorities at one generation would share a replica that
+answered both.
+
+`AnswerFence` keeps the strict `<` it always had when no replica elects: with
+one leader per generation the equal case is the same leader asking again.
+`Ballots = FALSE` and `Elections = 0` in every other configuration leave the
+model, and its state space, exactly as they were. So does
+`FenceEveryChange = FALSE` everywhere but the two `FelixShardElectHandoff`
+configurations.
+
+Ballots are not enough on their own. `FelixShardElectStaleSet.cfg` replaces a
+follower and lets the one that left stand on the set it last knew. The old
+set's majority never promised the generations the new set used, so no ballot
+is in the way, and TLC finds it opening without a record the new set
+acknowledged. A fence that carries the generation of the set it counts, and a
+replica that refuses one built on a set older than one it knows, is what
+self-election still needs. Nothing in the broker elects yet, so this pins the
+finding rather than a defect.
+
+The ballot lives in the replica's `ballot` file, written and fsynced before
+the generation it names is answered (`DiskLog::accept_generation`); see
+`docs/replication-design.md`, "Ballots".
+
 `FelixShardFencedAck.cfg` allows one promotion. `FelixShardFencedAckTwoPromotions.cfg`
 allows two (`L = 2`, without drift). Neither tells a
 leader that counts only records of its own generation from one that counts
 any it holds; that takes a third leadership (below). The two-promotion
-configuration takes 28 minutes on a CI runner, so it is run by hand;
+configuration takes 28 minutes on a CI runner, so it runs nightly instead of
+on every push;
 `FelixShardFencedAckTwoPromotionsStart.cfg`, with the start record on and one
 write, fits CI. The manual dispatch of the CI workflow takes a list of
 configurations for runs like these:
@@ -486,10 +544,11 @@ states, 90 s.
 
 ### A move under follower acks
 
-The broker opens a planned move's cut-over, and a cancel's hand-back, without
-the promotion fence: the destination takes over only once the drained leader's
-whole log is on it, and a cancel returns the shard to the leader that had it.
-The model does the same, and persists the new leader's generation before its
+The broker used to open a planned move's cut-over, and a cancel's hand-back,
+without the promotion fence: the destination takes over only once the drained
+leader's whole log is on it, and a cancel returns the shard to the leader that
+had it. The move configurations model that (`FenceEveryChange = FALSE`), and
+persist the new leader's generation before its
 start record, as `open` does. Placement fences a move only on a report from the
 generation it read, and a leader still in its own promotion fence sends none,
 so a move never catches one mid-fence.
@@ -504,6 +563,33 @@ without the record (`FelixShardFencedAckMoveDestination.cfg`,
 `FelixShardFencedAckStagedMoveDestination.cfg`, twelve steps). Placement now
 leaves a move's destination out of a `Quorum` failover, which ends the move
 (`PromoteDestination = FALSE`), and the move configurations pass.
+
+### Every change of leader fenced
+
+Without elections the unfenced cut-over is safe, because the control plane
+issues each generation once and nobody else leads in between. With them it
+is not. The control plane picks a cut-over's generation from its own view,
+which does not include an election held while it was away. In
+`FelixShardElectHandoffUnfenced.cfg` a replica elects itself to the
+generation after the control plane's while a move is fenced, fences the old
+leader and opens; the control plane then cuts over to the destination at that
+same generation, and the destination, which never promised it to the
+candidate, opens there too (`OneLeaderPerGeneration`, ten steps by hand).
+
+`FelixShardElectHandoff.cfg` fences the cut-over and the hand-back like a
+promotion (`FenceEveryChange`). The new leader persists its own ballot, which
+it cannot do at a generation it already promised a candidate, fences a
+majority and takes the answer furthest ahead. A majority that took the
+candidate's ballot refuses it, so it stays closed until a higher generation;
+one that did not has a replica holding whatever the candidate acknowledged.
+With one write it takes an hour on a CI runner, so it runs nightly, like
+`FelixShardFencedAckTwoPromotions.cfg`; `FelixShardElectHandoffLeaders.cfg`
+checks one leader per generation without the write on every pull request.
+The broker fences every leadership it takes this way, including a
+generation of a shard it serves that skips one. The generation right after
+the one it serves opens unfenced, as `Regenerate` does in the model, where
+only a follower replacement reaches it; that is not yet checked with
+elections: `FelixShardElectStaleSet.cfg` fails first on the stale set.
 
 ### The round that makes a read linearizable
 
@@ -706,6 +792,23 @@ without the state, and once promoted it keeps that half and its mark covers
 it with its next commit. Applied a part at a time, it fails on one broker
 with no failover at all. Those two are why the record is one record and why
 the state view is updated under the ring's lock.
+
+## Which configurations run where
+
+Every configuration registered in `scripts/check_tla.sh` runs on every push
+and pull request that touches the code or the spec: the `formal` job in
+`.github/workflows/ci.yml`, split across seven jobs by each configuration's
+measured time so that each stays well under its hour.
+
+Six configurations are too big for that hour, and run nightly instead, each in
+its own job with a two-and-a-half-hour limit (the `exhaustive` job in
+`.github/workflows/tla-walk.yml`): `FelixShardElectHandoff.cfg`,
+`FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
+`FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
+`FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
+runs per push. A failure shows the same way a failed walk does, as a failed
+run of that nightly workflow. Either set can also be run on a branch through
+the dispatch of either workflow.
 
 ## Long random walks
 

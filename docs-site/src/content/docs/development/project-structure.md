@@ -101,7 +101,7 @@ A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
   which runs on the log's append thread, and background rollover), `flush.rs`, `sync/` (fsync policy and group
   commit), `segments/` (with `rollover` and `truncation`), `recovery/`
   (startup validation and torn-tail repair), `retention.rs`, and the per-shard
-  state files (`durable_mark`, `replica_state`, `epochs`, `producers`).
+  state files (`durable_mark`, `replica_state`, `ballot`, `epochs`, `producers`).
 - `segment.rs` and `segment/`: one segment file. `format` (the byte format),
   `scan` (torn tail or corruption), `reader`, `writer`, `cursor`, and the
   sparse `index`.

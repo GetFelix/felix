@@ -199,7 +199,8 @@ and discrete time, with clocks that may drift. TLC explores every interleaving
 within the configured bounds.
 
 - `FelixShard.tla` models the lease, replication to a majority, promotion, the
-  promotion fence, planned moves and cancelled moves. Its invariants include
+  promotion fence, planned moves and cancelled moves, fenced or not, and
+  replicas electing themselves under ballots. Its invariants include
   that no two brokers serve the shard at once, that whoever serves holds every
   acknowledged record, that two brokers never disagree on an acknowledged
   record, and that no log holds a re-sent write twice.

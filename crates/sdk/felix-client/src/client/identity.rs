@@ -56,6 +56,7 @@ impl Client {
         let opened = self.publish_node.open_as(&credentials).await?;
         debug!("identity publish stream authenticated");
         let server_features = opened.negotiated.server_features;
+        let server_features_hi = opened.negotiated.server_features_hi;
         note_connection(&mut worker_connections, opened.lease.connection());
         let publish_worker = spawn_publish_worker(opened, &self.runtime_config, settings);
 
@@ -106,6 +107,7 @@ impl Client {
             runtime_config: self.runtime_config,
             worker_settings: settings,
             server_features,
+            server_features_hi,
         })
     }
 

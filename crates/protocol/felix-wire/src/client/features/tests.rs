@@ -405,3 +405,52 @@ fn the_extended_marker_is_the_last_bit_and_not_a_known_feature() {
         (crate::FEATURE_TOPOLOGY | crate::FEATURE_EXTENDED, Some(4))
     );
 }
+
+/// Inspection is the first extended bit, so it rides the second word and
+/// only reaches a peer that set the marker.
+#[test]
+fn inspect_is_the_first_extended_bit() {
+    assert_eq!(crate::FEATURE_INSPECT, 0x0000_0001);
+    assert_eq!(crate::KNOWN_FEATURES_HI, crate::FEATURE_INSPECT);
+    assert_eq!(
+        crate::offer_features(crate::KNOWN_FEATURES, crate::KNOWN_FEATURES_HI),
+        (
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
+            Some(crate::FEATURE_INSPECT)
+        )
+    );
+    // Not the low word's topology bit, which shares the value.
+    assert!(!crate::supports_feature(
+        crate::peer_features_hi(crate::FEATURE_TOPOLOGY, None),
+        crate::FEATURE_INSPECT
+    ));
+}
+
+/// A word the peer sent without the marker is not counted, and a broker
+/// answering a client that did not set it sends no extended word at all.
+#[test]
+fn an_extended_word_without_the_marker_is_ignored() {
+    assert_eq!(
+        crate::peer_features_hi(crate::KNOWN_FEATURES, Some(crate::FEATURE_INSPECT)),
+        0
+    );
+    assert_eq!(
+        crate::answer_features(
+            crate::KNOWN_FEATURES,
+            crate::FEATURE_INSPECT,
+            crate::KNOWN_FEATURES
+        ),
+        (crate::KNOWN_FEATURES, None)
+    );
+    assert_eq!(
+        crate::answer_features(
+            crate::KNOWN_FEATURES,
+            crate::FEATURE_INSPECT,
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED
+        ),
+        (
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
+            Some(crate::FEATURE_INSPECT)
+        )
+    );
+}

@@ -130,6 +130,10 @@ pub(crate) struct PublishContext {
     /// How far a majority of each shard's replica set has got, for a write
     /// that must not be acknowledged before it does. `None` off a cluster.
     pub(crate) marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    /// What replication last knew of each shard led here. Nothing on the
+    /// publish path reads it; it rides here with the rest of the cluster view
+    /// for `shard_inspect`.
+    pub(crate) shard_status: Option<Arc<felix_replication::status::ShardStatusBoard>>,
     /// How long such a write waits for its majority before saying it cannot
     /// confirm one.
     pub(crate) quorum_timeout: Duration,

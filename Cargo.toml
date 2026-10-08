@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-# Grouped by role; see the README in each directory under crates/. The binding
-# crates (crates/sdk/felix-python, crates/sdk/felix-typescript) and the demos
-# with their own [workspace] are deliberately not members.
+# Grouped by role; see the README in each directory under crates/. The Python
+# and Node binding crates (crates/sdk/felix-python, crates/sdk/felix-typescript)
+# and the demos with their own [workspace] are deliberately not members.
 members = [
   # How peers talk: the frame codec and the QUIC layer under it.
   "crates/protocol/felix-wire",
@@ -17,6 +17,8 @@ members = [
   "crates/server/felix-replication",
   # What applications link.
   "crates/sdk/felix-client",
+  # The C ABI over it, for the Go and C# SDKs.
+  "crates/sdk/felix-capi",
   # Harnesses, kits and load tools.
   "crates/testing/felix-cluster",
   "crates/testing/felix-conformance",

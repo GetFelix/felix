@@ -31,6 +31,14 @@ The broker and the control plane each serve Prometheus text on their own
 metrics endpoint (`metrics_bind` on the broker; `/metrics`, plus `/live` and
 `/ready` for probes).
 
+The broker's metrics listener is plain HTTP with no authentication. It
+carries counts and the listings below (`/replication/halted`,
+`/backup/offsets`), which name tenants, streams and brokers, and nothing that
+changes state. Keep it on an internal network that only Prometheus and your
+operators reach. Anything that needs a principal, such as a shard's live state
+from `felixctl inspect`, goes over the authenticated client listener instead;
+see [Diagnosing a cluster](/deployment/diagnosing/).
+
 ```yaml
 # prometheus.yml
 scrape_configs:
@@ -175,7 +183,7 @@ felix_broker_replication_rebuilding         # halted followers the leader is reb
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
 felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
-felix_broker_promotions_opened_total       # by path: fenced (a majority took the new leader's generation) or lease
+felix_broker_promotions_opened_total       # every new leadership, by path: fenced (a majority took the new leader's generation) or lease
 felix_broker_promotion_truncated_total      # a promoted leader dropped its own records a replica's newer log superseded
 felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary

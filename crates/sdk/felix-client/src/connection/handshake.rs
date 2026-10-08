@@ -163,6 +163,8 @@ pub(crate) struct Negotiated {
     pub(crate) server_flags: u16,
     /// Feature bits: which optional requests the broker implements.
     pub(crate) server_features: u32,
+    /// The extended feature word, counted only behind the marker bit.
+    pub(crate) server_features_hi: u32,
     /// Every port the broker's client-facing listeners are bound to, when it
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
@@ -216,9 +218,7 @@ async fn authenticate_stream(
         Some(Message::AuthOk {
             server_flags,
             server_features,
-            // No extended feature yet. The first one reads it with
-            // `felix_wire::peer_features_hi`.
-            server_features_hi: _,
+            server_features_hi,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {
@@ -227,6 +227,10 @@ async fn authenticate_stream(
             // an unrecognised message type is fatal to the broker's control
             // loop, so a client that guessed would cost itself the connection.
             server_features: server_features.unwrap_or(0),
+            server_features_hi: felix_wire::peer_features_hi(
+                server_features.unwrap_or(0),
+                server_features_hi,
+            ),
             listener_ports: listener_ports.unwrap_or_default(),
             // Only meaningful with the feature bit; a window without it would
             // be a broker promising an order it never agreed to.
@@ -243,6 +247,7 @@ async fn authenticate_stream(
         Some(Message::Ok) => Ok(Negotiated {
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
+            server_features_hi: 0,
             listener_ports: Vec::new(),
             publish_window: 0,
         }),

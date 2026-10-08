@@ -415,18 +415,12 @@ async fn auth_ok_for(client_features: u32, client_features_hi: Option<u32>) -> R
         .ok_or_else(|| anyhow::anyhow!("no auth_ok"))
 }
 
-/// A client offering an extended word gets the same `auth_ok` as one that
-/// does not, while this broker serves no extended feature: no marker, no
-/// `server_features_hi`.
+/// A client that does not set the marker gets the `auth_ok` it always got:
+/// no marker, no `server_features_hi`. One that does learns the extended
+/// features, inspection among them.
 #[tokio::test]
-async fn an_extended_offer_to_a_broker_serving_none_changes_nothing() -> Result<()> {
+async fn only_an_extended_offer_hears_the_extended_word() -> Result<()> {
     let plain = auth_ok_for(felix_wire::KNOWN_FEATURES, None).await?;
-    let extended = auth_ok_for(
-        felix_wire::KNOWN_FEATURES | felix_wire::FEATURE_EXTENDED,
-        Some(1),
-    )
-    .await?;
-    assert_eq!(plain.clone().encode()?, extended.encode()?);
     let Message::AuthOk {
         server_features,
         server_features_hi,
@@ -439,6 +433,25 @@ async fn an_extended_offer_to_a_broker_serving_none_changes_nothing() -> Result<
     assert!(!felix_wire::supports_feature(
         server_features.unwrap_or(0),
         felix_wire::FEATURE_EXTENDED
+    ));
+
+    let extended = auth_ok_for(
+        felix_wire::KNOWN_FEATURES | felix_wire::FEATURE_EXTENDED,
+        Some(felix_wire::KNOWN_FEATURES_HI),
+    )
+    .await?;
+    let Message::AuthOk {
+        server_features,
+        server_features_hi,
+        ..
+    } = extended
+    else {
+        unreachable!()
+    };
+    let hi = felix_wire::peer_features_hi(server_features.unwrap_or(0), server_features_hi);
+    assert!(felix_wire::supports_feature(
+        hi,
+        felix_wire::FEATURE_INSPECT
     ));
     Ok(())
 }

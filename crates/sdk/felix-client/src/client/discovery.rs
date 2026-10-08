@@ -1,6 +1,7 @@
 //! What a broker can tell a [`Client`] about the cluster: its brokers, how
-//! many shards a stream or cache has, and who owns each. Each question refuses
-//! to be asked of a broker that did not advertise it.
+//! many shards a stream or cache has, who owns each, and, for an operator,
+//! its own view of one shard. Each question refuses to be asked of a broker
+//! that did not advertise it.
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
@@ -25,6 +26,77 @@ impl Client {
     /// Whether this broker answers [`Client::stream_shards`].
     pub fn supports_stream_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_SHARDS)
+    }
+
+    /// Whether this broker answers [`Client::inspect_shard`].
+    pub fn supports_inspect(&self) -> bool {
+        felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_INSPECT)
+    }
+
+    /// This broker's own view of one shard: its phase and generation, the
+    /// fence, its lease and tail, and, where it leads, every replica's
+    /// position. Not forwarded: ask each broker for its own.
+    ///
+    /// Needs `node.view:cluster:*`, and may name any tenant. Errors when the
+    /// broker did not advertise [`felix_wire::FEATURE_INSPECT`]; check
+    /// [`Client::supports_inspect`] first to tell that apart.
+    pub async fn inspect_shard(
+        &self,
+        kind: crate::ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Result<felix_wire::ShardInspection> {
+        if !self.supports_inspect() {
+            anyhow::bail!("broker does not support inspect");
+        }
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
+        let request_id = self
+            .cache_request_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        write_message(
+            &mut send,
+            Message::ShardInspect {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                kind,
+                shard,
+                request_id,
+            },
+        )
+        .await
+        .context("send shard inspect request")?;
+        let mut scratch = BytesMut::with_capacity(4 * 1024);
+        let answer =
+            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
+                .await?;
+        let _ = send.finish();
+        match answer {
+            Some(Message::ShardInspectInfo { view, .. }) => Ok(*view),
+            Some(Message::Error {
+                message,
+                code,
+                retry,
+                detail,
+            }) => Err(crate::error::refused(
+                "shard inspect refused",
+                message,
+                code,
+                retry,
+                detail,
+            )),
+            Some(other) => Err(anyhow::anyhow!(
+                "unexpected shard inspect response: {other:?}"
+            )),
+            None => Err(anyhow::anyhow!("shard inspect response missing")),
+        }
     }
 
     /// Whether this broker answers [`Client::cache_shards`].

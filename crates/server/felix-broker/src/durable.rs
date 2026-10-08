@@ -124,6 +124,24 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// One stream shard's log if this broker has it open, without opening it.
+    pub fn opened_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_shard(&key)?;
+        Some(StreamLog { log })
+    }
+
     /// Close one stream shard's log, for a shard this broker no longer holds.
     ///
     /// Every [`StreamLog`] already handed out for it fails from here on; the
@@ -545,14 +563,20 @@ impl StreamLog {
         self.log.accepted_generation()
     }
 
-    /// Accept a leader at `generation`; a raised one is on disk on return.
+    /// The leader that generation was accepted from, if one was named.
+    pub fn accepted_leader(&self) -> Option<std::sync::Arc<str>> {
+        self.log.accepted_leader()
+    }
+
+    /// Accept `leader` at `generation`; a raised one is on disk on return.
     /// See `DiskLog::accept_generation`.
     pub async fn accept_generation(
         &self,
         generation: u64,
+        leader: Option<&str>,
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
-            .accept_generation(generation)
+            .accept_generation(generation, leader)
             .await
             .map_err(BrokerError::from)
     }

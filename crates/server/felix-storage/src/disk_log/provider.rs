@@ -71,6 +71,13 @@ impl DiskLogProvider {
         self.open_with(shard, None)
     }
 
+    /// The log for `shard` if it is open already. Unlike [`Self::open_shard`]
+    /// this never creates or recovers anything, so a read-only caller can
+    /// look without leaving a directory behind.
+    pub fn opened_shard(&self, shard: &ShardKey) -> Option<DiskLog> {
+        self.open_logs.get_open(shard)
+    }
+
     /// Open or return the cached log for `shard`, creating it to begin at
     /// `base_offset` if it does not exist yet.
     ///

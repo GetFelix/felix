@@ -8,7 +8,8 @@
 //! [`limits`] holds the per-address connection caps and per-tenant publish
 //! quotas the listeners enforce.
 //! [`forward`] sends a publish or cache operation to the broker that owns its
-//! shard, and answers the ones other brokers send here.
+//! shard, and answers the ones other brokers send here. `inspect` builds an
+//! operator's view of one shard.
 
 pub mod auth;
 pub(crate) mod cache_routing;
@@ -16,6 +17,7 @@ pub(crate) mod commit_ops;
 pub(crate) mod core_shards;
 pub mod forward;
 pub(crate) mod group_ops;
+pub(crate) mod inspect;
 pub mod kafka;
 pub mod limits;
 pub mod quic;

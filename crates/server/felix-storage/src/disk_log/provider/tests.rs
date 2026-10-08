@@ -312,3 +312,21 @@ async fn a_streams_retention_falls_back_per_bound_and_refuses_zero() {
         Err(StorageError::InvalidConfig(_))
     ));
 }
+
+/// Looking up a log that is not open neither opens it nor creates its
+/// directory, so a read-only caller leaves nothing behind.
+#[tokio::test]
+async fn looking_for_an_open_log_creates_nothing() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    let before: Vec<_> = std::fs::read_dir(dir.path()).expect("read").collect();
+
+    assert!(provider.opened_shard(&shard("orders")).is_none());
+    let after: Vec<_> = std::fs::read_dir(dir.path()).expect("read").collect();
+    assert_eq!(before.len(), after.len());
+
+    provider.open_shard(&shard("orders")).expect("open");
+    assert!(provider.opened_shard(&shard("orders")).is_some());
+    provider.close_shard(&shard("orders")).await.expect("close");
+    assert!(provider.opened_shard(&shard("orders")).is_none());
+}
