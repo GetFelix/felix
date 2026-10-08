@@ -678,7 +678,8 @@ async fn stream_and_cache_conflict_and_delete_errors() {
         .oneshot(conflict_stream)
         .await
         .expect("stream conflict");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    // The same configuration again is a no-op, not a conflict.
+    assert_eq!(response.status(), StatusCode::OK);
 
     let patch_stream = json_request_as(
         "PATCH",
@@ -724,7 +725,7 @@ async fn stream_and_cache_conflict_and_delete_errors() {
         .oneshot(conflict_cache)
         .await
         .expect("cache conflict");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
 
     let patch_cache = json_request_as(
         "PATCH",
@@ -1028,6 +1029,14 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn cache_changes(&self, _since: u64) -> StoreResult<ChangeSet<CacheChange>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn create_resources(
+        &self,
+        _streams: Vec<Stream>,
+        _caches: Vec<Cache>,
+    ) -> StoreResult<()> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

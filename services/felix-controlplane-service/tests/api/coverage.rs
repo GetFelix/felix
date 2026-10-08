@@ -210,13 +210,14 @@ async fn caches_error_paths_and_changes() {
     let response = app.clone().oneshot(create).await.expect("create");
     assert_eq!(response.status(), StatusCode::CREATED);
 
+    // A different configuration under a taken name.
     let conflict = json_request_as(
         "POST",
         "/v1/tenants/t1/namespaces/default/caches",
         &admin,
         serde_json::json!({
             "cache": "primary",
-            "display_name": "Primary Cache"
+            "display_name": "Another Cache"
         }),
     );
     let response = app.clone().oneshot(conflict).await.expect("conflict");
@@ -287,6 +288,7 @@ async fn streams_error_paths_and_changes() {
     let response = app.clone().oneshot(create).await.expect("create");
     assert_eq!(response.status(), StatusCode::CREATED);
 
+    // A different configuration under a taken name.
     let conflict = json_request_as(
         "POST",
         "/v1/tenants/t1/namespaces/default/streams",
@@ -294,7 +296,7 @@ async fn streams_error_paths_and_changes() {
         serde_json::json!({
             "stream": "orders",
             "kind": StreamKind::Stream,
-            "shards": 1,
+            "shards": 2,
             "retention": RetentionPolicy { max_age_seconds: Some(3600), max_size_bytes: None },
             "consistency": "Leader",
             "delivery": "AtLeastOnce",

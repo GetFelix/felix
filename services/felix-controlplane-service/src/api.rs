@@ -9,6 +9,7 @@ pub mod openapi;
 pub(crate) mod pagination;
 pub mod readiness;
 pub mod regions;
+pub(crate) mod resources;
 mod router;
 pub mod shard_assignments;
 pub mod shard_moves;

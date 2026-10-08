@@ -313,6 +313,13 @@ pub enum MetaCommand {
     FinalizeFleetFeature {
         feature: String,
     },
+    /// Streams and caches created together: one entry, so every member
+    /// applies all of them or, on a conflict or a missing namespace, none.
+    /// Level 5.
+    CreateResources {
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    },
 }
 
 impl MetaCommand {
@@ -341,6 +348,7 @@ impl MetaCommand {
                 3
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
+            Self::CreateResources { .. } => 5,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
