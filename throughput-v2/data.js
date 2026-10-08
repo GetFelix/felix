@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791458531502,
+  "lastUpdate": 1791463028062,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25116,6 +25116,58 @@ window.BENCHMARK_DATA = {
             "range": "10207.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1129685.87\nmean: 1127820.33\nstdev: 10207.76\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f728dc952908db4949ee8a76a09927ef3088a6dc",
+          "message": "fix(felixctl): don't add --namespace to a cluster test that set -n (#1072)\n\nThe cluster harness skipped a default connection flag only when the test\npassed its long name, so a test using -n got --namespace as well and clap\nrefused the command. Main has failed this test since #1059.",
+          "timestamp": "2026-10-08T05:31:21-07:00",
+          "tree_id": "af7170f51ab632097f2590ffb29f6e640c5e289a",
+          "url": "https://github.com/GetFelix/felix/commit/f728dc952908db4949ee8a76a09927ef3088a6dc"
+        },
+        "date": 1791463027288,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 451944.2,
+            "range": "22362.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 451944.20\nmean: 437907.63\nstdev: 22362.14\ncv: 5.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 451944.2,
+            "range": "22362.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 451944.20\nmean: 437907.63\nstdev: 22362.14\ncv: 5.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 99544.41,
+            "range": "546.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 99544.41\nmean: 99247.94\nstdev: 546.89\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 995444.08,
+            "range": "5468.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 995444.08\nmean: 992479.37\nstdev: 5468.92\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
