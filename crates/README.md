@@ -7,7 +7,7 @@ deployable binaries are in [`../services`](../services).
 |---|---|---|
 | [`protocol/`](protocol) | `felix-wire`, `felix-transport` | How a client and a broker talk: the frame codec and the QUIC layer under it. |
 | [`server/`](server) | `felix-broker`, `felix-storage`, `felix-router`, `felix-replication`, `felix-authz`, `felix-common` | The libraries the broker and control plane are built from. |
-| [`sdk/`](sdk) | `felix-client`, `felix-python`, `felix-typescript` | What an application links to use Felix. |
+| [`sdk/`](sdk) | `felix-client`, `felix-python`, `felix-typescript`, `felix-capi` | What an application links to use Felix. |
 | [`testing/`](testing) | `felix-cluster`, `felix-conformance`, `felix-loadgen` | Harnesses, the client conformance kit, and the load generator. |
 | [`tools/`](tools) | `felixctl` | Command-line tools for people working with a cluster. |
 

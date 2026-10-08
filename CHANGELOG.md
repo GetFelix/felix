@@ -12,6 +12,17 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
+  SDKs (part of #618). It builds `libfelix` as a shared and a static library
+  with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
+  and covers connect, publish and a polled subscribe (`felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe`,
+  `felix_subscription_next_event`). Handles are opaque with a free function
+  each, every call returns a status code whose classes match the other SDKs,
+  the message for a failure is per thread (`felix_last_error_message`), panics
+  never cross the boundary, and each client owns its Tokio runtime. A test
+  fails while the header is stale, and CI runs a C program against the
+  conformance fixture. Not published to crates.io.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
