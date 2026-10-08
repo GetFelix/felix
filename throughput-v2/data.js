@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791444940164,
+  "lastUpdate": 1791448588253,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24856,6 +24856,58 @@ window.BENCHMARK_DATA = {
             "range": "39168.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 791567.79\nmean: 779051.62\nstdev: 39168.08\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "34426bb88442bbaca5be661b1e6577dc91a5b937",
+          "message": "feat(wire,broker,client): publish only at an expected offset (#1017) (#1052)\n\n* feat(wire,broker,client): publish only at an expected offset (#1017)\n\nA writer can now append only if the shard's next offset is the one it\nexpects, behind a new broker feature bit, FEATURE_PUBLISH_CONDITIONAL\n(0x1000_0000):\n\n- publish_if appends a batch only if it would start at expected_offset,\n  answered with publish_ok and the offset, or publish_refused with the new\n  offset_mismatch reason and the shard's tail.\n- commit takes an optional expected_offset, a compare-and-set on the whole\n  shard. Absent, the frame is byte-identical to before.\n\nThe check is made on the log's append thread under the lock that assigns\noffsets, and the batch's commit range is claimed in the same step\n(DiskLog::append_claimed_at), so of two writers at one offset exactly one is\nwritten. A refused batch writes nothing, consumes no offset and reserves no\nrange, so nothing behind it is held up. The tail counts a new leader's\ngeneration-start record, so an expected offset goes stale on failover and the\nrefusal says where to resume.\n\nBoth are served by the shard's leader the way a commit is: a non-leader\nanswers not_leader rather than forwarding. An in-memory stream refuses them.\nfelix-client adds publish_if and commit_if on Client and ClusterClient,\nanswering ConditionalWrite. Per-key version preconditions are #1051.\n\nSpec-Unaffected: a conditional append is an append that may not happen; it enters the same dispatch, fence and quorum wait as a commit and changes nothing the shard model describes about leases, generations or replication.\n\n* fix(serving): charge publish_if against the tenant quota and ingress budget (#1017)\n\npublish_if is answered outside the publish queue, so it skipped the tenant\npublish quota and the ingress byte budgets. It now takes both before the\nclaim, the way an acked publish does on enqueue: the quota first, refused\nwith the same retryable overloaded answer and retry hint, then the\nconnection and broker byte budgets, held until the write is done. The claim\nstays where it is, so the check and the offset assignment remain one step.\n\nSpec-Unaffected: admission accounting only; no lease, generation or replication step changes.",
+          "timestamp": "2026-10-08T01:33:03-07:00",
+          "tree_id": "4c605dac8bc28f5e37d92179f40b3dfed314c481",
+          "url": "https://github.com/GetFelix/felix/commit/34426bb88442bbaca5be661b1e6577dc91a5b937"
+        },
+        "date": 1791448586979,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495167.52,
+            "range": "27038.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495167.52\nmean: 486502.77\nstdev: 27038.73\ncv: 5.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495167.52,
+            "range": "27038.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495167.52\nmean: 486502.77\nstdev: 27038.73\ncv: 5.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121498.06,
+            "range": "1477.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121498.06\nmean: 120936.19\nstdev: 1477.50\ncv: 1.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1214980.59,
+            "range": "14774.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1214980.59\nmean: 1209361.90\nstdev: 14774.97\ncv: 1.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
