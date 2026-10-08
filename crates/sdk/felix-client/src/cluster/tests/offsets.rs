@@ -154,6 +154,7 @@ async fn an_idempotent_producer_returns_the_offset_of_the_ack_that_settled_it() 
         policy(),
     )
     .await?;
+    let cluster = Arc::new(cluster);
     let producer = cluster.idempotent_producer().await?;
     let first = producer
         .publish("t1", "default", "orders", b"a".to_vec())

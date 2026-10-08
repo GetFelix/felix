@@ -319,7 +319,7 @@ async fn pipelined_case(
 ) -> Result<&'static str> {
     let step = &case.step;
     let hold = Duration::from_millis(step.hold_ms);
-    let cluster = ClusterClient::connect(&[link.addr()], "localhost", config).await?;
+    let cluster = Arc::new(ClusterClient::connect(&[link.addr()], "localhost", config).await?);
     let producer = cluster.idempotent_producer().await?;
     let mut published = Vec::new();
     let mut errors = 0;

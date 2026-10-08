@@ -249,9 +249,11 @@ happen behind one.
   that may have landed. Only these clients ever record a definite failure, so
   they are what exercise rule 6.
 - **Idempotent clients** re-send the same batch under the same sequence, up to
-  three times, and record an unknown outcome if all three fail. A cancelled
-  publish leaves the producer refusing all later sends, so the client replaces
-  it.
+  three times, and record an unknown outcome if all three fail; then the
+  client replaces the producer, since only that batch may go out under its
+  sequence. A publish that times out is recorded as unknown too, but the
+  producer is kept: the publish still runs to its answer, and the producer
+  re-sends it itself if that answer is in doubt.
 - **All clients** read 20% of the time, from a random broker. They follow one
   `not_leader` hop. A client reconnects from a fresh address book after three
   failures in a row, because a restarted broker listens on new ports.

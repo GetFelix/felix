@@ -928,7 +928,8 @@ async fn idempotent_producer_does_not_reuse_a_sequence_in_doubt() -> Result<()> 
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer = client.idempotent_producer().await?;
 
     // As far as the producer can tell, the first batch failed...
@@ -1083,7 +1084,8 @@ async fn a_reused_sequence_is_refused_to_the_rust_client() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, auth, _config, server_task) = serve_durable_orders(dir.path()).await?;
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let send = |payload: &'static [u8]| {

@@ -450,14 +450,14 @@ impl Client<'_> {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 continue;
             };
-            self.run_connected(&cluster).await;
+            self.run_connected(&Arc::new(cluster)).await;
         }
     }
 
     /// Run operations over one connection until it looks dead or the run ends.
-    async fn run_connected(&mut self, cluster: &ClusterClient) {
+    async fn run_connected(&mut self, cluster: &Arc<ClusterClient>) {
         let w = self.workload;
-        let mut producer: Option<IdempotentProducer<'_>> = None;
+        let mut producer: Option<IdempotentProducer> = None;
         let mut failures = 0;
         while !w.stopped() && failures < FAILURES_BEFORE_RECONNECT {
             let roll = self.rng.below(100);
@@ -506,10 +506,10 @@ impl Client<'_> {
         self.record_append(invoke, list, value, outcome)
     }
 
-    async fn append_idempotent<'c>(
+    async fn append_idempotent(
         &mut self,
-        cluster: &'c ClusterClient,
-        producer: &mut Option<IdempotentProducer<'c>>,
+        cluster: &Arc<ClusterClient>,
+        producer: &mut Option<IdempotentProducer>,
     ) -> bool {
         let w = self.workload;
         if producer.is_none() {
@@ -527,6 +527,7 @@ impl Client<'_> {
         let value = w.next_value.fetch_add(1, Ordering::Relaxed);
         let invoke = w.now();
         let mut outcome = AppendOutcome::Info;
+        let mut in_doubt = false;
         for _ in 0..IDEMPOTENT_ATTEMPTS {
             let sent = tokio::time::timeout(
                 w.op_timeout,
@@ -536,15 +537,23 @@ impl Client<'_> {
             match sent {
                 Ok(Ok(offset)) => {
                     outcome = AppendOutcome::Ok { offset };
+                    in_doubt = false;
                     break;
                 }
                 // The same batch under the same sequence cannot land twice.
-                Ok(Err(_)) => continue,
-                // A cancelled publish leaves the producer refusing everything.
-                Err(_) => break,
+                Ok(Err(_)) => {
+                    in_doubt = true;
+                    continue;
+                }
+                // A dropped publish still runs to its answer, and the
+                // producer re-sends it itself if that answer is in doubt.
+                Err(_) => {
+                    in_doubt = false;
+                    break;
+                }
             }
         }
-        if outcome == AppendOutcome::Info {
+        if in_doubt {
             // Its sequence is in doubt, and only this value may be sent
             // under it; a fresh producer is the way on to the next one.
             *producer = None;
