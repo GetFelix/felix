@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791419504188,
+  "lastUpdate": 1791426099098,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24544,6 +24544,58 @@ window.BENCHMARK_DATA = {
             "range": "11890.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 839559.97\nmean: 842790.48\nstdev: 11890.97\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8514d8f576b28b0a0526f18c7c0e3e50c6211749",
+          "message": "fix(ci): pick the nightly commit by walking main, not by run order (#1035)\n\nThe runs API returned a CI run from 09-14 as the newest successful one on\n10-06 and 10-07, so both nightlies checked out a months-old tree and failed\nin every build job. Walk main's last 50 commits newest first and take the\nfirst with a green push CI run.",
+          "timestamp": "2026-10-07T19:13:07-07:00",
+          "tree_id": "939deed975ce036e71256b4eb85a1afbfaedf990",
+          "url": "https://github.com/GetFelix/felix/commit/8514d8f576b28b0a0526f18c7c0e3e50c6211749"
+        },
+        "date": 1791426098358,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360516.07,
+            "range": "16841.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360516.07\nmean: 360022.43\nstdev: 16841.93\ncv: 4.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360516.07,
+            "range": "16841.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360516.07\nmean: 360022.43\nstdev: 16841.93\ncv: 4.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84636.97,
+            "range": "1006.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84636.97\nmean: 84900.23\nstdev: 1006.07\ncv: 1.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 846369.65,
+            "range": "10060.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 846369.65\nmean: 849002.27\nstdev: 10060.68\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
