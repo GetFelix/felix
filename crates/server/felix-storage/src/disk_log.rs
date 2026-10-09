@@ -40,6 +40,7 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod inspect;
 pub mod layout;
 
 mod append;

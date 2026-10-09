@@ -30,11 +30,16 @@ The control plane says what placement intends: `felixctl shard ls` for the
 stored assignments, and `felix-controlplane admin plan` for what the next
 placement pass would do with each shard and why it is waiting.
 
+`felix-broker inspect segments` reads a broker's data directory from disk,
+without starting a broker: every shard's segments, whether their records and indexes
+verify, and what startup would do with each shard. It is the tool for a broker
+that will not start.
+
 More `felixctl inspect` commands are coming
 ([#1077](https://github.com/GetFelix/felix/issues/1077)): `inspect conns` for
-connections, `inspect decisions` for the control plane's placement decisions, `inspect segments` and `inspect records`
-for a data directory read offline, and `inspect record` for which replicas
-hold one offset.
+connections, `inspect decisions` for the control plane's placement decisions,
+`inspect records` for the records of a data directory decoded offline, and
+`inspect record` for which replicas hold one offset.
 
 ## A shard is not serving, or refuses writes
 
@@ -374,29 +379,172 @@ authenticates under. See [Security](/features/security/).
 
 ## A broker will not start, or will not open a shard
 
-**What you see.** The broker exits at startup, or `inspect shard` says
-`failed` with the open error, and `felix_broker_shard_open_failures_total`
-rises.
+**What you see.** One of:
 
-**How to read it.** Startup recovery tells a torn tail from interior
-corruption. A tail cut short by a crash is repaired, and the broker logs
-`repaired a torn tail in the active segment` and starts.
-`felix_storage_recovery_truncated_bytes` says how much it dropped. A record
-that is damaged anywhere else is not repaired, because that would silently
-drop records a client was told are stored. The broker refuses with:
+- The broker exits at startup with `corruption detected: ...` and, under
+  Kubernetes, the pod goes into `CrashLoopBackOff`.
+- The broker runs, but `felixctl inspect shard` says the shard is `failed` with
+  the open error, and `felix_broker_shard_open_failures_total` rises.
+- The broker started and logged `repaired a torn tail in the active segment`,
+  or `felix_storage_recovery_truncated_bytes` moved, and you want to know what
+  was dropped.
+
+For example:
 
 ```
-corruption detected: record checksum mismatch (expected ..., found ...) (shard=t/ns/s/0, segment=4, position=0)
+corruption detected: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa) (shard=acme/default/orders/3, segment=1, position=50331712)
 ```
 
-A checksum failure on the very last record counts as interior corruption
-unless `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` is `true`. That setting is
-defensible with `FsyncMode::None` and not with `OnCommit`.
+**What to run.** `felix-broker inspect segments` on the data directory,
+wherever it is mounted. It is a subcommand of the broker binary that does not
+start a broker: it binds nothing, reads no configuration, and only reads the
+directory, so it is safe on the live volume. The verdict depends on three broker
+settings, so pass the ones the broker runs with
+(`--repair-checksum-tail`, `--index-spacing`, `--verify-all-on-open`).
 
-**What to do.** Keep the damaged directory for diagnosis and restore the shard
-from a replica or a backup point; see
+On Kubernetes, with the chart's layout (the volume at `/var/lib/felix/data`,
+the claim `data-<pod>`):
+
+- If the broker container is up (a shard failed, the broker did not), exec
+  into it and run the broker binary's subcommand:
+
+  ```bash
+  kubectl exec felix-broker-0 -c broker -- felix-broker inspect segments /var/lib/felix/data
+  ```
+
+- If it is crash-looping there is nothing to exec into. Run a one-off pod that
+  mounts the same claim read-only. A `ReadWriteOnce` claim can be mounted by
+  two pods only on the same node, so pin it to the broker's node:
+
+  ```bash
+  node=$(kubectl get pod felix-broker-0 -o jsonpath='{.spec.nodeName}')
+  kubectl run felix-inspect --rm -it --restart=Never \
+    --image=ghcr.io/getfelix/felix-broker:<tag> --overrides='{
+      "spec": {
+        "nodeName": "'"$node"'",
+        "securityContext": {"runAsUser": 65532, "runAsGroup": 65532, "runAsNonRoot": true},
+        "containers": [{
+          "name": "felix-inspect",
+          "image": "ghcr.io/getfelix/felix-broker:<tag>",
+          "command": ["felix-broker", "inspect", "segments", "/data"],
+          "volumeMounts": [{"name": "data", "mountPath": "/data", "readOnly": true}]
+        }],
+        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "data-felix-broker-0", "readOnly": true}}]
+      }}'
+  ```
+
+  `kubectl debug felix-broker-0 --copy-to=felix-broker-0-debug --same-node
+  --container=broker -- felix-broker inspect segments /var/lib/felix/data` is
+  shorter: it copies the pod with its volumes and runs the inspection in place
+  of the broker. The copy mounts the volume read-write, though the inspection
+  itself only reads. Delete the copy afterwards.
+
+- Safest in production: take a `VolumeSnapshot` of the claim, restore it to a
+  new claim and inspect that, as above, so nothing touches the broker's volume
+  at all.
+
+With Docker Compose, stop the restart loop first (`docker compose stop
+felix-broker`), find the volume (`docker volume ls`; Compose prefixes it with
+the project name, as in `felix_felix-data`) and run the broker image against
+it, mounted read-only. The image's entrypoint goes through `tini`, so name the
+binary with `--entrypoint`:
+
+```bash
+docker run --rm --entrypoint felix-broker -v felix_felix-data:/data:ro \
+  ghcr.io/getfelix/felix-broker:<tag> inspect segments /data
+```
+
+With Podman it is the same command:
+
+```bash
+podman run --rm --entrypoint felix-broker -v felix_felix-data:/data:ro \
+  ghcr.io/getfelix/felix-broker:<tag> inspect segments /data
+```
+
+A named volume needs no SELinux option. A host directory bind-mounted on an
+SELinux host needs one to be readable: use `:ro,z`. `z` relabels the files
+(their labels, not their contents) so containers can share them; `Z` would
+label them for this one container and lock the broker out of its own data.
+
+On any machine, a copy works as well as the volume: a backup, or a snapshot's
+files copied off the node. Run `felix-broker inspect segments ./copy` with the
+Linux `felix-broker` binary attached to each release (see
+[Installation](/getting-started/installation/)), or the image as above with
+the copy mounted. This is the safest of all, and the copy is what you keep for
+diagnosis anyway.
+
+**How to read it.**
+
+```
+STORE   SHARD                                   SEGMENTS  RECORDS  BYTES      STARTUP
+stream  acme_default_orders_0-0d3aed4b998d2798  5         1048576  268697912  clean
+stream  acme_default_orders_3-5c1f0e2a9b7d4410  3         271041   136501248  refuse: segment 1 at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+
+acme_default_orders_3-5c1f0e2a9b7d4410 (stream)  /data/acme_default_orders_3-5c1f0e2a9b7d4410
+  SEGMENT  BASE    NEXT    RECORDS  BYTES      INDEX    RECORDS CHECK
+  0        0       262144  262144   67108864   matches  ok
+  1        262144  -       -        67108864   matches  damaged at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+  2        393216  402113  8897     2283520    behind   ok
+  startup refuses: segment 1 at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+```
+
+One line per shard, for every store: streams directly under the data
+directory, then `caches/`, `groups/`, `dead-letters/` and `counters/`. A shard
+directory is named from its key plus a hash, so `SHARD` is that name; give
+`TENANT/NAMESPACE/NAME/SHARD` (and `--kind` for a store other than streams) to
+look at one. Shards with findings, a shard you name, and with `--segments`
+every shard, also get their segments listed. `RECORDS CHECK` comes from reading
+every record, which startup does not do for sealed segments: `torn tail` is
+damage in the shape an unfinished write leaves at the end of a file, `damaged`
+is anything else, and the segment's `NEXT` and `RECORDS` are then unknown.
+`INDEX` compares the index file with one rebuilt from the segment: `matches`,
+`behind` (normal for the active segment), `missing` or `stale`. `--json` prints
+one line per shard with `startup`, `actions` (the writes startup would make)
+and `segments`.
+
+`STARTUP` is the verdict the broker's startup recovery reaches, from the same
+code: it plans what it will do before it writes anything, and `inspect` runs
+only the plan. The exit status says the same for scripts: 0 clean, 6 repair,
+7 refuse or damaged records.
+
+- `clean`: the shard opens as it is. A missing or stale index does not change
+  this; startup rebuilds indexes from their segments.
+- `repair: ...`: startup cuts or removes something no client was ever told was
+  stored, and starts. The usual case is a torn tail: a crash in the middle of
+  an append leaves a partial record at the end of the newest segment, and
+  startup cuts it. Others are a segment left by a rollover that was interrupted,
+  or a retired segment whose seal a power loss interrupted. A broker that does
+  this logs it, and the shard's data up to the cut is intact.
+- `refuse: segment S at byte P: ...`: damage in bytes that may hold
+  acknowledged records. Startup will not cut them, because that would silently
+  drop records a client was told are stored.
+- `(records fail their checksum, see below)`: startup would open the shard, but
+  a record in a sealed segment does not verify. Startup only checks a sealed
+  segment from its last index entry on; reads of the damaged records fail
+  instead. `--verify-all-on-open` shows what the broker would do with
+  `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true`, which checks everything at startup.
+
+A checksum failure on the very last record of the newest segment counts as
+damage, not a torn tail, unless `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` is `true`.
+The header verified, so the record is complete and may have been acknowledged.
+That setting is defensible with `FsyncMode::None` and not with `OnCommit`.
+
+**Likely causes.**
+
+- `repair`, a torn tail: the broker or its node stopped in the middle of an
+  append: a crash, an OOM kill, a power loss. Expected; nothing to do.
+- `refuse` or damaged records: the storage under the volume returned different
+  bytes than were written (a failing disk, a volume restored from an
+  inconsistent snapshot), or something other than the broker wrote into the
+  data directory.
+- `refuse` with `offset out of order` at byte 0: a segment file is missing
+  from the middle of the chain, usually deleted by hand or lost in a partial
+  copy.
+
+**What to do.** For `repair`, start the broker; it makes exactly the repair
+shown. For `refuse` or damaged records, keep the directory as it is for
+diagnosis. Do not delete or cut segments by hand. Restore the shard from a
+replica or a backup point; see
 [Backup and restore](/deployment/backup-and-restore/).
 [Durable storage](/architecture/durable-storage/) has the recovery rules in
-full. `inspect segments` will report the verdict startup would reach, without
-starting the broker
-([#1077](https://github.com/GetFelix/felix/issues/1077)).
+full.

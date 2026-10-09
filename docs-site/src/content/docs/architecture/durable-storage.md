@@ -273,6 +273,11 @@ every record it returns, so bit rot in cold data is still caught, though when it
 is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
 
+Recovery plans every repair before it makes any, and
+`felix-broker inspect segments` runs that plan alone: it reports what startup would
+do with a data directory, read-only, without a broker. See
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
+
 Anything that deletes segments does it one synced unlink at a time, in an
 order that keeps the chain whole. Retention and compaction go oldest first.
 Replication's truncation and reset go newest first, and a reset creates its
