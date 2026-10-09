@@ -12,6 +12,13 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A cache shard's compaction pass now writes its key index to `keys.idx` in
+  the shard directory, and an open loads it and replays only the log past it
+  instead of the whole log (part of #1073). The snapshot is checked against
+  the log (CRC-32C, the offset range it covers, the checksum of the last
+  record it saw) and ignored for a full replay when anything disagrees; a log
+  truncation and `forget_index` remove it. Memory is unchanged: the index is
+  still held whole in memory. Format in `docs/storage-format.md`.
 - A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
   macOS and Linux, with completions and man pages (#1005). `release.yml`
   writes it from each release's archive checksums and pushes it to

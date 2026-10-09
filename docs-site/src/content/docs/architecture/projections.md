@@ -77,9 +77,10 @@ at that offset.
 - **In the log:** one record per put and per delete, each carrying the key.
 - **In memory:** an index of key to the offset of its latest record, plus the
   bytes each record occupies, so compaction knows when it is worth running.
-- **Rebuilt from the log:** the whole index. It is never read from disk, and it
-  catches up to the log's tail whenever it is behind. That lets a promoted
-  follower serve records that arrived by replication instead of through a put.
+- **Rebuilt from the log:** the whole index. Compaction leaves a snapshot of
+  it on disk, which an open uses only after checking it against the log, to
+  replay just the records past it. It catches up to the log's tail whenever
+  it is behind. That lets a promoted follower serve records that arrived by replication instead of through a put.
 
 Compaction copies the live set forward and drops superseded and expired
 records. It **appends the live set at the tail** rather than renumbering from

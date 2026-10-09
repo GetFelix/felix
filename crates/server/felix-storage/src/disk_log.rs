@@ -1402,12 +1402,14 @@ impl LogInner {
         }
     }
 
-    /// Rebuild producer state after the log was cut back. The snapshot may
-    /// describe records that are gone, so it is removed first, durably: one
-    /// that came back after a crash would be read as describing the records
-    /// that replaced them.
+    /// Rebuild producer state after the log was cut back. The producer
+    /// snapshot, and a cache's key index snapshot when this log backs a
+    /// cache, may describe records that are gone, so both are removed first,
+    /// durably: one that came back after a crash would be read as describing
+    /// the records that replaced them.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
+        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
         let state = producers::rebuild(&self.dir, segments, None)?;
         self.batch_open

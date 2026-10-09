@@ -18,9 +18,10 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use super::CacheOp;
-use super::shard::{CacheShard, Entry, Index, now_millis};
+use super::shard::{CacheShard, Index, now_millis};
 use crate::compaction::{COPY_BATCH, payload_bytes};
 use crate::disk_log::DiskLog;
+use crate::index_snapshot::IndexEntry;
 use crate::log::{AppendRecord, Offset};
 use crate::{Result, StorageError};
 
@@ -126,7 +127,7 @@ impl CacheShard {
                 .collect();
             for key in expired {
                 if let Some(entry) = index.entries.remove(&key) {
-                    index.live_bytes -= entry.bytes;
+                    index.live_bytes -= u64::from(entry.bytes);
                 }
             }
         }
@@ -136,8 +137,19 @@ impl CacheShard {
         log.sync().await?;
         let removed = log.trim_before(cut).await?;
         let reclaimed: u64 = removed.iter().map(payload_bytes).sum();
-        let mut state = self.state.lock().await;
-        state.index.log_bytes = state.index.log_bytes.saturating_sub(reclaimed);
+        {
+            let mut state = self.state.lock().await;
+            state.index.log_bytes = state.index.log_bytes.saturating_sub(reclaimed);
+        }
+        // After the trim, so the byte count it records is the trimmed log's.
+        // A crash before it leaves the previous snapshot, which now covers
+        // less than the trimmed base and is ignored on open.
+        if let Err(err) = self.write_snapshot().await {
+            tracing::warn!(
+                shard = %self.label, error = %err,
+                "could not write the cache's index snapshot; the next open replays the whole log",
+            );
+        }
         Ok(())
     }
 
@@ -150,7 +162,7 @@ impl CacheShard {
     }
 
     /// Live, unexpired entries whose record sits below `cut`.
-    pub(super) async fn live_below(&self, cut: Offset) -> Result<Vec<(String, Entry)>> {
+    pub(super) async fn live_below(&self, cut: Offset) -> Result<Vec<(String, IndexEntry)>> {
         let mut state = self.state.lock().await;
         self.ensure_index(&mut state).await?;
         let now = now_millis();
@@ -168,16 +180,16 @@ impl CacheShard {
     pub(super) async fn copy_forward(
         &self,
         log: &DiskLog,
-        batch: &[(String, Entry)],
+        batch: &[(String, IndexEntry)],
     ) -> Result<bool> {
         // Read without the lock: records are never rewritten, so the bytes at
         // an offset cannot change, and the staging step below checks the
         // index still points there.
-        let mut copies: Vec<(String, Entry, Bytes)> = Vec::with_capacity(batch.len());
+        let mut copies: Vec<(String, IndexEntry, Bytes)> = Vec::with_capacity(batch.len());
         let mut cost = 0;
         for (key, entry) in batch {
             if let Some(value) = Self::read_from(log, &self.label, *entry).await? {
-                cost += 2 * entry.bytes;
+                cost += 2 * u64::from(entry.bytes);
                 copies.push((key.clone(), *entry, value));
             }
         }
