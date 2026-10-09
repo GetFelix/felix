@@ -1871,7 +1871,10 @@ export FELIX_DURABLE_OFFLOAD_DIR="/mnt/felix-cold"
 
 **Note**: Nothing reads the copies yet. A read below the local head still
 reports `CursorTooOld`. The directory is written through the `object_store`
-crate's local filesystem backend; other backends are not wired up.
+crate's local filesystem backend; other backends are not wired up. The
+directory is opened by the first copy, not at startup, so a missing or
+read-only mount does not stop the broker; until it is fixed, retention keeps
+every segment without a copy and the local disk grows.
 
 ### `FELIX_DURABLE_INDEX_SPACING_BYTES`
 

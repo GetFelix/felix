@@ -262,6 +262,31 @@ impl LogCache {
         shard.read_value(&state, entry).await
     }
 
+    /// [`LogCache::get_checked`], once every write to `key` already staged
+    /// has applied.
+    ///
+    /// For a read-modify-write under a caller's own lock. A put whose caller
+    /// was cancelled still finishes on its own task, after that lock is gone,
+    /// so a plain read can miss it and the write that follows lands on top.
+    pub async fn get_settled_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<Bytes>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let state = shard.lock_settled(key).await?;
+        let Some(entry) = state.index.entries.get(key).copied() else {
+            return Ok(None);
+        };
+        if entry.is_expired(now_millis()) {
+            return Ok(None);
+        }
+        shard.read_value(&state, entry).await
+    }
+
     /// The read behind [`StorageApi::get_versioned`].
     pub async fn get_versioned_checked(
         &self,
@@ -829,6 +854,10 @@ impl StorageApi for LogCache {
     ) -> Result<Option<Bytes>> {
         self.delete_checked(tenant_id, namespace, cache, shard, key)
             .await
+    }
+
+    fn has_log(&self) -> bool {
+        true
     }
 
     async fn shard_log(

@@ -40,6 +40,7 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod inspect;
 pub mod layout;
 
 mod append;
@@ -807,6 +808,8 @@ impl DiskLog {
         // offloaded from one that was lost.
         let manifest = offload::manifest::load(&dir)?;
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
+        // Does not touch the archive: an unreachable one must not stop the
+        // log from serving. The first pass opens it.
         let offloader = config
             .offload
             .as_ref()

@@ -387,6 +387,86 @@ async fn a_manifest_that_does_not_decode_fails_the_open() {
     DiskLog::open(dir.path().join("log"), LABEL, config).expect_err("damaged manifest");
 }
 
+/// An archive under `blocker`, which starts as a file, so the archive
+/// directory cannot be created until the test removes it.
+fn blocked_archive_config(root: &Path) -> (PathBuf, LogConfig) {
+    let blocker = root.join("blocker");
+    std::fs::write(&blocker, b"not a directory").expect("blocker");
+    let config = LogConfig {
+        offload: Some(OffloadTarget::LocalDir(blocker.join("store"))),
+        ..offload_config(root, tight_retention())
+    };
+    (blocker, config)
+}
+
+#[tokio::test]
+async fn an_unreachable_archive_does_not_fail_the_open_or_publishes() {
+    let dir = tempdir().expect("dir");
+    let (_blocker, config) = blocked_archive_config(dir.path());
+    let log = filled_log(dir.path(), &config).await;
+    assert_eq!(read_all(&log, 0).await, payloads());
+    log.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn retention_keeps_and_reports_segments_while_the_archive_is_down_then_resumes() {
+    let dir = tempdir().expect("dir");
+    let (blocker, config) = blocked_archive_config(dir.path());
+    let log = filled_log(dir.path(), &config).await;
+
+    for pass in 1..=2 {
+        log.enforce_retention_now()
+            .await
+            .expect_err("the archive cannot be opened");
+        assert_eq!(log.base_offset(), 0, "deleted a segment with no copy");
+        let health = offloader(&log).health.lock();
+        assert_eq!(health.consecutive_failures, pass);
+        assert!(health.held_bytes > 0, "held bytes not reported");
+    }
+    // Publishes keep working through the outage.
+    log.append(&records(&["during-outage"]))
+        .await
+        .expect("append");
+
+    std::fs::remove_file(&blocker).expect("the archive comes back");
+    log.enforce_retention_now().await.expect("pass");
+    assert!(log.base_offset() > 0, "deletion did not resume");
+    assert!(log.inner.manifest.lock().covers(0, log.base_offset()));
+    {
+        let health = offloader(&log).health.lock();
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.held_bytes, 0);
+    }
+    log.shutdown().await.expect("shutdown");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_read_only_archive_does_not_fail_the_open_and_nothing_is_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("store");
+    std::fs::create_dir(&archive).expect("archive");
+    std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    if std::fs::write(archive.join("probe"), b"").is_ok() {
+        // Root ignores the mode bits; there is nothing to test.
+        return;
+    }
+    let config = offload_config(dir.path(), tight_retention());
+    let log = filled_log(dir.path(), &config).await;
+    log.enforce_retention_now()
+        .await
+        .expect_err("nothing can be written to the archive");
+    assert_eq!(log.base_offset(), 0);
+    assert_eq!(offloader(&log).health.lock().consecutive_failures, 1);
+
+    std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    log.enforce_retention_now().await.expect("pass");
+    assert!(log.base_offset() > 0);
+    log.shutdown().await.expect("shutdown");
+}
+
 #[test]
 fn offload_needs_a_check_interval() {
     let config = LogConfig {

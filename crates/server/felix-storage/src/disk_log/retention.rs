@@ -117,18 +117,21 @@ impl LogInner {
     ///
     /// With offload on, the copies are made first, and a failed copy does not
     /// stop the deletions after it: retention deletes only recorded segments,
-    /// and the error is returned once it is done.
+    /// and the error is returned once it is done. A segment past the bounds
+    /// without a recorded copy is kept, however long offload keeps failing,
+    /// and reported as held.
     pub(super) async fn sweep_retention(self: Arc<Self>) -> Result<RetentionOutcome> {
         let offloaded = self.offload_pass().await;
-        match &offloaded {
-            Ok(outcome) if outcome.segments > 0 => tracing::info!(
+        // A failure is logged, on a backoff, by the pass itself.
+        if let Ok(outcome) = &offloaded
+            && outcome.segments > 0
+        {
+            tracing::info!(
                 shard = %self.label,
                 segments = outcome.segments,
                 bytes = outcome.bytes,
                 "offloaded segments"
-            ),
-            Ok(_) => {}
-            Err(err) => tracing::warn!(shard = %self.label, error = %err, "offload pass failed"),
+            );
         }
         // A test stop stands for a crash, after which nothing else runs.
         #[cfg(test)]
@@ -142,6 +145,9 @@ impl LogInner {
             let mut outcome = RetentionOutcome::default();
             let bounds = *inner.retention_bounds.lock();
             if !bounds.is_set() {
+                if let Some(offloader) = &inner.offloader {
+                    offloader.note_held(&inner.label, 0, 0);
+                }
                 outcome.base_offset = inner.segments.read().base_offset();
                 return Ok(outcome);
             }
@@ -150,8 +156,9 @@ impl LogInner {
             let plan = inner.segments.read().retention_plan();
             let mut chosen =
                 plan.choose(bounds, inner.retention_floor(), now_micros(), &inner.label)?;
-            if inner.offloader.is_some() {
-                inner.keep_offloaded_prefix(&manifest, &mut chosen);
+            if let Some(offloader) = &inner.offloader {
+                let (segments, bytes) = inner.keep_offloaded_prefix(&manifest, &mut chosen);
+                offloader.note_held(&inner.label, segments, bytes);
             }
             let removed = {
                 let mut segments = inner.segments.write();
@@ -208,23 +215,29 @@ impl LogInner {
     }
 
     /// Cut `chosen` back to the segments, from the head, whose copy the
-    /// manifest records. The rest wait for a copy.
+    /// manifest records. The rest wait for a copy; returns how many segments
+    /// and bytes that keeps.
     fn keep_offloaded_prefix(
         &self,
         manifest: &super::offload::Manifest,
         chosen: &mut Vec<crate::log::SegmentId>,
-    ) {
+    ) -> (usize, u64) {
         let descriptors = self.segments.read().descriptors();
+        let descriptor =
+            |id: &crate::log::SegmentId| descriptors.iter().find(|descriptor| descriptor.id == *id);
         let recorded = chosen
             .iter()
-            .take_while(|id| {
-                descriptors
-                    .iter()
-                    .find(|descriptor| descriptor.id == **id)
-                    .is_some_and(|descriptor| manifest.records(descriptor))
-            })
+            .take_while(|id| descriptor(id).is_some_and(|descriptor| manifest.records(descriptor)))
             .count();
+        let held = &chosen[recorded..];
+        let bytes = held
+            .iter()
+            .filter_map(descriptor)
+            .map(|descriptor| descriptor.size_bytes)
+            .sum();
+        let segments = held.len();
         chosen.truncate(recorded);
+        (segments, bytes)
     }
 
     /// Delete the sealed head segments that hold only offsets below `before`,
