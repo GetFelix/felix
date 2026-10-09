@@ -98,6 +98,56 @@ fn a_per_connection_limit_above_the_broker_wide_one_is_refused() {
     assert!(config.validate().is_err());
 }
 
+/// Unset, a connection holds four identities' worth in all, never more than
+/// the broker-wide budget and never less than one identity's.
+#[test]
+fn a_connection_ceiling_follows_the_per_identity_limits() {
+    let defaults = BrokerConfig::default();
+    assert_eq!(defaults.conn_publish_ceiling(), defaults.pub_inflight_bytes);
+    assert_eq!(
+        defaults.conn_subscription_ceiling(),
+        defaults.max_subscriptions_per_conn * 4
+    );
+    let config = BrokerConfig {
+        pub_inflight_bytes: 1024,
+        pub_conn_inflight_bytes: 1024,
+        ..BrokerConfig::default()
+    };
+    assert_eq!(config.conn_publish_ceiling(), 1024);
+}
+
+#[test]
+fn a_connection_ceiling_below_one_identitys_limit_is_refused() {
+    let publish = BrokerConfig {
+        pub_conn_total_inflight_bytes: Some(1024),
+        pub_conn_inflight_bytes: 2048,
+        ..BrokerConfig::default()
+    };
+    let message = format!("{:#}", publish.validate().expect_err("below one identity"));
+    assert!(
+        message.contains("pub_conn_total_inflight_bytes"),
+        "{message}"
+    );
+    let above = BrokerConfig {
+        pub_conn_total_inflight_bytes: Some(BrokerConfig::default().pub_inflight_bytes + 1),
+        ..BrokerConfig::default()
+    };
+    assert!(above.validate().is_err());
+    let subscriptions = BrokerConfig {
+        max_subscriptions_per_conn_total: Some(1),
+        max_subscriptions_per_conn: 2,
+        ..BrokerConfig::default()
+    };
+    let message = format!(
+        "{:#}",
+        subscriptions.validate().expect_err("below one identity")
+    );
+    assert!(
+        message.contains("max_subscriptions_per_conn_total"),
+        "{message}"
+    );
+}
+
 #[test]
 fn a_stream_window_above_the_connection_window_is_refused() {
     let config = BrokerConfig {

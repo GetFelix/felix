@@ -365,15 +365,15 @@ async fn a_token_subject_binds_to_the_client_certificate() {
         .peer_certificates()
         .expect("the client's chain");
 
-    check_subject_binding(Some(&certs), "orders.apps.felix.test").expect("its own name");
-    let other = check_subject_binding(Some(&certs), "billing.apps.felix.test")
+    check_subject_binding(Some(&certs), "t1", "orders.apps.felix.test").expect("its own name");
+    let other = check_subject_binding(Some(&certs), "t1", "billing.apps.felix.test")
         .expect_err("another service's token");
     assert!(other.contains("not issued to"), "{other}");
     let unnameable =
-        check_subject_binding(Some(&certs), "user@example.com").expect_err("not a name");
+        check_subject_binding(Some(&certs), "t1", "user@example.com").expect_err("not a name");
     assert!(unnameable.contains("not issued to"), "{unnameable}");
     // No certificate, nothing to bind to: a listener without a client CA.
-    check_subject_binding(None, "anyone").expect("no certificate");
+    check_subject_binding(None, "t1", "anyone").expect("no certificate");
 }
 
 /// Control-plane principal ids are 64 hex characters: one label longer than
@@ -408,16 +408,54 @@ async fn a_principal_id_binds_through_the_uri_san() {
     };
 
     let with_uri = certs(&app_cert, &app_key).await;
-    check_subject_binding(Some(&with_uri), &principal).expect("the principal in its URI SAN");
-    check_subject_binding(Some(&with_uri), "orders.apps.felix.test")
+    check_subject_binding(Some(&with_uri), "t1", &principal).expect("the principal in its URI SAN");
+    check_subject_binding(Some(&with_uri), "t1", "orders.apps.felix.test")
         .expect("its DNS name still binds");
-    check_subject_binding(Some(&with_uri), &"4e".repeat(32))
+    check_subject_binding(Some(&with_uri), "t1", &"4e".repeat(32))
         .expect_err("another principal's token");
-    check_subject_binding(Some(&with_uri), "").expect_err("the bare prefix is no principal");
+    check_subject_binding(Some(&with_uri), "t1", "").expect_err("the bare prefix is no principal");
 
     let (plain_cert, plain_key) = pki.issue("plain", "orders.apps.felix.test");
     let without_uri = certs(&plain_cert, &plain_key).await;
-    let refused = check_subject_binding(Some(&without_uri), &principal)
+    let refused = check_subject_binding(Some(&without_uri), "t1", &principal)
         .expect_err("no URI SAN, so no principal to bind to");
+    assert!(refused.contains("not issued to"), "{refused}");
+}
+
+/// A gateway acting for many users presents each user's token over its own
+/// certificate. A `felix:delegate:<tenant>` URI SAN lets that certificate
+/// carry any subject of that tenant, and only that tenant.
+#[test]
+fn a_delegate_uri_binds_every_subject_of_its_tenant_only() {
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params =
+        rcgen::CertificateParams::new(vec!["gateway.apps.felix.test".to_string()]).expect("params");
+    params.subject_alt_names.push(rcgen::SanType::URI(
+        format!("{DELEGATE_URI_PREFIX}t1").try_into().expect("uri"),
+    ));
+    let gateway = vec![params.self_signed(&key).expect("cert").der().clone()];
+
+    let alice = "3f".repeat(32);
+    check_subject_binding(Some(&gateway), "t1", &alice).expect("a user of its tenant");
+    check_subject_binding(Some(&gateway), "t1", "bob@example.com")
+        .expect("any subject of its tenant");
+    check_subject_binding(Some(&gateway), "t1", "gateway.apps.felix.test")
+        .expect("its own name still binds");
+    let other_tenant = check_subject_binding(Some(&gateway), "t2", &alice)
+        .expect_err("a user of a tenant it does not act for");
+    assert!(other_tenant.contains("not issued to"), "{other_tenant}");
+    check_subject_binding(Some(&gateway), "", &alice).expect_err("no tenant is no delegation");
+
+    // Without the URI, the same certificate refuses every other subject.
+    let plain = vec![
+        rcgen::CertificateParams::new(vec!["gateway.apps.felix.test".to_string()])
+            .expect("params")
+            .self_signed(&key)
+            .expect("cert")
+            .der()
+            .clone(),
+    ];
+    let refused =
+        check_subject_binding(Some(&plain), "t1", &alice).expect_err("a user's token, no URI");
     assert!(refused.contains("not issued to"), "{refused}");
 }

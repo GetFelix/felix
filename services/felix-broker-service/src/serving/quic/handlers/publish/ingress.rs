@@ -95,30 +95,28 @@ pub(crate) async fn enqueue_publish(
 ) -> Result<bool> {
     // Byte-based admission gate, independent of the item-count queue depth: bounds total bytes
     // queued-or-processing so a handful of large payloads/batches can't blow past the intended
-    // ingress memory budget. Two gates are applied: the connection's own share
-    // (`conn_admission`) first, then the shared process-wide budget (`admission`). Gating on the
-    // per-connection budget first means one connection maxing out its own share can't consume
-    // global-budget accounting cycles meant for other connections. Both permits travel with the
-    // job and are released together once the job is done (or dropped without ever being
-    // enqueued).
+    // ingress memory budget. Three gates, narrowest first: the publishing identity's share of
+    // this connection (`identity`), the connection's ceiling across identities
+    // (`conn_admission`), then the shared process-wide budget (`admission`). A plain client is
+    // one identity and the ceiling is never below its share, so for it the first gate is the
+    // per-connection budget it always was. Gating narrowest first means one identity maxing
+    // out its share can't hold budget meant for the connection's other identities, or the
+    // broker's other connections. All permits travel with the job and are released together
+    // once the job is done (or dropped without ever being enqueued).
     let job_bytes: usize = job.payloads.iter().map(Bytes::len).sum();
     // One deadline for the whole enqueue, not one per stage, so admission and
     // the queue together cannot hold the control-stream read loop longer than
     // the configured budget.
     let deadline = tokio::time::Instant::now() + publish_ctx.wait_timeout;
-    let acquire_both = async {
-        let conn_permit = publish_ctx.conn_admission.acquire(job_bytes).await?;
-        let permit = publish_ctx.admission.acquire(job_bytes).await?;
-        Ok::<_, tokio::sync::AcquireError>((conn_permit, permit))
-    };
-    let (conn_permit, permit) = match policy {
-        EnqueuePolicy::Wait => match tokio::time::timeout_at(deadline, acquire_both).await {
-            Ok(Ok(permits)) => permits,
+    let acquire_all = acquire_permits(publish_ctx, job_bytes);
+    let permit = match policy {
+        EnqueuePolicy::Wait => match tokio::time::timeout_at(deadline, acquire_all).await {
+            Ok(Ok(permit)) => permit,
             Ok(Err(_)) => return Err(anyhow!("publish admission closed")),
             Err(_) => return Err(anyhow!("publish admission timed out")),
         },
-        EnqueuePolicy::Backpressure => match until_cancelled(acquire_both, &mut cancel).await {
-            Some(Ok(permits)) => permits,
+        EnqueuePolicy::Backpressure => match until_cancelled(acquire_all, &mut cancel).await {
+            Some(Ok(permit)) => permit,
             Some(Err(_)) => return Err(anyhow!("publish admission closed")),
             None => {
                 t_counter!("felix_broker_ingress_backpressure_cancelled_total").increment(1);
@@ -128,52 +126,42 @@ pub(crate) async fn enqueue_publish(
             }
         },
         EnqueuePolicy::Drop | EnqueuePolicy::Fail => {
-            let conn_permit = match publish_ctx.conn_admission.try_acquire(job_bytes) {
-                Ok(permit) => permit,
-                Err(_) => {
-                    t_counter!("felix_broker_ingress_conn_bytes_full_total").increment(1);
-                    return match policy {
-                        EnqueuePolicy::Drop => {
-                            t_counter!("felix_broker_ingress_dropped_total").increment(1);
-                            Ok(false)
-                        }
-                        EnqueuePolicy::Fail => {
-                            t_counter!("felix_broker_ingress_rejected_total").increment(1);
-                            Err(anyhow!(
-                                "publish ingress per-connection byte budget exhausted"
-                            ))
-                        }
-                        EnqueuePolicy::Wait | EnqueuePolicy::Backpressure => {
-                            unreachable!("waiting policies handled above")
-                        }
-                    };
+            let refused = |reason: &'static str| match policy {
+                EnqueuePolicy::Drop => {
+                    t_counter!("felix_broker_ingress_dropped_total").increment(1);
+                    Ok(false)
+                }
+                EnqueuePolicy::Fail => {
+                    t_counter!("felix_broker_ingress_rejected_total").increment(1);
+                    Err(anyhow!(reason))
+                }
+                EnqueuePolicy::Wait | EnqueuePolicy::Backpressure => {
+                    unreachable!("waiting policies handled above")
                 }
             };
-            match publish_ctx.admission.try_acquire(job_bytes) {
-                Ok(permit) => (conn_permit, permit),
-                Err(_) => {
-                    t_counter!("felix_broker_ingress_bytes_full_total").increment(1);
-                    return match policy {
-                        EnqueuePolicy::Drop => {
-                            t_counter!("felix_broker_ingress_dropped_total").increment(1);
-                            Ok(false)
-                        }
-                        EnqueuePolicy::Fail => {
-                            t_counter!("felix_broker_ingress_rejected_total").increment(1);
-                            Err(anyhow!("publish ingress byte budget exhausted"))
-                        }
-                        EnqueuePolicy::Wait | EnqueuePolicy::Backpressure => {
-                            unreachable!("waiting policies handled above")
-                        }
-                    };
-                }
+            let Ok(identity_permit) = publish_ctx.identity.admission.try_acquire(job_bytes) else {
+                t_counter!("felix_broker_ingress_conn_bytes_full_total").increment(1);
+                return refused("publish ingress per-connection byte budget exhausted");
+            };
+            let Ok(conn_permit) = publish_ctx.conn_admission.try_acquire(job_bytes) else {
+                t_counter!("felix_broker_ingress_conn_bytes_full_total").increment(1);
+                return refused(
+                    "publish ingress per-connection byte budget exhausted across identities",
+                );
+            };
+            let Ok(permit) = publish_ctx.admission.try_acquire(job_bytes) else {
+                t_counter!("felix_broker_ingress_bytes_full_total").increment(1);
+                return refused("publish ingress byte budget exhausted");
+            };
+            AdmissionPermit {
+                _identity: identity_permit,
+                _conn: conn_permit,
+                _global: permit,
+                _share: Arc::clone(&publish_ctx.identity),
             }
         }
     };
-    job.admission_permit = Some(AdmissionPermit {
-        _conn: conn_permit,
-        _global: permit,
-    });
+    job.admission_permit = Some(permit);
     // A write routed on a cluster member entered the fence when it was
     // routed, and keeps that place until it is written.
     if job.fenced.is_none() {
@@ -294,9 +282,26 @@ pub(crate) async fn enqueue_tenant_publish(
     Ok(enqueued)
 }
 
+/// Wait for `bytes` from the identity's share, the connection's ceiling and
+/// the broker-wide budget, in that order.
+async fn acquire_permits(
+    publish_ctx: &PublishContext,
+    bytes: usize,
+) -> Result<AdmissionPermit, tokio::sync::AcquireError> {
+    let identity = publish_ctx.identity.admission.acquire(bytes).await?;
+    let conn = publish_ctx.conn_admission.acquire(bytes).await?;
+    let global = publish_ctx.admission.acquire(bytes).await?;
+    Ok(AdmissionPermit {
+        _identity: identity,
+        _conn: conn,
+        _global: global,
+        _share: Arc::clone(&publish_ctx.identity),
+    })
+}
+
 /// Charge a write that does not go through the publish queue, `publish_if`,
 /// exactly what an acked publish is charged on its way in: the tenant's
-/// quota first, then the connection's and the broker's byte budgets, waiting
+/// quota first, then the identity's, the connection's and the broker's byte budgets, waiting
 /// for those no longer than a queued publish would. Hold the permit until the
 /// write is done.
 ///
@@ -317,15 +322,7 @@ pub(crate) async fn admit_unqueued(
         return Err(ClientError::tenant_quota(wait));
     }
     let deadline = tokio::time::Instant::now() + publish_ctx.wait_timeout;
-    let acquire_both = async {
-        let conn = publish_ctx.conn_admission.acquire(bytes).await?;
-        let global = publish_ctx.admission.acquire(bytes).await?;
-        Ok::<_, tokio::sync::AcquireError>(AdmissionPermit {
-            _conn: conn,
-            _global: global,
-        })
-    };
-    match tokio::time::timeout_at(deadline, acquire_both).await {
+    match tokio::time::timeout_at(deadline, acquire_permits(publish_ctx, bytes)).await {
         Ok(Ok(permit)) => {
             tenants::record_published(tenant, messages, bytes as u64);
             Ok(permit)

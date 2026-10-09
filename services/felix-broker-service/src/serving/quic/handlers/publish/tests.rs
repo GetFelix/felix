@@ -77,7 +77,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         wait_timeout: Duration::from_millis(100),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(

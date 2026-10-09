@@ -158,8 +158,12 @@ Dropping a handle closes its streams.
 
 A refused publish or cache request ends the stream it was sent on, as on any
 client, so a handle that has had one refused cannot publish or reach the cache
-afterwards; build a new one. Users share the connections' flow-control
-windows, so read every subscription promptly or drop it. `ClusterClient` does
+afterwards; build a new one. The broker gives each user on a connection their
+own subscription cap and publish byte budget, under a ceiling for the whole
+connection, so one user at a limit does not block the others. Users share the
+connections' flow-control windows, so read every subscription promptly or drop
+it. A broker that binds tokens to client certificates needs the gateway's
+certificate to carry `felix:delegate:<tenant id>`. `ClusterClient` does
 not offer handles yet. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
 
 ### TLS and ALPN

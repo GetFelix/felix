@@ -1340,8 +1340,10 @@ grows with its streams: up to streams × `publish_window` unanswered publishes,
 each a batch, rather than one `publish_window` for the whole connection. Two
 limits bound it. QUIC caps a connection at 1024 concurrent streams each way,
 and the broker admits at most `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
-(16 MiB) of one connection's publish payloads at a time, so publishes past
-that wait in QUIC flow control. A client should bound its own side the same
+(16 MiB) of one identity's publish payloads on a connection at a time, and
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` across a connection that
+authenticates several identities, so publishes past that wait in QUIC flow
+control. A client should bound its own side the same
 way: the Rust client counts every unanswered publish's bytes against one
 `publish_inflight_bytes` budget (4 MiB by default) across all its streams.
 

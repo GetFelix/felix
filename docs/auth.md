@@ -427,10 +427,26 @@ How an identity behaves:
   client. With one stream of each, the identity can no longer publish or reach
   the cache after that, so a gateway that forwards requests a user may not make
   should build a new identity after a refusal.
-- Publish admission (`publish_inflight_bytes`) is per identity, but the
-  connections' flow-control windows are shared. A subscription the gateway does
-  not read can slow delivery to the other users on that connection, so drain
-  each one promptly or drop it.
+- Each identity has its own limits on both sides. The client gives every
+  identity its own `publish_inflight_bytes`. The broker keys its per-connection
+  limits by tenant and token subject: each user on a connection gets
+  `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` of unanswered publish bytes and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` subscriptions and cache watches, so one
+  user at either limit is refused or slowed without taking the others' room.
+  The connection as a whole is capped at
+  `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (four users' worth, at most
+  `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (four users' worth), so a gateway
+  serving more users than that at full load does see them compete. A user's
+  share is dropped once they have no stream, subscription or publish in flight
+  on the connection.
+- The connections' QUIC flow-control windows are shared. A subscription the
+  gateway does not read can slow delivery to the other users on that
+  connection, so drain each one promptly or drop it.
+- With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, the gateway's certificate is
+  presented with every user's token. Give it the URI SAN
+  `felix:delegate:<tenant id>`, which binds any subject of that tenant and no
+  other; without it, every user's token is refused.
 - `ClusterClient` does not offer it yet.
 
 ## Bootstrap Mode (Day-0)

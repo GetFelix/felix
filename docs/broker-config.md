@@ -47,11 +47,13 @@ pub_workers_per_conn: 4
 pub_queue_depth: 64
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
+pub_conn_total_inflight_bytes: 67108864
 pub_ingress_wait: false
 core_shards: 0
 subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
+max_subscriptions_per_conn_total: 16384
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
@@ -210,7 +212,7 @@ one certificate:
 | `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
 | `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
 | `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. The shipped clients offer `felix/1` only when configured to (see [ALPN](protocol.md#alpn)), so turn that on in every client first. |
-| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
+| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. A certificate with the URI SAN `felix:delegate:<tenant id>` passes with any subject of that tenant, and no other tenant: issue it to a gateway that presents its users' tokens over its own connections (`Client::with_identity`). Each token is still checked against its own grants. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
 | `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
 
 Without `FELIX_TLS_CERT` the broker generates a self-signed certificate for
@@ -274,11 +276,16 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 - `pub_inflight_bytes` bounds actual queued-or-processing publish *bytes*, independent of
   `pub_queue_depth`'s item count, so a handful of large batches can't blow past the ingress
   memory budget even with a small queue depth.
-- `pub_conn_inflight_bytes` is a per-connection share of `pub_inflight_bytes`: it bounds how
-  much of the shared budget a single connection can occupy, so one connection publishing large
-  batches can't starve every other connection's admission. Must be smaller than
-  `pub_inflight_bytes` to have any effect; a value equal to or larger than it degenerates to
-  "no per-connection cap."
+- `pub_conn_inflight_bytes` is what one identity (tenant and token subject) may have in flight
+  on one connection. A plain client authenticates every stream as one identity, so for it this
+  is the connection's share of `pub_inflight_bytes`, and one connection publishing large
+  batches can't starve every other connection's admission. A client acting for many users over
+  one connection (`Client::with_identity`) gets this much per user, so one user's unanswered
+  publishes don't hold up the others. Must be smaller than `pub_inflight_bytes` to have any
+  effect.
+- `pub_conn_total_inflight_bytes` bounds one connection across all its identities. Unset, it is
+  four times `pub_conn_inflight_bytes`, capped at `pub_inflight_bytes`. Startup refuses a value
+  below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.
 - `pub_conn_recv_window` and `pub_stream_recv_window` are the QUIC receive windows of the
   client listeners, which carry publishes and cache requests alike. Unset, both follow
   `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. When ingress is full
@@ -295,10 +302,14 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   `max_client_connections` caps client QUIC connections across all client listeners; attempts
   past it are refused before the handshake. Frame buffers grow as payload bytes arrive, so a
   frame header alone never reserves `max_frame_bytes`.
-- `max_subscriptions_per_conn` bounds how many concurrent subscriptions a single QUIC connection
-  may hold, independent of `subscriber_queue_capacity`. It protects broker memory from a
-  connection that opens unbounded subscriptions rather than bounding any one subscription's
-  buffer size.
+- `max_subscriptions_per_conn` bounds how many concurrent subscriptions and cache watches one
+  identity may hold on a QUIC connection, independent of `subscriber_queue_capacity`. For a
+  plain client, which is one identity, that is the connection's cap. It protects broker memory
+  from a connection that opens unbounded subscriptions rather than bounding any one
+  subscription's buffer size. `max_subscriptions_per_conn_total` bounds the connection across
+  all its identities: unset, four times `max_subscriptions_per_conn`, and startup refuses a
+  value below it. A user at their cap is refused without taking room from the other users on
+  the same connection.
 - `subscriber_queue_capacity` and `subscriber_queue_policy` control broker-core per-subscriber
   buffering and drop behavior (the fanout enqueue path); `subscriber_lane_queue_depth` and
   `subscriber_lane_queue_policy` control the writer-lane stage one hop later (the actual QUIC

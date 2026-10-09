@@ -79,7 +79,9 @@ impl BrokerAuth {
     }
 
     /// Require every token presented over a connection with a client
-    /// certificate to name that certificate's identity as its subject.
+    /// certificate to name that certificate's identity as its subject, or a
+    /// principal of a tenant the certificate may act for (see
+    /// `tls::check_subject_binding`).
     pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
         self.bind_subject = bind_subject;
         self
@@ -96,7 +98,7 @@ impl BrokerAuth {
     ) -> Result<AuthContext> {
         let context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
-            crate::serving::tls::check_subject_binding(peer_certs, &context.subject)
+            crate::serving::tls::check_subject_binding(peer_certs, tenant_id, &context.subject)
                 .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
         }
         Ok(context)
