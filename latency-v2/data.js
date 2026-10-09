@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791569494659,
+  "lastUpdate": 1791571122662,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -33990,6 +33990,72 @@ window.BENCHMARK_DATA = {
             "range": "250.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 379.00\nmean: 470.20\nstdev: 250.21\ncv: 53.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d3823134bc9c179e7bd752aa7ec7ab2b226ef65",
+          "message": "fix(auth): per-identity limits, and delegated tokens bound through act (#1110)\n\n* fix(auth): give each delegated identity its own share of a connection's limits\n\nOne client acting for many users over a shared connection\n(Client::with_identity) shared the broker's per-connection subscription\ncap and publish byte budget, so one user could starve the rest. Both now\napply per tenant and token subject on a connection, under a new\nconnection-wide ceiling (FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES,\nFELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL, four identities' worth by\ndefault). A user's share is dropped once nothing of theirs is open or in\nflight. A client that authenticates as one identity sees the same limits,\nrefusals and frames as before.\n\nSubject binding refused every token a gateway presented for its users.\nA client certificate with the URI SAN felix:delegate:<tenant id> now\nbinds every subject of that tenant and no other.\n\nThe docs said the broker gave each identity its own publish budget; they\nnow say what it enforces.\n\nPart of #1098.\n\n* fix(auth): bind delegated tokens through an RFC 8693 act claim\n\nReplace the felix:delegate:<tenant> certificate grant with delegation the\ncontrol plane controls. POST /v1/tenants/{tenant_id}/token/delegate is a\ntoken exchange: a caller holding token.delegate:tenant:{tenant_id}\npresents a user's broker token and gets back one with the same subject,\nno wider permissions, no later expiry and act: {sub: <caller>}. The\nbroker's subject binding accepts a token whose act names the client\ncertificate's principal, on QUIC and Kafka SASL; a token without act\nbinds only to its subject, as before. token.delegate is never put in a\nbroker token, so a broker that predates it never sees it.\n\nPart of #1098.\n\nSpec-Unaffected: authentication and per-connection admission limits; no lease, quorum, report, promotion or handoff logic changes.",
+          "timestamp": "2026-10-09T11:33:23-07:00",
+          "tree_id": "44737f6926812620025221607d893e42c0f9dc8f",
+          "url": "https://github.com/GetFelix/felix/commit/9d3823134bc9c179e7bd752aa7ec7ab2b226ef65"
+        },
+        "date": 1791571119301,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 179.60\nstdev: 2.61\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 247,
+            "range": "22.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 256.60\nstdev: 22.95\ncv: 8.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 302,
+            "range": "321.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 302.00\nmean: 445.80\nstdev: 321.01\ncv: 72.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 216,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 215.60\nstdev: 1.14\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 443,
+            "range": "9.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 443.00\nmean: 439.20\nstdev: 9.44\ncv: 2.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 606,
+            "range": "52.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 606.00\nmean: 621.20\nstdev: 52.28\ncv: 8.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
