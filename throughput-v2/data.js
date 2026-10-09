@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791504848158,
+  "lastUpdate": 1791507568482,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25844,6 +25844,58 @@ window.BENCHMARK_DATA = {
             "range": "6275.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 792561.17\nmean: 794924.61\nstdev: 6275.24\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "17fba617546c2251e31f9cbba9543625b554b30f",
+          "message": "fix(routing): hold writes to a shard its new owner is still opening (#1085) (#1087)\n\nA write that reached the new owner of a shard while its log was still\nopening, or after the fence settled but before the servable set was\npublished, was refused with not_ready: only a shard waiting on its\npromotion fence was held. Hold any shard the lifecycle is opening,\nfencing or has just made active.\n\nThe client's cache worker also stopped on any error, so a single broker\nrefusal turned later requests on that worker into \"cache worker closed\".\nA refusal is a whole answer; the worker now keeps its stream.\n\nCloses #1085",
+          "timestamp": "2026-10-08T17:52:30-07:00",
+          "tree_id": "5d91c0e0ec70c5337fc84d092e015c7d2055a3d9",
+          "url": "https://github.com/GetFelix/felix/commit/17fba617546c2251e31f9cbba9543625b554b30f"
+        },
+        "date": 1791507567767,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348442.49,
+            "range": "6794.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348442.49\nmean: 347277.00\nstdev: 6794.09\ncv: 1.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348442.49,
+            "range": "6794.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348442.49\nmean: 347277.00\nstdev: 6794.09\ncv: 1.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81352.61,
+            "range": "887.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81352.61\nmean: 81611.63\nstdev: 887.93\ncv: 1.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813526.14,
+            "range": "8879.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813526.14\nmean: 816116.28\nstdev: 8879.35\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
