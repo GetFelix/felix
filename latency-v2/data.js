@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791581701439,
+  "lastUpdate": 1791585627470,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34386,6 +34386,72 @@ window.BENCHMARK_DATA = {
             "range": "42.85",
             "unit": "us",
             "extra": "trials: 5\nmedian: 354.00\nmean: 367.60\nstdev: 42.85\ncv: 11.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47ed3f185137d4165a93e544135784fdbb8f3191",
+          "message": "ci: a manual workflow that mirrors BuildKit into GHCR (#1124)\n\nsetup-buildx-action runs moby/buildkit, which Moby publishes only to Docker\nHub; its pulls failed image builds on #1116 when auth.docker.io returned\nerrors. This copies a reviewed version, pinned by digest, to\nghcr.io/getfelix/buildkit so the build workflows can use that instead.\n\nSpec-Unaffected: CI configuration only",
+          "timestamp": "2026-10-09T15:35:26-07:00",
+          "tree_id": "a03b0937fc95ee6aaaea5e8bae8662a7cd9a9da2",
+          "url": "https://github.com/GetFelix/felix/commit/47ed3f185137d4165a93e544135784fdbb8f3191"
+        },
+        "date": 1791585623163,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 105.80\nstdev: 1.92\ncv: 1.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "18.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 147.40\nstdev: 18.24\ncv: 12.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 191,
+            "range": "448.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 191.00\nmean: 388.60\nstdev: 448.03\ncv: 115.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 138,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 138.60\nstdev: 0.89\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 272,
+            "range": "6.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 271.20\nstdev: 6.98\ncv: 2.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 380,
+            "range": "40.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 380.00\nmean: 383.60\nstdev: 40.40\ncv: 10.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
