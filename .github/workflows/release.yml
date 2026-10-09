@@ -421,6 +421,9 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # BuildKit from our GHCR copy; see mirror-buildkit.yml.
+          driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
 
       - name: Log in to GHCR
         if: env.PUSH == 'true'
@@ -517,6 +520,9 @@ jobs:
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # BuildKit from our GHCR copy; see mirror-buildkit.yml.
+          driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
