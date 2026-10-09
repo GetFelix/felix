@@ -1860,6 +1860,10 @@ which runs whenever this is set, with or without a retention bound. Unset means
 no offload, which is the default. Cache, counter and consumer group logs never
 offload.
 
+Objects go under `<node id>/<shard directory>/`, so several brokers can share
+one directory. The node id is `FELIX_NODE_ID` when set; otherwise the broker
+generates one and keeps it in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
+
 **Type**: Directory path
 
 **Default**: unset (no offload)
