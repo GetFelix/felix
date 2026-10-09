@@ -127,13 +127,31 @@ fn placing_a_shard_over_a_blank_first_segment_keeps_its_base() {
     assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 40);
 }
 
+/// The header write extended the file but its bytes never reached the disk.
 #[test]
-fn a_first_segment_of_only_zeros_starts_the_log_afresh() {
+fn a_first_segment_of_one_zeroed_header_starts_the_log_afresh() {
     let dir = tempdir().expect("dir");
     let path = segment_path(dir.path(), 0);
-    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize + 64]).expect("create");
+    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize]).expect("create");
 
     assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 0);
+}
+
+/// Longer than a header means the header was synced before an append, so a
+/// zeroed one is rot even with no mark and nothing but zeros after it.
+#[test]
+fn a_zeroed_first_segment_longer_than_a_header_is_refused() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 1);
+    assert_eq!(discover_segment_ids(dir.path()).expect("ids"), [0]);
+    let path = segment_path(dir.path(), 0);
+    let len = std::fs::metadata(&path).expect("stat").len();
+    assert!(len > SEGMENT_HEADER_LEN);
+    std::fs::write(&path, vec![0u8; len as usize]).expect("zero");
+    let _ = std::fs::remove_file(dir.path().join(durable_mark::mark_file_name()));
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
 }
 
 /// A zeroed header in front of real records is rot on acknowledged data.
