@@ -374,20 +374,9 @@ impl IngressRouter {
                     Err(Fenced::NotServing) => true,
                 },
                 Dispatch::Unavailable(Reason::Moving) => true,
-                // This broker just took the shard and is opening or fencing
-                // it, which usually takes a round trip. The write waits for
-                // that as it waits out a move, rather than failing a cut-over.
-                // `Active` too: the lifecycle settles the fence a moment
-                // before the servable set that says so is published.
-                Dispatch::Unavailable(Reason::NotReady) => {
-                    self.fence.awaiting_promotion(key).is_some()
-                        || self.fence.phase_of(key).is_some_and(|record| {
-                            matches!(
-                                record.phase,
-                                Phase::Opening | Phase::Fencing | Phase::Active
-                            )
-                        })
-                }
+                // The write waits for a takeover as it waits out a move,
+                // rather than failing the cut-over it arrived at.
+                Dispatch::Unavailable(Reason::NotReady) => self.taking_over(key),
                 // The leader named here is fenced and will not take it,
                 // whether this broker would forward to it or cannot reach it.
                 _ => draining(&view, key),
@@ -414,22 +403,28 @@ impl IngressRouter {
         }
     }
 
-    /// Wait until `key` is not moving and this broker's routes have reached
-    /// `generation`, or the hold gives up.
+    /// Wait until `key` is not moving, this broker's routes have reached
+    /// `generation`, and a shard this broker has just taken is serving, or
+    /// the hold gives up.
     ///
     /// For a write forwarded here: the requester may have seen a cut-over this
-    /// broker has not, or may have sent it here in the gap before one. Either
-    /// way the answer after waiting is a definite one, and usually a success.
+    /// broker has not, may have sent it here in the gap before one, or may
+    /// have sent it the moment the routes named this broker, while it still
+    /// fences the replicas. Each settles in milliseconds, and the answer after
+    /// waiting is a definite one, and usually a success.
     pub(crate) async fn settle(&self, key: &ShardKey, generation: u64) {
         let mut held = None;
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            let unsettled = match self.view.load().routes.table().get(&to_router_key(key)) {
+            let view = self.view.load();
+            let unsettled = match view.routes.table().get(&to_router_key(key)) {
                 Some(route) => route.draining || route.generation < generation,
                 None => generation > 0,
-            };
+            } || (self.dispatch_in(&view, key)
+                == Dispatch::Unavailable(Reason::NotReady)
+                && self.taking_over(key));
             if !unsettled {
                 if let Some(hold) = held {
                     hold::Held::settled(hold);
@@ -453,6 +448,19 @@ impl IngressRouter {
                 return;
             }
         }
+    }
+
+    /// Whether this broker has just taken `key` and is opening or fencing it,
+    /// which usually takes a round trip. `Active` too: the lifecycle settles
+    /// the fence a moment before the servable set that says so is published.
+    fn taking_over(&self, key: &ShardKey) -> bool {
+        self.fence.awaiting_promotion(key).is_some()
+            || self.fence.phase_of(key).is_some_and(|record| {
+                matches!(
+                    record.phase,
+                    Phase::Opening | Phase::Fencing | Phase::Active
+                )
+            })
     }
 
     fn dispatch_in(&self, view: &View, key: &ShardKey) -> Dispatch {

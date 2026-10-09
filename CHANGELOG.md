@@ -25,6 +25,11 @@ for what the current release guarantees.
   identities`.
 
 ### Fixed
+- A publish forwarded to a moved shard's new owner while it was still fencing
+  the replicas was refused as `not_ready` instead of held, so a planned move or
+  shutdown handoff whose fence took longer than the forwarding broker's retries
+  could refuse a publish (#1120). The owner now holds it until the shard
+  serves, as it already did for a publish sent to it directly.
 - A subscription or cache watch that registered just after a lease lapse,
   deposal or release ended its shard's readers is now refused instead of being
   left attached to a shard the broker no longer serves, where it got nothing

@@ -2044,8 +2044,11 @@ waits, before admitting the publish, for the routes to change; then it
 dispatches again, to the new owner. A publish routed a moment before the fence
 closed finds the fence shut when it tries to enter and waits the same way. A
 forwarded publish that reaches the old leader, or reaches the new one before
-its own routes have caught up with the requester's, waits on that broker until
-they settle, and is then applied or redirected. Nothing held has been
+its own routes have caught up with the requester's or while it is still
+fencing the replicas, waits on that broker until they settle, and is then
+applied or redirected. The forwarding broker's own retries span a few tens
+of milliseconds, so refusing such a write as `not_ready` would fail it on any
+fence slower than that. Nothing held has been
 acknowledged, so a hold that runs out (`FELIX_SHARD_MOVE_HOLD_MS`, 2 s) or
 finds too many already waiting (`FELIX_SHARD_MOVE_HOLD_MAX`) is a plain refusal,
 `shard_unavailable` with reason `moving`, and the client retries. Holding lives
