@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791547562146,
+  "lastUpdate": 1791553522465,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26468,6 +26468,58 @@ window.BENCHMARK_DATA = {
             "range": "44623.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1161025.67\nmean: 1177230.32\nstdev: 44623.38\ncv: 3.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8fcd3e052f6a46f5a64c5fa685b9100666ee7344",
+          "message": "fix(storage): refuse a zeroed first segment longer than a header (#1103)\n\nRecovery deleted a lone segment 0 whose header and every byte after it read\nas zeros, treating it as a creation that never finished, so a log whose\nrecords had been zeroed came back empty. Creation syncs the header before\nanything can append, and preallocation leaves the file size alone, so only a\nfile no longer than a header can be an unfinished creation. A longer one is\nnow reported as corruption.\n\nPart of #1098.",
+          "timestamp": "2026-10-09T06:41:09-07:00",
+          "tree_id": "caf726928436dbaa47fe7d505a42eeb502b54054",
+          "url": "https://github.com/GetFelix/felix/commit/8fcd3e052f6a46f5a64c5fa685b9100666ee7344"
+        },
+        "date": 1791553521530,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 333708.38,
+            "range": "5682.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333708.38\nmean: 334903.05\nstdev: 5682.56\ncv: 1.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 333708.38,
+            "range": "5682.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333708.38\nmean: 334903.05\nstdev: 5682.56\ncv: 1.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79386.38,
+            "range": "733.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79386.38\nmean: 79154.82\nstdev: 733.37\ncv: 0.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 793863.79,
+            "range": "7333.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 793863.79\nmean: 791548.17\nstdev: 7333.72\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
