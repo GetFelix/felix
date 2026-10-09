@@ -538,10 +538,11 @@ Four properties:
    are still interior corruption. Bytes past the durable mark, an unfinished
    background roll, and an empty segment a lost roll race left mid-chain are
    repaired too, never below what the mark says was synced. So is a log whose
-   only segment is its first and is blank (no header, zeros after it, and no
-   durable mark past the header): its creation failed, usually on a full disk,
-   before it could hold a record, and the log starts again empty (or at its
-   placed base). A zeroed header in front of records stays fatal. See
+   only segment is its first and is blank (no longer than a header, no header,
+   and no durable mark past the header): its creation failed, usually on a full
+   disk, before it could hold a record, and the log starts again empty (or at
+   its placed base). A zeroed header on a longer first segment stays fatal,
+   even if the bytes after it are zeros too. See
    `docs/storage-format.md`, "What recovery may repair".
    A **failed fsync poisons the log**, whichever path issued it (the group
    commit flush, the io_uring flusher, a seal, a truncation): the durable bound

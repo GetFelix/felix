@@ -404,13 +404,16 @@ impl<'a> View<'a> {
     /// header. It never held a record, so the log starts again as if new. Only
     /// segment 0 qualifies: any later one follows records that were somewhere.
     ///
-    /// Blank means no header, nothing but zeros after it, and no durable mark
-    /// past the header. A zeroed header in front of records, or one the mark
-    /// says was synced beyond, is damage to acknowledged data and stays fatal.
+    /// Blank means no longer than a header, all zeros, and no durable mark
+    /// past the header. Creation syncs the header before anything can append
+    /// and preallocation leaves the size alone, so a file longer than a header
+    /// had its header synced: zeros there are rot, even when the bytes after
+    /// it are zeros too, and stay fatal.
     pub(crate) fn discard_blank_first(&mut self, ids: &mut Vec<SegmentId>) -> Result<()> {
         if ids.as_slice() != [0]
             || DurableMark::synced_through(self.mark, 0) > SEGMENT_HEADER_LEN
-            || !segment_is_blank(&self.path(0))?
+            || self.len(0)? > SEGMENT_HEADER_LEN
+            || !header_never_written(&self.path(0))?
         {
             return Ok(());
         }
@@ -699,29 +702,6 @@ fn header_never_written(path: &Path) -> Result<bool> {
     let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
     let read = crate::io::read_at(&file, &mut header, 0)?;
     Ok(read == header.len() && header.iter().all(|byte| *byte == 0))
-}
-
-/// Every byte of the file is zero, or it is shorter than a header.
-fn segment_is_blank(path: &Path) -> Result<bool> {
-    if !header_never_written(path)? {
-        return Ok(false);
-    }
-    let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut offset = SEGMENT_HEADER_LEN;
-    while offset < len {
-        let want = buf.len().min((len - offset) as usize);
-        let read = crate::io::read_at(&file, &mut buf[..want], offset)?;
-        if read == 0 {
-            break;
-        }
-        if buf[..read].iter().any(|byte| *byte != 0) {
-            return Ok(false);
-        }
-        offset += read as u64;
-    }
-    Ok(true)
 }
 
 fn gap_error(label: &str, id: SegmentId, expected: Offset, found: Offset) -> StorageError {
