@@ -188,7 +188,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (48.7M distinct states, 61 min on a four-core CI runner; nightly) |
-| `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write |
+| `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (1.9M distinct states, depth 35, 2.4 min on a CI runner) |
 | `FelixShardElectHandoffUnfenced.cfg` | `FelixShardElectHandoffLeaders.cfg` with the cut-over opened without the fence, no writes and no cancel | violate `OneLeaderPerGeneration`: a candidate opens at the generation after the control plane's, and the control plane cuts over to the destination at that same generation |
 | `FelixShardSuspicion.cfg` | `FelixShardFencedAck.cfg` with placement promoting at the first generation before the lease lapses (`Suspicions = 1`), on any read, as it does on the followers' word; promotion from the leader's report, time standing still, so no lease lapses in a run | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (not yet measured) |
 | `FelixShardSuspicionLease.cfg` | `FelixShardFencedPromotion.cfg` with the same early promotion: acknowledgements on the report and the lease, time to 4 | violate `AtMostOneServing`: the old leader still serves on its lease after the new one opens |
@@ -285,8 +285,10 @@ test proving the check they remove is really there.
 
 Citations do not catch the change that actually drifted: #268 changed the
 protocol without renaming a cited test. So a pull request that touches the
-code this model describes (`services/felix-broker-service/src/{cluster/lease,cluster/membership,replication,serving,shards/lifecycle}`
-and `services/felix-controlplane-service/src/{api/nodes/reports,cluster/membership,cluster/placement}`,
+code this model describes (`services/felix-broker-service/src/{cluster/lease,cluster/membership,serving,shards/lifecycle,shards/routing}`,
+`crates/server/felix-replication/src`, the replica's persisted promise in
+`crates/server/felix-storage/src/disk_log/{ballot,replica_state,epochs}`, and
+`services/felix-controlplane-service/src/{api/nodes/reports,cluster/membership,cluster/placement}`,
 tests and metrics aside) must also touch `docs/formal/`, or carry a line
 
 ```
@@ -462,10 +464,10 @@ answered both.
 
 `AnswerFence` keeps the strict `<` it always had when no replica elects: with
 one leader per generation the equal case is the same leader asking again.
-`Ballots = FALSE` and `Elections = 0` in every other configuration leave the
-model, and its state space, exactly as they were. So does
-`FenceEveryChange = FALSE` everywhere but the two `FelixShardElectHandoff`
-configurations.
+`Ballots = FALSE` and `Elections = 0` in the bounded configurations that
+predate ballots leave the model, and its state space, exactly as they were. So
+does `FenceEveryChange = FALSE` there. The long walks (below) turn ballots and
+the fence on every change on, as the broker ships them.
 
 Ballots are not enough on their own. `FelixShardElectStaleSet.cfg` replaces a
 follower and lets the one that left stand on the set it last knew. The old
@@ -860,6 +862,12 @@ per family:
 | `FelixShardWalkMovesDestination.cfg` | the same with a failover free to name the destination | violate `AckedHeldByLeader` |
 | `FelixShardWalkHandoff.cfg` | the broker as built under the lease (`FelixShardFencedPromotion.cfg` with start records) with `FelixShardHandoff.cfg`'s move; `FelixShardRealMargins.cfg`'s margins and drift, writes acknowledged on commit | pass every invariant and `AckedHeldByLeader` |
 | `FelixShardWalkHandoffNoWait.cfg` | the same cutting over without waiting for the drained report | violate `AtMostOneServing` |
+
+Every walk runs with ballots and every change of leader fenced
+(`Ballots`, `FenceEveryChange`), as the broker ships, and without elections,
+which the broker does not hold. The exception is
+`FelixShardWalkMovesDestination.cfg`, whose violation is the destination
+opening without the fence.
 
 The walks carry no `SYMMETRY`: simulation stores no states, so it buys nothing.
 `Tick` draws each clock from its drift window rather than from `0..MaxTime`,
