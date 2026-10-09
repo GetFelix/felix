@@ -293,7 +293,7 @@ class Client:
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
     def group_nack(
-        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, record: GroupRecord
     ) -> None: ...
     def group_dead_letters(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
@@ -427,7 +427,7 @@ class AsyncClient:
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
     async def group_nack(
-        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, record: GroupRecord
     ) -> None: ...
     async def group_dead_letters(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str

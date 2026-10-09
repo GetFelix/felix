@@ -134,13 +134,13 @@ impl ClusterClient {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: &felix_wire::GroupRecord,
     ) -> Result<()> {
         self.on_group_shard(
             shard_key(tenant_id, namespace, stream, shard),
             |client| async move {
                 client
-                    .group_nack(tenant_id, namespace, stream, shard, group, offset)
+                    .group_nack(tenant_id, namespace, stream, shard, group, record)
                     .await
             },
         )

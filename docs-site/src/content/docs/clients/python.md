@@ -291,8 +291,12 @@ while True:
             client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
         except Retryable:
             # Back to the queue now, rather than after the visibility timeout.
-            client.group_nack("t1", "default", "orders", shard, "billing", record.offset)
+            client.group_nack("t1", "default", "orders", shard, "billing", record)
 ```
+
+A nack takes the record, not its offset, because it names that delivery: once
+the claim has lapsed and the record has gone out again, the nack is refused
+with `stale_claim` rather than taking it from the consumer now holding it.
 
 `record.attempts` counts deliveries **including this one**, so `1` is a first
 attempt and anything higher is a redelivery. It is how a consumer tells a retry

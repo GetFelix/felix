@@ -14,7 +14,7 @@ use crate::errors::{classify, invalid};
 use crate::sharded_subscription::ShardedSubscriptionHandle;
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
-use crate::types::GroupRecord;
+use crate::types::{GroupDelivery, GroupRecord};
 
 /// A connected Felix client.
 #[napi]
@@ -528,6 +528,7 @@ impl Client {
     }
 
     /// Return a record for redelivery without waiting out its timeout.
+    /// Refused once its claim has lapsed or the record has gone out again.
     #[napi]
     pub async fn group_nack(
         &self,
@@ -536,11 +537,18 @@ impl Client {
         stream: String,
         shard: u32,
         group: String,
-        offset: BigInt,
+        record: GroupDelivery,
     ) -> Result<()> {
-        let offset = u64_of(offset)?;
+        let record = felix_wire::GroupRecord {
+            offset: u64_of(record.offset)?,
+            payload: Default::default(),
+            attempts: record.attempts,
+            skipped_before: 0,
+            publisher: None,
+            timestamp_micros: None,
+        };
         self.cluster()?
-            .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
+            .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
             .await
             .map_err(classify)
     }

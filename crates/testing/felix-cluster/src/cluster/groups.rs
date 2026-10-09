@@ -103,7 +103,7 @@ impl Cluster {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: &felix_wire::GroupRecord,
     ) -> Result<()> {
         let node = self
             .node(node_id)
@@ -117,7 +117,7 @@ impl Cluster {
                 stream,
                 shard,
                 group,
-                offset,
+                record,
             )
             .await
     }

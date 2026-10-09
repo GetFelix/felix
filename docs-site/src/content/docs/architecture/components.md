@@ -357,8 +357,9 @@ has capacity for more work.
   claim up to `max_records`, optionally waiting for work rather than spinning on
   empty polls
 - `group_ack(…, offset)`: finish a record
-- `group_nack(…, offset)`: hand one back for immediate redelivery, rather than
-  waiting out the visibility timeout, or with `delay_ms` only after a delay
+- `group_nack(…, offset, attempts)`: hand one back for immediate redelivery,
+  rather than waiting out the visibility timeout, or with `delay_ms` only after
+  a delay. `attempts` names the delivery, so a late nack is refused
 - `group_extend(…, offset, attempts, extend_ms)` / `group_dead_letter(…, offset)`:
   keep a claim standing while the work goes on, or give up on the record
 - `group_dead_letters(…)` / `group_discard(…, offset)` / `group_redrive(…, offset)`:

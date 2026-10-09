@@ -285,7 +285,7 @@ async fn a_dead_letter_survives_a_leader_failover() {
             break dead[0];
         };
         cluster
-            .group_nack_via(&owner, STREAM, 0, GROUP, record.offset)
+            .group_nack_via(&owner, STREAM, 0, GROUP, record)
             .await
             .expect("nack");
     };

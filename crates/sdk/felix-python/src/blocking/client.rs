@@ -463,7 +463,8 @@ impl Client {
     }
 
     /// Hand one record back for immediate redelivery, rather than waiting out
-    /// the visibility timeout.
+    /// the visibility timeout. Refused once its claim has lapsed or the
+    /// record has gone out again.
     fn group_nack(
         &self,
         py: Python<'_>,
@@ -472,13 +473,14 @@ impl Client {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: PyRef<'_, GroupRecord>,
     ) -> PyResult<()> {
+        let record = record.delivery();
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
         block_on(py, async move {
             inner
-                .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
+                .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
                 .await
                 .map_err(to_py_err)
         })

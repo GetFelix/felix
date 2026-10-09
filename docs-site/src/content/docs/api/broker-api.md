@@ -898,7 +898,8 @@ longer stands, because it lapsed or the record went out again. `delay_ms` on a
 nack makes the record owed only after the delay, holding a place under the
 in-flight cap until then. `attempts` on a nack names the delivery the same way
 and is refused the same way, so a late nack cannot take the record from whoever
-holds it now; left out, the nack hands back whatever claim stands. `group_dead_letter` lists the record as a dead letter
+holds it now; left out, the nack hands back whatever claim stands. The clients
+name the delivery on every nack, delayed or not. `group_dead_letter` lists the record as a dead letter
 and finishes it, answered with `cache_ok`; a record already finished is
 `invalid_request`. The broker caps every duration at
 `FELIX_GROUP_MAX_VISIBILITY_MS`. All of these need `group.consume`. Extensions
@@ -961,7 +962,7 @@ let records = client
 for record in records {
     match handle(&record.payload) {
         Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
-        Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
+        Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", &record).await?,
     }
 }
 ```

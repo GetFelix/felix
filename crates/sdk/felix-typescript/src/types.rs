@@ -41,6 +41,14 @@ pub struct GroupRecord {
     pub skipped_before: BigInt,
 }
 
+/// The delivery a nack names: a [`GroupRecord`] as `groupPoll` returned it.
+/// Only these fields are read, so the payload is not copied back.
+#[napi(object)]
+pub struct GroupDelivery {
+    pub offset: BigInt,
+    pub attempts: u32,
+}
+
 /// One change observed by a cache watch.
 #[napi(object)]
 pub struct CacheChange {

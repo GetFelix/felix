@@ -26,9 +26,15 @@ export interface Event {
   skippedBefore: bigint;
 }
 
+/** The delivery `groupNack` hands back. A `GroupRecord` is one. */
+export interface GroupDelivery {
+  offset: bigint;
+  attempts: number;
+}
+
 /** One record handed out by a consumer group. */
 export interface GroupRecord {
-  /** What to pass to `groupAck` or `groupNack` to settle this record. */
+  /** What to pass to `groupAck` to settle this record. */
   offset: bigint;
   payload: Buffer;
   /**
@@ -538,14 +544,18 @@ export declare class Client {
     offset: bigint,
   ): Promise<void>;
 
-  /** Return a record for redelivery without waiting out its timeout. */
+  /**
+   * Return a record for redelivery without waiting out its timeout. Pass the
+   * record `groupPoll` returned: it names that delivery, and is refused once
+   * its claim has lapsed or the record has gone out again.
+   */
   groupNack(
     tenantId: string,
     namespace: string,
     stream: string,
     shard: number,
     group: string,
-    offset: bigint,
+    record: GroupDelivery,
   ): Promise<void>;
 
   /** Offsets this group gave up on after exhausting their attempts. */

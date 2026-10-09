@@ -12,6 +12,14 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A consumer-group commit cancelled after it handed its write to a task, but
+  before that task first ran, could still let the next commit read the old
+  cursor and move the group backwards (part of #1109; the case #1097 left
+  open). A log-backed cache put or delete that checks no condition now marks
+  its key in flight before it spawns the write, so a settled read waits for it.
+- A plain nack can no longer take a record from the consumer it was handed to
+  next (part of #1109). `group_nack` names the delivery by its attempt count,
+  as `group_nack_after` does, so a late one is refused with `stale_claim`.
 - An in-memory cache's versions restarted at 0 with the broker, so a
   `cache_put_if` or `cache_delete_if` holding a version read before a restart
   could apply against a value written after it (#1098). Versions now start
@@ -69,6 +77,14 @@ for what the current release guarantees.
   without a fence, even once caches acknowledge by their followers and the
   lease no longer stops the old leader. It now stays closed and the next pass
   tries again (#1095).
+
+### Changed
+- `Client::group_nack` and `ClusterClient::group_nack` in felix-client take the
+  `GroupRecord` instead of its offset, and send `record.attempts` to a broker
+  advertising `FEATURE_GROUP_CLAIM_CONTROL`. The Python `group_nack` takes the
+  `GroupRecord` and the Node `groupNack` takes the record (any object with
+  `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
+  a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
 
 ### Documentation
 - The docs site documents felix-gateway, the WebSocket relay that lets

@@ -64,6 +64,21 @@ pub struct GroupRecord {
     pub skipped_before: u64,
 }
 
+impl GroupRecord {
+    /// The delivery this record names, for a call that settles it. The
+    /// payload stays behind: only the offset and attempt count are sent.
+    pub(crate) fn delivery(&self) -> felix_wire::GroupRecord {
+        felix_wire::GroupRecord {
+            offset: self.offset,
+            payload: bytes::Bytes::new(),
+            attempts: self.attempts,
+            skipped_before: self.skipped_before,
+            publisher: None,
+            timestamp_micros: None,
+        }
+    }
+}
+
 #[pymethods]
 impl GroupRecord {
     fn __repr__(&self, py: Python<'_>) -> String {
