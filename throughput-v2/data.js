@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791520858393,
+  "lastUpdate": 1791522280745,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26156,6 +26156,58 @@ window.BENCHMARK_DATA = {
             "range": "7393.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805266.54\nmean: 803627.99\nstdev: 7393.94\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0d0c749239094ed721764d568bde67176dd4b703",
+          "message": "feat(broker): inspect segments, offline and read-only (#1077) (#1092)\n\n* feat(felixctl): inspect segments, offline and read-only (#1077)\n\nStartup recovery now plans every write before making any, and\nfelix_storage::inspect runs only the plan, so felixctl inspect segments\nreports the verdict startup would reach without touching the data dir.\nfelix-storage is published so felixctl can link it, and the broker image\ncarries felixctl.\n\n* feat(broker): move inspect segments into the broker binary (#1077)\n\nfelix-storage stays unpublished, so felixctl cannot link it. The offline\ncommand is now felix-broker inspect segments, which already depends on it.\nReverts felixctl's command, the publish-list change and the broker image's\nextra binary.",
+          "timestamp": "2026-10-08T21:59:29-07:00",
+          "tree_id": "126265d9bc82703d31c2e3f745c7770aea4c80f7",
+          "url": "https://github.com/GetFelix/felix/commit/0d0c749239094ed721764d568bde67176dd4b703"
+        },
+        "date": 1791522280195,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354098.18,
+            "range": "8589.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354098.18\nmean: 357682.13\nstdev: 8589.17\ncv: 2.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354098.18,
+            "range": "8589.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354098.18\nmean: 357682.13\nstdev: 8589.17\ncv: 2.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84334.5,
+            "range": "713.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84334.50\nmean: 84726.24\nstdev: 713.94\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 843345.02,
+            "range": "7139.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 843345.02\nmean: 847262.40\nstdev: 7139.45\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
