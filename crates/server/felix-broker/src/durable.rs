@@ -596,9 +596,13 @@ impl StreamLog {
     }
 
     /// Keep retention and compaction below the commit offset, for a log
-    /// replicated under `Quorum`. See `DiskLog::hold_retention_at_commit`.
-    pub fn hold_retention_at_commit(&self, hold: bool) {
-        self.log.hold_retention_at_commit(hold);
+    /// replicated under `Quorum`. Survives a restart. See
+    /// `DiskLog::hold_retention_at_commit`.
+    pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        self.log
+            .hold_retention_at_commit(hold)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Where each leadership generation began here, oldest first.

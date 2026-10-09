@@ -205,3 +205,102 @@ async fn retention_and_rebuilds_never_carry_the_mark_over_a_lost_record() {
     let tail = log.tail_offset().await.expect("tail");
     assert_eq!(mark, tail, "the followers never caught up");
 }
+
+/// **A shard left with no follower is not held.** It is its own majority, and
+/// no pass runs for it to advance the commit offset, so a hold kept from when
+/// it had followers would stop its retention for good once the log reopened
+/// with it (#1109).
+#[tokio::test]
+async fn a_shard_whose_followers_are_removed_is_no_longer_held() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            segment_size_bytes: 128,
+            index_spacing_bytes: 64,
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            retention_bytes: Some(256),
+            retention_check_interval: std::time::Duration::from_secs(3600),
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                shards: 1,
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let followers = StoppableFollowers::default();
+    followers.stopped.store(true, Ordering::SeqCst);
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    for i in 0..40 {
+        log.append(&[Bytes::from(format!("value-{i:03}"))])
+            .await
+            .expect("append");
+    }
+
+    let replicated = router(LOCAL, &["broker-b", "broker-c"], 4);
+    replicate_once(
+        &followers,
+        &broker,
+        &replicated,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(
+        log.base_offset(),
+        0,
+        "nothing is committed, so nothing goes"
+    );
+
+    let alone = router(LOCAL, &[], 4);
+    replicate_once(
+        &followers,
+        &broker,
+        &alone,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    log.enforce_retention_now().await.expect("retention");
+    assert!(
+        log.base_offset() > 0,
+        "retention is still held on a shard with no follower"
+    );
+}

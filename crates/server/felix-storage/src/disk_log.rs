@@ -525,6 +525,7 @@ impl DiskLog {
                     let state = replica_state::ReplicaState {
                         accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
                         commit_offset: offset,
+                        hold_at_commit: operation.hold_at_commit.load(Ordering::Acquire),
                     };
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
@@ -600,6 +601,7 @@ impl DiskLog {
                 let state = replica_state::ReplicaState {
                     accepted_generation: generation,
                     commit_offset: inner.commit_offset.load(Ordering::Acquire),
+                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
                 };
                 replica_state::store(&inner.dir, &state)?;
                 *persisted = (state, Some(std::time::Instant::now()));
@@ -679,11 +681,25 @@ impl DiskLog {
     ///
     /// For a log replicated under `Quorum`, where a record above the commit
     /// offset may still be waiting for a majority. Deleting it there would let
-    /// a follower rebuilt at the new base be counted as holding it. Off by
-    /// default, since a log nobody advances the commit offset on would never
-    /// trim. Takes effect from the next pass.
-    pub fn hold_retention_at_commit(&self, hold: bool) {
-        self.inner.hold_at_commit.store(hold, Ordering::Release);
+    /// a follower rebuilt at the new base be counted as holding it. Off for a
+    /// new log, since a log nobody advances the commit offset on would never
+    /// trim.
+    ///
+    /// Takes effect in memory at once, from the next pass. A change is then
+    /// written to the replica state, and the log reopens with it, so a
+    /// restarted log is held before replication has touched it. If that write
+    /// fails the error is returned and the hold stays in effect in memory.
+    pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        if self.inner.hold_at_commit.swap(hold, Ordering::AcqRel) == hold {
+            return Ok(());
+        }
+        self.persist_replica_state().await
+    }
+
+    /// Whether retention is held at the commit offset. See
+    /// [`Self::hold_retention_at_commit`].
+    pub fn retention_held_at_commit(&self) -> bool {
+        self.inner.hold_at_commit.load(Ordering::Acquire)
     }
 
     /// Write the replica state if memory is ahead of disk.
@@ -694,6 +710,7 @@ impl DiskLog {
             let state = replica_state::ReplicaState {
                 accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
                 commit_offset: inner.commit_offset.load(Ordering::Acquire),
+                hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
             };
             if state == persisted.0 {
                 return Ok(());
@@ -880,7 +897,9 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
-            hold_at_commit: std::sync::atomic::AtomicBool::new(false),
+            // Restored before retention starts below, so a sweep after a
+            // restart is held before any replication pass or batch has run.
+            hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),

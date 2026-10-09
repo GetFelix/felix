@@ -374,6 +374,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     // duration. Taken out of the maps rather than borrowed from them, which is
     // what lets the shards run at the same time below.
     let mut work = Vec::new();
+    let mut unreplicated = Vec::new();
     for (key, route) in table.iter() {
         if route.leader.node_id != router.local_node_id() {
             continue;
@@ -395,8 +396,11 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
             counter_cursors,
         ) {
             work.push((key.clone(), route.clone(), entry, aux));
+        } else {
+            unreplicated.push(key.clone());
         }
     }
+    release_unreplicated(broker, &unreplicated).await;
 
     let fencing = open_promoted(
         requester,
@@ -574,6 +578,64 @@ async fn open_fenced(
                 "the promoted shard is not fenced yet; it does not serve until it is",
             );
             false
+        }
+    }
+}
+
+/// Lift the retention hold on led shards with no replica besides this one.
+///
+/// Such a shard is its own majority, so every record it holds is committed,
+/// but no pass runs for it to advance the commit offset. A hold left from when
+/// it had followers, which the log keeps across restarts, would stop its
+/// retention for good. Only logs already open are touched: opening one here
+/// would create a log for every such shard in the table.
+async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
+    if keys.is_empty() {
+        return;
+    }
+    let open_caches: HashSet<(String, String, String, u32)> = if keys
+        .iter()
+        .any(|key| key.kind == felix_router::ShardKind::Cache)
+    {
+        broker.cache().open_shards().into_iter().collect()
+    } else {
+        HashSet::new()
+    };
+    for key in keys {
+        let log = match key.kind {
+            felix_router::ShardKind::Stream => broker.durable_storage().and_then(|storage| {
+                storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            }),
+            felix_router::ShardKind::Cache => {
+                let id = (
+                    key.tenant_id.clone(),
+                    key.namespace.clone(),
+                    key.stream.clone(),
+                    key.shard,
+                );
+                if !open_caches.contains(&id) {
+                    continue;
+                }
+                broker
+                    .shard_log(
+                        felix_broker::LogKind::Cache,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                    )
+                    .await
+            }
+        };
+        if let Some(log) = log
+            && let Err(err) = log.hold_retention_at_commit(false).await
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not write the retention hold through; it is lifted in memory",
+            );
         }
     }
 }

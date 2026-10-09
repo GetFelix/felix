@@ -277,7 +277,7 @@ async fn retention_held_at_the_commit_offset_stops_below_it() {
 
     let dir = tempdir().expect("dir");
     let log = eight_records_over_a_tight_bound(&dir).await;
-    log.hold_retention_at_commit(true);
+    log.hold_retention_at_commit(true).await.expect("hold");
     let outcome = log.enforce_retention_now().await.expect("retention");
     assert_eq!(
         outcome.segments_deleted, 0,
@@ -299,12 +299,54 @@ async fn retention_held_at_the_commit_offset_stops_below_it() {
     assert_eq!(log.base_offset(), unheld.base_offset());
 }
 
+/// **The hold survives a restart.** After one, nothing sets it again until a
+/// replication pass or an applied batch, and an idle shard or a follower cut
+/// off from its leader may see neither before a sweep (#1109).
+#[tokio::test]
+async fn a_reopened_log_is_held_before_replication_touches_it() {
+    let dir = tempdir().expect("dir");
+    let log = eight_records_over_a_tight_bound(&dir).await;
+    log.hold_retention_at_commit(true).await.expect("hold");
+    log.advance_commit_offset(3).await.expect("commit");
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        retention_config(Some(crate::segment::SEGMENT_HEADER_LEN + 120), None),
+    )
+    .expect("reopen");
+    assert_eq!(log.commit_offset(), 3);
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(
+        log.base_offset(),
+        0,
+        "retention after a restart deleted offset 3 above the commit offset"
+    );
+    assert!(log.retention_held_at_commit());
+
+    // Lifted, the change is written through too.
+    log.hold_retention_at_commit(false).await.expect("lift");
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        retention_config(Some(crate::segment::SEGMENT_HEADER_LEN + 120), None),
+    )
+    .expect("reopen");
+    assert!(!log.retention_held_at_commit());
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(log.base_offset(), 4);
+}
+
 /// Compaction's head trim is held at the same floor.
 #[tokio::test]
 async fn a_head_trim_held_at_the_commit_offset_stops_below_it() {
     let dir = tempdir().expect("dir");
     let log = eight_records_over_a_tight_bound(&dir).await;
-    log.hold_retention_at_commit(true);
+    log.hold_retention_at_commit(true).await.expect("hold");
     log.advance_commit_offset(6).await.expect("commit");
 
     log.roll_now().await.expect("roll");

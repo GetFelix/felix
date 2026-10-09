@@ -12,6 +12,15 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A retention sweep after a restart could delete records above a `Quorum`
+  shard's commit offset, on an idle leader or a follower cut off from its
+  leader, until replication reached the shard again (#1109). The hold at the
+  commit offset is now kept in the shard's `replica` file (a flag in what was
+  a reserved field, which older builds ignore) and restored at open, before
+  retention starts. A leader whose shard has no followers left lifts the hold,
+  since nothing advances that shard's commit offset. In felix-storage and
+  felix-broker, `hold_retention_at_commit` is now async and returns whether
+  the change was written.
 - An in-memory cache's versions restarted at 0 with the broker, so a
   `cache_put_if` or `cache_delete_if` holding a version read before a restart
   could apply against a value written after it (#1098). Versions now start

@@ -983,12 +983,23 @@ both the mark and its own commit offset. With the floor in place that does not
 happen; if a log reaches that state some other way, the follower waits and the
 publishes time out rather than being acknowledged.
 
+The hold is part of the log's persisted replica state. A broker that restarts
+opens the shard held, at the commit offset it wrote last, before any pass or
+batch has run. Without that, a sweep on an idle leader or on a follower cut off
+from its leader could delete above the commit offset until replication reached
+the shard again (#1109). A commit offset read back behind after a crash only
+holds more.
+
 A `Leader` stream acknowledges before shipping, so it has no mark to protect
 and retention applies in full. An RF 1 `Quorum` stream is its own majority:
-its mark follows its tail, and the floor costs nothing.
+its mark follows its tail, and the floor costs nothing. No pass runs for it,
+so its leader lifts a hold left from when it had followers; otherwise the
+commit offset would never move again and nothing would be deleted.
 
 > `retention_and_rebuilds_never_carry_the_mark_over_a_lost_record`,
 > `a_quorum_follower_keeps_what_is_above_its_commit_offset`,
+> `a_reopened_log_is_held_before_replication_touches_it`,
+> `a_shard_whose_followers_are_removed_is_no_longer_held`,
 > `a_bootstrap_above_the_commit_offset_is_not_offered`,
 > `a_rebuild_above_the_commit_offset_is_not_requested`, and in the cluster
 > suite `retention_waits_for_the_followers_of_a_quorum_stream`.
