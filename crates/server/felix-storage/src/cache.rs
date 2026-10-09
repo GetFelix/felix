@@ -173,6 +173,20 @@ pub trait StorageApi: Debug + Send + Sync {
         Ok(())
     }
 
+    /// Hold one cache's logs at the commit offset, or lift the hold: for a
+    /// cache whose consistency became `Quorum`, or stopped being it. Applies
+    /// to its shards already open, written through before this returns, and
+    /// to every one opened later. A no-op for a store with no log.
+    async fn set_retention_hold(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _hold: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Every shard this store has open, as tenant, namespace, cache, shard.
     /// Empty for a store with no log, whose expiry stays lazy.
     fn open_shards(&self) -> Vec<(String, String, String, u32)> {

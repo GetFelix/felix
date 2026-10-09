@@ -69,6 +69,8 @@ impl DurableStorageConfig {
             max_open_sealed_segments: LogConfig::default().max_open_sealed_segments,
             // Set per store: only stream logs offload. See `stream_log`.
             offload: None,
+            // Set from the broker's cluster configuration when the stores open.
+            retention_hold: LogConfig::default().retention_hold,
         };
         let offload_dir = std::env::var("FELIX_DURABLE_OFFLOAD_DIR")
             .ok()

@@ -683,13 +683,17 @@ impl DiskLog {
     /// offset may still be waiting for a majority. Deleting it there would let
     /// a follower rebuilt at the new base be counted as holding it. Off for a
     /// new log, since a log nobody advances the commit offset on would never
-    /// trim.
+    /// trim. [`LogConfig::retention_hold`] sets it at open.
     ///
     /// Takes effect in memory at once, from the next pass. A change is then
     /// written to the replica state, and the log reopens with it, so a
     /// restarted log is held before replication has touched it. If that write
     /// fails the error is returned and the hold stays in effect in memory.
     pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        // A closed log's directory may already be another log's.
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.inner.label.clone()));
+        }
         if self.inner.hold_at_commit.swap(hold, Ordering::AcqRel) == hold {
             return Ok(());
         }
@@ -854,7 +858,17 @@ impl DiskLog {
         crate::io::sync_dir(&dir).map_err(StorageError::Io)?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
-        let replica = replica_state::load(&dir)?;
+        let mut replica = replica_state::load(&dir)?;
+        // Before retention starts below, so its first sweep sees the hold.
+        let hold = match config.retention_hold {
+            crate::log::RetentionHold::AsSaved => replica.hold_at_commit,
+            crate::log::RetentionHold::Held => true,
+            crate::log::RetentionHold::Lifted => false,
+        };
+        if hold != replica.hold_at_commit {
+            replica.hold_at_commit = hold;
+            replica_state::store(&dir, &replica)?;
+        }
         // A ballot ahead of `replica` is a raise that crashed between the two
         // writes; it was never answered, but taking it only refuses more.
         let (accepted_generation, accepted_leader) = match ballot::load(&dir)? {
@@ -897,8 +911,8 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
-            // Restored before retention starts below, so a sweep after a
-            // restart is held before any replication pass or batch has run.
+            // Set before retention starts below, so a sweep after a restart
+            // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),

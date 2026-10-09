@@ -944,8 +944,13 @@ These properties are worth knowing, because each rules out a class of surprise:
   without replication included, is not held. The hold is written to the
   shard's `replica` file and read back at open, before retention starts, so
   a sweep after a restart is held even on an idle shard or a follower cut
-  off from its leader, which no pass or batch has reached yet. A leader
-  lifts it once its shard has no followers left.
+  off from its leader, which no pass or batch has reached yet. The broker
+  also sets it when a stream or cache's consistency becomes `Quorum`, on the
+  shards open and the ones opened later (`LogConfig::retention_hold`), so
+  nothing is unheld between the change and the first pass. A leader lifts it
+  once its shard has no followers left, and a broker with neither
+  membership nor a peer transport lifts every saved hold at open, since
+  nothing there will advance a commit offset.
 
 What a reader sees after a trim is the point of the feature. `read_range` below
 `base_offset` returns `StorageError::Trimmed { requested, oldest }`, which the

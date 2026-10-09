@@ -71,6 +71,21 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// Hold one stream's logs at the commit offset, open and future, or
+    /// lift the hold. See `DiskLogProvider::set_stream_retention_hold`.
+    pub async fn set_stream_retention_hold(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        hold: bool,
+    ) -> Result<()> {
+        self.provider
+            .set_stream_retention_hold(tenant, namespace, stream, hold)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     pub fn config(&self) -> &LogConfig {
         self.provider.config()
     }

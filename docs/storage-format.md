@@ -519,7 +519,8 @@ offset again.
 The flags were a reserved zero before the hold was recorded, and no build
 checked them, so a file without the flag reads as not held and an older build
 reads a file with it unchanged. The hold is written when replication turns it
-on or off (`DiskLog::hold_retention_at_commit`) and restored at open, before
+on or off (`DiskLog::hold_retention_at_commit`), or when the log opens under a
+`LogConfig::retention_hold` that differs from it, and restored at open, before
 retention starts; see `docs/durable-storage.md`, "Retention".
 
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild

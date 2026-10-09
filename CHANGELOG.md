@@ -17,10 +17,15 @@ for what the current release guarantees.
   leader, until replication reached the shard again (#1109). The hold at the
   commit offset is now kept in the shard's `replica` file (a flag in what was
   a reserved field, which older builds ignore) and restored at open, before
-  retention starts. A leader whose shard has no followers left lifts the hold,
-  since nothing advances that shard's commit offset. In felix-storage and
-  felix-broker, `hold_retention_at_commit` is now async and returns whether
-  the change was written.
+  retention starts. A stream or cache raised to `Quorum` is held as the
+  broker applies the change, not from the first replication pass. A leader
+  whose shard has no followers left lifts the hold, and so does a broker with
+  neither membership nor a peer transport, at open, since nothing there
+  advances a commit offset. In felix-storage and felix-broker,
+  `hold_retention_at_commit` is now async and returns whether the change was
+  written; felix-storage adds `LogConfig::retention_hold`,
+  `DiskLogProvider::set_stream_retention_hold` and
+  `StorageApi::set_retention_hold`.
 - An in-memory cache's versions restarted at 0 with the broker, so a
   `cache_put_if` or `cache_delete_if` holding a version read before a restart
   could apply against a value written after it (#1098). Versions now start

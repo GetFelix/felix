@@ -21,10 +21,15 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
+    let hold = retention_hold(config);
     let durable_storage = match &durable_config {
         Some(durable) => {
             tracing::info!(config = %durable.summary(), "opening durable stream storage");
-            let storage = DurableStorage::open(&durable.root, durable.stream_log())
+            let stream_log = felix_storage::log::LogConfig {
+                retention_hold: hold,
+                ..durable.stream_log()
+            };
+            let storage = DurableStorage::open(&durable.root, stream_log)
                 .with_context(|| format!("open durable storage at {}", durable.root.display()))?;
             Some(storage)
         }
@@ -50,8 +55,14 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
             let root = durable.root.join("caches");
             tracing::info!(root = %root.display(), "opening the cache on durable storage");
             Box::new(
-                felix_storage::LogCache::open(&root, durable.log.clone())
-                    .with_context(|| format!("open the cache log at {}", root.display()))?,
+                felix_storage::LogCache::open(
+                    &root,
+                    felix_storage::log::LogConfig {
+                        retention_hold: hold,
+                        ..durable.log.clone()
+                    },
+                )
+                .with_context(|| format!("open the cache log at {}", root.display()))?,
             )
         }
         None => {
@@ -125,3 +136,21 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     };
     Ok((broker, durable_storage))
 }
+
+/// How stream and cache logs treat a retention hold they saved.
+///
+/// A broker with neither membership nor a peer transport never replicates:
+/// nothing would ever advance a log's commit offset, and it has no follower
+/// to protect, so a hold saved while it was clustered is lifted. Read from
+/// configuration, so a clustered broker whose replication has not started
+/// yet keeps its holds.
+fn retention_hold(config: &BrokerConfig) -> felix_storage::log::RetentionHold {
+    if config.membership.is_none() && config.peer_transport.is_none() {
+        felix_storage::log::RetentionHold::Lifted
+    } else {
+        felix_storage::log::RetentionHold::AsSaved
+    }
+}
+
+#[cfg(test)]
+mod tests;
