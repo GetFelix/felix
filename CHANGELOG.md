@@ -457,6 +457,15 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A broker notices its lease lapse within a sixteenth of the lease the control
+  plane hands out, not of the 10s placeholder it starts on (#1071). The refresh
+  that clears the cached admission flag, sets `felix_broker_lease_held` and
+  ends a deposed leader's readers was paced once, at startup, so under a 1s
+  lease it ran every 470ms instead of every 47ms. The commit-time lease check
+  was always exact; this was admission and the metric running late. It also
+  made the cluster harness's clock faults land late, since that refresh is
+  what reads the clock on an idle broker, which failed
+  `a_frozen_leader_is_refused_by_the_majority_its_successor_fenced`.
 - A write that reaches a shard's new owner while it is still opening the
   shard, or just after its fence settles but before it publishes that it
   serves, is held until it serves instead of being refused with
