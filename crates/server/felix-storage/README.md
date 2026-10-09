@@ -10,5 +10,7 @@ beats silently losing acknowledged records. Indexes are derived and never
 trusted — a missing, short or stale one is rebuilt from the segment it
 describes.
 
-Not published; it is built into the broker service. AGPL-3.0-only. See
+Built into the broker service, and published so that `felixctl inspect
+segments` can read a data directory offline with the same recovery plan the
+broker runs at startup (`felix_storage::inspect`). AGPL-3.0-only. See
 [LICENSING.md](https://github.com/GetFelix/felix/blob/main/LICENSING.md).

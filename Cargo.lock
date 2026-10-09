@@ -1396,6 +1396,7 @@ dependencies = [
  "felix-client",
  "felix-cluster",
  "felix-loadgen",
+ "felix-storage",
  "quinn",
  "reqwest",
  "serde",

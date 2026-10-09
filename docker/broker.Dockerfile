@@ -23,13 +23,16 @@ COPY . .
 
 ARG BIN=felix-broker
 
+# felixctl rides along so a broker that will not start can be inspected where
+# its volume is mounted: `felixctl inspect segments` reads the data directory.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/felix/target \
-    cargo build --release --locked -p felix-broker-service --bin "${BIN}" \
-    && strip "target/release/${BIN}" \
+    cargo build --release --locked -p felix-broker-service --bin "${BIN}" -p felixctl --bin felixctl \
+    && strip "target/release/${BIN}" target/release/felixctl \
     # Copied out of the cache mount, which does not survive the layer.
-    && cp "target/release/${BIN}" /usr/local/bin/felix-broker
+    && cp "target/release/${BIN}" /usr/local/bin/felix-broker \
+    && cp target/release/felixctl /usr/local/bin/felixctl
 
 # --- runtime -------------------------------------------------------------
 FROM docker.io/library/debian:bookworm-slim AS runtime
@@ -51,6 +54,7 @@ RUN groupadd --gid 65532 felix \
     && useradd --uid 65532 --gid 65532 --home-dir /var/lib/felix --create-home felix
 
 COPY --from=build /usr/local/bin/felix-broker /usr/local/bin/felix-broker
+COPY --from=build /usr/local/bin/felixctl /usr/local/bin/felixctl
 
 # Durability is opt-in — with FELIX_DURABLE_STORAGE_DIR unset the broker keeps
 # nothing on disk — so this is the path to point it at rather than one the

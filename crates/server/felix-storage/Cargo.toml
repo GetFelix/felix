@@ -10,8 +10,6 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["felix", "storage", "cache"]
 categories = ["network-programming", "caching"]
-# Built into the services, not consumed from a registry.
-publish = false
 
 [features]
 # Test-only faults at the I/O seam (see `src/fault.rs`). Debug builds have them

@@ -83,6 +83,11 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         }
         _ => {}
     }
+    // Reads a data directory and nothing else, so no context is needed: it
+    // runs where a broker's volume is mounted, often with no config at all.
+    if let Command::Inspect(cli::InspectCommand::Segments(args)) = command {
+        return inspect::segments::run(args, out);
+    }
     let path = context::config_path(cli.connection.config.as_deref(), &env)?;
     if let Command::Context(command) = command {
         return context::run(command, &cli.connection, &path, out);

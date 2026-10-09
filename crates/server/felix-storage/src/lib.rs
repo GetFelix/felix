@@ -64,5 +64,5 @@ pub use cache::{
 };
 pub use commit_order::{CommitSequencer, CommitTurn, Superseded};
 pub use counter_log::CounterStore;
-pub use disk_log::{DiskLog, DiskLogProvider};
+pub use disk_log::{DiskLog, DiskLogProvider, inspect};
 pub use error::{Corruption, CorruptionKind, CorruptionSite, Result, StorageError};

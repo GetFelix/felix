@@ -12,6 +12,23 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]` (part of
+  #1077): a broker's data directory read from disk, with no broker, context or
+  token. For every shard of every store (streams, `caches/`, `groups/`,
+  `dead-letters/`, `counters/`) it lists the segments, checks every record's
+  checksum and each index against one rebuilt from its segment, and gives the
+  verdict startup would reach: clean, repair (and what it would cut or
+  remove), or refuse (and the segment and byte). Strictly read-only: files are
+  opened for reading and nothing is created, cut, removed or re-indexed.
+  `--repair-checksum-tail`, `--index-spacing` and `--verify-all-on-open` match
+  the broker's settings, `--kind` narrows to one store and `--json` prints one
+  line per shard. It exits 6 when startup would repair a shard and 7 when it
+  would refuse one or a record fails its checksum, two new felixctl exit
+  statuses. The broker image now carries `felixctl`, so
+  `kubectl exec <pod> -- felixctl inspect segments /var/lib/felix/data` works;
+  Diagnosing a cluster covers a broker that will not start, on Kubernetes,
+  Docker and Podman, and on a copy. Decoding records offline
+  (`inspect records`) comes next.
 - A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
   macOS and Linux, with completions and man pages (#1005). `release.yml`
   writes it from each release's archive checksums and pushes it to
@@ -345,6 +362,16 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Startup recovery of a shard now plans every write before it makes any
+  (`plan_recovery` in felix-storage's `disk_log/recovery/plan.rs`), then makes
+  them in the same order as before. What recovery does is unchanged; the plan
+  is what `felix_storage::inspect` and `felixctl inspect segments` report. An
+  I/O error while planning now stops before any repair is written, where it
+  used to stop partway. The `segment_recovery` fuzz target also checks that
+  plan and recovery agree.
+- `felix-storage` is published to crates.io, ahead of `felixctl`, which links
+  it for `inspect segments`. A first publish of the name needs
+  `CARGO_REGISTRY_TOKEN` with `publish-new`.
 - Containers run under Docker or Podman. `scripts/container_engine.sh` picks
   the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
   answers) for `task test`, `task coverage`, `task pg:*` and `task

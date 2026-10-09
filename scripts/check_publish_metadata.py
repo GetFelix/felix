@@ -52,8 +52,9 @@ COPYLEFT = {
 }
 
 # Everything except the client SDK and the two crates it is built on, and
-# felixctl with the felix-loadgen it links. The server libraries are only ever
-# built into the services, and the rest are service binaries or dev/CI tools.
+# felixctl with the felix-loadgen and felix-storage it links. The other server
+# libraries are only ever built into the services, and the rest are service
+# binaries or dev/CI tools.
 NOT_PUBLISHABLE = {
     # A native library and header; it ships beside the Go and C# packages.
     "felix-capi",
@@ -63,7 +64,6 @@ NOT_PUBLISHABLE = {
     "felix-router",
     "felix-kafka",
     "felix-replication",
-    "felix-storage",
     "felix-broker-service",
     "felix-controlplane-service",
     "felix-conformance",

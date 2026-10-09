@@ -24,6 +24,12 @@ pub(crate) enum Exit {
     Server = 4,
     /// The key, resource or context does not exist.
     NotFound = 5,
+    /// `inspect segments`: startup would repair a shard (a torn tail, or what
+    /// an interrupted rollover left).
+    WouldRepair = 6,
+    /// `inspect segments`: startup would refuse a shard, or a record fails its
+    /// checksum.
+    Damaged = 7,
 }
 
 impl Exit {

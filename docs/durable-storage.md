@@ -643,6 +643,23 @@ default:
 Set `verify_all_on_open` to trade startup time for eager detection of bit rot in
 cold data.
 
+### Plan, then apply
+
+Recovery decides everything before it writes anything. `plan_recovery` in
+`disk_log/recovery/plan.rs` reads the directory and returns the writes it
+needs (segments to remove, indexes to rebuild, a retired segment to cut) and
+how the log ends up: fresh, resumed with the active segment's torn tail to cut,
+or refused with the corruption and its place. Where a repair changes what a
+later check reads, as when an unsealed retired segment is cut and the chain is
+checked again, the plan reads the files as if the earlier writes were made.
+Startup then makes the writes in order and opens the log. A refusal still
+makes the writes planned before the damage was found, as recovery always has.
+
+`felix_storage::inspect` runs only the plan, which is what lets
+`felixctl inspect segments` report startup's verdict on a data directory
+without changing it. The plan never writes, and the `segment_recovery` fuzz
+target checks that the plan and the recovery that follows agree.
+
 ### A gap at the head left by an older build
 
 Up to 0.6.0-preview, retention unlinked segments without syncing the
@@ -823,6 +840,11 @@ emptying it. Lowering first makes an interrupted restore safe to run again, and
 running it again on a restored log changes nothing.
 
 ## Tools
+
+`felixctl inspect segments <data-dir>` reports, read-only, every shard's
+segments, whether their records and indexes verify, and what startup would do
+with each one. See "A broker will not start" in the docs site's
+`deployment/diagnosing.md`.
 
 ```sh
 # Write, then verify what survived.

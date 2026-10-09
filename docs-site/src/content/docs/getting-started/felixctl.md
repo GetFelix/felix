@@ -586,10 +586,74 @@ With `--json` each broker prints one line: `node_id`, `subscriptions` (each
 with `behind` added when it has a position) and `next_cursor`, or `node_id` and
 `error` for a broker that did not answer.
 
+### A data directory, offline
+
+`felixctl inspect segments` reads a broker's data directory
+(`FELIX_DURABLE_STORAGE_DIR`) from disk. It needs no broker, no context and no
+token, so it works when the broker will not start: run it where the volume is
+mounted, or on a copy. The broker image carries `felixctl` for this.
+
+```bash
+felixctl inspect segments /var/lib/felix/data
+felixctl inspect segments /var/lib/felix/data acme/default/orders/3
+felixctl inspect segments /var/lib/felix/data --kind cache --json
+```
+
+```
+STORE   SHARD                                   SEGMENTS  RECORDS  BYTES      STARTUP
+stream  acme_default_orders_0-0d3aed4b998d2798  5         1048576  268697912  clean
+stream  acme_default_orders_3-5c1f0e2a9b7d4410  3         271041   136501248  refuse: segment 1 at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+
+acme_default_orders_3-5c1f0e2a9b7d4410 (stream)  /var/lib/felix/data/acme_default_orders_3-5c1f0e2a9b7d4410
+  SEGMENT  BASE    NEXT    RECORDS  BYTES      INDEX    RECORDS CHECK
+  0        0       262144  262144   67108864   matches  ok
+  1        262144  -       -        67108864   matches  damaged at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+  2        393216  402113  8897     2283520    behind   ok
+  startup refuses: segment 1 at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
+```
+
+Every shard of every store is listed: streams directly under the data
+directory, and `caches/`, `groups/`, `dead-letters/` and `counters/`. A shard
+directory is named from its key plus a hash, so `SHARD` is that name; give
+`TENANT/NAMESPACE/NAME/SHARD` (with `--kind` for a store other than streams) to
+look at one. Shards with something to report, and a shard you name, also get
+their segments listed; `--segments` lists them for every shard.
+
+- `STARTUP` is what the broker would do with the shard when it opens:
+  `clean`, `repair` and what it would cut or remove, or `refuse` and where. It
+  comes from the same plan the broker's startup recovery makes before it
+  writes anything, so the two agree.
+- `RECORDS CHECK` comes from reading every record of the segment, which startup
+  does not do for sealed segments. `torn tail` is damage in the shape an
+  unfinished write leaves at the end of a file; `damaged` is anything else, and
+  the segment's `NEXT` and `RECORDS` are then unknown.
+- `INDEX` compares the segment's index file with one rebuilt from its records:
+  `matches`, `behind` (a leading part of it, normal for the active segment),
+  `missing` or `stale`. Indexes are rebuilt at startup, so neither of the last
+  two stops a broker.
+
+The verdict depends on three broker settings. Pass the values the broker runs
+with: `--repair-checksum-tail` for `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL`,
+`--index-spacing` for `FELIX_DURABLE_INDEX_SPACING_BYTES` and
+`--verify-all-on-open` for `FELIX_DURABLE_VERIFY_ALL_ON_OPEN`.
+
+It only reads: nothing is created, cut, removed or re-indexed, and every file
+is opened read-only, so a read-only mount works. There is no lock on a data
+directory. Next to a running broker the reads are safe, but the active segment
+may be mid-write and show a torn tail that is only an append in flight.
+
+With `--json` each shard prints one line: `store`, `dir`, `path`, `startup`
+(`verdict`, and for `refuse` the `segment`, `position` and `detail`),
+`actions` (the writes startup would make), `durable_mark` and `segments`.
+
+`inspect segments` exits 0 when every shard would open as it is, 6 when startup
+would repair one, and 7 when it would refuse one or a record fails its
+checksum.
+
 ### Permissions
 
-Every `inspect` command needs a broker token allowed `node.view` on
-`cluster:*`, which no tenant grant reaches. A broker from before inspection
+Every `inspect` command that asks a broker needs a broker token allowed
+`node.view` on `cluster:*`, which no tenant grant reaches. A broker from before inspection
 does not answer it, and felixctl says `broker ADDR does not support inspect`
 rather than guessing. [Diagnosing a cluster](/deployment/diagnosing/) goes
 through what to look for, symptom by symptom.
@@ -628,6 +692,8 @@ error goes to stderr as `{"error": "...", "exit": N}`.
 | 3 | No broker or control plane could be reached |
 | 4 | A broker or the control plane refused the request |
 | 5 | The key, resource or context does not exist |
+| 6 | `inspect segments`: startup would repair a shard |
+| 7 | `inspect segments`: startup would refuse a shard, or a record fails its checksum |
 
 ## Help, completions and man pages
 
@@ -646,5 +712,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 State reads are planned. See
 [issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
 `felixctl inspect` is coming: connections, the control plane's placement
-decisions, a broker's segments read offline, and where one
+decisions, the records of a data directory decoded offline, and where one
 record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).
