@@ -149,8 +149,9 @@ async fn handle_cache_request(
                     Ok(())
                 }
                 Err(err) => {
+                    let stream = stream_outcome(&err);
                     let _ = response.send(Err(err));
-                    Err(anyhow::anyhow!("cache stream failed"))
+                    stream
                 }
             }
         }
@@ -175,8 +176,9 @@ async fn handle_cache_request(
                     Ok(())
                 }
                 Err(err) => {
+                    let stream = stream_outcome(&err);
                     let _ = response.send(Err(err));
-                    Err(anyhow::anyhow!("cache stream failed"))
+                    stream
                 }
             }
         }
@@ -195,7 +197,7 @@ async fn handle_cache_request(
                 max_frame_bytes,
             )
             .await;
-            let failed = result.is_err();
+            let stream = result.as_ref().err().map_or(Ok(()), stream_outcome);
             let _ = response.send(result.and_then(|(value, version)| match (value, version) {
                 (Some(value), Some(version)) => Ok(Some(VersionedValue { value, version })),
                 (None, _) => Ok(None),
@@ -205,10 +207,7 @@ async fn handle_cache_request(
                     "the broker answered without a version: the key's owner does not keep them"
                 )),
             }));
-            if failed {
-                return Err(anyhow::anyhow!("cache stream failed"));
-            }
-            Ok(())
+            stream
         }
         CacheRequest::Conditional {
             request_id,
@@ -231,8 +230,9 @@ async fn handle_cache_request(
                     Ok(())
                 }
                 Err(err) => {
+                    let stream = stream_outcome(&err);
                     let _ = response.send(Err(err));
-                    Err(anyhow::anyhow!("cache stream failed"))
+                    stream
                 }
             }
         }
@@ -257,11 +257,25 @@ async fn handle_cache_request(
                     Ok(())
                 }
                 Err(err) => {
+                    let stream = stream_outcome(&err);
                     let _ = response.send(Err(err));
-                    Err(anyhow::anyhow!("cache stream failed"))
+                    stream
                 }
             }
         }
+    }
+}
+
+/// Whether the stream can take the next request after `err`.
+///
+/// A refusal the broker sent back is a whole answer, so the stream is still in
+/// step and the worker keeps going. Anything else may have left half a frame
+/// on it, so the worker stops.
+fn stream_outcome(err: &anyhow::Error) -> Result<()> {
+    if err.downcast_ref::<crate::error::BrokerError>().is_some() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("cache stream failed"))
     }
 }
 

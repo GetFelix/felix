@@ -27,6 +27,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use felix_router::{Resolution, ShardRouter, Unavailable};
 
+use crate::shards::lifecycle::Phase;
 use crate::shards::lifecycle::fence::{FenceGuard, Fenced, ShardFence};
 use crate::shards::routing::hold::MoveHold;
 use crate::shards::{ShardKey, ShardKind};
@@ -373,11 +374,19 @@ impl IngressRouter {
                     Err(Fenced::NotServing) => true,
                 },
                 Dispatch::Unavailable(Reason::Moving) => true,
-                // This broker just took the shard and is fencing its replicas,
-                // which usually takes a round trip. The write waits for that
-                // as it waits out a move, rather than failing a cut-over.
+                // This broker just took the shard and is opening or fencing
+                // it, which usually takes a round trip. The write waits for
+                // that as it waits out a move, rather than failing a cut-over.
+                // `Active` too: the lifecycle settles the fence a moment
+                // before the servable set that says so is published.
                 Dispatch::Unavailable(Reason::NotReady) => {
                     self.fence.awaiting_promotion(key).is_some()
+                        || self.fence.phase_of(key).is_some_and(|record| {
+                            matches!(
+                                record.phase,
+                                Phase::Opening | Phase::Fencing | Phase::Active
+                            )
+                        })
                 }
                 // The leader named here is fenced and will not take it,
                 // whether this broker would forward to it or cannot reach it.

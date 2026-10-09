@@ -457,6 +457,16 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A write that reaches a shard's new owner while it is still opening the
+  shard, or just after its fence settles but before it publishes that it
+  serves, is held until it serves instead of being refused with
+  `shard_unavailable` / `not_ready` (#1085). Publishes, cache writes and
+  counter adds were all exposed; a move's cut-over showed it as a refused
+  counter add.
+- The Rust client's cache worker keeps its stream after the broker refuses a
+  cache or counter request (#1085). It used to stop on any error, so one
+  refusal turned the requests that later landed on that worker into
+  `cache worker closed`.
 - A `Quorum` publish no longer waits out an unreachable follower when the
   other follower already holds the record but is still answering an earlier
   replication pass (#1080). The pass waiting for a majority had shipped only to
