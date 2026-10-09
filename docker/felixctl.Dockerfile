@@ -5,8 +5,13 @@
 # Same two-stage shape as the broker image, minus what a short-lived CLI does
 # not need: no init, no healthcheck, no ports.
 
+# Docker Hub by default. CI passes a mirror of the same official images
+# (`--build-arg BASE_REGISTRY=public.ecr.aws/docker/library`) to stay clear
+# of Docker Hub's anonymous pull limit.
+ARG BASE_REGISTRY=docker.io/library
+
 # --- build ---------------------------------------------------------------
-FROM docker.io/library/rust:1.97-bookworm AS build
+FROM ${BASE_REGISTRY}/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 COPY . .
@@ -19,7 +24,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/felixctl /usr/local/bin/felixctl
 
 # --- runtime -------------------------------------------------------------
-FROM docker.io/library/debian:bookworm-slim AS runtime
+FROM ${BASE_REGISTRY}/debian:bookworm-slim AS runtime
 
 # ca-certificates: felixctl verifies brokers and the control plane against the
 # system trust store unless a context names its own CA file.

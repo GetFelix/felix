@@ -166,6 +166,8 @@ jobs:
         if: env.DRY_RUN == 'true'
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
           context: .
           file: docker/broker.Dockerfile
           load: true
@@ -175,6 +177,8 @@ jobs:
         if: env.DRY_RUN == 'true'
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
           context: .
           file: docker/controlplane.Dockerfile
           load: true
@@ -184,6 +188,8 @@ jobs:
         if: env.DRY_RUN == 'true'
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
           context: .
           file: docker/felixctl.Dockerfile
           load: true

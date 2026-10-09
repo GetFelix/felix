@@ -5,8 +5,13 @@
 # (`docker build -f docker/controlplane.Dockerfile .`). Same two-stage shape as
 # the broker image.
 
+# Docker Hub by default. CI passes a mirror of the same official images
+# (`--build-arg BASE_REGISTRY=public.ecr.aws/docker/library`) to stay clear
+# of Docker Hub's anonymous pull limit.
+ARG BASE_REGISTRY=docker.io/library
+
 # --- build ---------------------------------------------------------------
-FROM docker.io/library/rust:1.97-bookworm AS build
+FROM ${BASE_REGISTRY}/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 COPY . .
@@ -21,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/release/${BIN}" /usr/local/bin/felix-controlplane
 
 # --- runtime -------------------------------------------------------------
-FROM docker.io/library/debian:bookworm-slim AS runtime
+FROM ${BASE_REGISTRY}/debian:bookworm-slim AS runtime
 
 # ca-certificates: two reasons, not one — the control plane fetches an IdP's
 #   JWKS over TLS, and it connects to Postgres, which is usually TLS too.
