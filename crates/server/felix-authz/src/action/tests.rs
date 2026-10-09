@@ -18,6 +18,7 @@ fn action_string_roundtrip() {
         Action::GroupManage,
         Action::NodeView,
         Action::NodeManage,
+        Action::TokenDelegate,
     ];
 
     for action in actions {

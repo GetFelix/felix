@@ -212,10 +212,15 @@ pub struct BrokerConfig {
     pub pub_queue_depth: usize,
     /// Shared in-flight publish byte budget across all publishes (process-wide).
     pub pub_inflight_bytes: usize,
-    /// Per-connection share of the in-flight publish byte budget. Bounds how much of the
-    /// process-wide `pub_inflight_bytes` budget a single connection can occupy at once, so one
-    /// connection can't starve every other connection's publishes under load.
+    /// In-flight publish bytes one identity (tenant and token subject) may hold on a
+    /// connection. A plain client authenticates every stream as one identity, so this is
+    /// its connection's budget. A client acting for many users gets this per user, so one
+    /// user cannot starve the others.
     pub pub_conn_inflight_bytes: usize,
+    /// In-flight publish bytes one connection may hold across all its identities. Unset,
+    /// four identities' worth, capped at `pub_inflight_bytes`. See
+    /// [`Self::conn_publish_ceiling`].
+    pub pub_conn_total_inflight_bytes: Option<usize>,
     /// Most acknowledged publishes one connection may have unanswered when its
     /// client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker stops
     /// reading that connection's publishes at this depth. `0` refuses to
@@ -233,10 +238,14 @@ pub struct BrokerConfig {
     /// The largest queue capacity a subscriber may ask for on `subscribe`.
     /// A larger request is granted this.
     pub subscriber_queue_capacity_max: usize,
-    /// Max concurrent subscriptions a single QUIC connection may hold. Prevents a single
-    /// connection from unboundedly growing broker memory via subscriber queues/writer-lane
-    /// registrations.
+    /// Max concurrent subscriptions (and cache watches) one identity may hold on a QUIC
+    /// connection. For a plain client, which authenticates as one identity, this is the
+    /// connection's cap.
     pub max_subscriptions_per_conn: usize,
+    /// Max concurrent subscriptions one connection may hold across all its identities, so
+    /// a client acting for many users cannot grow broker memory without bound. Unset, four
+    /// identities' worth. See [`Self::conn_subscription_ceiling`].
+    pub max_subscriptions_per_conn_total: Option<usize>,
     /// Subscriber queue policy for publish->fanout enqueue.
     #[serde(serialize_with = "print::queue_policy")]
     pub subscriber_queue_policy: SubQueuePolicy,
@@ -329,6 +338,33 @@ impl BrokerConfig {
         let conn = self.pub_conn_recv_window.unwrap_or(budget);
         let stream = self.pub_stream_recv_window.unwrap_or(conn.min(budget));
         (conn, stream)
+    }
+
+    /// In-flight publish bytes one connection may hold across every identity
+    /// its streams authenticate as.
+    ///
+    /// Never below `pub_conn_inflight_bytes`, so a connection with one
+    /// identity is limited by that alone, as before identities had their own
+    /// budgets.
+    pub fn conn_publish_ceiling(&self) -> usize {
+        self.pub_conn_total_inflight_bytes
+            .unwrap_or_else(|| {
+                self.pub_conn_inflight_bytes
+                    .saturating_mul(IDENTITIES_PER_CONN)
+                    .min(self.pub_inflight_bytes)
+            })
+            .max(self.pub_conn_inflight_bytes)
+    }
+
+    /// Subscriptions one connection may hold across every identity its
+    /// streams authenticate as. Never below `max_subscriptions_per_conn`.
+    pub fn conn_subscription_ceiling(&self) -> usize {
+        self.max_subscriptions_per_conn_total
+            .unwrap_or_else(|| {
+                self.max_subscriptions_per_conn
+                    .saturating_mul(IDENTITIES_PER_CONN)
+            })
+            .max(self.max_subscriptions_per_conn)
     }
 
     /// Server endpoints this broker binds: the client listeners, plus the
@@ -432,12 +468,14 @@ impl Default for BrokerConfig {
             pub_queue_depth: DEFAULT_PUB_QUEUE_DEPTH,
             pub_inflight_bytes: DEFAULT_PUB_INFLIGHT_BYTES,
             pub_conn_inflight_bytes: DEFAULT_PUB_CONN_INFLIGHT_BYTES,
+            pub_conn_total_inflight_bytes: None,
             publish_window: DEFAULT_PUBLISH_WINDOW,
             pub_ingress_wait: false,
             core_shards: 0,
             subscriber_queue_capacity: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY,
             subscriber_queue_capacity_max: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX,
             max_subscriptions_per_conn: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN,
+            max_subscriptions_per_conn_total: None,
             subscriber_queue_policy: DEFAULT_SUBSCRIBER_QUEUE_POLICY,
             subscriber_writer_lanes: DEFAULT_SUBSCRIBER_WRITER_LANES,
             subscriber_lane_queue_depth: DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH,

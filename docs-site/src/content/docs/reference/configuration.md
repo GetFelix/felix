@@ -52,10 +52,12 @@ pub_workers_per_conn: 4
 pub_queue_depth: 64
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
+pub_conn_total_inflight_bytes: 67108864
 pub_conn_recv_window: 16777216
 pub_stream_recv_window: 16777216
 subscriber_queue_capacity: 512
 max_subscriptions_per_conn: 4096
+max_subscriptions_per_conn_total: 16384
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
 max_subscriber_writer_lanes: 8
@@ -431,7 +433,7 @@ subscriber_queue_capacity_max: 4096
 
 #### `max_subscriptions_per_conn`
 
-**Description**: Max concurrent subscriptions a single QUIC connection may hold. `subscriber_queue_capacity` bounds the size of one subscription's buffer. This bounds how many subscriptions one connection can open in total. Without it, a connection issuing unlimited `Subscribe` requests could grow broker memory without limit.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. `subscriber_queue_capacity` bounds the size of one subscription's buffer; this bounds how many subscriptions there are. A plain client authenticates every stream as one identity, so for it this is the connection's cap. A client acting for many users over one connection (`Client::with_identity`) gets this many per user, so one user at the cap does not stop the others subscribing.
 
 **Type**: `usize` (count)
 
@@ -441,6 +443,20 @@ subscriber_queue_capacity_max: 4096
 
 ```yaml
 max_subscriptions_per_conn: 4096
+```
+
+#### `max_subscriptions_per_conn_total`
+
+**Description**: Max concurrent subscriptions and cache watches one QUIC connection may hold across all its identities. Without it, a connection acting for many users could grow broker memory without limit. A subscription past it is refused with `max subscriptions per connection exceeded across identities`.
+
+**Type**: `usize` (count)
+
+**Default**: four times `max_subscriptions_per_conn` (`16384`). Startup refuses a value below `max_subscriptions_per_conn`.
+
+**Environment**: `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`
+
+```yaml
+max_subscriptions_per_conn_total: 16384
 ```
 
 #### `subscriber_queue_policy`
@@ -724,7 +740,7 @@ pub_inflight_bytes: 67108864
 
 ### `pub_conn_inflight_bytes`
 
-**Description**: Per-connection share of `pub_inflight_bytes`. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. `pub_conn_inflight_bytes` closes that gap: it's a second, independent byte-budget gate sized per connection, checked before the shared budget on every publish admission.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. This closes that gap: it is checked first on every publish admission, then `pub_conn_total_inflight_bytes`, then the shared budget. A plain client authenticates every stream as one identity, so for it this is the connection's budget. A client acting for many users over one connection (`Client::with_identity`) gets this much per user, so one user's unanswered publishes do not hold up the others.
 
 **Type**: `usize` (bytes)
 
@@ -740,6 +756,21 @@ pub_conn_inflight_bytes: 16777216
 **Tuning**:
 - Set it below `pub_inflight_bytes` to have any effect. Equal lets one connection take the whole shared budget. Above is refused at startup.
 - Roughly `pub_inflight_bytes / N` for the expected number of concurrently active connections gives each a fair share while still allowing the shared budget to absorb bursts from fewer connections.
+
+### `pub_conn_total_inflight_bytes`
+
+**Description**: In-flight publish bytes one connection may hold across all its identities. Only a connection that acts for several users can reach it, since it is never below `pub_conn_inflight_bytes`.
+
+**Type**: `usize` (bytes)
+
+**Default**: four times `pub_conn_inflight_bytes`, capped at `pub_inflight_bytes` (64 MiB with the defaults). Startup refuses a value below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.
+
+**Environment**: `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`
+
+**Example**:
+```yaml
+pub_conn_total_inflight_bytes: 67108864
+```
 
 ### `pub_conn_recv_window`
 

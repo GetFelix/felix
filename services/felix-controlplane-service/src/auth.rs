@@ -3,6 +3,7 @@
 //! boundary; only public keys leave, via JWKS.
 pub mod admin;
 pub(crate) mod bearer;
+pub mod delegate;
 pub mod exchange;
 pub mod felix_token;
 pub mod idp_registry;

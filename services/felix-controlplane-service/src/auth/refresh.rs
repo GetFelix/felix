@@ -283,6 +283,7 @@ pub async fn refresh_token_handler(
     if let Some(narrowing) = &record.narrowing {
         perms = crate::auth::exchange::narrow_permissions(perms, narrowing, &tenant_id);
     }
+    let perms = crate::auth::exchange::for_audience(perms, audience);
     if perms.is_empty() {
         // Every grant is gone since the token was issued. Refusing here is the
         // point of re-evaluating: the chain also ends, so a principal whose

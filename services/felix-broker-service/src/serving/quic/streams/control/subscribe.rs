@@ -96,7 +96,7 @@ pub(super) async fn subscribe(
         Arc::clone(broker),
         connection.clone(),
         config.clone(),
-        &publish_ctx.subscriptions,
+        &publish_ctx.identity,
         &publish_ctx.lane_manager,
         publish_ctx.ingress.as_deref(),
         out_ack_tx,

@@ -6,6 +6,7 @@
 //!   3. `Backpressure` still ends promptly when the connection is torn down.
 
 use super::*;
+use crate::serving::quic::handlers::publish::admission::SubscriptionCap;
 
 #[tokio::test]
 async fn publish_admission_bounds_shared_inflight_bytes() {
@@ -43,7 +44,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::new(4)),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
@@ -79,7 +80,7 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
         // Shared budget is generous; this connection's own share is not.
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::new(4)),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
@@ -114,7 +115,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
         wait_timeout: Duration::from_millis(50),
         admission: Arc::clone(&admission),
         conn_admission: Arc::new(PublishAdmission::new(4)),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
@@ -130,7 +131,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
         lease: None,
         lease_headroom: std::time::Duration::ZERO,
         conn_admission: Arc::new(PublishAdmission::new(4)),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ..ctx_a.clone()
     };
@@ -269,4 +270,171 @@ async fn backpressure_gives_up_when_the_connection_is_cancelled() {
         err.to_string().contains("cancelled"),
         "unexpected error: {err}"
     );
+}
+
+/// Limits as a connection's: 7 bytes (one `make_job`) and one subscription
+/// per identity, room for three identities' worth in all.
+fn shared_conn() -> (crate::config::BrokerConfig, Arc<ConnLimits>) {
+    let payload = b"payload".len();
+    let config = crate::config::BrokerConfig {
+        pub_conn_inflight_bytes: payload,
+        pub_conn_total_inflight_bytes: Some(payload * 3),
+        max_subscriptions_per_conn: 1,
+        max_subscriptions_per_conn_total: Some(3),
+        ..crate::config::BrokerConfig::default()
+    };
+    let limits = ConnLimits::new(&config);
+    (config, limits)
+}
+
+fn alice() -> IdentityKey {
+    IdentityKey::new("t1", "alice")
+}
+
+fn bob() -> IdentityKey {
+    IdentityKey::new("t1", "bob")
+}
+
+/// A gateway's users share its connection. One user's unanswered publishes
+/// filling her budget must not shed another user's.
+#[tokio::test]
+async fn one_identity_at_its_byte_budget_leaves_another_room() {
+    let (config, limits) = shared_conn();
+    let (mut ctx, _rx, _tx) = make_publish_context(8);
+    ctx.conn_admission = Arc::new(PublishAdmission::new(config.conn_publish_ceiling()));
+    let mut alice_ctx = ctx.clone();
+    alice_ctx.identity = limits.share(alice());
+    let mut bob_ctx = ctx;
+    bob_ctx.identity = limits.share(bob());
+
+    let queued = enqueue_publish(&alice_ctx, "t1", make_job(), EnqueuePolicy::Drop, None)
+        .await
+        .expect("enqueue");
+    assert!(queued, "alice's first publish fits her budget");
+    let over = enqueue_publish(&alice_ctx, "t1", make_job(), EnqueuePolicy::Fail, None)
+        .await
+        .expect_err("alice is over her budget");
+    assert!(
+        over.to_string()
+            .contains("per-connection byte budget exhausted"),
+        "{over}"
+    );
+
+    let queued = enqueue_publish(&bob_ctx, "t1", make_job(), EnqueuePolicy::Drop, None)
+        .await
+        .expect("enqueue");
+    assert!(queued, "alice's full budget shed bob's publish");
+}
+
+/// The connection's ceiling still bounds the identities together.
+#[tokio::test]
+async fn the_connection_ceiling_bounds_every_identity_together() {
+    let (config, limits) = shared_conn();
+    let (mut ctx, _rx, _tx) = make_publish_context(8);
+    ctx.conn_admission = Arc::new(PublishAdmission::new(config.conn_publish_ceiling()));
+    let mut held = Vec::new();
+    for user in ["a", "b", "c"] {
+        let mut user_ctx = ctx.clone();
+        user_ctx.identity = limits.share(IdentityKey::new("t1", user));
+        assert!(
+            enqueue_publish(&user_ctx, "t1", make_job(), EnqueuePolicy::Drop, None)
+                .await
+                .expect("enqueue")
+        );
+        held.push(user_ctx);
+    }
+    ctx.identity = limits.share(IdentityKey::new("t1", "d"));
+    let refused = enqueue_publish(&ctx, "t1", make_job(), EnqueuePolicy::Fail, None)
+        .await
+        .expect_err("past the connection's ceiling");
+    assert!(
+        refused.to_string().contains("across identities"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn subscriptions_are_capped_per_identity_under_the_connection_ceiling() {
+    let (_, limits) = shared_conn();
+    let alice = limits.share(alice());
+    let bob = limits.share(bob());
+    alice.try_reserve().expect("alice's first");
+    assert_eq!(alice.try_reserve(), Err(SubscriptionCap::Identity));
+    assert_eq!(
+        SubscriptionCap::Identity.message(),
+        "max subscriptions per connection exceeded",
+        "a plain client's refusal reads as it always did"
+    );
+    bob.try_reserve().expect("alice at her cap leaves bob room");
+    limits
+        .share(IdentityKey::new("t1", "carol"))
+        .try_reserve()
+        .expect("carol");
+    assert_eq!(
+        limits.share(IdentityKey::new("t1", "dave")).try_reserve(),
+        Err(SubscriptionCap::Connection)
+    );
+    alice.release();
+    alice.try_reserve().expect("a released slot is reusable");
+}
+
+/// A client cycling through identities must not grow the connection's table:
+/// an identity's entry goes with the last stream, subscription or in-flight
+/// publish that holds it.
+#[tokio::test]
+async fn an_identity_with_nothing_held_is_forgotten() {
+    let (config, limits) = shared_conn();
+    for user in 0..1000 {
+        let share = limits.share(IdentityKey::new("t1", &user.to_string()));
+        share.try_reserve().expect("reserve");
+        share.release();
+    }
+    assert_eq!(limits.identities(), 0);
+
+    // Streams of one identity share one entry.
+    let first = limits.share(alice());
+    let second = limits.share(alice());
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(limits.identities(), 1);
+    drop((first, second));
+    assert_eq!(limits.identities(), 0);
+
+    // An in-flight publish keeps its identity's entry, and its budget, after
+    // the stream that sent it is gone.
+    let (mut ctx, mut rx, _tx) = make_publish_context(8);
+    ctx.conn_admission = Arc::new(PublishAdmission::new(config.conn_publish_ceiling()));
+    ctx.identity = limits.share(alice());
+    assert!(
+        enqueue_publish(&ctx, "t1", make_job(), EnqueuePolicy::Drop, None)
+            .await
+            .expect("enqueue")
+    );
+    drop(ctx);
+    assert_eq!(limits.identities(), 1);
+    let (mut reopened, _rx2, _tx2) = make_publish_context(8);
+    reopened.identity = limits.share(alice());
+    assert!(
+        enqueue_publish(&reopened, "t1", make_job(), EnqueuePolicy::Fail, None)
+            .await
+            .is_err(),
+        "a reopened stream found a fresh budget while alice's bytes were in flight"
+    );
+    drop(reopened);
+    drop(rx.try_recv().expect("the queued job"));
+    assert_eq!(limits.identities(), 0);
+}
+
+/// Rebinding a stream to the identity it authenticated as.
+#[test]
+fn a_stream_rebinds_to_its_identitys_share() {
+    let (_, limits) = shared_conn();
+    let unauthenticated = limits.share(IdentityKey::default());
+    let alice_stream = unauthenticated.rebind(alice());
+    assert!(Arc::ptr_eq(&alice_stream, &limits.share(alice())));
+    assert!(Arc::ptr_eq(&alice_stream.rebind(alice()), &alice_stream));
+    drop(unauthenticated);
+    assert_eq!(limits.identities(), 1);
+    // A standalone share has no connection to move within.
+    let lone = IdentityLimits::unlimited();
+    assert!(Arc::ptr_eq(&lone.rebind(alice()), &lone));
 }

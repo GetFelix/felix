@@ -248,6 +248,11 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_PUB_CONN_INFLIGHT_BYTES);
+        let pub_conn_total_inflight_bytes =
+            std::env::var("FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0);
         let publish_window = std::env::var("FELIX_BROKER_PUBLISH_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
@@ -276,6 +281,11 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN);
+        let max_subscriptions_per_conn_total =
+            std::env::var("FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0);
         let subscriber_queue_policy = std::env::var("FELIX_SUB_QUEUE_POLICY")
             .ok()
             .and_then(|value| parse_sub_queue_policy(&value))
@@ -405,12 +415,14 @@ impl BrokerConfig {
             pub_queue_depth,
             pub_inflight_bytes,
             pub_conn_inflight_bytes,
+            pub_conn_total_inflight_bytes,
             publish_window,
             pub_ingress_wait,
             core_shards,
             subscriber_queue_capacity,
             subscriber_queue_capacity_max,
             max_subscriptions_per_conn,
+            max_subscriptions_per_conn_total,
             subscriber_queue_policy,
             subscriber_writer_lanes,
             subscriber_lane_queue_depth,
