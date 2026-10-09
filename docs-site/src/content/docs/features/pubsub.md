@@ -285,7 +285,7 @@ for record in records {
     match process_order(&record.payload) {
         Ok(()) => client.group_ack("tenant", "ns", "orders", shard, "fulfilment", record.offset).await?,
         // Hand it back for immediate redelivery instead of waiting out the timeout.
-        Err(_) => client.group_nack("tenant", "ns", "orders", shard, "fulfilment", record.offset).await?,
+        Err(_) => client.group_nack("tenant", "ns", "orders", shard, "fulfilment", &record).await?,
     }
 }
 ```

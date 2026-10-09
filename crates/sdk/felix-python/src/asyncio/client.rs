@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use super::{AsyncCacheWatch, AsyncShardedSubscription, AsyncSubscription};
 use crate::args::{parse_ack, parse_addrs, parse_start};
 use crate::errors::to_py_err;
-use crate::types::{CacheWatchFilter, OwnedGroupRecord};
+use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 
 /// A connection to a Felix cluster, for asyncio.
 ///
@@ -401,7 +401,8 @@ impl AsyncClient {
         )
     }
 
-    /// Hand one record back for immediate redelivery.
+    /// Hand one record back for immediate redelivery. Refused once its claim
+    /// has lapsed or the record has gone out again.
     fn group_nack<'py>(
         &self,
         py: Python<'py>,
@@ -410,18 +411,22 @@ impl AsyncClient {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: PyRef<'_, GroupRecord>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        self.settle(
-            py,
-            tenant_id,
-            namespace,
-            stream,
-            shard,
-            group,
-            offset,
-            Settle::Nack,
-        )
+        let record = record.delivery();
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            group.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     /// Offsets this group gave up on, lowest first.
@@ -659,11 +664,6 @@ impl AsyncClient {
                         .group_ack(&tenant_id, &namespace, &stream, shard, &group, offset)
                         .await
                 }
-                Settle::Nack => {
-                    client
-                        .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
-                        .await
-                }
                 Settle::Discard => {
                     client
                         .group_discard(&tenant_id, &namespace, &stream, shard, &group, offset)
@@ -680,12 +680,11 @@ impl AsyncClient {
     }
 }
 
-/// Which settle a group call is making. One helper serves all four because
+/// Which settle a group call is making. One helper serves all three because
 /// they differ only in the client method they reach.
 #[derive(Clone, Copy)]
 enum Settle {
     Ack,
-    Nack,
     Discard,
     Redrive,
 }

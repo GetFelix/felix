@@ -436,3 +436,33 @@ async fn a_settled_read_sees_a_staged_write() {
         Some(&b"staged"[..])
     );
 }
+
+/// A put whose caller is cancelled before its task first runs still holds off
+/// a settled read. On a current-thread runtime the spawned task cannot run
+/// until this one yields, so the cancel lands before the put has started.
+#[tokio::test(flavor = "current_thread")]
+async fn a_settled_read_sees_a_put_cancelled_before_it_started() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache
+        .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"old"), None)
+        .await
+        .unwrap();
+
+    let mut put = Box::pin(cache.put_checked(T, NS, C, 0, "k", Bytes::from_static(b"new"), None));
+    let polled = std::future::poll_fn(|cx| Poll::Ready(put.as_mut().poll(cx))).await;
+    assert!(polled.is_pending(), "the put waits on its spawned task");
+    drop(put);
+
+    assert_eq!(
+        cache
+            .get_settled_checked(T, NS, C, 0, "k")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&b"new"[..])
+    );
+}

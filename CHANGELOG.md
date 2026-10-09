@@ -39,6 +39,14 @@ for what the current release guarantees.
   written; felix-storage adds `LogConfig::retention_hold`,
   `DiskLogProvider::set_stream_retention_hold` and
   `StorageApi::set_retention_hold`.
+- A consumer-group commit cancelled after it handed its write to a task, but
+  before that task first ran, could still let the next commit read the old
+  cursor and move the group backwards (part of #1109; the case #1097 left
+  open). A log-backed cache put or delete that checks no condition now marks
+  its key in flight before it spawns the write, so a settled read waits for it.
+- A plain nack can no longer take a record from the consumer it was handed to
+  next (part of #1109). `group_nack` names the delivery by its attempt count,
+  as `group_nack_after` does, so a late one is refused with `stale_claim`.
 - Two brokers offloading to one directory could write the same object key,
   because keys held only the shard directory name, which every replica of a
   shard shares, so one broker could replace a copy the other had recorded
@@ -128,6 +136,12 @@ for what the current release guarantees.
   tries again (#1095).
 
 ### Changed
+- `Client::group_nack` and `ClusterClient::group_nack` in felix-client take the
+  `GroupRecord` instead of its offset, and send `record.attempts` to a broker
+  advertising `FEATURE_GROUP_CLAIM_CONTROL`. The Python `group_nack` takes the
+  `GroupRecord` and the Node `groupNack` takes the record (any object with
+  `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
+  a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
 - felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
   and `LogConfig::validate` refuses a node id that is not one path segment
   (letters, digits, `-`, `_`, `.`, not starting with `.`). In

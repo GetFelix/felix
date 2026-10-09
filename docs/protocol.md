@@ -527,8 +527,8 @@ out again would take it from whoever holds it now and, with a delay, hold it
 back from everyone. A delayed nack is not a claim, so a second nack naming the
 same delivery is refused too. Omitted or `0` hands back whatever claim stands,
 as a nack always did. Sent only to a broker that advertised
-`FEATURE_GROUP_CLAIM_CONTROL`; felix-client sends it with every
-`group_nack_after`, delayed or not. A broker released before the field ignores
+`FEATURE_GROUP_CLAIM_CONTROL`; felix-client sends it with every nack, delayed
+or not, and so do the Python and Node bindings. A broker released before the field ignores
 it and hands back whatever claim stands, which is no worse than a nack that
 leaves it out.
 

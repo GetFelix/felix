@@ -162,6 +162,10 @@ impl LogCache {
             offset: 0,
             expires_at_millis,
         };
+        // Registered before the spawn, so a caller cancelled before the task
+        // first runs still holds off a settled read. A conditional put cannot
+        // do this: it waits out every in-flight write to its key itself.
+        let early = condition.is_none().then(|| shard.key_in_flight(key));
         // Staged on a task of its own: once the append thread has the record
         // it is written, and the guard built from it is what applies it and
         // tells the watchers. A caller cancelled in between would leave the
@@ -204,7 +208,7 @@ impl LogCache {
                     )
                     .await?;
                 state.sequenced_through = Some(pending.last_offset() + 1);
-                let in_flight = shard.key_in_flight(&change.key);
+                let in_flight = early.unwrap_or_else(|| shard.key_in_flight(&change.key));
                 Ok(Ok(FinishOnDrop::new(StagedWrite {
                     shard: Arc::clone(&shard),
                     log: state.log.clone(),
@@ -450,6 +454,8 @@ impl LogCache {
             offset: 0,
             expires_at_millis: 0,
         };
+        // Registered before the spawn, as in `put_entry`.
+        let early = matches!(when, DeleteWhen::Always).then(|| shard.key_in_flight(key));
         // On a task of its own, for the reason `put_checked` gives.
         let staged = crate::task::run_to_end({
             let shard = Arc::clone(&shard);
@@ -499,7 +505,7 @@ impl LogCache {
                     )
                     .await?;
                 state.sequenced_through = Some(pending.last_offset() + 1);
-                let in_flight = shard.key_in_flight(&change.key);
+                let in_flight = early.unwrap_or_else(|| shard.key_in_flight(&change.key));
                 let staged = FinishOnDrop::new(StagedWrite {
                     shard: Arc::clone(&shard),
                     log: state.log.clone(),

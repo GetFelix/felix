@@ -134,9 +134,7 @@ def test_a_record_handed_back_is_delivered_again(client, fixture, key):
     assert mine, "nothing to hand back"
     first_attempts = mine[0].attempts
 
-    client.group_nack(
-        fixture["tenant_id"], fixture["namespace"], stream, 0, group, mine[0].offset
-    )
+    client.group_nack(fixture["tenant_id"], fixture["namespace"], stream, 0, group, mine[0])
 
     redelivered = poll_until(client, fixture, 0, group, 1)
     again = [record for record in redelivered if record.payload == payload]

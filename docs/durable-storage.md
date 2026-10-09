@@ -328,6 +328,10 @@ held. A read that feeds a write, like a consumer group's cursor commit or a
 dead letter's state change, uses `LogCache::get_settled_checked`, which waits
 for the writes already staged to that key to apply. A plain read could see the
 old value, and the write that follows would land on top of the cancelled one.
+An unconditional put or delete marks its key in flight before it spawns its
+task, so a caller cancelled before that task first runs is waited for too. A
+conditional one marks it once staged, since it waits out the key's other
+writes itself.
 
 ## Segments and rollover
 
