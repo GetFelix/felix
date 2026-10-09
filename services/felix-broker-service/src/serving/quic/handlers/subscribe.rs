@@ -234,12 +234,8 @@ pub(crate) async fn handle_subscribe_message(
             principal,
         });
 
-        // A shard's fence closes before its readers are ended, and the routes
-        // that admitted this request catch up only after. A subscription that
-        // registered after the ending would never be ended and would wait on
-        // a shard nobody writes here, so it is refused and the client retries
-        // where the shard is now. Checked after registering: a fence still
-        // open here means the ending is yet to come and will include it.
+        // Checked again now that it is registered: an ending that landed
+        // since the first check would otherwise have missed it.
         let key = crate::shards::ShardKey {
             tenant_id: tenant_id.clone(),
             namespace: namespace.clone(),
@@ -247,15 +243,10 @@ pub(crate) async fn handle_subscribe_message(
             shard,
             kind: crate::shards::ShardKind::Stream,
         };
-        if ingress.is_some_and(|ingress| ingress.fence().is_closed(&key)) {
+        if let Some(refusal) = super::redirect::stopped_serving(ingress, &key) {
             drop(subscription);
-            let reason = crate::shards::routing::Reason::Moving;
             return subscribe_failed(
-                ClientError::unavailable(
-                    &reason,
-                    format!("stream {stream} stopped being served here"),
-                )
-                .into_message(),
+                refusal,
                 subscriptions,
                 out_ack_tx,
                 out_ack_depth,

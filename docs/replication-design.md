@@ -824,8 +824,8 @@ has lost the shard. Without it the broker learns another way:
   reports it (`WriteFence::deposed`), and the first report at a generation
   ends the shard's readers the way a move does: each gets the offset to resume
   from and no named owner, and the client finds the shard again. From then on
-  the shard's readers need the lease again, so a broker that has lost it
-  refuses new ones.
+  the broker refuses new readers of the shard at that generation, lease or no
+  lease.
 - The new assignment reaching the broker does the same, as it always has.
 - A leader that hears from no majority for a lease duration ends its readers
   too. A shard with nothing to ship exchanges nothing with its followers, so
@@ -834,6 +834,14 @@ has lost the shard. Without it the broker learns another way:
   deposal. That is the only clock left, and it decides only when a quiet feed
   gives up, never what it delivers. While the lease holds no rounds run: a new
   assignment reaches the broker the usual way.
+
+Each of these endings runs once, over the readers registered at that moment.
+A subscribe or watch is admitted (`redirect_for`) before it registers, so one
+admitted just before an ending and registered just after would be missed. The
+handler checks again after registering (`stopped_serving`): every ending first
+changes what that check reads (the fence closes, the lease clock runs out, the
+gate records the deposal), so a reader either sees the change and is refused,
+or registered in time to be ended with the rest.
 
 A `Latest` subscription on a deposed leader starts at that leader's mark,
 which may be behind the real tail. That errs on the safe side: the reader may

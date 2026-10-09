@@ -25,6 +25,12 @@ for what the current release guarantees.
   identities`.
 
 ### Fixed
+- A subscription or cache watch that registered just after a lease lapse,
+  deposal or release ended its shard's readers is now refused instead of being
+  left attached to a shard the broker no longer serves, where it got nothing
+  and never heard the shard moved (#1117). The broker checks again after
+  registering, and a broker deposed at a shard's generation now refuses new
+  readers of it even while its lease holds.
 - A consumer-group commit cancelled after it handed its write to a task, but
   before that task first ran, could still let the next commit read the old
   cursor and move the group backwards (part of #1109; the case #1097 left

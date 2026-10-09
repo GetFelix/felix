@@ -815,36 +815,29 @@ async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() 
     Ok(())
 }
 
-/// **A subscribe that lands after a shard's readers were ended is refused.**
-/// The lifecycle closes the fence and ends the readers before this broker's
-/// routes catch up, so for a moment the routes still admit a subscribe. One
-/// registered then was never ended: it sat on a broker that no longer
-/// receives the shard's writes and delivered nothing more.
-#[tokio::test]
-async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
-    use crate::test_support::leader::{self, Leader};
+/// Whether the routing check made before a subscribe registers would let
+/// one for the durable stream through.
+fn admitted(fixture: &crate::test_support::leader::Leader) -> bool {
+    use crate::test_support::leader;
+    crate::serving::quic::handlers::redirect::redirect_for(
+        Some(&fixture.ingress),
+        None,
+        leader::TENANT,
+        leader::NAMESPACE,
+        leader::DURABLE,
+        0,
+        crate::shards::ShardKind::Stream,
+        0,
+    )
+    .is_none()
+}
 
-    let mut fixture = Leader::start().await;
-    let key = leader::stream_key(leader::DURABLE);
-    fixture.fence_move(&key);
-    fixture
-        .broker
-        .end_subscriptions(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0, None)
-        .await;
-    // The window: the routes still say the shard is served here.
-    assert!(
-        crate::serving::quic::handlers::redirect::redirect_for(
-            Some(&fixture.ingress),
-            None,
-            leader::TENANT,
-            leader::NAMESPACE,
-            leader::DURABLE,
-            0,
-            crate::shards::ShardKind::Stream,
-            0,
-        )
-        .is_none()
-    );
+/// Register a subscriber on the durable stream, as the control stream does
+/// once [`admitted`] said yes, and return the first answer to it.
+async fn subscribe_after_admission(
+    fixture: &crate::test_support::leader::Leader,
+) -> Result<Message> {
+    use crate::test_support::leader;
 
     let (server_config, cert) = make_server_config()?;
     let transport = TransportConfig::default();
@@ -895,11 +888,26 @@ async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
         .await
         .context("ack timeout")?
         .context("ack missing")?;
-    let Outgoing::Message(Message::Error { code, .. }) = ack else {
-        panic!("expected a refusal, got {ack:?}");
+    server_task.await.context("server join")??;
+    let Outgoing::Message(answer) = ack else {
+        panic!("expected a control message, got {ack:?}");
+    };
+    Ok(answer)
+}
+
+/// The refusal in `answer`, and that it left no subscriber behind.
+async fn assert_refused(
+    fixture: &crate::test_support::leader::Leader,
+    answer: Message,
+    says: &str,
+) -> Result<()> {
+    use crate::test_support::leader;
+
+    let Message::Error { code, message, .. } = answer else {
+        panic!("expected a refusal, got {answer:?}");
     };
     assert_eq!(code, Some(felix_wire::ErrorCode::ShardUnavailable));
-    server_task.await.context("server join")??;
+    assert!(message.contains(says), "unexpected refusal: {message}");
     assert_eq!(
         fixture
             .broker
@@ -907,6 +915,112 @@ async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
             .await?,
         0,
         "the refused subscribe left a registration behind"
+    );
+    Ok(())
+}
+
+/// **A subscribe that lands after a shard's readers were ended is refused.**
+/// The lifecycle closes the fence and ends the readers before this broker's
+/// routes catch up, so for a moment the routes still admit a subscribe. One
+/// registered then was never ended: it sat on a broker that no longer
+/// receives the shard's writes and delivered nothing more.
+#[tokio::test]
+async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let mut fixture = Leader::start().await;
+    let key = leader::stream_key(leader::DURABLE);
+    fixture.fence_move(&key);
+    fixture
+        .broker
+        .end_subscriptions(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0, None)
+        .await;
+    // The window: the routes still say the shard is served here.
+    assert!(admitted(&fixture));
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "stopped being served here").await
+}
+
+/// **A lease lapse between admission and registration still reaches the
+/// subscriber.** The lapse ends the readers registered at that moment, once.
+/// A subscribe admitted while the lease held but registered after that ending
+/// would get nothing and never hear that the shard moved.
+#[tokio::test]
+async fn a_subscribe_registered_after_a_lease_lapse_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let fixture = Leader::start().await;
+    let lease = fixture.hold_lease();
+    assert!(admitted(&fixture));
+    // What `ShardReaders::watch_leadership` does on a lapse, landing between
+    // the admission above and the registration below.
+    lease.surrender();
+    fixture
+        .broker
+        .end_subscriptions(
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::DURABLE,
+            0,
+            Some(felix_broker::ShardHandoff {
+                node_id: None,
+                addr: None,
+                generation: leader::GENERATION,
+            }),
+        )
+        .await;
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "lease").await
+}
+
+/// **The same for a deposal**: a follower named a newer leader, which ends the
+/// readers here, and a subscribe registered after that is refused rather than
+/// left on a shard someone else leads.
+#[tokio::test]
+async fn a_subscribe_registered_after_a_deposal_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let fixture = Leader::start().await;
+    let key = leader::stream_key(leader::DURABLE);
+    assert!(admitted(&fixture));
+    fixture.ingress.fence().depose(&key, leader::GENERATION);
+    fixture
+        .broker
+        .end_subscriptions(
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::DURABLE,
+            0,
+            Some(felix_broker::ShardHandoff {
+                node_id: None,
+                addr: None,
+                generation: leader::GENERATION,
+            }),
+        )
+        .await;
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "stopped being served here").await?;
+    // And the routing check now refuses it before registering at all.
+    assert!(!admitted(&fixture));
+    Ok(())
+}
+
+/// A shard still served here takes the subscriber: the check after
+/// registering refuses only what has ended.
+#[tokio::test]
+async fn a_subscribe_with_the_lease_held_is_served() -> Result<()> {
+    use crate::test_support::leader::Leader;
+
+    let fixture = Leader::start().await;
+    let _lease = fixture.hold_lease();
+    assert!(admitted(&fixture));
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert!(
+        matches!(answer, Message::Subscribed { .. }),
+        "expected Subscribed, got {answer:?}"
     );
     Ok(())
 }

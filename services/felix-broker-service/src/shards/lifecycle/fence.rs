@@ -237,6 +237,14 @@ impl ShardFence {
         self.deposal.notify_one();
     }
 
+    /// Whether this broker learned `key` has a newer leader than `generation`.
+    pub fn is_deposed(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.deposed_at.load(SeqCst) == generation)
+    }
+
     /// Resolves once a deposal is queued, or at once if one was queued with
     /// no one waiting.
     pub async fn deposed(&self) {
