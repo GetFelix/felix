@@ -831,6 +831,10 @@ impl StorageApi for LogCache {
             .await
     }
 
+    fn has_log(&self) -> bool {
+        true
+    }
+
     async fn shard_log(
         &self,
         tenant_id: &str,

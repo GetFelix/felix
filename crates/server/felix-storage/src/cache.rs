@@ -111,6 +111,13 @@ pub trait StorageApi: Debug + Send + Sync {
         key: &str,
     ) -> Result<Option<Bytes>>;
 
+    /// Whether this store keeps each shard as a log. When it does, a `None`
+    /// from [`Self::shard_log`] means the log could not be opened, not that
+    /// there is none.
+    fn has_log(&self) -> bool {
+        false
+    }
+
     /// The log backing one cache shard, when the cache is log-backed.
     ///
     /// `None` for a cache with no log, which has nothing to replicate. Exposed
