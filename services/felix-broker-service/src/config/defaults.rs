@@ -88,6 +88,11 @@ pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY: usize = 512;
 // batch in memory, so this bounds what one reader can hold.
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX: usize = 4096;
 pub(super) const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN: usize = 4096;
+// How many identities' worth of publish budget and subscriptions one
+// connection may hold in all, unless set. A plain client is one identity and
+// never reaches it; a client acting for many users can serve four at their
+// full share before they compete.
+pub(super) const IDENTITIES_PER_CONN: usize = 4;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
 pub(super) const DEFAULT_SUBSCRIBER_WRITER_LANES: usize = 4;
 pub(super) const DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH: usize = 64;

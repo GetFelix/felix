@@ -293,7 +293,7 @@ fn offload_is_off_unless_a_directory_is_set_and_reaches_only_stream_logs() {
             .expect("config")
             .expect("enabled");
         assert_eq!(config.offload_dir, None);
-        assert_eq!(config.stream_log().offload, None);
+        assert_eq!(config.stream_log(None).expect("config").offload, None);
     });
     with_env(
         &[
@@ -309,9 +309,41 @@ fn offload_is_off_unless_a_directory_is_set_and_reaches_only_stream_logs() {
                 "caches and counters do not offload"
             );
             assert_eq!(
-                config.stream_log().offload,
-                Some(OffloadTarget::LocalDir(PathBuf::from("/mnt/cold")))
+                config.stream_log(Some("broker-a")).expect("config").offload,
+                Some(OffloadTarget::LocalDir {
+                    dir: PathBuf::from("/mnt/cold"),
+                    node: "broker-a".to_string(),
+                })
             );
         },
     );
+}
+
+#[test]
+fn a_broker_without_a_node_id_offloads_under_one_kept_in_its_data_directory() {
+    let dir = tempfile::tempdir().expect("dir");
+    let config = |root: &std::path::Path| DurableStorageConfig {
+        root: root.to_path_buf(),
+        log: LogConfig::default(),
+        offload_dir: Some(PathBuf::from("/mnt/cold")),
+    };
+    let node =
+        |config: &DurableStorageConfig| match config.stream_log(None).expect("config").offload {
+            Some(OffloadTarget::LocalDir { node, .. }) => node,
+            None => panic!("offload is on"),
+        };
+    let first = node(&config(dir.path()));
+    assert!(!first.is_empty());
+    assert_eq!(node(&config(dir.path())), first, "a restart keeps the id");
+    let other = tempfile::tempdir().expect("other");
+    assert_ne!(
+        node(&config(other.path())),
+        first,
+        "another broker's differs"
+    );
+    config(dir.path())
+        .stream_log(None)
+        .expect("config")
+        .validate()
+        .expect("a generated id is a valid key segment");
 }

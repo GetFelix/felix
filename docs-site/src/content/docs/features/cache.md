@@ -440,7 +440,10 @@ absent. A key's version is the log offset of the put that wrote it. It only
 grows and is never reused, and it survives compaction and restarts. The
 in-memory cache has no log, so its versions come from a counter that starts
 each run at the wall-clock time in microseconds; a version read before a
-restart is refused after it rather than matching a new value. The
+restart is refused after it rather than matching a new value. That holds
+unless the clock steps back across the restart, or the last run averaged more
+than one write per microsecond: with no data directory there is nowhere to
+record where its counter stopped. The
 answer waits on the same durability and replication as a plain put. Negotiated
 as `FEATURE_CACHE_CONDITIONAL`; both cache backends support it.
 

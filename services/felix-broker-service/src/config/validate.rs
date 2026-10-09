@@ -35,6 +35,33 @@ impl BrokerConfig {
                 self.pub_inflight_bytes,
             );
         }
+        if let Some(total) = self.pub_conn_total_inflight_bytes {
+            if total < self.pub_conn_inflight_bytes {
+                anyhow::bail!(
+                    "pub_conn_total_inflight_bytes ({total}) is below \
+                     pub_conn_inflight_bytes ({}): one identity on a connection \
+                     could never use its own budget",
+                    self.pub_conn_inflight_bytes,
+                );
+            }
+            if total > self.pub_inflight_bytes {
+                anyhow::bail!(
+                    "pub_conn_total_inflight_bytes ({total}) exceeds pub_inflight_bytes \
+                     ({}): the per-connection limit can never be the one that applies",
+                    self.pub_inflight_bytes,
+                );
+            }
+        }
+        if let Some(total) = self.max_subscriptions_per_conn_total
+            && total < self.max_subscriptions_per_conn
+        {
+            anyhow::bail!(
+                "max_subscriptions_per_conn_total ({total}) is below \
+                 max_subscriptions_per_conn ({}): one identity on a connection \
+                 could never reach its own cap",
+                self.max_subscriptions_per_conn,
+            );
+        }
         self.validate_pub_recv_windows()?;
         self.validate_io_runtime_covers_every_listener()?;
         self.validate_credential_can_outlive_itself()?;

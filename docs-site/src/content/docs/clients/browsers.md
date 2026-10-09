@@ -254,7 +254,14 @@ deployment needs.
 
 - Each browser session opens its own Felix client, and a broker accepts a
   bounded number of connections, so one gateway does not serve very large
-  audiences yet.
+  audiences yet. Felix itself can carry many users over one client
+  (`Client::with_identity`), with each user's subscriptions and publish bytes
+  limited separately on the shared connection. On a broker that binds tokens
+  to client certificates (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`), a gateway
+  sharing its connections has to exchange each user's token at the control
+  plane's `/token/delegate` first, which names the gateway as the token's
+  actor; the gateway's principal needs `token.delegate` on the tenant. The
+  gateway does not do either yet.
 - Events carry no publisher, which is why sender stamping lives in the gateway
   and only on streams marked `stamp_sender`.
 - The scope file describes one kind of scope. An app with two kinds runs two

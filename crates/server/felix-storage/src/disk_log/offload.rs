@@ -11,6 +11,8 @@
 //! the whole safety argument: a crash at any point leaves the local segment,
 //! or a recorded and verified copy, and usually both. The object is written
 //! under a key no recorded copy uses, so a recorded copy is never rewritten.
+//! Keys start with the node id, which keeps that true when several brokers
+//! share one archive.
 //!
 //! The store is opened by the first pass, not by `DiskLog::open`, so a
 //! missing or read-only archive never stops a log from serving. While passes
@@ -56,8 +58,9 @@ pub(super) struct Offloader {
     /// creates the directory again if the mount came back empty.
     store: Mutex<Option<Arc<LocalFileSystem>>>,
     root: PathBuf,
-    /// The shard's directory name, which is unique under a storage root and
-    /// safe in a path. Every key starts with it.
+    /// `<node>/<shard directory name>`, which every key starts with. The
+    /// shard's name is unique under one storage root but not across nodes:
+    /// replicas of a shard share it, so the node keeps their copies apart.
     prefix: String,
     /// Set when the log stops, so a pass ends between segments instead of
     /// holding shutdown up for the rest of its uploads.
@@ -117,13 +120,14 @@ pub(super) struct OffloadOutcome {
 
 impl Offloader {
     pub(super) fn open(target: &OffloadTarget, shard_dir: &Path) -> Result<Self> {
-        let OffloadTarget::LocalDir(root) = target;
-        let prefix = shard_dir
+        let OffloadTarget::LocalDir { dir: root, node } = target;
+        let shard = shard_dir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .ok_or(StorageError::InvalidConfig(
                 "an offloaded log's directory must have a name",
             ))?;
+        let prefix = format!("{node}/{shard}");
         Ok(Self {
             store: Mutex::new(None),
             root: root.clone(),

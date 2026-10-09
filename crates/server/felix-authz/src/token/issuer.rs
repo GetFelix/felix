@@ -54,6 +54,21 @@ impl FelixTokenIssuer {
         principal_id: &str,
         perms: Vec<String>,
     ) -> AuthzResult<String> {
+        self.mint_with_actor(tenant_id, principal_id, perms, None)
+    }
+
+    /// [`Self::mint`] with an `act` claim naming who may present the token
+    /// for `principal_id`.
+    ///
+    /// # Errors
+    /// As [`Self::mint`].
+    pub fn mint_with_actor(
+        &self,
+        tenant_id: &TenantId,
+        principal_id: &str,
+        perms: Vec<String>,
+        actor: Option<&str>,
+    ) -> AuthzResult<String> {
         let now = now_epoch_seconds();
         let exp = now + self.ttl.as_secs() as i64;
         let claims = FelixClaims {
@@ -65,6 +80,9 @@ impl FelixTokenIssuer {
             iat: now,
             jti: None,
             perms,
+            act: actor.map(|sub| super::Actor {
+                sub: sub.to_string(),
+            }),
         };
         let signing_key = self.key_store.current_signing_key(tenant_id)?;
         let encoding_key = self.cache.encoding_key(tenant_id, &signing_key)?;

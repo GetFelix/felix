@@ -48,6 +48,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
 
 ```text
 <root>/
+  node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
@@ -585,6 +586,12 @@ segment with a verified copy in the object store, ordered by base offset.
         54   n  key             UTF-8 object key
  end-4   4  crc          u32  crc32 over every byte before it
 ```
+
+A key is `<node id>/<shard directory name>/<base offset>-<segment id>.segment`,
+with both numbers zero-padded to 20 digits. The node id keeps replicas of one
+shard apart when brokers share an offload directory. Entries written by
+0.6.0-preview.3 have keys without it and are read as they are: an entry names
+its object by the full key, never by recomputing it.
 
 Entries never overlap. Gaps between them are allowed: a segment retention
 deleted while offload was off was never copied. Written through a temporary,

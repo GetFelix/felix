@@ -586,8 +586,9 @@ certificate from it.
 **SASL fails with "the client certificate is not issued to the token's
 subject".** The broker has `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, and the
 certificate the client presented names neither `felix:principal:<sub>` (a URI
-SAN) nor a DNS or IP name matching the token's `sub`. Issue the client's
-certificate to the principal its token is for.
+SAN) nor a DNS or IP name matching the token's `sub`, nor the actor of a
+delegated token. Issue the client's certificate to the principal its token is
+for.
 
 **Connection closed right after connecting.** The client and broker disagree
 about TLS: a `SASL_SSL` client against a broker with `FELIX_KAFKA_TLS=false`, or

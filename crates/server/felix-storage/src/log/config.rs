@@ -161,7 +161,32 @@ pub enum RetentionHold {
 pub enum OffloadTarget {
     /// A directory, through `object_store`'s local filesystem backend. Each
     /// object is fsynced, with its directories, before it is recorded.
-    LocalDir(std::path::PathBuf),
+    LocalDir {
+        dir: std::path::PathBuf,
+        /// The writing node's id. Every key starts with it, so nodes sharing
+        /// one archive never write to each other's keys. Letters, digits,
+        /// `-`, `_` and `.`, not starting with `.`.
+        node: String,
+    },
+}
+
+impl OffloadTarget {
+    pub(crate) fn node(&self) -> &str {
+        match self {
+            Self::LocalDir { node, .. } => node,
+        }
+    }
+}
+
+/// Whether `node` can be the first part of an object key: one path segment,
+/// never `.` or `..`.
+fn is_valid_offload_node(node: &str) -> bool {
+    !node.is_empty()
+        && node.len() <= 255
+        && !node.starts_with('.')
+        && node
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 /// The bounds retention deletes a log's oldest segments by. Either, both or
@@ -244,6 +269,13 @@ impl LogConfig {
             ));
         }
         self.check_retention(self.retention())?;
+        if let Some(target) = &self.offload
+            && !is_valid_offload_node(target.node())
+        {
+            return Err(StorageError::InvalidConfig(
+                "an offload node id must be letters, digits, '-', '_' and '.', not starting with '.'",
+            ));
+        }
         if self.max_open_sealed_segments == 0 {
             return Err(StorageError::InvalidConfig(
                 "max_open_sealed_segments must be greater than zero",

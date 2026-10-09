@@ -82,6 +82,46 @@ each refresh returns its replacement. It lasts `FELIX_REFRESH_TOKEN_TTL_SECONDS`
 (30 days by default). The token keeps the audience its exchange chose, and
 naming a different `audience` is a `400`.
 
+### POST /v1/tenants/{tenant_id}/token/delegate
+
+An RFC 8693 token exchange for a gateway acting for its users: trade a user's
+broker token for one that names the caller as its actor, so a broker that binds
+tokens to client certificates accepts it on the gateway's certificate.
+
+```http
+POST /v1/tenants/{tenant_id}/token/delegate
+Authorization: Bearer <caller's felix-controlplane token>
+Content-Type: application/json
+
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "subject_token": "<user's felix-broker token>",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "permissions": ["stream.subscribe:stream:t1/app/alice-feed"]
+}
+```
+
+```json
+{
+  "access_token": "<jwt>",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+The caller needs `token.delegate:tenant:{tenant_id}`; `tenant.manage` does not
+imply it. The subject token must be a broker token of the same tenant that is
+not already delegated. The result has the subject token's `sub`, `act:
+{"sub": "<caller>"}`, its permissions or the subset `permissions` keeps (never
+wider), and expires no later than the subject token. `subject_token_type` and
+`permissions` are optional. No refresh token is issued.
+
+`400` for a wrong `grant_type` or `subject_token_type` or a malformed
+permission, `401` for a missing or invalid caller token, `403` when the caller
+lacks the permission, the subject token does not verify or is already
+delegated, or nothing is left after narrowing.
+
 ### Configuring Allowed IdPs
 
 IdP allowlists are stored per tenant in the control plane database (`idp_issuers` table) and can be managed via the admin HTTP endpoints below (or directly in the store for tests/dev).

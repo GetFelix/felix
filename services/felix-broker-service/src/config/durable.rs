@@ -9,7 +9,7 @@
 //! rejected at registration rather than silently downgraded to a guarantee the
 //! broker cannot keep.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -90,11 +90,26 @@ impl DurableStorageConfig {
     /// The configuration for stream logs: `log`, plus offload when it is on.
     /// Caches, counters and consumer groups compact rather than age out, so
     /// they keep `log` as it is.
-    pub fn stream_log(&self) -> LogConfig {
-        LogConfig {
-            offload: self.offload_dir.clone().map(OffloadTarget::LocalDir),
+    ///
+    /// Offloaded keys start with `cluster_node` (`FELIX_NODE_ID`) when the
+    /// broker has one, and otherwise with an id generated once for this data
+    /// directory and kept in it, so brokers sharing an archive never write
+    /// to the same key.
+    pub fn stream_log(&self, cluster_node: Option<&str>) -> Result<LogConfig> {
+        let offload = match &self.offload_dir {
+            Some(dir) => Some(OffloadTarget::LocalDir {
+                dir: dir.clone(),
+                node: match cluster_node {
+                    Some(node) => node.to_string(),
+                    None => storage_node_id(&self.root)?,
+                },
+            }),
+            None => None,
+        };
+        Ok(LogConfig {
+            offload,
             ..self.log.clone()
-        }
+        })
     }
 
     /// One-line summary for the startup log.
@@ -130,6 +145,38 @@ impl DurableStorageConfig {
             self.log.index_spacing_bytes,
         )
     }
+}
+
+/// Where a broker without `FELIX_NODE_ID` keeps the id its offloaded keys
+/// start with.
+const NODE_ID_FILE: &str = "node-id";
+
+/// This data directory's node id, generated and written on first use.
+///
+/// Losing the file only means later copies go under a new id: the manifest
+/// records each copy's full key, so nothing already recorded moves.
+fn storage_node_id(root: &Path) -> Result<String> {
+    let path = root.join(NODE_ID_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(id) if !id.trim().is_empty() => return Ok(id.trim().to_string()),
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
+    // Written whole and renamed into place, so a crash never leaves a
+    // half-written id to be read back.
+    let temporary = root.join(format!("{NODE_ID_FILE}.tmp"));
+    {
+        let file = std::fs::File::create(&temporary)
+            .with_context(|| format!("create {}", temporary.display()))?;
+        std::io::Write::write_all(&mut &file, id.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temporary, &path).with_context(|| format!("write {}", path.display()))?;
+    std::fs::File::open(root)?.sync_all()?;
+    Ok(id)
 }
 
 /// `none` | `periodic` | `on_commit`, defaulting to the `LogConfig` default.

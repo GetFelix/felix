@@ -44,7 +44,7 @@ use felix_wire::{Message, StartPosition};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
-use super::publish::{Outgoing, SubscriptionLimiter, send_outgoing_critical};
+use super::publish::{IdentityLimits, Outgoing, send_outgoing_critical};
 use crate::observability::tenants::TenantDelivery;
 use crate::serving::quic::SUBSCRIPTION_ID;
 use crate::serving::quic::client_error::ClientError;
@@ -83,7 +83,7 @@ pub(crate) async fn handle_subscribe_message(
     broker: Arc<Broker>,
     connection: felix_transport::QuicConnection,
     config: crate::config::BrokerConfig,
-    subscriptions: &Arc<SubscriptionLimiter>,
+    subscriptions: &Arc<IdentityLimits>,
     lane_manager: &Arc<WriterLaneManager>,
     ingress: Option<&crate::shards::routing::IngressRouter>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
@@ -135,9 +135,10 @@ pub(crate) async fn handle_subscribe_message(
         let subscription_id = subscription_id
             .unwrap_or_else(|| SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
 
-        // Enforce the per-connection subscription cap before asking the broker core for a
-        // subscriber queue — no point allocating one just to reject it immediately after.
-        if !subscriptions.try_reserve(config.max_subscriptions_per_conn) {
+        // Enforce the identity's and the connection's subscription caps before asking the
+        // broker core for a subscriber queue — no point allocating one just to reject it
+        // immediately after.
+        if let Err(cap) = subscriptions.try_reserve() {
             t_counter!("felix_subscribe_requests_total", "result" => "error").increment(1);
             t_counter!("felix_broker_subscribe_conn_limit_rejected_total").increment(1);
             super::publish::handle_ack_enqueue_result(
@@ -146,10 +147,7 @@ pub(crate) async fn handle_subscribe_message(
                     out_ack_depth,
                     "felix_broker_out_ack_depth",
                     ack_throttle_tx,
-                    Outgoing::Message(
-                        ClientError::limit_exceeded("max subscriptions per connection exceeded")
-                            .into_message(),
-                    ),
+                    Outgoing::Message(ClientError::limit_exceeded(cap.message()).into_message()),
                 )
                 .await,
                 ack_timeout_state,
@@ -584,7 +582,7 @@ pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message
 #[allow(clippy::too_many_arguments)]
 async fn subscribe_failed(
     message: Message,
-    subscriptions: &Arc<SubscriptionLimiter>,
+    subscriptions: &Arc<IdentityLimits>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,

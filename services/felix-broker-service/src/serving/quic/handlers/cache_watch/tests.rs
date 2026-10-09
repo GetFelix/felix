@@ -87,7 +87,6 @@ async fn a_watch_after_the_watches_were_ended_is_refused() -> Result<()> {
     handle_cache_watch_message(
         Arc::clone(&fixture.broker),
         connection,
-        BrokerConfig::default(),
         &publish_ctx,
         WatchResponder {
             out_ack_tx: &out_ack_tx,

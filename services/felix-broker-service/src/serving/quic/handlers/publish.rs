@@ -58,7 +58,7 @@ pub(crate) use ack::{
     AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_best_effort,
     send_outgoing_critical,
 };
-pub(crate) use admission::{PublishAdmission, SubscriptionLimiter};
+pub(crate) use admission::{ConnLimits, IdentityKey, IdentityLimits, PublishAdmission};
 pub(crate) use commit_ack::CommitAcks;
 pub(crate) use control::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
@@ -103,6 +103,8 @@ use scheduler::PublishScheduler;
 ///   intentionally process-wide (see `build_tracked_publish_context`), but that means nothing
 ///   bounds how much of the shared budget one connection can occupy. `conn_admission` is
 ///   constructed fresh per connection (`handle_connection`) and closes that gap.
+/// - `identity`: the share of this connection's limits held by the identity the stream
+///   authenticated as (see [`IdentityLimits`]).
 #[derive(Clone)]
 pub(crate) struct PublishContext {
     /// Cluster ownership, when this broker is a member.
@@ -141,10 +143,10 @@ pub(crate) struct PublishContext {
     pub(crate) wait_timeout: Duration,
     pub(crate) admission: Arc<PublishAdmission>,
     pub(crate) conn_admission: Arc<PublishAdmission>,
-    /// This connection's subscription-count limiter (see [`SubscriptionLimiter`]). Bundled here
-    /// because `PublishContext` is already the per-connection context threaded down to the
-    /// control-stream loop that handles `Subscribe` messages.
-    pub(crate) subscriptions: Arc<SubscriptionLimiter>,
+    /// The subscription cap and publish byte budget of the identity this stream authenticated
+    /// as, a share of the connection's. Until the stream authenticates it is the
+    /// connection's unauthenticated share; the stream loops rebind it on `Auth`.
+    pub(crate) identity: Arc<IdentityLimits>,
     /// This connection's writer-lane manager for subscription delivery (see
     /// [`WriterLaneManager`]). One instance per connection, constructed fresh in
     /// `handle_connection` — see that type's doc comment for why it's no longer a
@@ -178,7 +180,7 @@ impl PublishContext {
     /// Derive this connection's context from the process-wide one.
     ///
     /// Only the per-connection limits are fresh: its slice of the publish byte
-    /// budget, its subscription limiter, and its writer lanes. Everything else —
+    /// budget, its per-identity limits, and its writer lanes. Everything else —
     /// the scheduler, the shared budget, and **the cluster view** — is
     /// carried through.
     ///
@@ -189,13 +191,22 @@ impl PublishContext {
     /// refuses or forwards a shard it does not own.
     pub(crate) fn for_connection(&self, config: &crate::config::BrokerConfig) -> Self {
         Self {
-            conn_admission: Arc::new(PublishAdmission::new(config.pub_conn_inflight_bytes)),
-            subscriptions: Arc::new(SubscriptionLimiter::new()),
+            conn_admission: Arc::new(PublishAdmission::new(config.conn_publish_ceiling())),
+            identity: ConnLimits::new(config).share(IdentityKey::default()),
             lane_manager: WriterLaneManager::new(config),
             preauth: Arc::new(PreAuthGate::new(config)),
             publish_window: config.publish_window,
             ..self.clone()
         }
+    }
+
+    /// Move this stream onto the limits of the identity it authenticated as,
+    /// shared with every other stream of the connection that authenticated
+    /// as the same tenant and subject.
+    pub(crate) fn bind_identity(&mut self, auth: &crate::serving::auth::AuthContext) {
+        self.identity = self
+            .identity
+            .rebind(IdentityKey::new(&auth.tenant_id, &auth.subject));
     }
 
     /// Overflow policy for publishes that carry no ack (fire-and-forget).

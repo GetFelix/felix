@@ -175,6 +175,11 @@ impl BrokerConfig {
         {
             config.pub_conn_inflight_bytes = value;
         }
+        if let Some(value) = override_cfg.pub_conn_total_inflight_bytes
+            && value > 0
+        {
+            config.pub_conn_total_inflight_bytes = Some(value);
+        }
         if let Some(value) = override_cfg.publish_window {
             config.publish_window = value;
         }
@@ -198,6 +203,11 @@ impl BrokerConfig {
             && value > 0
         {
             config.max_subscriptions_per_conn = value;
+        }
+        if let Some(value) = override_cfg.max_subscriptions_per_conn_total
+            && value > 0
+        {
+            config.max_subscriptions_per_conn_total = Some(value);
         }
         if let Some(value) = override_cfg.subscriber_queue_policy
             && let Some(parsed) = parse_sub_queue_policy(&value)
@@ -293,12 +303,14 @@ pub(super) struct BrokerConfigOverride {
     pub_queue_depth: Option<usize>,
     pub_inflight_bytes: Option<usize>,
     pub_conn_inflight_bytes: Option<usize>,
+    pub_conn_total_inflight_bytes: Option<usize>,
     publish_window: Option<u32>,
     pub_ingress_wait: Option<bool>,
     core_shards: Option<usize>,
     subscriber_queue_capacity: Option<usize>,
     subscriber_queue_capacity_max: Option<usize>,
     max_subscriptions_per_conn: Option<usize>,
+    max_subscriptions_per_conn_total: Option<usize>,
     subscriber_queue_policy: Option<String>,
     subscriber_writer_lanes: Option<usize>,
     subscriber_lane_queue_depth: Option<usize>,

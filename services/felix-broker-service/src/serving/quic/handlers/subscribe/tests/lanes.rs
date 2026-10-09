@@ -45,7 +45,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
                 broker_for_server.clone(),
                 connection,
                 config.clone(),
-                &Arc::new(SubscriptionLimiter::new()),
+                &IdentityLimits::unlimited(),
                 &server_lane_manager,
                 None,
                 &out_ack_tx,

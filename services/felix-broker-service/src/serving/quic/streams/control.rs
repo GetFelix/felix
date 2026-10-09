@@ -93,7 +93,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     connection: felix_transport::QuicConnection,
     config: BrokerConfig,
     auth: Arc<BrokerAuth>,
-    publish_ctx: PublishContext,
+    mut publish_ctx: PublishContext,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
     out_ack_tx: mpsc::Sender<Outgoing>,
@@ -1130,9 +1130,12 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         if let Step::Close(graceful) = step {
             return Ok(graceful);
         }
-        if preauth_permit.is_some() && session.auth_ctx.is_some() {
+        if preauth_permit.is_some()
+            && let Some(auth_ctx) = &session.auth_ctx
+        {
             preauth_permit = None;
             publish_ctx.preauth.mark_authenticated();
+            publish_ctx.bind_identity(auth_ctx);
         }
     }
     // `graceful_close` only tracks EOF from the peer. Any other early-exit path returns false

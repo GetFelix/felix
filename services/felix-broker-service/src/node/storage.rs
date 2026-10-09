@@ -25,9 +25,12 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     let durable_storage = match &durable_config {
         Some(durable) => {
             tracing::info!(config = %durable.summary(), "opening durable stream storage");
+            let cluster_node = config.membership.as_ref().map(|m| m.node_id.as_str());
             let stream_log = felix_storage::log::LogConfig {
                 retention_hold: hold,
-                ..durable.stream_log()
+                ..durable
+                    .stream_log(cluster_node)
+                    .context("resolve the node id for offloaded segments")?
             };
             let storage = DurableStorage::open(&durable.root, stream_log)
                 .with_context(|| format!("open durable storage at {}", durable.root.display()))?;

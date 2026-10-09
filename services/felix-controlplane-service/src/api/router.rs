@@ -225,6 +225,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(auth::exchange::exchange_token),
         )
         .route(
+            "/v1/tenants/{tenant_id}/token/delegate",
+            axum::routing::post(auth::delegate::delegate_token),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/token/refresh",
             axum::routing::post(auth::refresh::refresh_token_handler),
         )

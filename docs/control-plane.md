@@ -1427,6 +1427,7 @@ Control plane:
 | `felix_refresh_token_bad_secret_total` | refresh tokens presented with a real token id and the wrong secret. The token is spent anyway, so guessing costs the guesser the token; any increase means someone holds half a credential |
 | `felix_refresh_tokens_revoked_total` | refresh tokens revoked by a replay |
 | `felix_refresh_tokens_issued_total{via}` | refresh tokens issued: `exchange` or `refresh` |
+| `felix_delegated_tokens_issued_total` | tokens issued by `/token/delegate` |
 
 Broker side:
 
