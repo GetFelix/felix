@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791572440840,
+  "lastUpdate": 1791574258508,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26884,6 +26884,58 @@ window.BENCHMARK_DATA = {
             "range": "5383.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805676.95\nmean: 805944.95\nstdev: 5383.39\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "11384b81c168ea2841e85350acffd60f80ee9cac",
+          "message": "fix(groups): mark a cursor write in flight before spawning it, and name the delivery on a plain nack (#1113)\n\nA log-backed cache put or delete that checks no condition now registers its\nkey in flight before it spawns the task that stages it. A consumer-group\ncommit cancelled right after the spawn, before that task first ran, could\notherwise let the next commit's settled read see the old cursor and move the\ngroup backwards.\n\nClient::group_nack and ClusterClient::group_nack take the GroupRecord and\nsend its attempt count, as group_nack_after does, so a late plain nack is\nrefused with stale_claim rather than taking the record from its new holder.\nfelixctl, the Python and Node bindings and the cluster harness follow.\n\nPart of #1109",
+          "timestamp": "2026-10-09T12:26:17-07:00",
+          "tree_id": "796fd502b376204192d715a1ad399d241329b396",
+          "url": "https://github.com/GetFelix/felix/commit/11384b81c168ea2841e85350acffd60f80ee9cac"
+        },
+        "date": 1791574257687,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 492504.8,
+            "range": "20916.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492504.80\nmean: 500215.70\nstdev: 20916.84\ncv: 4.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 492504.8,
+            "range": "20916.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492504.80\nmean: 500215.70\nstdev: 20916.84\ncv: 4.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122732.65,
+            "range": "6616.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122732.65\nmean: 119883.73\nstdev: 6616.68\ncv: 5.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1227326.53,
+            "range": "66166.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1227326.53\nmean: 1198837.33\nstdev: 66166.79\ncv: 5.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
