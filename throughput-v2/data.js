@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791507568482,
+  "lastUpdate": 1791508043772,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25896,6 +25896,58 @@ window.BENCHMARK_DATA = {
             "range": "8879.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813526.14\nmean: 816116.28\nstdev: 8879.35\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1a3aadb2fd3d3033e2f5386a933cc4658bc1e986",
+          "message": "fix(lease): pace the lease refresh by the adopted lease (#1071) (#1088)\n\n* fix(lease): pace the lease refresh by the adopted lease (#1071)\n\nThe refresh period was computed once from the 10s placeholder lease, so\nunder the control plane's 1s lease the cached admission flag, the\nlease_held metric and the lapse notification ran up to 470ms late\ninstead of 47ms. On an idle broker that refresh is also what reads the\nclock, so the cluster harness's 250ms clock-fault settle could pass\nwithout the frozen leader seeing its slowed clock, and the freeze then\nspent its lease at full speed.\n\nCloses #1071\n\n* chore: note the TLA+ model is unaffected\n\nSpec-Unaffected: the fix changes how often the lease refresh re-reads the clock, not the lease protocol; the commit-time lease check was already exact.",
+          "timestamp": "2026-10-08T17:59:45-07:00",
+          "tree_id": "b24a9e6fd71bbd8170d616dd5d33084c261b1ae6",
+          "url": "https://github.com/GetFelix/felix/commit/1a3aadb2fd3d3033e2f5386a933cc4658bc1e986"
+        },
+        "date": 1791508043154,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 564871.53,
+            "range": "21228.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 564871.53\nmean: 557555.34\nstdev: 21228.51\ncv: 3.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 564871.53,
+            "range": "21228.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 564871.53\nmean: 557555.34\nstdev: 21228.51\ncv: 3.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122881.68,
+            "range": "1018.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122881.68\nmean: 122364.76\nstdev: 1018.44\ncv: 0.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1228816.82,
+            "range": "10184.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1228816.82\nmean: 1223647.58\nstdev: 10184.41\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
