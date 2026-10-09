@@ -1,6 +1,6 @@
 {
   "name": "felix-client-win32-x64-msvc",
-  "version": "0.6.0-preview.2",
+  "version": "0.6.0-preview.3",
   "description": "The win32-x64-msvc binary for felix-client. Installed automatically; do not depend on it directly.",
   "main": "felix.win32-x64-msvc.node",
   "files": [

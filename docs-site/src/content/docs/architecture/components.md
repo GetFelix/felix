@@ -331,8 +331,9 @@ The cache provides low-latency key-value operations with TTL:
 - Lazy expiration on access, against an absolute expiry that survives a restart
 - Two backends. Without durable storage: an in-memory hash map, lost on restart,
   evicted best-effort under pressure. With it: a log, read through an index of
-  key to latest offset that is rebuilt from the log rather than trusted from
-  disk, and compacted rather than evicted
+  key to latest offset that is rebuilt from the log (starting from a snapshot
+  compaction wrote, once it checks out against the log), and compacted rather
+  than evicted
 - Sharded and routed, so exactly one broker owns each key, and replicated with
   the machinery that replicates a stream
 

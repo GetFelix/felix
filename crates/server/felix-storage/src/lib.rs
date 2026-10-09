@@ -28,6 +28,8 @@
 //!   (positioned reads, preallocation, flushes).
 //! - Projections of a log: [`cache`] ([`StorageApi`] and its two stores) and
 //!   [`counter_log`], which both compact in the background through `compaction`.
+//! - `index_snapshot`: the key index a compaction pass writes to disk, so a
+//!   restart replays only the log past it.
 //! - `shard_slots`: the per-shard open and close every store above shares.
 //!   `legacy_swap` settles, before that open, a compaction swap an older build
 //!   left half done.
@@ -49,6 +51,7 @@ pub mod fault;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
+mod index_snapshot;
 pub(crate) mod io;
 mod legacy_swap;
 pub mod log;

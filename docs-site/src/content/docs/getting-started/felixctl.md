@@ -40,7 +40,7 @@ brew uninstall felixctl     # and `brew untap getfelix/tap` to drop the tap
 From crates.io, which puts `felixctl` in `~/.cargo/bin`:
 
 ```bash
-cargo install felixctl --version 0.6.0-preview.2
+cargo install felixctl --version 0.6.0-preview.3
 ```
 
 A preview has to be named with `--version`, because cargo skips pre-releases
@@ -54,7 +54,7 @@ archive is `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) with a
 pages in `man/`:
 
 ```bash
-tag=v0.6.0-preview.2 target=aarch64-apple-darwin
+tag=v0.6.0-preview.3 target=aarch64-apple-darwin
 base=https://github.com/GetFelix/felix/releases/download/$tag
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz"
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz.sha256"
@@ -68,7 +68,7 @@ written mode `0600`, so run as your own user to read a mounted one:
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" \
   -v "$HOME/.config/felixctl:/home/felix/.config/felixctl" \
-  ghcr.io/getfelix/felixctl:0.6.0-preview.2 stream ls
+  ghcr.io/getfelix/felixctl:0.6.0-preview.3 stream ls
 ```
 
 With rootless Podman, use `--userns=keep-id` in place of `--user`, so the

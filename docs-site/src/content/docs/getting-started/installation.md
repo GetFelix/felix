@@ -290,7 +290,7 @@ docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
   -e FELIX_CONTROLPLANE_URL=http://<control-plane-host>:8443 \
   -e FELIX_NODE_TOKEN_FILE=/etc/felix/node.token \
   -v /path/to/node.token:/etc/felix/node.token:ro \
-  ghcr.io/getfelix/felix-broker:0.6.0-preview.2
+  ghcr.io/getfelix/felix-broker:0.6.0-preview.3
 ```
 
 The broker binds up to four client ports from `5000`, depending on its cores
@@ -305,7 +305,7 @@ exits on the next line. Without the credential it runs but serves no streams.
 a local cluster with nothing to configure, `felix-cluster up` is quicker (see
 the [Quickstart](/getting-started/quickstart/)).
 
-Each release publishes the full version (`0.6.0-preview.2`). A release without a
+Each release publishes the full version (`0.6.0-preview.3`). A release without a
 pre-release suffix also publishes the minor series (`0.6`) and `latest`. Use a
 full version tag in anything you keep; the other two move. Images are
 signed by digest. See [Kubernetes](/deployment/kubernetes/) for the
@@ -349,7 +349,7 @@ The same, for the control plane:
 # host is host.containers.internal.
 docker run -p 8443:8443 \
   -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.docker.internal:55432/postgres \
-  ghcr.io/getfelix/felix-controlplane:0.6.0-preview.2
+  ghcr.io/getfelix/felix-controlplane:0.6.0-preview.3
 ```
 
 See [Docker Compose Guide](/deployment/docker-compose/) for orchestrated deployments.
