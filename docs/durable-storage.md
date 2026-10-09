@@ -804,7 +804,9 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
 | `felix_storage_offload_segments_total`, `felix_storage_offload_bytes_total` | segments and bytes copied to the object store, verified and recorded |
-| `felix_storage_offload_failures_total` | copies that failed; while one keeps failing, retention cannot delete that segment or any after it |
+| `felix_storage_offload_failures_total` | offload passes that failed, a missing or read-only directory included; while they keep failing, retention cannot delete a segment without a copy or any after it |
+| `felix_storage_offload_failing_logs` | logs whose last offload pass failed; non-zero means local disk is growing past retention |
+| `felix_storage_offload_held_bytes` | bytes retention would delete but keeps until offload copies them |
 
 The first two together answer the question that actually comes up: *is durability
 the bottleneck?* If sync dominates append, the fsync policy is the cost.
@@ -1089,6 +1091,30 @@ leaves the recorded copy. So every record is in the local log or in a recorded,
 verified copy, at every point. A recorded copy is never rewritten: only
 segments without a recorded copy are uploaded.
 
+**When the archive is down.** Opening a log does not touch the offload
+directory; the first pass creates and opens it. So a missing mount, a
+read-only one or a full one never stops a stream log from opening or taking
+publishes. A pass that cannot open the directory or write a copy fails, adds
+to `felix_storage_offload_failures_total` and is tried again on the next tick.
+The broker logs `offload pass failed` at the first failure and then at most
+every 30 seconds, backing off to every 15 minutes, with the shard, the
+directory and the number of failed passes. When a pass succeeds again it logs
+`offload is copying again`.
+
+Retention does not give up on a copy. While passes keep failing, a segment
+past the retention bound with no recorded copy stays on local disk, however
+long that lasts, because deleting it would lose records nothing else holds. So
+an archive outage turns into local disk growth at the publish rate.
+`felix_storage_offload_held_bytes` says how much retention is keeping for that
+reason, `felix_storage_offload_failing_logs` how many logs are failing, and
+with each failure report the broker logs at error level `retention is keeping
+segments past their bound until offload can copy them`. Fix the archive (mount
+it, make it writable, free space on it) before the local disk fills; deletion
+resumes on the first pass after it is back. If the disk fills first, writes to
+it are refused as with any full disk (`felix_storage_full_total`); unsetting
+`FELIX_DURABLE_OFFLOAD_DIR` and restarting lets retention delete without a
+copy, which gives up the copies of those segments.
+
 **Recovery.** The manifest is authoritative, like `replica`: a manifest that
 does not decode fails the open. A gap in the local chain is still corruption,
 with one exception. If the manifest covers the gap and records a copy of every
@@ -1117,6 +1143,10 @@ manifest is rewritten whole for every copy it records.
 > `recovery_accepts_a_head_gap_the_manifest_covers` and
 > `recovery_still_refuses_a_gap_the_manifest_does_not_cover`.
 > `truncation_forgets_the_copies_it_cuts_into`.
+> `an_unreachable_archive_does_not_fail_the_open_or_publishes`,
+> `retention_keeps_and_reports_segments_while_the_archive_is_down_then_resumes`
+> and `a_read_only_archive_does_not_fail_the_open_and_nothing_is_deleted`: an
+> archive outage costs local disk and nothing else.
 
 Still to come: a cold read path (ranged reads of a copy, using its index),
 a bound on a local cold cache, cloud backends, and tail latency numbers for

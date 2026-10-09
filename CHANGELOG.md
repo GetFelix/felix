@@ -12,6 +12,13 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A missing or read-only offload directory no longer fails every durable
+  stream log at open. The directory is opened by the offload pass, which
+  reports a failure through `felix_storage_offload_failures_total`, the new
+  `felix_storage_offload_failing_logs` and `felix_storage_offload_held_bytes`
+  gauges and a backed-off log line, and retries on the next tick. Retention
+  still never deletes a segment without a recorded copy, so an outage grows
+  local disk; deletion resumes once the directory is back (#1096).
 - A promoted cache shard whose cache log or counter log failed to open (the
   shard closing, too many open files, a failed recovery) opened on the lease
   without a fence, even once caches acknowledge by their followers and the

@@ -82,6 +82,12 @@ pub const OFFLOAD_BYTES_TOTAL: &str = "felix_storage_offload_bytes_total";
 /// Segment offloads that failed. The segment stays local and the next pass
 /// retries it; retention cannot delete it until one succeeds.
 pub const OFFLOAD_FAILURES_TOTAL: &str = "felix_storage_offload_failures_total";
+/// Offloaded logs whose last pass failed, a missing or read-only archive
+/// included. Non-zero means local disk is growing past retention.
+pub const OFFLOAD_FAILING_LOGS: &str = "felix_storage_offload_failing_logs";
+/// Bytes retention would delete but keeps because they have no recorded
+/// copy yet. Grows for as long as offload keeps failing.
+pub const OFFLOAD_HELD_BYTES: &str = "felix_storage_offload_held_bytes";
 
 /// Records returned by range reads.
 pub const READ_RECORDS_TOTAL: &str = "felix_storage_read_records_total";

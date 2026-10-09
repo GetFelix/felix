@@ -410,8 +410,13 @@ printing wrong numbers.
   and CRC-32, and recorded in a per-shard `offload.manifest` before retention
   may delete them. A crash at any step leaves the local segment or a recorded
   copy. Nothing reads the copies yet, so a read below the local head is still
-  `Trimmed`, and the only backend is a local directory. See
-  `docs/durable-storage.md`, "Tiered storage: offload".
+  `Trimmed`, and the only backend is a local directory. A missing or
+  read-only offload directory does not stop a log from opening or taking
+  publishes, but retention keeps every segment without a copy until the
+  directory is back, so an outage grows local disk; watch
+  `felix_storage_offload_held_bytes` and see
+  [Diagnosing a cluster](/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on).
+  See `docs/durable-storage.md`, "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.
