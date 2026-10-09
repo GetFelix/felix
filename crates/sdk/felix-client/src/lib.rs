@@ -74,6 +74,7 @@ pub use cache::{
 };
 pub use client::{
     Client, ConditionalWrite, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, StreamPage,
+    SubscriptionsPage,
 };
 pub use cluster::{
     ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
@@ -99,6 +100,6 @@ pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
     GroupRecord, InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica,
-    PublishRefusalReason, RetryClass, ShardInspection, ShardKind, ShardOwner, StartPosition,
-    StreamRecord,
+    InspectedSubscription, PublishRefusalReason, RetryClass, ShardInspection, ShardKind,
+    ShardOwner, StartPosition, StreamRecord, SubscriptionCursor, SubscriptionFilter,
 };

@@ -11,10 +11,12 @@ mod committed;
 mod delivery;
 mod producers;
 mod state;
+mod stats;
 mod subscription;
 
 pub use committed::{ReadBound, ReadBounds};
 pub use delivery::{DeliveryEnvelope, FrameShape, SubQueuePolicy};
+pub use stats::{SubscriberOwner, SubscriberStats};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
 pub(crate) use committed::{HeldBatch, Pass, ReadSource};

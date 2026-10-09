@@ -13,7 +13,8 @@ pub use fields::{
     ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
 };
 pub use inspect::{
-    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, ShardInspection,
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,
+    ShardInspection, SubscriptionCursor, SubscriptionFilter,
 };
 
 use bytes::Bytes;
@@ -1172,6 +1173,36 @@ pub enum Message {
     ShardInspectInfo {
         /// Boxed: far larger than any other answer, and rare.
         view: Box<ShardInspection>,
+        request_id: u64,
+    },
+    /// Ask a broker for the subscriptions it serves, one page at a time:
+    /// each one's queue, drops, position and owner. Answered with
+    /// `subscriptions_list_info`. Needs `node.view:cluster:*`, and lists
+    /// every tenant's.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_INSPECT`.
+    SubscriptionsList {
+        /// Boxed: larger than most requests, and rare.
+        #[serde(default)]
+        filter: Box<SubscriptionFilter>,
+        /// At most this many. The broker answers 100 when absent and never
+        /// more than 1000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        /// Start after this subscription: the `next_cursor` of the page
+        /// before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<SubscriptionCursor>,
+        request_id: u64,
+    },
+    /// The answer to `subscriptions_list`.
+    SubscriptionsListInfo {
+        /// The broker answering. Empty on a broker that is not in a cluster.
+        node_id: String,
+        subscriptions: Vec<InspectedSubscription>,
+        /// Where the next page starts. Absent on the last page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<SubscriptionCursor>,
         request_id: u64,
     },
 

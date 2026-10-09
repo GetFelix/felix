@@ -1,5 +1,6 @@
-//! `shard_inspect` against a real broker over QUIC: the feature is
-//! advertised, an operator token is answered, and a tenant token is refused.
+//! `shard_inspect` and `subscriptions_list` against a real broker over QUIC:
+//! the feature is advertised, an operator token is answered, and a tenant
+//! token is refused.
 //!
 //! One broker, in memory, with no cluster behind it. A cluster's fence and
 //! replica positions are the felixctl cluster test's to cover.
@@ -42,9 +43,13 @@ impl Drop for Running {
 
 impl Running {
     async fn client(&self, perms: &[&str]) -> Result<Client> {
+        self.client_as("p:operator", perms).await
+    }
+
+    async fn client_as(&self, subject: &str, perms: &[&str]) -> Result<Client> {
         let token = self.issuer.mint(
             &TenantId::new("ops"),
-            "p:operator",
+            subject,
             perms.iter().map(|perm| perm.to_string()).collect(),
         )?;
         let mut roots = RootCertStore::empty();
@@ -57,13 +62,18 @@ impl Running {
     }
 }
 
-/// A broker holding `acme/default/orders`, verifying tokens for tenant `ops`.
+/// A broker holding `acme/default/orders` and `ops/default/events`, verifying tokens for tenant `ops`.
 async fn start() -> Result<Running> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("acme").await?;
     broker.register_namespace("acme", "default").await?;
     broker
         .register_stream("acme", "default", "orders", StreamMetadata::default())
+        .await?;
+    broker.register_tenant("ops").await?;
+    broker.register_namespace("ops", "default").await?;
+    broker
+        .register_stream("ops", "default", "events", StreamMetadata::default())
         .await?;
 
     let cert = generate_simple_self_signed(vec!["localhost".into()])?;
@@ -166,5 +176,59 @@ async fn a_tenant_token_is_refused() -> Result<()> {
         format!("{refused:#}").contains("node.view:cluster:*"),
         "{refused:#}"
     );
+    Ok(())
+}
+
+/// A subscriber shows up with its connection and the principal it
+/// authenticated as, and only to a token with cluster scope.
+#[tokio::test]
+async fn an_operator_lists_subscriptions_with_their_owners() -> Result<()> {
+    let running = start().await?;
+    let reader = running
+        .client_as("p:reader", &["stream.subscribe:stream:ops/*/*"])
+        .await?;
+    let _subscription = reader.subscribe("ops", "default", "events").await?;
+
+    let refused = reader
+        .list_subscriptions(Default::default(), None, None)
+        .await
+        .expect_err("a tenant token was answered");
+    assert!(
+        format!("{refused:#}").contains("node.view:cluster:*"),
+        "{refused:#}"
+    );
+
+    let operator = running.client(&["node.view:cluster:*"]).await?;
+    // Registered before `Subscribed` is answered, but the owner is attached
+    // just after, so give it a moment.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let page = loop {
+        let page = operator
+            .list_subscriptions(Default::default(), None, None)
+            .await?;
+        if page.subscriptions.iter().any(|s| s.principal.is_some())
+            || tokio::time::Instant::now() > deadline
+        {
+            break page;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let [listed] = page.subscriptions.as_slice() else {
+        panic!("one subscription: {page:?}");
+    };
+    assert_eq!(
+        (listed.tenant_id.as_str(), listed.stream.as_str()),
+        ("ops", "events")
+    );
+    assert_eq!(listed.principal.as_deref(), Some("p:reader"));
+    assert!(listed.connection.is_some(), "{listed:?}");
+    assert!(
+        listed
+            .peer
+            .as_deref()
+            .is_some_and(|peer| peer.starts_with("127.0.0.1:"))
+    );
+    assert_eq!(listed.policy, "drop_new");
+    assert!(page.next_cursor.is_none());
     Ok(())
 }

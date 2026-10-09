@@ -15,6 +15,8 @@ mod connect;
 mod discovery;
 mod groups;
 mod identity;
+mod inspect;
+pub use inspect::SubscriptionsPage;
 
 pub use groups::{GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
 pub use subscribe::StreamPage;

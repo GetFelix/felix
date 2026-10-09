@@ -12,6 +12,27 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl inspect subs` and the `subscriptions_list` request (part of
+  #1077). A broker advertising `FEATURE_INSPECT` now also answers
+  `subscriptions_list` with `subscriptions_list_info`: one page of the
+  subscriptions it serves, each with its stream and shard, subscriber and
+  subscription ids, connection id, client address and principal, overflow
+  policy, queue depth and capacity in batches, records dropped, position and
+  the shard's tail. The filter narrows by tenant, namespace, stream, shard,
+  principal, or to subscriptions that have dropped records. A page is 100 by
+  default and at most 1000, and a cursor of shard and subscriber id continues
+  it. It needs `node.view:cluster:*`. The broker reads each shard's fanout
+  snapshot and never touches a queue. On the delivery path, a subscriber's
+  receiver now stores one past the offset of each batch it takes (a relaxed
+  store), and a drop adds to a per-subscriber count beside the existing
+  metric. felixctl asks every broker, or only `--node`, and prints one table
+  or one JSON line per broker, with `--principal`, `--dropping`, `--limit` and
+  `--cursor`. felix-broker adds `Broker::list_subscriptions`,
+  `SubscriberStats`, `SubscriberOwner` and `Subscription::set_owner`;
+  felix-client adds `Client::list_subscriptions` and `SubscriptionsPage`, and
+  its inspect calls now report a broker's `unsupported` answer as such.
+  Diagnosing a cluster covers a subscriber missing records and one falling
+  behind.
 - Stream logs can copy their sealed segments to an object store before
   retention deletes them, the first part of tiered storage (#172). Off by
   default; `FELIX_DURABLE_OFFLOAD_DIR` turns it on, and the only backend is a
@@ -445,6 +466,16 @@ for what the current release guarantees.
   made the cluster harness's clock faults land late, since that refresh is
   what reads the clock on an idle broker, which failed
   `a_frozen_leader_is_refused_by_the_majority_its_successor_fenced`.
+- A write that reaches a shard's new owner while it is still opening the
+  shard, or just after its fence settles but before it publishes that it
+  serves, is held until it serves instead of being refused with
+  `shard_unavailable` / `not_ready` (#1085). Publishes, cache writes and
+  counter adds were all exposed; a move's cut-over showed it as a refused
+  counter add.
+- The Rust client's cache worker keeps its stream after the broker refuses a
+  cache or counter request (#1085). It used to stop on any error, so one
+  refusal turned the requests that later landed on that worker into
+  `cache worker closed`.
 - A `Quorum` publish no longer waits out an unreachable follower when the
   other follower already holds the record but is still answering an earlier
   replication pass (#1080). The pass waiting for a majority had shipped only to

@@ -12,6 +12,7 @@ mod contexts;
 mod control_plane;
 mod data_plane;
 mod inspect;
+mod inspect_subs;
 mod rbac;
 
 use std::path::{Path, PathBuf};

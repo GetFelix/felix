@@ -17,7 +17,12 @@ fn payload(value: &str) -> Bytes {
 fn resuming_at(skip_below: u64) -> (mpsc::Sender<QueuedDelivery>, Subscription) {
     let (tx, rx) = mpsc::channel(16);
     let subscription = Subscription {
-        receiver: SubscriptionReceiver::new(rx, Default::default(), Default::default()),
+        receiver: SubscriptionReceiver::new(
+            rx,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ),
         // No stream to unregister from; the guard's `Weak` simply never
         // upgrades, which is the same thing it does after a stream is dropped.
         guard: SubscriptionGuard {
@@ -172,7 +177,8 @@ async fn the_split_receiver_skips_below_the_resume_point() {
 async fn a_receiver_waiting_when_the_queue_drops_ends() {
     let (_tx, rx) = mpsc::channel(1);
     let lag = Arc::new(Lag::default());
-    let mut receiver = SubscriptionReceiver::new(rx, Default::default(), Arc::clone(&lag));
+    let mut receiver =
+        SubscriptionReceiver::new(rx, Default::default(), Arc::clone(&lag), Default::default());
     receiver.end_on_lag();
     let waiting = tokio::spawn(async move { (receiver.recv().await.is_none(), receiver.lagged()) });
     tokio::task::yield_now().await;

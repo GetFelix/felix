@@ -1,5 +1,6 @@
-//! `shard_inspect` is for operators: a token without `node.view:cluster:*`
-//! is refused, one with it is answered for any tenant.
+//! `shard_inspect` and `subscriptions_list` are for operators: a token
+//! without `node.view:cluster:*` is refused, one with it is answered for any
+//! tenant.
 
 use super::*;
 
@@ -80,5 +81,62 @@ async fn cluster_scope_inspects_any_tenant() -> Result<()> {
     assert_eq!(view.role, "leader");
     assert!(view.serving);
     assert_eq!(view.shards, 1);
+    Ok(())
+}
+
+async fn list(perms: Vec<String>, limit: Option<u32>) -> Result<Vec<Outgoing>> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t2").await?;
+    broker.register_namespace("t2", "default").await?;
+    broker
+        .register_stream("t2", "default", "orders", Default::default())
+        .await?;
+    let _held = [
+        broker.subscribe("t2", "default", "orders", 0).await?,
+        broker.subscribe("t2", "default", "orders", 0).await?,
+    ];
+    let auth = auth_fixture("t1", perms);
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_message(&auth)))),
+        Ok(Some(frame_from_message(Message::SubscriptionsList {
+            filter: Box::default(),
+            limit,
+            cursor: None,
+            request_id: 8,
+        }))),
+    ];
+    let (_, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    Ok(messages)
+}
+
+fn listed(messages: &[Outgoing]) -> Option<(usize, bool)> {
+    messages.iter().find_map(|message| match message {
+        Outgoing::Message(Message::SubscriptionsListInfo {
+            subscriptions,
+            next_cursor,
+            request_id: 8,
+            ..
+        }) => Some((subscriptions.len(), next_cursor.is_some())),
+        _ => None,
+    })
+}
+
+/// Principals and addresses across every tenant are cluster scope too.
+#[tokio::test]
+async fn listing_subscriptions_needs_cluster_scope() -> Result<()> {
+    let messages = list(default_perms(), None).await?;
+    assert!(refused(&messages), "{messages:?}");
+    assert!(listed(&messages).is_none());
+
+    let messages = list(vec!["node.view:cluster:*".to_string()], None).await?;
+    assert_eq!(listed(&messages), Some((2, false)), "{messages:?}");
+    let messages = list(vec!["node.view:cluster:*".to_string()], Some(1)).await?;
+    assert_eq!(listed(&messages), Some((1, true)), "{messages:?}");
     Ok(())
 }
