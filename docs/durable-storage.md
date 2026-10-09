@@ -323,6 +323,12 @@ wait. A cache put or delete stages there (append, then the guard that applies
 the write and tells the watchers), and a counter add appends and folds there.
 The broker's publish executors are never cancelled mid-claim.
 
+Such a write can still be applying after its caller has let go of any lock it
+held. A read that feeds a write, like a consumer group's cursor commit or a
+dead letter's state change, uses `LogCache::get_settled_checked`, which waits
+for the writes already staged to that key to apply. A plain read could see the
+old value, and the write that follows would land on top of the cancelled one.
+
 ## Segments and rollover
 
 A shard's log is one *active* segment plus any number of sealed ones, and the

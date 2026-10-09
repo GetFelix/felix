@@ -403,3 +403,36 @@ async fn concurrent_compare_and_set_loses_no_increment() {
         (writers * increments) as u64
     );
 }
+
+/// A settled read waits out a put that is staged but not applied, as the put
+/// of a cancelled caller is until it finishes on its own task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_settled_read_sees_a_staged_write() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = Arc::new(cache(dir.path()).await);
+    let held = HeldTurn::hold(&cache).await;
+
+    let put = tokio::spawn({
+        let cache = Arc::clone(&cache);
+        async move {
+            cache
+                .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"staged"), None)
+                .await
+        }
+    });
+    held.wait_for_in_flight("k").await;
+    put.abort();
+
+    let read = tokio::spawn({
+        let cache = Arc::clone(&cache);
+        async move { cache.get_settled_checked(T, NS, C, 0, "k").await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!read.is_finished(), "read before the staged write applied");
+    held.release().await;
+
+    assert_eq!(
+        read.await.unwrap().unwrap().as_deref(),
+        Some(&b"staged"[..])
+    );
+}
