@@ -65,8 +65,8 @@ use crate::config::BrokerConfig;
 use crate::observability::timings;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use crate::serving::quic::handlers::publish::{
-    AckTimeoutState, CommitAcks, Outgoing, PublishAdmission, PublishContext, PublishTarget,
-    SubscriptionLimiter, test_channel,
+    AckTimeoutState, CommitAcks, IdentityLimits, Outgoing, PublishAdmission, PublishContext,
+    PublishTarget, test_channel,
 };
 use crate::serving::quic::handlers::subscribe::WriterLaneManager;
 use crate::serving::quic::{ACK_HI_WATER, ACK_LO_WATER};
@@ -232,7 +232,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: WriterLaneManager::new(&BrokerConfig::default()),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(

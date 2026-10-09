@@ -336,7 +336,7 @@ VARIABLES
     canswered,  \* who has answered each broker's counter fence
     cacked,     \* counter updates acknowledged to a client
     ballot,     \* under `Ballots`, whom each broker's promise was made to: {} or {leader}
-    opened      \* history, under `Elections`: each <<generation, broker>> that opened for writes
+    opened      \* history, under `Elections` or `Suspicions`: each <<generation, broker>> that opened for writes
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -371,9 +371,11 @@ Promise(f, b, g) ==
     /\ promised' = [promised EXCEPT ![f] = g]
     /\ ballot' = IF Ballots THEN [ballot EXCEPT ![f] = {b}] ELSE ballot
 
-\* `b` opens for writes at `g`. Recorded only under `Elections`, for the
-\* same reason.
-Opens(b, g) == opened' = IF Elections > 0 THEN opened \cup {<<g, b>>} ELSE opened
+\* `b` opens for writes at `g`. Recorded only where a second leader at one
+\* generation is in question, for the same reason: under `Elections`, and
+\* under `Suspicions`, where placement replaces a leader that is still open.
+TracksOpens == Elections > 0 \/ Suspicions > 0
+Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
@@ -508,7 +510,7 @@ Init ==
     /\ joinedAt = 0
     /\ CounterInit
     /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
-    /\ opened = IF Elections > 0 THEN {<<1, leader>>} ELSE {}
+    /\ opened = IF TracksOpens THEN {<<1, leader>>} ELSE {}
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -1484,7 +1486,8 @@ AckedAgree ==
         /\ log[c][i].id \in acked
         => log[a][i].id = log[c][i].id
 
-\* Under `Elections`, no two brokers open for writes at one generation.
+\* Under `Elections` or `Suspicions`, no two brokers open for writes at one
+\* generation.
 OneLeaderPerGeneration ==
     \A x, y \in opened : x[1] = y[1] => x[2] = y[2]
 

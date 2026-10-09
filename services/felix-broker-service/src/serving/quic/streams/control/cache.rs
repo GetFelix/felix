@@ -606,7 +606,6 @@ pub(super) async fn cache_watch(
     let Ctx {
         broker,
         connection,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -641,7 +640,6 @@ pub(super) async fn cache_watch(
     crate::serving::quic::handlers::cache_watch::handle_cache_watch_message(
         Arc::clone(broker),
         connection.clone(),
-        config.clone(),
         publish_ctx,
         crate::serving::quic::handlers::cache_watch::WatchResponder {
             out_ack_tx,

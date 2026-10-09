@@ -39,7 +39,9 @@ import sys
 # planned handoff. Also the ingress routing that admits a write under the
 # fence, and the replica's persisted promise: the ballot, the accepted
 # generation and commit offset, and the generation history a fence answer
-# orders by. The rest of disk_log is storage the model does not describe.
+# orders by. `accept_generation` and the open's choice between the ballot and
+# the replica state are in disk_log/ballot.rs for this reason. The rest of
+# disk_log is storage the model does not describe.
 MODELLED = (
     "services/felix-broker-service/src/cluster/lease",
     "services/felix-broker-service/src/cluster/membership",

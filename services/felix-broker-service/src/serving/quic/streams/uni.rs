@@ -45,7 +45,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
     let UniLoopArgs {
         config,
         auth,
-        publish_ctx,
+        mut publish_ctx,
         mut stream_cache,
         mut stream_cache_key,
         peer_certs,
@@ -118,6 +118,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     .await
                 {
                     Ok(ctx) => {
+                        publish_ctx.bind_identity(&ctx);
                         auth_ctx = Some(ctx);
                         preauth_permit.take();
                         publish_ctx.preauth.mark_authenticated();

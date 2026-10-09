@@ -365,15 +365,14 @@ async fn a_token_subject_binds_to_the_client_certificate() {
         .peer_certificates()
         .expect("the client's chain");
 
-    check_subject_binding(Some(&certs), "orders.apps.felix.test").expect("its own name");
-    let other = check_subject_binding(Some(&certs), "billing.apps.felix.test")
-        .expect_err("another service's token");
+    bind_subject(Some(&certs), "orders.apps.felix.test").expect("its own name");
+    let other =
+        bind_subject(Some(&certs), "billing.apps.felix.test").expect_err("another service's token");
     assert!(other.contains("not issued to"), "{other}");
-    let unnameable =
-        check_subject_binding(Some(&certs), "user@example.com").expect_err("not a name");
+    let unnameable = bind_subject(Some(&certs), "user@example.com").expect_err("not a name");
     assert!(unnameable.contains("not issued to"), "{unnameable}");
     // No certificate, nothing to bind to: a listener without a client CA.
-    check_subject_binding(None, "anyone").expect("no certificate");
+    bind_subject(None, "anyone").expect("no certificate");
 }
 
 /// Control-plane principal ids are 64 hex characters: one label longer than
@@ -408,16 +407,55 @@ async fn a_principal_id_binds_through_the_uri_san() {
     };
 
     let with_uri = certs(&app_cert, &app_key).await;
-    check_subject_binding(Some(&with_uri), &principal).expect("the principal in its URI SAN");
-    check_subject_binding(Some(&with_uri), "orders.apps.felix.test")
-        .expect("its DNS name still binds");
-    check_subject_binding(Some(&with_uri), &"4e".repeat(32))
-        .expect_err("another principal's token");
-    check_subject_binding(Some(&with_uri), "").expect_err("the bare prefix is no principal");
+    bind_subject(Some(&with_uri), &principal).expect("the principal in its URI SAN");
+    bind_subject(Some(&with_uri), "orders.apps.felix.test").expect("its DNS name still binds");
+    bind_subject(Some(&with_uri), &"4e".repeat(32)).expect_err("another principal's token");
+    bind_subject(Some(&with_uri), "").expect_err("the bare prefix is no principal");
 
     let (plain_cert, plain_key) = pki.issue("plain", "orders.apps.felix.test");
     let without_uri = certs(&plain_cert, &plain_key).await;
-    let refused = check_subject_binding(Some(&without_uri), &principal)
+    let refused = bind_subject(Some(&without_uri), &principal)
         .expect_err("no URI SAN, so no principal to bind to");
     assert!(refused.contains("not issued to"), "{refused}");
+}
+
+/// Subject binding for a token with no actor.
+fn bind_subject(
+    certs: Option<&[CertificateDer<'_>]>,
+    subject: &str,
+) -> std::result::Result<(), String> {
+    check_subject_binding(certs, subject, None)
+}
+
+/// A gateway acting for many users presents each user's token over its own
+/// certificate. A token the control plane minted by delegation names the
+/// gateway as its actor, and binds to the gateway's certificate; nothing
+/// else lets the gateway's certificate carry another subject.
+#[test]
+fn a_delegated_token_binds_through_its_actor() {
+    let gateway_id = "9c".repeat(32);
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params =
+        rcgen::CertificateParams::new(vec!["gateway.apps.felix.test".to_string()]).expect("params");
+    params.subject_alt_names.push(rcgen::SanType::URI(
+        format!("{PRINCIPAL_URI_PREFIX}{gateway_id}")
+            .try_into()
+            .expect("uri"),
+    ));
+    let gateway = vec![params.self_signed(&key).expect("cert").der().clone()];
+    let alice = "3f".repeat(32);
+
+    check_subject_binding(Some(&gateway), &alice, Some(&gateway_id))
+        .expect("alice's token, delegated to this gateway");
+    check_subject_binding(Some(&gateway), &alice, Some("gateway.apps.felix.test"))
+        .expect("an actor named by the certificate's DNS name");
+    let other_actor = check_subject_binding(Some(&gateway), &alice, Some(&"4e".repeat(32)))
+        .expect_err("delegated to another gateway");
+    assert!(other_actor.contains("or its actor"), "{other_actor}");
+    let no_actor =
+        check_subject_binding(Some(&gateway), &alice, None).expect_err("alice's own token");
+    assert!(no_actor.contains("not issued to"), "{no_actor}");
+    check_subject_binding(Some(&gateway), &alice, Some(""))
+        .expect_err("an empty actor names nobody");
+    check_subject_binding(Some(&gateway), &gateway_id, None).expect("the gateway's own token");
 }

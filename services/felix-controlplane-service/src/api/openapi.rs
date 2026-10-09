@@ -28,6 +28,7 @@ use crate::auth::admin;
 use crate::auth::admin::{
     GroupingRequest, PolicyRequest, RevokeRefreshTokensRequest, RevokeRefreshTokensResponse,
 };
+use crate::auth::delegate::{self, TokenDelegateRequest, TokenDelegateResponse};
 use crate::auth::exchange::{self, TokenExchangeRequest, TokenExchangeResponse};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::jwks::{self, JwksResponse};
@@ -55,6 +56,7 @@ use crate::model::{
         regions::list_regions,
         regions::get_region,
         exchange::exchange_token,
+        delegate::delegate_token,
         jwks::tenant_jwks,
         admin::upsert_idp_issuer,
         admin::delete_idp_issuer,
@@ -208,6 +210,8 @@ use crate::model::{
         ShardReplicationResponse,
         TokenExchangeRequest,
         TokenExchangeResponse,
+        TokenDelegateRequest,
+        TokenDelegateResponse,
         IdpIssuerConfig,
         PolicyRequest,
         GroupingRequest,

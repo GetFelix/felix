@@ -79,7 +79,8 @@ impl BrokerAuth {
     }
 
     /// Require every token presented over a connection with a client
-    /// certificate to name that certificate's identity as its subject.
+    /// certificate to name that certificate's identity as its subject, or as
+    /// its actor (`act`) on a token the control plane minted by delegation.
     pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
         self.bind_subject = bind_subject;
         self
@@ -96,8 +97,12 @@ impl BrokerAuth {
     ) -> Result<AuthContext> {
         let context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
-            crate::serving::tls::check_subject_binding(peer_certs, &context.subject)
-                .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
+            crate::serving::tls::check_subject_binding(
+                peer_certs,
+                &context.subject,
+                context.actor.as_deref(),
+            )
+            .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
         }
         Ok(context)
     }
@@ -119,6 +124,7 @@ impl BrokerAuth {
             token: token.to_string(),
             publisher: publisher_of(&claims.sub),
             subject: claims.sub,
+            actor: claims.act.map(|actor| actor.sub),
         })
     }
 }
@@ -133,6 +139,9 @@ pub struct AuthContext {
     pub token: String,
     /// The principal the token was issued to (`sub`).
     pub subject: String,
+    /// Who may present the token for `subject` (`act.sub`), when the control
+    /// plane minted it by delegation. Only subject binding reads it.
+    pub actor: Option<String>,
     /// `subject` as it is recorded on what this connection publishes. `None`
     /// when it is too long to record.
     pub publisher: Option<bytes::Bytes>,

@@ -11,6 +11,19 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Changed
+- `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` are now per identity (tenant and token
+  subject) on a connection, which for a plain client is the whole connection.
+  Two new settings cap a connection across its identities:
+  `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (default four times the
+  per-identity budget, at most `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (default four times the
+  per-identity cap), also settable in the config file. Startup refuses either
+  below its per-identity value. A subscription past the connection's ceiling
+  is refused with `max subscriptions per connection exceeded across
+  identities`.
+
 ### Fixed
 - Two brokers offloading to one directory could write the same object key,
   because keys held only the shard directory name, which every replica of a
@@ -21,6 +34,27 @@ for what the current release guarantees.
   in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
   Copies made by 0.6.0-preview.3 keep their old keys, which their manifest
   entries still name.
+- One client acting for many users over a shared connection
+  (`Client::with_identity`) no longer lets one user starve the rest (part of
+  #1098). The broker's subscription cap (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`)
+  and publish byte budget (`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`) now
+  apply per tenant and token subject on a connection, so one user at either
+  limit is refused or slowed while the others keep their room. A user's share
+  is dropped once nothing of theirs is open or in flight on the connection. A
+  client that authenticates every stream as one identity sees the same limits,
+  refusals and frames as before.
+- Subject binding (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`) refused every user's
+  token a gateway presented over its own certificate (part of #1098). The
+  control plane has a new RFC 8693 token exchange,
+  `POST /v1/tenants/{tenant_id}/token/delegate`: a caller holding the new
+  `token.delegate:tenant:{tenant_id}` permission trades a user's broker token
+  for one with the same subject, no wider permissions and no later expiry, and
+  `act: {"sub": "<caller>"}`. The broker binds such a token to a certificate
+  issued to its actor, on QUIC and Kafka SASL alike; a token without `act`
+  binds only to its subject, as before. `token.delegate` is never put in a
+  broker token, so brokers that predate it are unaffected.
+- The docs said a delegated identity had its own publish budget when only the
+  client's was per identity; they now describe what the broker enforces.
 - An in-memory cache's versions restarted at 0 with the broker, so a
   `cache_put_if` or `cache_delete_if` holding a version read before a restart
   could apply against a value written after it (#1098). Versions now start

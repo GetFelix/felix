@@ -88,7 +88,7 @@ async fn spawn_feeder_capped(flush_delay: Duration, max_bytes: usize) -> Result<
         0,
         None,
         config,
-        Arc::new(SubscriptionLimiter::new()),
+        IdentityLimits::unlimited(),
         TenantDelivery::for_tenant("t1"),
     ));
     Ok(Harness {
@@ -342,7 +342,7 @@ async fn feed_to_the_end(
         0,
         None,
         config,
-        Arc::new(SubscriptionLimiter::new()),
+        IdentityLimits::unlimited(),
         TenantDelivery::for_tenant("t1"),
     ));
     let mut delivered = 0;

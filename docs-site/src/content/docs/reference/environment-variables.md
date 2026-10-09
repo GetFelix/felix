@@ -166,6 +166,11 @@ certificate to be issued to its token's subject (`sub`).
   or a DNS or IP name that `sub` matches the way a server name would.
 - Control-plane tokens carry a 64-hex principal id, longer than a DNS label
   may be, so issue those clients' certificates with the URI SAN.
+- A token minted by delegation (`/token/delegate`) names its actor in `act`,
+  and also binds a certificate issued to the actor, by the same rules. That is
+  how a gateway presents its users' tokens over its own connections
+  (`Client::with_identity`); each token is still checked against its own
+  grants.
 - Needs `FELIX_TLS_CLIENT_CA`. Set without it, startup fails.
 - Applies to the QUIC client listeners, and to the Kafka listener when it
   serves TLS: SASL/PLAIN checks the token against the certificate the client
@@ -573,7 +578,7 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
 
-**Description**: Max concurrent subscriptions a single QUIC connection may hold. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). This bounds how many subscriptions a connection can open in total, protecting broker memory from a connection that opens unbounded subscriptions.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). A plain client authenticates as one identity, so for it this is the connection's cap. A client acting for many users over one connection gets this many per user, so one user at the cap does not stop the others subscribing.
 
 **Type**: Positive integer (count)
 
@@ -581,6 +586,18 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ```bash
 export FELIX_MAX_SUBSCRIPTIONS_PER_CONN="4096"
+```
+
+### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`
+
+**Description**: Max concurrent subscriptions and cache watches one QUIC connection may hold across all its identities, protecting broker memory from a connection that acts for many users.
+
+**Type**: Positive integer (count)
+
+**Default**: four times `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` (`16384`). Below `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`, startup fails.
+
+```bash
+export FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL="16384"
 ```
 
 ### `FELIX_SUB_QUEUE_POLICY`
@@ -1118,7 +1135,7 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 
 ### `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
 
-**Description**: Per-connection share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`. Bounds how much of the shared, process-wide publish byte budget a single connection can occupy at once, so one connection publishing large batches can't starve every other connection's admission into the shared budget.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. A plain client authenticates as one identity, so for it this is the connection's share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, and one connection publishing large batches can't starve every other connection's admission into the shared budget. A client acting for many users over one connection gets this much per user, so one user's unanswered publishes don't hold up the others.
 
 **Type**: Positive integer (bytes)
 
@@ -1126,6 +1143,18 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 
 ```bash
 export FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES="16777216"
+```
+
+### `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`
+
+**Description**: In-flight publish bytes one connection may hold across all its identities. Only a connection acting for several users can reach it.
+
+**Type**: Positive integer (bytes)
+
+**Default**: four times `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`, capped at `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES` (64 MiB with the defaults). Below `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` or above `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, startup fails.
+
+```bash
+export FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES="67108864"
 ```
 
 ### `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
@@ -1612,6 +1641,8 @@ no error to explain it:
 |---|---|
 | `event_batch_max_bytes` > `max_frame_bytes` | The broker would send subscribers frames larger than it will itself accept, and a client applying the same limit drops them |
 | `pub_conn_inflight_bytes` > `pub_inflight_bytes` | The per-connection limit could never be the one that applies, so one connection may take the whole broker-wide allowance |
+| `pub_conn_total_inflight_bytes` < `pub_conn_inflight_bytes`, or > `pub_inflight_bytes` | One identity could never use its own budget, or the connection's ceiling could never apply |
+| `max_subscriptions_per_conn_total` < `max_subscriptions_per_conn` | One identity could never reach its own cap |
 | `pub_stream_recv_window` > `pub_conn_recv_window` | A single stream can never reach its own window, because the connection's runs out first |
 | `pub_conn_recv_window` or `pub_stream_recv_window` < `max_frame_bytes` | One full-size frame would not fit in a receive window |
 | `FELIX_INTERNAL_BIND` shares a port with `FELIX_QUIC_BIND` | The internal and client-facing listeners must be separate |
