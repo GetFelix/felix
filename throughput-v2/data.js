@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791588859940,
+  "lastUpdate": 1791590169588,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27300,6 +27300,58 @@ window.BENCHMARK_DATA = {
             "range": "14725.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1121799.22\nmean: 1126396.61\nstdev: 14725.79\ncv: 1.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff5f0619594c49265b3f412f5f5e0613591ba44e",
+          "message": "fix(replication): hold a forward to a shard its new owner is still fencing (#1122)\n\nA publish forwarded to the broker a move cut over to could arrive after\nthat broker's routes named it leader but before it finished fencing the\nreplicas. The owner's settle only waited for the routes, so the write was\nrefused as not_ready; the forwarding broker's three retries span a few\ntens of milliseconds, the client's one reroute through its entry broker\nmet the same refusal, and the publish failed. A write sent to the new\nowner directly was already held through the same window.\n\nsettle now also waits while the shard is opening, fencing, or active but\nnot yet published as servable, using the predicate dispatch_write uses.\n\nThe shutdown handoff test now prints the refusals it counts.\n\nSpec-Unaffected: only delays a forwarded write until the owner serves; what may be admitted (serving at the exact generation, inside the write fence) is unchanged, and the model admits writes only to a serving leader already.",
+          "timestamp": "2026-10-09T16:48:58-07:00",
+          "tree_id": "b2b7fc56137cb0f8cb34b71b73c404794a8471c5",
+          "url": "https://github.com/GetFelix/felix/commit/ff5f0619594c49265b3f412f5f5e0613591ba44e"
+        },
+        "date": 1791590169108,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354427.24,
+            "range": "11942.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354427.24\nmean: 354754.39\nstdev: 11942.15\ncv: 3.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354427.24,
+            "range": "11942.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354427.24\nmean: 354754.39\nstdev: 11942.15\ncv: 3.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80957.21,
+            "range": "551.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80957.21\nmean: 81049.21\nstdev: 551.13\ncv: 0.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809572.07,
+            "range": "5511.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809572.07\nmean: 810492.09\nstdev: 5511.33\ncv: 0.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
