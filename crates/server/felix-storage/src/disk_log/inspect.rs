@@ -38,7 +38,7 @@ pub enum Store {
 }
 
 impl Store {
-    pub const ALL: [Store; 5] = [
+    const ALL: [Store; 5] = [
         Store::Stream,
         Store::Cache,
         Store::Groups,
@@ -46,7 +46,7 @@ impl Store {
         Store::Counters,
     ];
 
-    /// The name `felixctl` and the docs use for it.
+    /// The name `felix-broker inspect` and the docs use for it.
     pub fn name(self) -> &'static str {
         match self {
             Store::Stream => "stream",

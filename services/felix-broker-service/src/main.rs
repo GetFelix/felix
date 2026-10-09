@@ -21,6 +21,13 @@ async fn main() -> Result<()> {
     // startup loads it, so a file that will not parse or a key the broker does
     // not know fails here — before a rollout — with the same message it would
     // have produced on the node.
+    // Read-only over a data directory, and before `--print-config` so none of
+    // its arguments can be taken for a broker flag. Reads no configuration.
+    if std::env::args().nth(1).as_deref() == Some("inspect") {
+        std::process::exit(
+            felix_broker_service::inspect::run(std::env::args().skip(2).collect()).into(),
+        );
+    }
     if std::env::args().any(|arg| arg == "--print-config") {
         return print_config();
     }

@@ -1179,7 +1179,7 @@ jobs:
         run: |
           set -euo pipefail
           crates=()
-          for crate in felix-transport felix-wire felix-client felix-loadgen felix-storage felixctl; do
+          for crate in felix-transport felix-wire felix-client felix-loadgen felixctl; do
             crates+=("$crate")
           done
           echo "CRATES=${crates[*]}" >> "$GITHUB_ENV"

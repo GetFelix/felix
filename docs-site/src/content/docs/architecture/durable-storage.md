@@ -271,7 +271,7 @@ is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trad
 startup time for eager detection.
 
 Recovery plans every repair before it makes any, and
-`felixctl inspect segments` runs that plan alone: it reports what startup would
+`felix-broker inspect segments` runs that plan alone: it reports what startup would
 do with a data directory, read-only, without a broker. See
 [Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 

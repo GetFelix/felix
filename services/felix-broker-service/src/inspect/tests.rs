@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode};
@@ -45,10 +45,8 @@ fn report_of(dir: &Path) -> Value {
     shard_json(&shard, &inspect_shard(dir, &config()).expect("inspect"))
 }
 
-fn exit_of(reports: &[Value]) -> Option<Exit> {
-    verdict(reports)
-        .err()
-        .map(|err| crate::error::exit_for(&err))
+fn exit_of(reports: &[Value]) -> u8 {
+    verdict(reports).0
 }
 
 #[test]
@@ -69,8 +67,7 @@ fn a_shard_is_tenant_namespace_name_and_number() {
         "acme/default/orders/x",
         "//orders/0",
     ] {
-        let err = parse_shard(bad).expect_err(bad);
-        assert_eq!(crate::error::exit_for(&err), Exit::Usage, "{bad}");
+        parse_shard(bad).expect_err(bad);
     }
 }
 
@@ -95,7 +92,7 @@ async fn a_clean_shard_prints_one_line_and_exits_zero() {
         "no details for a clean shard: {text}"
     );
     assert!(render(std::slice::from_ref(&report), true).contains("RECORDS CHECK"));
-    assert_eq!(exit_of(&[report]), None);
+    assert_eq!(exit_of(&[report]), 0);
 }
 
 #[tokio::test]
@@ -117,7 +114,7 @@ async fn a_torn_tail_is_a_repair_with_status_6() {
     let text = render(std::slice::from_ref(&report), false);
     assert!(text.contains("cut the torn tail of segment"), "{text}");
     assert!(text.contains("append in flight"), "{text}");
-    assert_eq!(exit_of(&[report]), Some(Exit::WouldRepair));
+    assert_eq!(exit_of(&[report]), EXIT_WOULD_REPAIR);
 }
 
 #[tokio::test]
@@ -134,5 +131,53 @@ async fn rot_in_a_sealed_segment_is_damage_with_status_7() {
     let text = render(std::slice::from_ref(&report), false);
     assert!(text.contains("records fail their checksum"), "{text}");
     assert!(text.contains("damaged at byte"), "{text}");
-    assert_eq!(exit_of(&[report]), Some(Exit::Damaged));
+    assert_eq!(exit_of(&[report]), EXIT_DAMAGED);
+}
+
+fn args(list: &[&str]) -> Result<Parsed, String> {
+    parse(list.iter().map(|arg| arg.to_string()).collect())
+}
+
+#[test]
+fn arguments_parse_like_the_usage_says() {
+    let Ok(Parsed::Run(parsed)) = args(&[
+        "segments",
+        "/data",
+        "acme/default/orders/0",
+        "--kind",
+        "cache",
+        "--json",
+        "--index-spacing",
+        "8192",
+        "--repair-checksum-tail",
+        "--verify-all-on-open",
+        "--segments",
+    ]) else {
+        panic!("expected a run");
+    };
+    assert_eq!(
+        parsed,
+        Args {
+            data_dir: "/data".into(),
+            shard: Some("acme/default/orders/0".into()),
+            kind: Some(Store::Cache),
+            segments: true,
+            json: true,
+            repair_checksum_tail: true,
+            index_spacing: Some(8192),
+            verify_all_on_open: true,
+        }
+    );
+    assert!(matches!(args(&["segments", "--help"]), Ok(Parsed::Help)));
+    assert!(matches!(args(&[]), Ok(Parsed::Help)));
+    for bad in [
+        &["records", "/data"][..],
+        &["segments"],
+        &["segments", "/data", "--kind", "topics"],
+        &["segments", "/data", "--index-spacing", "lots"],
+        &["segments", "/data", "--frobnicate"],
+        &["segments", "/data", "a/b/c/0", "extra"],
+    ] {
+        assert!(args(bad).is_err(), "{bad:?}");
+    }
 }

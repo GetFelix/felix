@@ -327,16 +327,13 @@ pub(crate) enum Command {
                       one broker's own view; felixctl asks every broker that has a part in \
                       what is shown.\n\n\
                       Needs a broker token allowed node.view on cluster:*. A broker too old \
-                      to answer is reported, not guessed at.\n\n\
-                      inspect segments is the exception: it reads a data directory from \
-                      disk and needs no broker.",
+                      to answer is reported, not guessed at.",
         after_long_help = "Examples:
   felixctl inspect shard orders --shard 3
   felixctl inspect shard acme/default/orders
   felixctl inspect shard sessions --cache --json
   felixctl inspect subs orders --dropping
-  felixctl inspect subs --node broker-a --limit 500
-  felixctl inspect segments /var/lib/felix"
+  felixctl inspect subs --node broker-a --limit 500"
     )]
     Inspect(InspectCommand),
 
@@ -845,63 +842,6 @@ pub(crate) enum InspectCommand {
   felixctl inspect subs --node broker-a --cursor eyJ0ZW5hbnRfaWQiOi4uLn0"
     )]
     Subs(InspectSubsArgs),
-    /// A broker's data directory, offline: segments, indexes and the startup verdict
-    #[command(
-        long_about = "Read a broker's data directory (FELIX_DURABLE_STORAGE_DIR) and report, \
-                      for every shard of every store, its segments, whether each one's \
-                      records and index verify, and what the broker would do with it at \
-                      startup: open it as it is, repair it (cut a torn tail, discard what \
-                      an interrupted rollover left), or refuse to start, and where.\n\n\
-                      Strictly read-only: nothing is created, repaired, truncated or \
-                      re-indexed, so it is safe on a mounted volume, a snapshot or a copy. \
-                      It needs no broker and no connection settings. Next to a running \
-                      broker the reads are safe, but an active segment may be mid-write.\n\n\
-                      The verdict depends on three broker settings; pass the same values \
-                      with --repair-checksum-tail, --index-spacing and \
-                      --verify-all-on-open.\n\n\
-                      Exits 0 when every shard opens as it is, 6 when startup would repair \
-                      something, and 7 when startup would refuse a shard or a record fails \
-                      its checksum.",
-        after_long_help = "Examples:
-  felixctl inspect segments /var/lib/felix
-  felixctl inspect segments /var/lib/felix acme/default/orders/3
-  felixctl inspect segments /data --kind cache --json
-  kubectl exec felix-broker-0 -- felixctl inspect segments /var/lib/felix"
-    )]
-    Segments(InspectSegmentsArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct InspectSegmentsArgs {
-    /// The broker's data directory
-    pub(crate) data_dir: std::path::PathBuf,
-    /// Only this shard, as TENANT/NAMESPACE/NAME/SHARD; prints its segments
-    pub(crate) shard: Option<String>,
-    /// Only this store [default with a shard: stream]
-    #[arg(long, value_enum)]
-    pub(crate) kind: Option<StoreKind>,
-    /// List the segments of every shard, not only of those with findings
-    #[arg(long)]
-    pub(crate) segments: bool,
-    /// As the broker's FELIX_DURABLE_REPAIR_CHECKSUM_TAIL
-    #[arg(long)]
-    pub(crate) repair_checksum_tail: bool,
-    /// As the broker's FELIX_DURABLE_INDEX_SPACING_BYTES
-    #[arg(long, value_name = "BYTES")]
-    pub(crate) index_spacing: Option<u64>,
-    /// As the broker's FELIX_DURABLE_VERIFY_ALL_ON_OPEN
-    #[arg(long)]
-    pub(crate) verify_all_on_open: bool,
-}
-
-/// The broker's stores, each its own directory of shards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum StoreKind {
-    Stream,
-    Cache,
-    Groups,
-    DeadLetters,
-    Counters,
 }
 
 #[derive(Debug, Args)]

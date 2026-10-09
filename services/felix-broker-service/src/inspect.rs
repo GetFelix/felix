@@ -1,8 +1,11 @@
-//! `felixctl inspect segments`: a broker's data directory, read from disk.
+//! `felix-broker inspect segments`: a data directory, read from disk.
 //!
-//! The verdict is `felix_storage::inspect`'s, which is the plan startup
-//! recovery makes before it writes anything. Nothing here opens a file for
-//! writing.
+//! Runs instead of the broker, never alongside it in this process: nothing is
+//! bound, no configuration is read, and no file is opened for writing. The
+//! verdict is `felix_storage::inspect`'s, which is the plan startup recovery
+//! makes before it writes anything, so the two cannot disagree.
+
+use std::path::PathBuf;
 
 use felix_storage::inspect::{
     Action, IndexState, SegmentReport, ShardDir, ShardReport, Startup, Store, find_shards,
@@ -11,34 +14,163 @@ use felix_storage::inspect::{
 use felix_storage::log::{LogConfig, ShardKey};
 use serde_json::{Value, json};
 
-use crate::cli::{InspectSegmentsArgs, StoreKind};
-use crate::error::{Exit, MarkExit, fail};
-use crate::output::{Output, table};
+/// Startup would repair a shard: cut a torn tail, or remove what an
+/// interrupted rollover left.
+pub const EXIT_WOULD_REPAIR: u8 = 6;
+/// Startup would refuse a shard, or a record fails its checksum.
+pub const EXIT_DAMAGED: u8 = 7;
+/// Bad arguments.
+pub const EXIT_USAGE: u8 = 2;
+/// The data directory or the named shard is not there.
+pub const EXIT_NOT_FOUND: u8 = 5;
 
-pub(crate) fn run(args: &InspectSegmentsArgs, out: &Output) -> anyhow::Result<()> {
+const USAGE: &str = "\
+usage: felix-broker inspect segments DATA_DIR [TENANT/NAMESPACE/NAME/SHARD]
+           [--kind stream|cache|groups|dead-letters|counters] [--segments] [--json]
+           [--repair-checksum-tail] [--index-spacing BYTES] [--verify-all-on-open]
+
+Reads a broker's data directory (FELIX_DURABLE_STORAGE_DIR) and reports, for
+every shard of every store, its segments, whether each one's records and index
+verify, and what startup would do with it: open it as it is, repair it, or
+refuse to start, and where. Strictly read-only, and it does not start the
+broker. Next to a running broker the reads are safe, but an active segment may
+be mid-write.
+
+The verdict depends on three broker settings; pass the values the broker runs
+with: --repair-checksum-tail (FELIX_DURABLE_REPAIR_CHECKSUM_TAIL),
+--index-spacing (FELIX_DURABLE_INDEX_SPACING_BYTES) and --verify-all-on-open
+(FELIX_DURABLE_VERIFY_ALL_ON_OPEN).
+
+A shard you name, shards with findings, and with --segments every shard, get
+their segments listed. --json prints one line per shard.
+
+Exits 0 when every shard opens as it is, 6 when startup would repair one, 7
+when it would refuse one or a record fails its checksum, 2 for bad arguments
+and 5 when the directory or shard is not there.";
+
+/// What `inspect segments` was asked.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    data_dir: PathBuf,
+    shard: Option<String>,
+    kind: Option<Store>,
+    segments: bool,
+    json: bool,
+    repair_checksum_tail: bool,
+    index_spacing: Option<u64>,
+    verify_all_on_open: bool,
+}
+
+/// Run `inspect`; `args` starts after the word `inspect`. Returns the exit
+/// status, having printed the report and any error.
+pub fn run(args: Vec<String>) -> u8 {
+    let args = match parse(args) {
+        Ok(Parsed::Run(args)) => args,
+        Ok(Parsed::Help) => {
+            println!("{USAGE}");
+            return 0;
+        }
+        Err(message) => {
+            eprintln!("felix-broker inspect: {message}\n\n{USAGE}");
+            return EXIT_USAGE;
+        }
+    };
+    match inspect(&args) {
+        Ok((reports, single)) => {
+            if args.json {
+                for report in &reports {
+                    println!("{report}");
+                }
+            } else {
+                println!("{}", render(&reports, single || args.segments));
+            }
+            let (code, why) = verdict(&reports);
+            if let Some(why) = why {
+                eprintln!("felix-broker inspect: {why}");
+            }
+            code
+        }
+        Err((code, message)) => {
+            eprintln!("felix-broker inspect: {message}");
+            code
+        }
+    }
+}
+
+enum Parsed {
+    Run(Args),
+    Help,
+}
+
+fn parse(args: Vec<String>) -> Result<Parsed, String> {
+    let mut args = args.into_iter();
+    match args.next().as_deref() {
+        Some("segments") => {}
+        Some("-h" | "--help") | None => return Ok(Parsed::Help),
+        Some(other) => return Err(format!("unknown inspect command {other}")),
+    }
+    let mut parsed = Args::default();
+    let mut positional = Vec::new();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(Parsed::Help),
+            "--json" => parsed.json = true,
+            "--segments" => parsed.segments = true,
+            "--repair-checksum-tail" => parsed.repair_checksum_tail = true,
+            "--verify-all-on-open" => parsed.verify_all_on_open = true,
+            "--index-spacing" => {
+                let value = args.next().ok_or("--index-spacing needs a byte count")?;
+                let bytes = value
+                    .parse()
+                    .map_err(|_| format!("--index-spacing {value:?} is not a byte count"))?;
+                parsed.index_spacing = Some(bytes);
+            }
+            "--kind" => {
+                let value = args.next().ok_or("--kind needs a store")?;
+                parsed.kind = Some(
+                    STORES
+                        .iter()
+                        .find(|store| store.name() == value)
+                        .copied()
+                        .ok_or_else(|| format!("--kind {value:?} is not a store"))?,
+                );
+            }
+            flag if flag.starts_with('-') => return Err(format!("unknown argument {flag}")),
+            _ => positional.push(arg),
+        }
+    }
+    let mut positional = positional.into_iter();
+    parsed.data_dir = positional.next().ok_or("missing DATA_DIR")?.into();
+    parsed.shard = positional.next();
+    if let Some(extra) = positional.next() {
+        return Err(format!("unexpected argument {extra}"));
+    }
+    Ok(Parsed::Run(parsed))
+}
+
+const STORES: [Store; 5] = [
+    Store::Stream,
+    Store::Cache,
+    Store::Groups,
+    Store::DeadLetters,
+    Store::Counters,
+];
+
+/// Every selected shard's report, and whether one shard was named.
+fn inspect(args: &Args) -> Result<(Vec<Value>, bool), (u8, String)> {
     let config = log_config(args);
     let shards = select(args)?;
-    let single = args.shard.is_some();
-
     let mut reports = Vec::with_capacity(shards.len());
     for shard in &shards {
         let report = inspect_shard(&shard.path, &config)
-            .mark(Exit::Failure, format!("read {}", shard.path.display()))?;
+            .map_err(|err| (1, format!("read {}: {err}", shard.path.display())))?;
         reports.push(shard_json(shard, &report));
     }
-
-    if out.json {
-        for report in &reports {
-            out.json_value(report)?;
-        }
-    } else {
-        out.text(&render(&reports, single || args.segments))?;
-    }
-    verdict(&reports)
+    Ok((reports, args.shard.is_some()))
 }
 
 /// The broker settings the verdict depends on, as given.
-fn log_config(args: &InspectSegmentsArgs) -> LogConfig {
+fn log_config(args: &Args) -> LogConfig {
     let defaults = LogConfig::default();
     LogConfig {
         index_spacing_bytes: args.index_spacing.unwrap_or(defaults.index_spacing_bytes),
@@ -48,32 +180,22 @@ fn log_config(args: &InspectSegmentsArgs) -> LogConfig {
     }
 }
 
-fn store(kind: StoreKind) -> Store {
-    match kind {
-        StoreKind::Stream => Store::Stream,
-        StoreKind::Cache => Store::Cache,
-        StoreKind::Groups => Store::Groups,
-        StoreKind::DeadLetters => Store::DeadLetters,
-        StoreKind::Counters => Store::Counters,
-    }
-}
-
 /// The shard directories the arguments name.
-fn select(args: &InspectSegmentsArgs) -> anyhow::Result<Vec<ShardDir>> {
+fn select(args: &Args) -> Result<Vec<ShardDir>, (u8, String)> {
     let data = &args.data_dir;
     if !data.is_dir() {
-        return Err(fail(
-            Exit::NotFound,
+        return Err((
+            EXIT_NOT_FOUND,
             format!("{} is not a directory", data.display()),
         ));
     }
     if let Some(given) = &args.shard {
-        let key = parse_shard(given)?;
-        let store = store(args.kind.unwrap_or(StoreKind::Stream));
+        let key = parse_shard(given).map_err(|message| (EXIT_USAGE, message))?;
+        let store = args.kind.unwrap_or(Store::Stream);
         let path = shard_dir(data, store, &key);
         if !path.is_dir() {
-            return Err(fail(
-                Exit::NotFound,
+            return Err((
+                EXIT_NOT_FOUND,
                 format!(
                     "no {} shard {given} in {} (looked for {})",
                     store.name(),
@@ -88,26 +210,24 @@ fn select(args: &InspectSegmentsArgs) -> anyhow::Result<Vec<ShardDir>> {
             .unwrap_or_default();
         return Ok(vec![ShardDir { store, name, path }]);
     }
-    let mut shards = find_shards(data).mark(Exit::Failure, format!("list {}", data.display()))?;
+    let mut shards =
+        find_shards(data).map_err(|err| (1, format!("list {}: {err}", data.display())))?;
     if let Some(kind) = args.kind {
-        shards.retain(|shard| shard.store == store(kind));
+        shards.retain(|shard| shard.store == kind);
     }
     Ok(shards)
 }
 
 /// `TENANT/NAMESPACE/NAME/SHARD`.
-pub(crate) fn parse_shard(given: &str) -> anyhow::Result<ShardKey> {
+fn parse_shard(given: &str) -> Result<ShardKey, String> {
     let parts: Vec<&str> = given.split('/').collect();
     match parts.as_slice() {
         [tenant, namespace, name, shard]
             if !tenant.is_empty() && !namespace.is_empty() && !name.is_empty() =>
         {
-            let shard = shard.parse().map_err(|_| {
-                fail(
-                    Exit::Usage,
-                    format!("{shard:?} in {given:?} is not a shard number"),
-                )
-            })?;
+            let shard = shard
+                .parse()
+                .map_err(|_| format!("{shard:?} in {given:?} is not a shard number"))?;
             Ok(ShardKey {
                 tenant: tenant.to_string(),
                 namespace: namespace.to_string(),
@@ -115,15 +235,12 @@ pub(crate) fn parse_shard(given: &str) -> anyhow::Result<ShardKey> {
                 shard,
             })
         }
-        _ => Err(fail(
-            Exit::Usage,
-            format!("{given:?} is not TENANT/NAMESPACE/NAME/SHARD"),
-        )),
+        _ => Err(format!("{given:?} is not TENANT/NAMESPACE/NAME/SHARD")),
     }
 }
 
 /// One shard, as `--json` prints it.
-pub(crate) fn shard_json(shard: &ShardDir, report: &ShardReport) -> Value {
+fn shard_json(shard: &ShardDir, report: &ShardReport) -> Value {
     let startup = match &report.startup {
         Startup::Clean => json!({ "verdict": "clean" }),
         Startup::Repair => json!({ "verdict": "repair" }),
@@ -242,7 +359,7 @@ fn has_findings(report: &Value) -> bool {
 
 /// The human form: a line per shard, then the segments of those with
 /// findings (or of all, with `all_segments`).
-pub(crate) fn render(reports: &[Value], all_segments: bool) -> String {
+fn render(reports: &[Value], all_segments: bool) -> String {
     if reports.is_empty() {
         return "no shards found".to_string();
     }
@@ -444,8 +561,9 @@ fn details(report: &Value) -> String {
     out.join("\n")
 }
 
-/// The exit status: 7 for anything damaged, else 6 for anything repaired.
-fn verdict(reports: &[Value]) -> anyhow::Result<()> {
+/// The exit status and why: 7 for anything damaged, else 6 for anything
+/// repaired, else 0.
+fn verdict(reports: &[Value]) -> (u8, Option<String>) {
     let count = |pick: &dyn Fn(&Value) -> bool| reports.iter().filter(|r| pick(r)).count();
     let refused = count(&|r| r["startup"]["verdict"] == "refuse");
     let rotted = count(&unexplained_damage);
@@ -461,15 +579,15 @@ fn verdict(reports: &[Value]) -> anyhow::Result<()> {
                 shards(rotted)
             ));
         }
-        return Err(fail(Exit::Damaged, parts.join("; ")));
+        return (EXIT_DAMAGED, Some(parts.join("; ")));
     }
     if repaired > 0 {
-        return Err(fail(
-            Exit::WouldRepair,
-            format!("startup would repair {}", shards(repaired)),
-        ));
+        return (
+            EXIT_WOULD_REPAIR,
+            Some(format!("startup would repair {}", shards(repaired))),
+        );
     }
-    Ok(())
+    (0, None)
 }
 
 fn shards(count: usize) -> String {
@@ -493,6 +611,37 @@ fn dash(value: &Value) -> String {
         Value::Null => "-".to_string(),
         other => text(other),
     }
+}
+
+/// Columns padded to their widest cell. The last column is not padded.
+fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+    let line = |cells: Vec<&str>| -> String {
+        let last = cells.len().saturating_sub(1);
+        let mut out = String::new();
+        for (i, cell) in cells.into_iter().enumerate() {
+            out.push_str(cell);
+            if i != last {
+                out.extend(std::iter::repeat_n(
+                    ' ',
+                    widths[i] - cell.chars().count() + 2,
+                ));
+            }
+        }
+        out
+    };
+    let mut out = vec![line(headers.to_vec())];
+    for row in &rows {
+        out.push(line(row.iter().map(String::as_str).collect()));
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]

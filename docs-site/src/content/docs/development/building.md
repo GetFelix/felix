@@ -181,7 +181,7 @@ docs pin (`scripts/check_release_version.py`), and its release notes are its
   Node addons and publishes them to PyPI (`PUBLISH_PYPI`) and npm
   (`PUBLISH_NPM`);
 - after both conformance suites, packages `felix-transport`, `felix-wire`,
-  `felix-client`, `felix-loadgen`, `felix-storage` and `felixctl` together, then publishes them
+  `felix-client`, `felix-loadgen` and `felixctl` together, then publishes them
   to crates.io in that order (`PUBLISH_CRATES`), skipping any version already
   there.
 

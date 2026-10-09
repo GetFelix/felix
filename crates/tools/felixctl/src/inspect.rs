@@ -17,7 +17,6 @@ use crate::controlplane::{Api, assignments};
 use crate::error::{Exit, MarkExit, fail};
 use crate::output::{Output, table};
 
-pub(crate) mod segments;
 mod subs;
 
 pub(crate) async fn run(
@@ -28,7 +27,6 @@ pub(crate) async fn run(
     match command {
         InspectCommand::Shard(args) => shard(args, settings, out).await,
         InspectCommand::Subs(args) => subs::run(args, settings, out).await,
-        InspectCommand::Segments(args) => segments::run(args, out),
     }
 }
 

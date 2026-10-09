@@ -30,8 +30,8 @@ The control plane says what placement intends: `felixctl shard ls` for the
 stored assignments, and `felix-controlplane admin plan` for what the next
 placement pass would do with each shard and why it is waiting.
 
-`felixctl inspect segments` reads a broker's data directory from disk, with no
-broker running: every shard's segments, whether their records and indexes
+`felix-broker inspect segments` reads a broker's data directory from disk,
+without starting a broker: every shard's segments, whether their records and indexes
 verify, and what startup would do with each shard. It is the tool for a broker
 that will not start.
 
@@ -395,9 +395,10 @@ For example:
 corruption detected: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa) (shard=acme/default/orders/3, segment=1, position=50331712)
 ```
 
-**What to run.** `felixctl inspect segments` on the data directory, wherever it
-is mounted. It only reads, so it is safe on the live volume, and it does not
-need the broker, a context or a token. The verdict depends on three broker
+**What to run.** `felix-broker inspect segments` on the data directory,
+wherever it is mounted. It is a subcommand of the broker binary that does not
+start a broker: it binds nothing, reads no configuration, and only reads the
+directory, so it is safe on the live volume. The verdict depends on three broker
 settings, so pass the ones the broker runs with
 (`--repair-checksum-tail`, `--index-spacing`, `--verify-all-on-open`).
 
@@ -405,10 +406,10 @@ On Kubernetes, with the chart's layout (the volume at `/var/lib/felix/data`,
 the claim `data-<pod>`):
 
 - If the broker container is up (a shard failed, the broker did not), exec
-  into it. The broker image carries `felixctl`:
+  into it and run the broker binary's subcommand:
 
   ```bash
-  kubectl exec felix-broker-0 -c broker -- felixctl inspect segments /var/lib/felix/data
+  kubectl exec felix-broker-0 -c broker -- felix-broker inspect segments /var/lib/felix/data
   ```
 
 - If it is crash-looping there is nothing to exec into. Run a one-off pod that
@@ -425,7 +426,7 @@ the claim `data-<pod>`):
         "containers": [{
           "name": "felix-inspect",
           "image": "ghcr.io/getfelix/felix-broker:<tag>",
-          "command": ["felixctl", "inspect", "segments", "/data"],
+          "command": ["felix-broker", "inspect", "segments", "/data"],
           "volumeMounts": [{"name": "data", "mountPath": "/data", "readOnly": true}]
         }],
         "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "data-felix-broker-0", "readOnly": true}}]
@@ -433,10 +434,10 @@ the claim `data-<pod>`):
   ```
 
   `kubectl debug felix-broker-0 --copy-to=felix-broker-0-debug --same-node
-  --container=broker -- felixctl inspect segments /var/lib/felix/data` is
-  shorter: it copies the pod with its volumes and runs `felixctl` in place of
-  the broker. The copy mounts the volume read-write, though `felixctl` itself
-  only reads. Delete the copy afterwards.
+  --container=broker -- felix-broker inspect segments /var/lib/felix/data` is
+  shorter: it copies the pod with its volumes and runs the inspection in place
+  of the broker. The copy mounts the volume read-write, though the inspection
+  itself only reads. Delete the copy afterwards.
 
 - Safest in production: take a `VolumeSnapshot` of the claim, restore it to a
   new claim and inspect that, as above, so nothing touches the broker's volume
@@ -444,19 +445,19 @@ the claim `data-<pod>`):
 
 With Docker Compose, stop the restart loop first (`docker compose stop
 felix-broker`), find the volume (`docker volume ls`; Compose prefixes it with
-the project name, as in `felix_felix-data`) and run `felixctl` from the broker
-image against it, mounted read-only. The image's entrypoint is the broker, so
-name `felixctl` with `--entrypoint`:
+the project name, as in `felix_felix-data`) and run the broker image against
+it, mounted read-only. The image's entrypoint goes through `tini`, so name the
+binary with `--entrypoint`:
 
 ```bash
-docker run --rm --entrypoint felixctl -v felix_felix-data:/data:ro \
+docker run --rm --entrypoint felix-broker -v felix_felix-data:/data:ro \
   ghcr.io/getfelix/felix-broker:<tag> inspect segments /data
 ```
 
 With Podman it is the same command:
 
 ```bash
-podman run --rm --entrypoint felixctl -v felix_felix-data:/data:ro \
+podman run --rm --entrypoint felix-broker -v felix_felix-data:/data:ro \
   ghcr.io/getfelix/felix-broker:<tag> inspect segments /data
 ```
 
@@ -466,10 +467,11 @@ SELinux host needs one to be readable: use `:ro,z`. `z` relabels the files
 label them for this one container and lock the broker out of its own data.
 
 On any machine, a copy works as well as the volume: a backup, or a snapshot's
-files copied off the node. Install `felixctl` there (see
-[felixctl](/getting-started/felixctl/#install)) and run
-`felixctl inspect segments ./copy`. This is the safest of all, and the copy is
-what you keep for diagnosis anyway.
+files copied off the node. Run `felix-broker inspect segments ./copy` with the
+Linux `felix-broker` binary attached to each release (see
+[Installation](/getting-started/installation/)), or the image as above with
+the copy mounted. This is the safest of all, and the copy is what you keep for
+diagnosis anyway.
 
 **How to read it.**
 
@@ -486,8 +488,22 @@ acme_default_orders_3-5c1f0e2a9b7d4410 (stream)  /data/acme_default_orders_3-5c1
   startup refuses: segment 1 at byte 50331712: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa)
 ```
 
+One line per shard, for every store: streams directly under the data
+directory, then `caches/`, `groups/`, `dead-letters/` and `counters/`. A shard
+directory is named from its key plus a hash, so `SHARD` is that name; give
+`TENANT/NAMESPACE/NAME/SHARD` (and `--kind` for a store other than streams) to
+look at one. Shards with findings, a shard you name, and with `--segments`
+every shard, also get their segments listed. `RECORDS CHECK` comes from reading
+every record, which startup does not do for sealed segments: `torn tail` is
+damage in the shape an unfinished write leaves at the end of a file, `damaged`
+is anything else, and the segment's `NEXT` and `RECORDS` are then unknown.
+`INDEX` compares the index file with one rebuilt from the segment: `matches`,
+`behind` (normal for the active segment), `missing` or `stale`. `--json` prints
+one line per shard with `startup`, `actions` (the writes startup would make)
+and `segments`.
+
 `STARTUP` is the verdict the broker's startup recovery reaches, from the same
-code: it plans what it will do before it writes anything, and `felixctl` runs
+code: it plans what it will do before it writes anything, and `inspect` runs
 only the plan. The exit status says the same for scripts: 0 clean, 6 repair,
 7 refuse or damaged records.
 
