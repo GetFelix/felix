@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791574255789,
+  "lastUpdate": 1791577259162,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34188,6 +34188,72 @@ window.BENCHMARK_DATA = {
             "range": "547.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 487.00\nmean: 741.20\nstdev: 547.67\ncv: 73.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87a54c4cc0c9beabf39e1350ccf98273753cf595",
+          "message": "fix(storage): restore the retention hold at open (#1111)\n\n* fix(storage): restore the retention hold at open (#1109)\n\nThe hold at the commit offset lived only in memory and started off. It was\nset by the leader's replication pass or a follower's applied batch, so after\na restart a retention sweep on an idle shard or on a follower cut off from\nits leader could delete records above the commit offset before either ran.\n\nThe hold is now a flag in the shard's replica file, in what was a reserved\nfield no build checked, and is read back at open before retention starts.\nhold_retention_at_commit writes a change through. A leader whose shard has\nno followers left lifts the hold, since no pass runs to advance that\nshard's commit offset and a persisted hold would otherwise stop its\nretention for good.\n\nSpec-Unaffected: retention and its floor are not modelled; the lease, mark, reports, promotion and handoff are unchanged\n\n* fix(storage): hold on a raise to Quorum, lift on a standalone broker (#1109)\n\nA stream or cache raised to Quorum was not held until the first\nreplication pass, so a sweep in between could delete a record its publish\nwas waiting on. The broker now sets the hold as it applies the new\nconsistency: on the shards already open, written through, and through\nLogConfig::retention_hold on every shard opened later, before its first\nsweep. Only on a change, so a resync does not undo a lift on a shard with\nno followers.\n\nA saved hold on a broker that never replicates would stop retention for\ngood, since nothing there advances a commit offset. A broker with neither\nmembership nor a peer transport now opens its stream and cache logs with\nthe hold lifted. That is read from configuration, so a clustered broker\nwhose replication has not started keeps its holds.\n\nSpec-Unaffected: retention and its floor are not modelled; the lease, mark, reports, promotion and handoff are unchanged",
+          "timestamp": "2026-10-09T13:16:15-07:00",
+          "tree_id": "7438bfde426f75e4dc36648f4133624dd0df7a18",
+          "url": "https://github.com/GetFelix/felix/commit/87a54c4cc0c9beabf39e1350ccf98273753cf595"
+        },
+        "date": 1791577255815,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 74.00\nstdev: 1.22\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 99,
+            "range": "25.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 112.80\nstdev: 25.51\ncv: 22.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "43.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 175.00\nstdev: 43.67\ncv: 24.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.60\nstdev: 0.89\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "18.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 211.80\nstdev: 18.55\ncv: 8.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 301,
+            "range": "363.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 301.00\nmean: 519.20\nstdev: 363.87\ncv: 70.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
