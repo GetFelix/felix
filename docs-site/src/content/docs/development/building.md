@@ -170,6 +170,10 @@ docs pin (`scripts/check_release_version.py`), and its release notes are its
   `.sha256` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
   `aarch64-apple-darwin`, `x86_64-apple-darwin` and `x86_64-pc-windows-msvc`.
   Each holds the binary, its README and LICENSE, `completions/` and `man/`;
+- writes `Formula/felixctl.rb` in `<owner>/homebrew-tap` from those archives'
+  `.sha256` files and pushes it with the `HOMEBREW_TAP_DEPLOY_KEY` secret, a deploy key with write access to the tap
+  (`PUBLISH_HOMEBREW`). A dry run keeps the formula as the
+  `homebrew-formula-<tag>` artifact, and a nightly skips it;
 - builds `ghcr.io/<owner>/felix-broker`, `felix-controlplane` and `felixctl`
   for linux/amd64 and linux/arm64, each on a runner of that architecture, and
   when `PUBLISH_IMAGES` is `true` pushes them as one multi-arch tag and signs it;

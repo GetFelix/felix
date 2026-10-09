@@ -286,6 +286,77 @@ jobs:
           files: dist/*
           append_body: false
 
+  # --- Homebrew ------------------------------------------------------------
+  #
+  # Writes Formula/felixctl.rb in <owner>/homebrew-tap from the archives' own
+  # .sha256 files, so `brew install getfelix/tap/felixctl` follows each
+  # release. A dry run generates the formula and pushes nothing; a nightly
+  # skips this, because the tap should only ever point at a tagged release.
+  # Pushing needs HOMEBREW_TAP_DEPLOY_KEY, an SSH deploy key with write access to the tap.
+  homebrew-tap:
+    name: ${{ inputs.dry_run && 'Homebrew formula (dry run, not pushed)' || 'Update the Homebrew tap' }}
+    needs: felixctl-release-assets
+    if: ${{ !inputs.nightly && (vars.PUBLISH_HOMEBREW == 'true' || inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TAP: ${{ github.repository_owner }}/homebrew-tap
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: felixctl-${{ env.RELEASE_TAG }}-archives
+          path: dist
+
+      - name: Generate the formula
+        run: |
+          set -euo pipefail
+          mkdir -p formula
+          python3 scripts/homebrew_formula.py "$RELEASE_TAG" dist "$GITHUB_REPOSITORY" > formula/felixctl.rb
+          cat formula/felixctl.rb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-formula-${{ env.RELEASE_TAG }}
+          path: formula/felixctl.rb
+          if-no-files-found: error
+
+      - name: Push to the tap
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set; cannot push to ${TAP}."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 "git@github.com:${TAP}.git" tap
+          mkdir -p tap/Formula
+          cp formula/felixctl.rb tap/Formula/felixctl.rb
+          cd tap
+          git add Formula/felixctl.rb
+          # A re-run of the same release finds nothing to commit.
+          if git diff --cached --quiet; then
+            echo "${TAP} already has felixctl ${RELEASE_TAG#v}"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "felixctl ${RELEASE_TAG#v}"
+          git push origin HEAD
+
   # ---------------------------------------------------------------------------
   # Python wheels
   #

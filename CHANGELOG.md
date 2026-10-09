@@ -12,6 +12,12 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
+  macOS and Linux, with completions and man pages (#1005). `release.yml`
+  writes it from each release's archive checksums and pushes it to
+  `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
+  `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap); dry runs keep it as an artifact and nightlies
+  skip it.
 - `felixctl inspect subs` and the `subscriptions_list` request (part of
   #1077). A broker advertising `FEATURE_INSPECT` now also answers
   `subscriptions_list` with `subscriptions_list_info`: one page of the
