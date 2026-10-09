@@ -467,7 +467,10 @@ async fn control_stream_rejects_unexpected_message() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert!(matches!(response, Some(Message::Error { .. }) | None));
+    assert!(
+        matches!(response, Some(Message::Error { .. })),
+        "{response:?}"
+    );
 
     drop(connection);
     server_task.abort();
@@ -525,6 +528,71 @@ async fn cache_put_unknown_cache_closes_stream() -> Result<()> {
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
     assert!(matches!(response, Some(Message::Error { .. })));
+    let response =
+        crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
+            .await?;
+    assert!(response.is_none());
+
+    drop(connection);
+    server_task.abort();
+    Ok(())
+}
+
+/// A refused group request ends the stream, and the refusal reaches the
+/// client before the end does.
+#[tokio::test]
+async fn refused_group_request_answers_before_closing() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    // Nothing on the stream, so a describe is forbidden.
+    let auth = auth_fixture("t1", vec!["cache.read:cache:t1/*/*".to_string()]);
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+
+    let config = BrokerConfig::default();
+    let max_frame_bytes = config.max_frame_bytes;
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
+    let server_task = tokio::spawn(crate::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        build_quinn_client_config(cert)?,
+        TransportConfig::default(),
+    )?;
+    let connection = client.connect(addr, "localhost").await?;
+
+    let (mut send, mut recv) =
+        open_authenticated_bi(&connection, &auth, max_frame_bytes, &mut frame_scratch).await?;
+    crate::serving::quic::write_message(
+        &mut send,
+        Message::GroupDescribe {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            group: "billing".to_string(),
+            request_id: 7,
+        },
+    )
+    .await?;
+    let response =
+        crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
+            .await?;
+    assert!(
+        matches!(&response, Some(Message::Error { message, .. }) if message == "forbidden"),
+        "{response:?}"
+    );
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;

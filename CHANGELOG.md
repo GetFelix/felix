@@ -457,6 +457,11 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A request the broker refuses and then closes the stream for, such as a
+  group describe without permission, reaches the client as the broker's coded
+  error (#1078). The broker's response writer could see the stream's
+  cancellation before the queued error and finish the stream without it, so the
+  client reported "the broker closed the group stream" instead of `forbidden`.
 - A broker notices its lease lapse within a sixteenth of the lease the control
   plane hands out, not of the 10s placeholder it starts on (#1071). The refresh
   that clears the cached admission flag, sets `felix_broker_lease_held` and
