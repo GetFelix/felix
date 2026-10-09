@@ -27,7 +27,7 @@ configuration:
 
 | Link | Default | With configuration |
 | --- | --- | --- |
-| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`: that certificate must be issued to the token's subject (a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN). `FELIX_TLS_REQUIRE_CERT=true` refuses to start without a certificate. `FELIX_TLS_REQUIRE_ALPN=true` refuses clients that do not negotiate the `felix/1` ALPN. |
+| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`: that certificate must be issued to the token's subject (a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN), or to its actor (`act`) on a token the control plane delegated. `FELIX_TLS_REQUIRE_CERT=true` refuses to start without a certificate. `FELIX_TLS_REQUIRE_ALPN=true` refuses clients that do not negotiate the `felix/1` ALPN. |
 | Client ↔ broker (Kafka listener) | TLS with the same certificate as QUIC (`FELIX_KAFKA_TLS=false` turns it off). | Same variables as QUIC, except `FELIX_TLS_REQUIRE_ALPN`. |
 | Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
 | Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. |
@@ -476,8 +476,21 @@ A token is bound to a QUIC stream, not a connection: each stream sends its own
 `Auth` and every request on it is checked against that token. So one client can
 carry several users. The Rust client's `Client::with_identity` opens streams
 under another user's token over the same connections, and the broker still
-checks each user's requests against that user's grants alone. See
-[Acting for many users](/clients/rust/#acting-for-many-users).
+checks each user's requests against that user's grants alone. Each user also
+gets their own share of the connection's limits: the subscription cap
+(`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`) and the publish byte budget
+(`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`) apply per tenant and token subject
+on a connection, under a ceiling for the whole connection
+(`FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`,
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`, four users' worth by
+default). With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`, a user's own token is
+refused on the gateway's certificate. The gateway exchanges it first at
+`POST /v1/tenants/{tenant_id}/token/delegate`, an RFC 8693 token exchange that
+needs `token.delegate:tenant:{tenant_id}` and returns the user's token, no
+wider and no longer-lived, with `act: {"sub": "<gateway principal>"}`. The
+broker binds that token to a certificate issued to its actor. See
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
+See [Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Not built
 

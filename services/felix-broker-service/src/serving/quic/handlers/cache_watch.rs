@@ -98,7 +98,6 @@ pub(crate) struct WatchRequest {
 pub(crate) async fn handle_cache_watch_message(
     broker: Arc<Broker>,
     connection: felix_transport::QuicConnection,
-    config: crate::config::BrokerConfig,
     publish_ctx: &PublishContext,
     responder: WatchResponder<'_>,
     request: WatchRequest,
@@ -223,21 +222,15 @@ pub(crate) async fn handle_cache_watch_message(
         return Ok(true);
     };
 
-    if !publish_ctx
-        .subscriptions
-        .try_reserve(config.max_subscriptions_per_conn)
-    {
+    if let Err(cap) = publish_ctx.identity.try_reserve() {
         responder
-            .send(
-                ClientError::limit_exceeded("max subscriptions per connection exceeded")
-                    .into_message(),
-            )
+            .send(ClientError::limit_exceeded(cap.message()).into_message())
             .await?;
         return Ok(true);
     }
     // Reserved; every exit below must release exactly once — failure paths do
     // it inline, the delivery task does it on the success path.
-    let subscriptions = Arc::clone(&publish_ctx.subscriptions);
+    let subscriptions = Arc::clone(&publish_ctx.identity);
 
     // Register *before* reading the tail: this pins the live edge. Every
     // change applied from here on is queued (or reported as lag), so the
@@ -666,7 +659,7 @@ async fn run_watch_delivery(
     mut watch: CacheWatchSubscription,
     mut event_send: quinn::SendStream,
     resume_offset: u64,
-    subscriptions: Arc<super::publish::SubscriptionLimiter>,
+    subscriptions: Arc<super::publish::IdentityLimits>,
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
     gate: CommitGate,

@@ -62,6 +62,10 @@ struct Running {
 
 impl Running {
     async fn start() -> Result<Self> {
+        Self::start_with(felix_broker_service::config::BrokerConfig::from_env()?).await
+    }
+
+    async fn start_with(config: felix_broker_service::config::BrokerConfig) -> Result<Self> {
         let dir = tempfile::tempdir()?;
         let root = dir.path();
         let log = || LogConfig {
@@ -152,7 +156,6 @@ impl Running {
             TransportConfig::default(),
         )?);
         let addr = server.local_addr()?;
-        let config = felix_broker_service::config::BrokerConfig::from_env()?;
         let task = tokio::spawn(quic::serve(server, broker, config, auth));
         Ok(Self {
             addr,
@@ -171,6 +174,10 @@ impl Running {
 
     /// The gateway's own client. Its token can publish nowhere a user can.
     async fn gateway(&self) -> Result<Client> {
+        self.gateway_with(|_| {}).await
+    }
+
+    async fn gateway_with(&self, tune: impl FnOnce(&mut ClientConfig)) -> Result<Client> {
         let mut roots = RootCertStore::empty();
         roots.add(self.cert.clone())?;
         let mut config = ClientConfig::from_env_or_yaml(
@@ -185,6 +192,7 @@ impl Running {
         )?);
         // A poll right after an acked publish must see it.
         config.ack_on_commit = true;
+        tune(&mut config);
         Client::connect(self.addr, "localhost", config).await
     }
 
@@ -211,6 +219,7 @@ fn expired_token(user: &str) -> Result<String> {
         iat: now - 4500,
         jti: None,
         perms: user_perms(user),
+        act: None,
     };
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
     header.kid = Some(KID.to_string());
@@ -476,5 +485,52 @@ async fn one_user_cut_off_leaves_the_others_alone() -> Result<()> {
     let mut alice_sub = alice.subscribe(TENANT, NS, "alice-feed").await?;
     publish(&alice, "alice-feed", "a").await?;
     assert_eq!(next_payload(&mut alice_sub).await?, "a");
+    Ok(())
+}
+
+/// The subscription cap is per user on a shared connection: alice at her cap
+/// is refused, and bob, on the same connection, still subscribes.
+#[tokio::test]
+async fn one_user_at_the_subscription_cap_leaves_the_others_room() -> Result<()> {
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    config.max_subscriptions_per_conn = 2;
+    let running = Running::start_with(config).await?;
+    // One event connection, so every subscription shares it.
+    let gateway = running
+        .gateway_with(|config| config.event_conn_pool = 1)
+        .await?;
+    let alice = running.user(&gateway, "alice").await?;
+    let bob = running.user(&gateway, "bob").await?;
+
+    let _a1 = alice.subscribe(TENANT, NS, "alice-feed").await?;
+    let a2 = alice.subscribe(TENANT, NS, "alice-feed").await?;
+    let refused = alice
+        .subscribe(TENANT, NS, "alice-feed")
+        .await
+        .err()
+        .context("alice went past her cap")?;
+    assert!(
+        format!("{refused:#}").contains("max subscriptions per connection exceeded"),
+        "{refused:#}"
+    );
+
+    let mut b1 = bob.subscribe(TENANT, NS, "bob-feed").await?;
+    let _b2 = bob.subscribe(TENANT, NS, "bob-feed").await?;
+    publish(&bob, "bob-feed", "b").await?;
+    assert_eq!(next_payload(&mut b1).await?, "b");
+
+    // A subscription alice drops gives her slot back. The broker notices a
+    // dropped subscription when it next writes to it, hence the publishes.
+    drop(a2);
+    let mut freed = None;
+    for _ in 0..50 {
+        publish(&alice, "alice-feed", "a").await?;
+        if let Ok(sub) = alice.subscribe(TENANT, NS, "alice-feed").await {
+            freed = Some(sub);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    freed.context("alice's dropped subscription never freed its slot")?;
     Ok(())
 }

@@ -12,7 +12,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::task::TaskTracker;
 
 use super::scheduler::{LaneGuard, PublishScheduler};
-use super::{PublishAdmission, PublishContext, PublishJob, PublishTarget, SubscriptionLimiter};
+use super::{ConnLimits, IdentityKey, PublishAdmission, PublishContext, PublishJob, PublishTarget};
 use crate::config::BrokerConfig;
 use crate::serving::quic::ClusterContext;
 use crate::serving::quic::client_error::ClientError;
@@ -121,12 +121,12 @@ pub(crate) fn build_tracked_publish_context(
         scheduler,
         wait_timeout: Duration::from_millis(config.publish_queue_wait_timeout_ms),
         admission: Arc::new(PublishAdmission::new(config.pub_inflight_bytes)),
-        // Placeholder; `handle_connection` replaces this (and `subscriptions`/`lane_manager`)
+        // Placeholder; `handle_connection` replaces this (and `identity`/`lane_manager`)
         // with fresh per-connection instances before this context is used by any stream on
         // that connection. These template values are never themselves shared across
         // connections.
-        conn_admission: Arc::new(PublishAdmission::new(config.pub_conn_inflight_bytes)),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        conn_admission: Arc::new(PublishAdmission::new(config.conn_publish_ceiling())),
+        identity: ConnLimits::new(config).share(IdentityKey::default()),
         lane_manager: WriterLaneManager::new(config),
         ingress_wait: config.pub_ingress_wait,
         preauth: Arc::new(PreAuthGate::new(config)),

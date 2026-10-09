@@ -115,6 +115,7 @@ async fn broker_auth_rejects_invalid_claims_and_signature() -> Result<()> {
         iat: now,
         jti: None,
         perms: vec!["stream.publish:stream:t1/*/*".to_string()],
+        act: None,
     };
     let wrong_aud_token = encode_claims(&wrong_aud, "k1", &TEST_PRIVATE_KEY);
     assert!(auth.authenticate("t1", &wrong_aud_token).await.is_err());

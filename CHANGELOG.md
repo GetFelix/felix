@@ -11,6 +11,19 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Changed
+- `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` are now per identity (tenant and token
+  subject) on a connection, which for a plain client is the whole connection.
+  Two new settings cap a connection across its identities:
+  `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (default four times the
+  per-identity budget, at most `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (default four times the
+  per-identity cap), also settable in the config file. Startup refuses either
+  below its per-identity value. A subscription past the connection's ceiling
+  is refused with `max subscriptions per connection exceeded across
+  identities`.
+
 ### Fixed
 - A consumer-group commit cancelled after it handed its write to a task, but
   before that task first ran, could still let the next commit read the old
@@ -20,6 +33,36 @@ for what the current release guarantees.
 - A plain nack can no longer take a record from the consumer it was handed to
   next (part of #1109). `group_nack` names the delivery by its attempt count,
   as `group_nack_after` does, so a late one is refused with `stale_claim`.
+- Two brokers offloading to one directory could write the same object key,
+  because keys held only the shard directory name, which every replica of a
+  shard shares, so one broker could replace a copy the other had recorded
+  (#1109). Keys now start with the node id:
+  `<node id>/<shard directory>/<base>-<segment id>.segment`. The node id is
+  `FELIX_NODE_ID`, or, on a broker without one, an id generated once and kept
+  in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
+  Copies made by 0.6.0-preview.3 keep their old keys, which their manifest
+  entries still name.
+- One client acting for many users over a shared connection
+  (`Client::with_identity`) no longer lets one user starve the rest (part of
+  #1098). The broker's subscription cap (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`)
+  and publish byte budget (`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`) now
+  apply per tenant and token subject on a connection, so one user at either
+  limit is refused or slowed while the others keep their room. A user's share
+  is dropped once nothing of theirs is open or in flight on the connection. A
+  client that authenticates every stream as one identity sees the same limits,
+  refusals and frames as before.
+- Subject binding (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`) refused every user's
+  token a gateway presented over its own certificate (part of #1098). The
+  control plane has a new RFC 8693 token exchange,
+  `POST /v1/tenants/{tenant_id}/token/delegate`: a caller holding the new
+  `token.delegate:tenant:{tenant_id}` permission trades a user's broker token
+  for one with the same subject, no wider permissions and no later expiry, and
+  `act: {"sub": "<caller>"}`. The broker binds such a token to a certificate
+  issued to its actor, on QUIC and Kafka SASL alike; a token without `act`
+  binds only to its subject, as before. `token.delegate` is never put in a
+  broker token, so brokers that predate it are unaffected.
+- The docs said a delegated identity had its own publish budget when only the
+  client's was per identity; they now describe what the broker enforces.
 - An in-memory cache's versions restarted at 0 with the broker, so a
   `cache_put_if` or `cache_delete_if` holding a version read before a restart
   could apply against a value written after it (#1098). Versions now start
@@ -85,8 +128,18 @@ for what the current release guarantees.
   `GroupRecord` and the Node `groupNack` takes the record (any object with
   `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
   a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
+- felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
+  and `LogConfig::validate` refuses a node id that is not one path segment
+  (letters, digits, `-`, `_`, `.`, not starting with `.`). In
+  felix-broker-service, `DurableStorageConfig::stream_log` takes the cluster
+  node id and returns a `Result` (#1109).
 
 ### Documentation
+- The docs said an in-memory cache's versions never repeat across a restart.
+  They can if the clock steps back across the restart or the last run averaged
+  more than one write per microsecond; `docs/protocol.md` and the cache page
+  now say so (#1109). That cache runs only on a broker with no data directory,
+  so there is nowhere to record where its counter stopped.
 - The docs site documents felix-gateway, the WebSocket relay that lets
   browsers use Felix, under Clients, and has a Built on Felix section for
   felix-canvas, felix-webhook-relay and felix-arena that says which Felix

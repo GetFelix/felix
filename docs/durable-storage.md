@@ -1092,7 +1092,8 @@ before retention, and the timer runs whenever offload is on, with or without a
 retention bound. For each sealed segment that has no recorded copy, oldest
 first, the pass:
 
-1. uploads the segment's bytes to `<shard directory name>/<base offset>-<segment id>.segment`
+1. uploads the segment's bytes to
+   `<node id>/<shard directory name>/<base offset>-<segment id>.segment`
    under the offload directory, computing their CRC-32 as it reads them;
 2. fsyncs the object and the directories above it, then reads it back and
    checks its size and CRC-32;
@@ -1104,6 +1105,19 @@ run of them that the manifest records. A segment with no copy stays, and so
 does every segment after it. With no retention bound nothing is deleted and the
 offload directory holds a second copy. Reads below the local head still return
 `Trimmed`: nothing reads the copies yet.
+
+**Key layout.** Keys start with the node id so that brokers can share one
+offload directory. Replicas of a shard have the same shard directory name and
+the same segment ids and offsets on every broker, so without it two replicas
+would write to the same key and one could replace a copy the other had
+recorded. The node id is `FELIX_NODE_ID` when it is set. A broker without one
+generates an id the first time it offloads and keeps it in `node-id` under
+`FELIX_DURABLE_STORAGE_DIR`, so it survives restarts. A node id must be
+letters, digits, `-`, `_` and `.`, not starting with `.`; any other value fails
+startup. The manifest records each copy's full key, so a node id that changes
+(the file is lost, or `FELIX_NODE_ID` is set later) only puts later copies
+under the new id. Copies made by 0.6.0-preview.3, which had no node id in the
+key, stay where they are and their manifest entries still name them.
 
 **Crash safety.** A segment's local file is unlinked only after its copy is
 verified and the manifest entry recording it is on disk. A crash after the
@@ -1154,6 +1168,9 @@ describes. The objects stay in the store, unrecorded.
 the copy, in 8 MiB chunks, so its memory does not grow with segment size. The
 manifest is rewritten whole for every copy it records.
 
+> `brokers_sharing_an_archive_do_not_overwrite_each_others_copies`: two
+> replicas of one shard copy to one directory without touching each other's
+> copies.
 > `retention_with_offload_deletes_only_recorded_segments`,
 > `a_copy_that_fails_verification_is_not_recorded_and_its_segment_stays`:
 > retention waits for a verified copy.

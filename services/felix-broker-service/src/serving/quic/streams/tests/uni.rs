@@ -121,7 +121,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: WriterLaneManager::new(&BrokerConfig::default()),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(

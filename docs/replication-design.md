@@ -269,7 +269,7 @@ reads on its lease, and replacing it before that runs out would let it hand
 out values its successor has since overwritten. `Leader` streams and caches
 keep the lease. `FelixShardSuspicion.cfg` lets placement promote on any read
 before the lease lapses, the old leader alive and renewing, and loses
-nothing; `FelixShardSuspicionLease.cfg`, the same where the lease still
+nothing and opens no second leader at a generation; `FelixShardSuspicionLease.cfg`, the same where the lease still
 decides who serves, finds two brokers serving.
 
 **The followers' half.** Every broker pings each broker that leads a shard

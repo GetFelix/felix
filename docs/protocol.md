@@ -618,7 +618,12 @@ value, so the same version read twice means nothing was written in between.
 It says nothing about order across shards. A broker with no durable storage
 keeps its cache in memory and has no log; there a version is a counter that
 starts each run at the wall-clock time in microseconds, so a version read
-before a restart does not match a value written after it.
+before a restart does not match a value written after it. Nothing records
+where the last run's counter stopped, since such a broker has no data
+directory to keep it in, so two cases can still reuse a version across a
+restart: the clock stepping back across the restart, and a run that averaged
+more than one write per microsecond since it started followed by a restart
+within that lead. A broker with durable storage is not affected.
 
 This is a new request rather than a field on `cache_put` because a broker that
 predates it ignores unknown fields, and would make the write unconditionally
@@ -1340,8 +1345,10 @@ grows with its streams: up to streams × `publish_window` unanswered publishes,
 each a batch, rather than one `publish_window` for the whole connection. Two
 limits bound it. QUIC caps a connection at 1024 concurrent streams each way,
 and the broker admits at most `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
-(16 MiB) of one connection's publish payloads at a time, so publishes past
-that wait in QUIC flow control. A client should bound its own side the same
+(16 MiB) of one identity's publish payloads on a connection at a time, and
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` across a connection that
+authenticates several identities, so publishes past that wait in QUIC flow
+control. A client should bound its own side the same
 way: the Rust client counts every unanswered publish's bytes against one
 `publish_inflight_bytes` budget (4 MiB by default) across all its streams.
 

@@ -415,7 +415,9 @@ printing wrong numbers.
 - **Offload, but no cold reads.** With `FELIX_DURABLE_OFFLOAD_DIR` set, a
   stream log's sealed segments are copied to that directory, checked by size
   and CRC-32, and recorded in a per-shard `offload.manifest` before retention
-  may delete them. A crash at any step leaves the local segment or a recorded
+  may delete them. Keys start with the broker's node id (`FELIX_NODE_ID`, or an
+  id kept in `node-id` under the data directory), so brokers can share one
+  offload directory. A crash at any step leaves the local segment or a recorded
   copy. Nothing reads the copies yet, so a read below the local head is still
   `Trimmed`, and the only backend is a local directory. A missing or
   read-only offload directory does not stop a log from opening or taking

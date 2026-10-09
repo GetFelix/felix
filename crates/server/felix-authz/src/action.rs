@@ -34,6 +34,10 @@ pub enum Action {
     /// over `cluster:*` to an operator. Brokers enforce nothing with it; it is
     /// here so a token that carries it still parses.
     NodeManage,
+    /// Exchange a user's token for one that names the holder as its actor
+    /// (`act`), to present on the user's behalf. Granted over
+    /// `tenant:{tenant_id}`; only the control plane enforces it.
+    TokenDelegate,
 }
 
 impl Action {
@@ -56,6 +60,7 @@ impl Action {
             Action::GroupManage => "group.manage",
             Action::NodeView => "node.view",
             Action::NodeManage => "node.manage",
+            Action::TokenDelegate => "token.delegate",
         }
     }
 
@@ -101,6 +106,7 @@ impl std::str::FromStr for Action {
             "group.manage" => Ok(Action::GroupManage),
             "node.view" => Ok(Action::NodeView),
             "node.manage" => Ok(Action::NodeManage),
+            "token.delegate" => Ok(Action::TokenDelegate),
             _ => Err(()),
         }
     }

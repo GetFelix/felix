@@ -23,7 +23,8 @@ use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_toke
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
 use crate::auth::rbac::authorize::{
-    ParsedObject, format_object, narrow_object, parse_object, parse_permission,
+    ACTION_TOKEN_DELEGATE, ParsedObject, format_object, narrow_object, parse_object,
+    parse_permission,
 };
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
@@ -200,10 +201,13 @@ pub(crate) async fn mint_for_principal(
             api_internal_message("failed to build enforcer")
         })?;
 
-    let perms = narrow_permissions(
-        effective_permissions(&enforcer, principal_id, &tenant_id),
-        &narrowing,
-        &tenant_id,
+    let perms = for_audience(
+        narrow_permissions(
+            effective_permissions(&enforcer, principal_id, &tenant_id),
+            &narrowing,
+            &tenant_id,
+        ),
+        audience,
     );
 
     // A token with no permissions is useless and usually masks a
@@ -323,6 +327,20 @@ fn narrowing_for(
         permissions: request.permissions.clone(),
         audience: audience.to_string(),
     })
+}
+
+/// `perms` without what only the control plane enforces, on a broker token.
+///
+/// `token.delegate` is checked here and nowhere else, and a broker that
+/// predates it would refuse a token naming an action it cannot parse.
+pub(crate) fn for_audience(mut perms: Vec<String>, audience: &str) -> Vec<String> {
+    if audience == BROKER_AUDIENCE {
+        perms.retain(|perm| {
+            perm.split_once(':')
+                .is_none_or(|(action, _)| action != ACTION_TOKEN_DELEGATE)
+        });
+    }
+    perms
 }
 
 /// `perms` narrowed as `narrowing` says. `permissions`, when present, is the

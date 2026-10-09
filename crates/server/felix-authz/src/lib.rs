@@ -31,6 +31,6 @@ pub use resource::{
     tenant_resource,
 };
 pub use token::{
-    FelixClaims, FelixTokenIssuer, FelixTokenVerifier, TenantKeyCache, TenantKeyMaterial,
+    Actor, FelixClaims, FelixTokenIssuer, FelixTokenVerifier, TenantKeyCache, TenantKeyMaterial,
     TenantKeyStore, TenantSigningKey, TenantVerificationKey,
 };

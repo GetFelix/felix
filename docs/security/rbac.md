@@ -27,6 +27,9 @@ Canonical actions:
 - `group.manage`
 - `node.view`: cluster-scoped only; see [Cluster scope](#cluster-scope)
 - `node.manage`: over `node:{node_id}` or `cluster:*`
+- `token.delegate`: over `tenant:{tenant_id}`, to exchange a user's broker
+  token for one naming the caller as its actor (`/token/delegate`); not
+  implied by `tenant.manage`, and never put in a broker token
 
 Consumer groups have two actions, granted over the stream's object
 (`stream:{tenant_id}/{namespace}/{stream}`) or one group's object
