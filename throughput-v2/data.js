@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791581703821,
+  "lastUpdate": 1791585630791,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27092,6 +27092,58 @@ window.BENCHMARK_DATA = {
             "range": "6623.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1129298.27\nmean: 1126955.81\nstdev: 6623.89\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47ed3f185137d4165a93e544135784fdbb8f3191",
+          "message": "ci: a manual workflow that mirrors BuildKit into GHCR (#1124)\n\nsetup-buildx-action runs moby/buildkit, which Moby publishes only to Docker\nHub; its pulls failed image builds on #1116 when auth.docker.io returned\nerrors. This copies a reviewed version, pinned by digest, to\nghcr.io/getfelix/buildkit so the build workflows can use that instead.\n\nSpec-Unaffected: CI configuration only",
+          "timestamp": "2026-10-09T15:35:26-07:00",
+          "tree_id": "a03b0937fc95ee6aaaea5e8bae8662a7cd9a9da2",
+          "url": "https://github.com/GetFelix/felix/commit/47ed3f185137d4165a93e544135784fdbb8f3191"
+        },
+        "date": 1791585629987,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533569.66,
+            "range": "13846.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533569.66\nmean: 534825.95\nstdev: 13846.64\ncv: 2.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533569.66,
+            "range": "13846.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533569.66\nmean: 534825.95\nstdev: 13846.64\ncv: 2.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125451.1,
+            "range": "1309.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125451.10\nmean: 124874.76\nstdev: 1309.61\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1254511.02,
+            "range": "13096.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1254511.02\nmean: 1248747.61\nstdev: 13096.10\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
