@@ -12,7 +12,8 @@
 //! * `offload`   — copying sealed segments to an object store first.
 //! * `epochs`    — where each leadership generation began.
 //! * `replica_state` — the highest generation accepted, and the commit offset.
-//! * `ballot`    — which leader that generation was accepted from.
+//! * `ballot`    — which leader that generation was accepted from, and
+//!   accepting one.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -543,83 +544,6 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
-    /// The highest leadership generation a leader of this shard was accepted
-    /// at here, as a follower or as the leader itself. Zero if none.
-    pub fn accepted_generation(&self) -> u64 {
-        self.inner.accepted_generation.load(Ordering::Acquire)
-    }
-
-    /// The leader this log accepted its generation from, if it was named.
-    pub fn accepted_leader(&self) -> Option<Arc<str>> {
-        self.inner.ballot.read().1.clone()
-    }
-
-    /// Accept `leader` at `generation`, persisting it first if it is new.
-    ///
-    /// Returns once a raised generation is on disk, so a caller that
-    /// acknowledges afterwards has made a promise that survives a restart: a
-    /// leader older than this one is refused from here on, whatever the
-    /// routing view says after the restart.
-    ///
-    /// With a leader named, the promise is a ballot: at the generation already
-    /// accepted only that leader is [`GenerationCheck::Current`], and any
-    /// other is [`GenerationCheck::Promised`]. A generation accepted with no
-    /// leader named takes the first one that asks, persisted before this
-    /// returns. `None` checks the generation alone.
-    pub async fn accept_generation(
-        &self,
-        generation: u64,
-        leader: Option<&str>,
-    ) -> Result<GenerationCheck> {
-        if let Some(found) = ballot::check(&self.inner.ballot.read(), generation, leader) {
-            return Ok(found);
-        }
-        let inner = Arc::clone(&self.inner);
-        let leader: Option<Arc<str>> = leader.map(Arc::from);
-        tokio::task::spawn_blocking(move || {
-            let mut persisted = inner.replica_persisted.lock();
-            // Re-checked under the writer's lock: a concurrent request may
-            // have raised it, or named its leader, while this waited.
-            if let Some(found) = ballot::check(&inner.ballot.read(), generation, leader.as_deref())
-            {
-                return Ok(found);
-            }
-            // Before `replica`, so a crash between the two leaves a ballot
-            // the open takes the generation from, never a raised generation
-            // with no leader.
-            if let Some(leader) = &leader {
-                ballot::store(
-                    &inner.dir,
-                    &ballot::Ballot {
-                        generation,
-                        leader: leader.to_string(),
-                    },
-                )?;
-            }
-            let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
-            if raised {
-                let state = replica_state::ReplicaState {
-                    accepted_generation: generation,
-                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
-                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
-                };
-                replica_state::store(&inner.dir, &state)?;
-                *persisted = (state, Some(std::time::Instant::now()));
-            }
-            *inner.ballot.write() = (generation, leader);
-            inner
-                .accepted_generation
-                .store(generation, Ordering::Release);
-            Ok(if raised {
-                GenerationCheck::Raised
-            } else {
-                GenerationCheck::Current
-            })
-        })
-        .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
-    }
-
     /// Label the records from `from` on with the generations that wrote them,
     /// as the log they were copied from has them.
     ///
@@ -869,14 +793,7 @@ impl DiskLog {
             replica.hold_at_commit = hold;
             replica_state::store(&dir, &replica)?;
         }
-        // A ballot ahead of `replica` is a raise that crashed between the two
-        // writes; it was never answered, but taking it only refuses more.
-        let (accepted_generation, accepted_leader) = match ballot::load(&dir)? {
-            Some(ballot) if ballot.generation >= replica.accepted_generation => {
-                (ballot.generation, Some(Arc::<str>::from(ballot.leader)))
-            }
-            _ => (replica.accepted_generation, None),
-        };
+        let (accepted_generation, accepted_leader) = ballot::reconcile(&dir, &replica)?;
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
             dir,

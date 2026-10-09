@@ -14,11 +14,16 @@
 //!
 //! Like `replica` it cannot be rebuilt, so a file that does not decode fails
 //! the open.
+//!
+//! `DiskLog::accept_generation` and the open's reading of the two files live
+//! here, where `scripts/check_spec_pairing.py` pairs them with the formal model.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use super::GenerationCheck;
+use super::replica_state::{self, ReplicaState};
+use super::{DiskLog, GenerationCheck};
 use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
@@ -78,6 +83,84 @@ impl Ballot {
     }
 }
 
+impl DiskLog {
+    /// The highest leadership generation a leader of this shard was accepted
+    /// at here, as a follower or as the leader itself. Zero if none.
+    pub fn accepted_generation(&self) -> u64 {
+        self.inner.accepted_generation.load(Ordering::Acquire)
+    }
+
+    /// The leader this log accepted its generation from, if it was named.
+    pub fn accepted_leader(&self) -> Option<Arc<str>> {
+        self.inner.ballot.read().1.clone()
+    }
+
+    /// Accept `leader` at `generation`, persisting it first if it is new.
+    ///
+    /// Returns once a raised generation is on disk, so a caller that
+    /// acknowledges afterwards has made a promise that survives a restart: a
+    /// leader older than this one is refused from here on, whatever the
+    /// routing view says after the restart.
+    ///
+    /// With a leader named, the promise is a ballot: at the generation already
+    /// accepted only that leader is [`GenerationCheck::Current`], and any
+    /// other is [`GenerationCheck::Promised`]. A generation accepted with no
+    /// leader named takes the first one that asks, persisted before this
+    /// returns. `None` checks the generation alone.
+    pub async fn accept_generation(
+        &self,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<GenerationCheck> {
+        if let Some(found) = check(&self.inner.ballot.read(), generation, leader) {
+            return Ok(found);
+        }
+        let inner = Arc::clone(&self.inner);
+        let leader: Option<Arc<str>> = leader.map(Arc::from);
+        tokio::task::spawn_blocking(move || {
+            let mut persisted = inner.replica_persisted.lock();
+            // Re-checked under the writer's lock: a concurrent request may
+            // have raised it, or named its leader, while this waited.
+            if let Some(found) = check(&inner.ballot.read(), generation, leader.as_deref()) {
+                return Ok(found);
+            }
+            // Before `replica`, so a crash between the two leaves a ballot
+            // the open takes the generation from, never a raised generation
+            // with no leader.
+            if let Some(leader) = &leader {
+                store(
+                    &inner.dir,
+                    &Ballot {
+                        generation,
+                        leader: leader.to_string(),
+                    },
+                )?;
+            }
+            let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
+            if raised {
+                let state = replica_state::ReplicaState {
+                    accepted_generation: generation,
+                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
+                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
+                };
+                replica_state::store(&inner.dir, &state)?;
+                *persisted = (state, Some(std::time::Instant::now()));
+            }
+            *inner.ballot.write() = (generation, leader);
+            inner
+                .accepted_generation
+                .store(generation, Ordering::Release);
+            Ok(if raised {
+                GenerationCheck::Raised
+            } else {
+                GenerationCheck::Current
+            })
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
 /// What the accepted ballot says of `leader` at `generation`, or `None` when
 /// the answer needs a write: a raise, or the first leader named at the
 /// accepted generation.
@@ -102,6 +185,19 @@ pub(super) fn check(
         }),
         (Some(_), None) => None,
     }
+}
+
+/// The generation and leader a shard opens with, from its `replica` state
+/// and its ballot.
+pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<(u64, Option<Arc<str>>)> {
+    // A ballot ahead of `replica` is a raise that crashed between the two
+    // writes; it was never answered, but taking it only refuses more.
+    Ok(match load(dir)? {
+        Some(ballot) if ballot.generation >= replica.accepted_generation => {
+            (ballot.generation, Some(Arc::<str>::from(ballot.leader)))
+        }
+        _ => (replica.accepted_generation, None),
+    })
 }
 
 /// Read a shard's ballot, or `None` if it has never kept one.
