@@ -48,12 +48,17 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     let followers = placed.replicas.clone();
     assert_eq!(followers.len(), 2, "{placed:?}");
 
+    // The harness publishes a probe of its own first, so the log's start is
+    // read from offsets rather than payloads.
+    let mut early = None;
     for i in 0..5 {
-        cluster
-            .publish_via(&leader, STREAM, format!("early-{i}").into_bytes())
+        let offset = cluster
+            .publish_via_at(&leader, STREAM, format!("early-{i}").into_bytes())
             .await
             .expect("publish while whole");
+        early = early.or(offset);
     }
+    let early = early.expect("a durable publish reports its offset");
     felix_cluster::wait::until(Duration::from_secs(20), "every copy level", || async {
         cluster
             .replica_report(STREAM, 0)
@@ -102,12 +107,13 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
             .expect("replay")
             .expect("a record")
     };
-    assert_eq!(
-        String::from_utf8_lossy(&first.payload),
-        "early-0",
-        "retention deleted records above the commit offset; the leader's log now \
-         starts at offset {:?}",
-        first.offset,
+    let start = first
+        .offset
+        .expect("a durable stream's events carry offsets");
+    assert!(
+        start <= early,
+        "retention deleted records above the commit offset: the leader's log now \
+         starts at {start}, past early-0 at {early}",
     );
 
     for follower in &followers {
