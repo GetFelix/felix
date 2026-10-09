@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791587099632,
+  "lastUpdate": 1791588562215,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27196,6 +27196,58 @@ window.BENCHMARK_DATA = {
             "range": "4157.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804472.40\nmean: 807315.42\nstdev: 4157.57\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "468c3be342d75d578da38e92bb2bfb2eafc5d953",
+          "message": "fix(broker): re-check serving after a subscriber registers (#1117) (#1118)\n\nA subscribe or cache watch was admitted by redirect_for and then registered.\nA lease lapse, deposal or release ends a shard's readers once, over those\nregistered at that moment, so a reader admitted just before and registered\njust after was left on a shard this broker no longer serves and never told.\n\nAfter registering, both handlers now call redirect::stopped_serving, which\nchecks the fence, the lease and the deposal record. Each ending changes one\nof those before it ends any reader, so a reader either sees it and is\nrefused, or registered in time to be ended. redirect_for also refuses a\nshard deposed at its generation while the lease holds, which\nwatch_leadership already ends readers of.\n\nSpec-Unaffected: broker-side reader admission only; no lease, mark, report, promotion or handoff change.",
+          "timestamp": "2026-10-09T16:22:50-07:00",
+          "tree_id": "5f398f9943ef2e5a4ef53f63868d22152aae0b30",
+          "url": "https://github.com/GetFelix/felix/commit/468c3be342d75d578da38e92bb2bfb2eafc5d953"
+        },
+        "date": 1791588561764,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 514386.35,
+            "range": "23213.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514386.35\nmean: 511125.81\nstdev: 23213.68\ncv: 4.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 514386.35,
+            "range": "23213.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514386.35\nmean: 511125.81\nstdev: 23213.68\ncv: 4.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123012.13,
+            "range": "762.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123012.13\nmean: 122920.57\nstdev: 762.52\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1230121.29,
+            "range": "7625.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1230121.29\nmean: 1229205.72\nstdev: 7625.21\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
