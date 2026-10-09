@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791585630791,
+  "lastUpdate": 1791587099632,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27144,6 +27144,58 @@ window.BENCHMARK_DATA = {
             "range": "13096.10",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1254511.02\nmean: 1248747.61\nstdev: 13096.10\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6cab52c1377d6855230a4ed1ee7bd1fb1bffd98",
+          "message": "ci: run BuildKit from the GHCR copy instead of Docker Hub (#1125)\n\nEvery setup-buildx-action step in CI, nightly and release now names\nghcr.io/getfelix/buildkit:v0.33.1, mirrored by digest by mirror-buildkit.yml.\nWith the base images on ECR and no syntax directive, image builds pull nothing\nfrom Docker Hub.\n\nSpec-Unaffected: CI configuration only",
+          "timestamp": "2026-10-09T16:00:28-07:00",
+          "tree_id": "1275eca7102b692128ed796c63efed9373886f5f",
+          "url": "https://github.com/GetFelix/felix/commit/f6cab52c1377d6855230a4ed1ee7bd1fb1bffd98"
+        },
+        "date": 1791587098948,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347029.07,
+            "range": "12596.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347029.07\nmean: 346542.70\nstdev: 12596.30\ncv: 3.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347029.07,
+            "range": "12596.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347029.07\nmean: 346542.70\nstdev: 12596.30\ncv: 3.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80447.24,
+            "range": "415.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80447.24\nmean: 80731.54\nstdev: 415.76\ncv: 0.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804472.4,
+            "range": "4157.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804472.40\nmean: 807315.42\nstdev: 4157.57\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
