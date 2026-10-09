@@ -340,11 +340,16 @@ for (;;) {
       await client.groupAck("t1", "default", "orders", shard, "billing", record.offset);
     } catch {
       // Back to the queue now, rather than after the visibility timeout.
-      await client.groupNack("t1", "default", "orders", shard, "billing", record.offset);
+      await client.groupNack("t1", "default", "orders", shard, "billing", record);
     }
   }
 }
 ```
+
+`groupNack` takes the record, not its offset, because it names that delivery:
+once the claim has lapsed and the record has gone out again, the nack is
+refused with `stale_claim` rather than taking it from the consumer now holding
+it.
 
 `record.attempts` counts deliveries **including this one**, so `1` is a first
 attempt and anything higher is a redelivery. It is worth branching on before doing

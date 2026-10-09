@@ -157,3 +157,44 @@ async fn forgetting_survives_a_restart() {
         "a forgotten group came back after a restart",
     );
 }
+
+/// A commit cancelled after it spawned its write but before that write ran
+/// must not let the next commit read the old position and move it back.
+///
+/// The runtime is current-thread, so the spawned write cannot start until
+/// this task yields. The commit is polled by hand, sleeping the thread rather
+/// than yielding while its reads finish, until the write task exists.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_cancelled_before_its_write_started_is_not_overwritten() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let groups = groups(dir.path());
+    groups.commit(T, NS, S, 0, G, 50).await.expect("commit");
+
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let tasks_before = metrics.num_alive_tasks();
+    let mut cancelled = Box::pin(groups.commit(T, NS, S, 0, G, 100));
+    loop {
+        let polled = std::future::poll_fn(|cx| Poll::Ready(cancelled.as_mut().poll(cx))).await;
+        assert!(
+            polled.is_pending(),
+            "the write cannot finish without a yield"
+        );
+        if metrics.num_alive_tasks() > tasks_before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(cancelled);
+
+    assert_eq!(
+        groups.commit(T, NS, S, 0, G, 70).await.expect("commit"),
+        100
+    );
+    assert_eq!(
+        groups.committed(T, NS, S, 0, G).await.expect("committed"),
+        Some(100)
+    );
+}

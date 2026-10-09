@@ -38,7 +38,7 @@ loop {
             }
             Err(_) => {
                 // Hand it back now rather than waiting out the timeout.
-                client.group_nack("t1", "default", "jobs", 0, "workers", record.offset).await?;
+                client.group_nack("t1", "default", "jobs", 0, "workers", &record).await?;
             }
         }
     }
@@ -236,7 +236,7 @@ Like an extension, the nack is for the delivery you hold, named by
 `record.attempts`. Once the claim has lapsed and the record has gone out again
 it is refused with `stale_claim`, so a late nack cannot take the record from
 the consumer now working on it, or push its redelivery back. A plain
-`group_nack` names no delivery and hands back whatever claim stands.
+`group_nack` takes the record too and is refused the same way.
 
 While it waits, the record holds a place under `FELIX_GROUP_MAX_IN_FLIGHT`, so
 a group cannot park more than that. Nobody holds it, so it cannot be extended,

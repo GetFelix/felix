@@ -677,7 +677,7 @@ async fn a_nacked_record_is_polled_again() -> Result<()> {
     assert_eq!(first.len(), 1);
 
     client
-        .group_nack("t1", "default", QUEUE, 0, "workers", first[0].offset)
+        .group_nack("t1", "default", QUEUE, 0, "workers", &first[0])
         .await?;
 
     let again = client
@@ -749,7 +749,7 @@ async fn a_dead_letter_can_be_listed_and_redriven() -> Result<()> {
             .await?;
         assert_eq!(claimed.len(), 1);
         client
-            .group_nack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+            .group_nack("t1", "default", QUEUE, 0, "workers", &claimed[0])
             .await?;
     }
 
@@ -811,7 +811,7 @@ async fn a_dead_letter_can_be_discarded() -> Result<()> {
             .group_poll("t1", "default", QUEUE, 0, "workers", 10)
             .await?;
         client
-            .group_nack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+            .group_nack("t1", "default", QUEUE, 0, "workers", &claimed[0])
             .await?;
     }
     client
@@ -1326,6 +1326,13 @@ async fn a_consumer_extends_delays_and_dead_letters_its_claims() -> Result<()> {
         .await
         .expect_err("nacked a claim that was handed out again");
     assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // A plain nack names its delivery too.
+    let stale = client
+        .group_nack("t1", "default", QUEUE, 0, "workers", retry)
+        .await
+        .expect_err("a plain nack took a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // The second delivery's claim still stands.
     client
         .group_extend(
             "t1",

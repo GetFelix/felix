@@ -1228,7 +1228,7 @@ loop {
             Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
             // Hand it back for immediate redelivery rather than waiting out the
             // visibility timeout.
-            Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
+            Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", &record).await?,
         }
     }
 }
@@ -1311,9 +1311,9 @@ for record in &records {
 }
 ```
 
-An extension or a delayed nack is refused with `stale_claim` once the claim
-has lapsed and the record has been handed out again: both name the delivery by
-`record.attempts`. The client refuses a delay or a visibility
+An extension or a nack, delayed or not, is refused with `stale_claim` once the
+claim has lapsed and the record has been handed out again: each names the
+delivery by `record.attempts`. The client refuses a delay or a visibility
 to a broker without the bit, which would ignore it. `ClusterClient` has the
 same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`.
 

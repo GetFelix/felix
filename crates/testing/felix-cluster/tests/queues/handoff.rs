@@ -72,7 +72,7 @@ async fn a_moved_shard_keeps_its_group_state_and_counters() {
         for record in claimed {
             if record.payload.as_ref() == b"poison" {
                 cluster
-                    .group_nack_via(&first, STREAM, 0, GROUP, record.offset)
+                    .group_nack_via(&first, STREAM, 0, GROUP, &record)
                     .await
                     .expect("nack");
             } else {

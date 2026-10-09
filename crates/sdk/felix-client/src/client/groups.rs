@@ -262,8 +262,14 @@ impl Client {
         .await
     }
 
-    /// Hand one record back without finishing it. It is redelivered at once
+    /// Hand `record` back without finishing it. It is redelivered at once
     /// rather than after the visibility timeout.
+    ///
+    /// Names the delivery by `record.attempts`, as
+    /// [`Client::group_nack_after`] does, so a nack that arrives after the
+    /// claim lapsed is refused with `stale_claim` rather than taking the
+    /// record from whoever holds it now. A broker without
+    /// `FEATURE_GROUP_CLAIM_CONTROL` hands back whatever claim stands.
     pub async fn group_nack(
         &self,
         tenant_id: &str,
@@ -271,19 +277,16 @@ impl Client {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: &felix_wire::GroupRecord,
     ) -> Result<()> {
-        self.settle_group(
+        self.group_nack_after(
             tenant_id,
             namespace,
             stream,
             shard,
             group,
-            offset,
-            Settle::Nack {
-                delay: std::time::Duration::ZERO,
-                attempts: 0,
-            },
+            record,
+            std::time::Duration::ZERO,
         )
         .await
     }
@@ -300,7 +303,7 @@ impl Client {
     /// the record has been handed out again, rather than taking the record
     /// from whoever holds it now. A broker without
     /// `FEATURE_GROUP_CLAIM_CONTROL` only takes a zero delay, and hands back
-    /// whatever claim stands, as [`Client::group_nack`] does.
+    /// whatever claim stands.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_nack_after(
         &self,

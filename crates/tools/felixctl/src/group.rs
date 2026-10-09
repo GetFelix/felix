@@ -135,11 +135,11 @@ pub(crate) enum GroupCommand {
     /// Hand claimed records back
     #[command(
         long_about = "Hand each claimed record back to the group, to be delivered again at \
-                      once, or after --delay-ms. With --delay-ms, a claim given as \
-                      SHARD:OFFSET:ATTEMPTS is refused once that delivery's claim has lapsed \
-                      or the record has gone out again.",
+                      once, or after --delay-ms. A claim given as SHARD:OFFSET:ATTEMPTS is \
+                      refused once that delivery's claim has lapsed or the record has gone \
+                      out again.",
         after_long_help = "Examples:
-  felixctl group nack orders billing 0:15
+  felixctl group nack orders billing 0:15:1
   felixctl group nack orders billing 0:15:1 --delay-ms 30000"
     )]
     Nack {
@@ -605,8 +605,9 @@ async fn settle(
                     .await
             }
             Settle::Nack => {
+                let record = claim_record(claim, claim.attempts.unwrap_or(0));
                 cluster
-                    .group_nack(tenant, namespace, stream, shard, group, offset)
+                    .group_nack(tenant, namespace, stream, shard, group, &record)
                     .await
             }
             Settle::NackAfter(delay) => {
