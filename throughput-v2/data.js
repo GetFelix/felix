@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791528453901,
+  "lastUpdate": 1791538819382,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26364,6 +26364,58 @@ window.BENCHMARK_DATA = {
             "range": "5345.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 841275.90\nmean: 839581.19\nstdev: 5345.88\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f263f80855517d7a5f4dac4b62b061cd1bf6260",
+          "message": "fix(retention): never trim above the commit mark (#1094) (#1102)\n\n* fix(retention): never trim above the commit mark (#1094)\n\nRetention and compaction's head trims looked only at their bounds. With\nboth followers of a Quorum shard down, a tight bound deleted records only\nthe leader held, including ones publishes were waiting on. The followers\ncame back below the new base, were rebuilt there, and their answers moved\nthe quorum mark over the deleted records, acknowledging the waiting\npublishes for records no broker held. Reproduced in a driver test: the\nmark reached 40 over offsets 2..36 that no replica held.\n\nDiskLog gains a hold that stops retention and head trims at the commit\noffset. Replication turns it on for the shard log of a Quorum stream or\ncache, on the leader each pass and on a follower with each applied batch.\nThe leader's commit offset is the mark written through, so the floor never\nruns ahead of the mark. As a second line, the leader does not bootstrap or\nrebuild a follower at a base above both the mark and its commit offset.\n\nCloses #1094\n\n* test(cluster): read the retained start from offsets, not the harness probe (#1094)",
+          "timestamp": "2026-10-09T02:36:09-07:00",
+          "tree_id": "dfd2687331bed7b52e8856ec7f6830c92c43087f",
+          "url": "https://github.com/GetFelix/felix/commit/4f263f80855517d7a5f4dac4b62b061cd1bf6260"
+        },
+        "date": 1791538818483,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 363511.68,
+            "range": "15443.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363511.68\nmean: 358940.88\nstdev: 15443.21\ncv: 4.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 363511.68,
+            "range": "15443.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363511.68\nmean: 358940.88\nstdev: 15443.21\ncv: 4.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83595.87,
+            "range": "4438.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83595.87\nmean: 81829.05\nstdev: 4438.93\ncv: 5.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 835958.75,
+            "range": "44389.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 835958.75\nmean: 818290.46\nstdev: 44389.28\ncv: 5.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
