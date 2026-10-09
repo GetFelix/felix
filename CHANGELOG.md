@@ -12,6 +12,11 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- `felixctl` saved its config through a temporary file with a predictable
+  name, opened without `O_EXCL`, so a symlink planted at that path in a
+  shared directory was followed and the target overwritten (#1098). The
+  temporary file now gets a random name and is created exclusively,
+  owner-only on Unix, before it is renamed over the config.
 - A first segment whose header and records had all been zeroed was deleted at
   startup as a segment whose creation never finished, and the log came back
   empty (part of #1098). Creation syncs the header before anything appends,
