@@ -16,7 +16,9 @@
 //! the open.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use super::GenerationCheck;
 use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
@@ -73,6 +75,32 @@ impl Ballot {
             generation: u64::from_be_bytes(bytes[8..16].try_into().ok()?),
             leader: String::from_utf8(body[HEADER_LEN..].to_vec()).ok()?,
         })
+    }
+}
+
+/// What the accepted ballot says of `leader` at `generation`, or `None` when
+/// the answer needs a write: a raise, or the first leader named at the
+/// accepted generation.
+pub(super) fn check(
+    (accepted, promised): &(u64, Option<Arc<str>>),
+    generation: u64,
+    leader: Option<&str>,
+) -> Option<GenerationCheck> {
+    if generation < *accepted {
+        return Some(GenerationCheck::Superseded {
+            accepted: *accepted,
+        });
+    }
+    if generation > *accepted {
+        return None;
+    }
+    match (leader, promised) {
+        (None, _) => Some(GenerationCheck::Current),
+        (Some(leader), Some(promised)) if **promised == *leader => Some(GenerationCheck::Current),
+        (Some(_), Some(promised)) => Some(GenerationCheck::Promised {
+            leader: promised.to_string(),
+        }),
+        (Some(_), None) => None,
     }
 }
 

@@ -570,7 +570,7 @@ impl DiskLog {
         generation: u64,
         leader: Option<&str>,
     ) -> Result<GenerationCheck> {
-        if let Some(found) = check_ballot(&self.inner.ballot.read(), generation, leader) {
+        if let Some(found) = ballot::check(&self.inner.ballot.read(), generation, leader) {
             return Ok(found);
         }
         let inner = Arc::clone(&self.inner);
@@ -579,7 +579,8 @@ impl DiskLog {
             let mut persisted = inner.replica_persisted.lock();
             // Re-checked under the writer's lock: a concurrent request may
             // have raised it, or named its leader, while this waited.
-            if let Some(found) = check_ballot(&inner.ballot.read(), generation, leader.as_deref()) {
+            if let Some(found) = ballot::check(&inner.ballot.read(), generation, leader.as_deref())
+            {
                 return Ok(found);
             }
             // Before `replica`, so a crash between the two leaves a ballot
@@ -1135,32 +1136,6 @@ impl PendingAppend {
 
     pub fn last_offset(&self) -> Offset {
         self.result.last_offset
-    }
-}
-
-/// What the accepted ballot says of `leader` at `generation`, or `None` when
-/// the answer needs a write: a raise, or the first leader named at the
-/// accepted generation.
-fn check_ballot(
-    (accepted, promised): &(u64, Option<Arc<str>>),
-    generation: u64,
-    leader: Option<&str>,
-) -> Option<GenerationCheck> {
-    if generation < *accepted {
-        return Some(GenerationCheck::Superseded {
-            accepted: *accepted,
-        });
-    }
-    if generation > *accepted {
-        return None;
-    }
-    match (leader, promised) {
-        (None, _) => Some(GenerationCheck::Current),
-        (Some(leader), Some(promised)) if **promised == *leader => Some(GenerationCheck::Current),
-        (Some(_), Some(promised)) => Some(GenerationCheck::Promised {
-            leader: promised.to_string(),
-        }),
-        (Some(_), None) => None,
     }
 }
 

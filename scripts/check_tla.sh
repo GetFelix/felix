@@ -251,8 +251,8 @@ weights=(
   "FelixShardStalePlannerCas 3"
   "FelixShardLogOrder 3"
   "FelixShardStagedMove 3"
+  "FelixShardElectHandoffLeaders 3"
   "FelixShardSessionsSubscriber 2"
-  "FelixShardElectHandoffLeaders 10"
   "FelixShardSuspicion 3"
 )
 

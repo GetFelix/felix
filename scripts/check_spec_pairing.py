@@ -36,13 +36,20 @@ import sys
 # the heartbeats that renew it, the control plane's expiry clock, the write
 # paths that check the lease and the generation, the replication and quorum
 # mark, the reports and the control plane's answer to them, promotion, and the
-# planned handoff.
+# planned handoff. Also the ingress routing that admits a write under the
+# fence, and the replica's persisted promise: the ballot, the accepted
+# generation and commit offset, and the generation history a fence answer
+# orders by. The rest of disk_log is storage the model does not describe.
 MODELLED = (
     "services/felix-broker-service/src/cluster/lease",
     "services/felix-broker-service/src/cluster/membership",
     "crates/server/felix-replication/src",
+    "crates/server/felix-storage/src/disk_log/ballot",
+    "crates/server/felix-storage/src/disk_log/replica_state",
+    "crates/server/felix-storage/src/disk_log/epochs",
     "services/felix-broker-service/src/serving",
     "services/felix-broker-service/src/shards/lifecycle",
+    "services/felix-broker-service/src/shards/routing",
     "services/felix-controlplane-service/src/api/nodes/reports",
     "services/felix-controlplane-service/src/cluster/membership",
     "services/felix-controlplane-service/src/cluster/placement",
