@@ -12,6 +12,11 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- `felixctl` saved its config through a temporary file with a predictable
+  name, opened without `O_EXCL`, so a symlink planted at that path in a
+  shared directory was followed and the target overwritten (#1098). The
+  temporary file now gets a random name and is created exclusively,
+  owner-only on Unix, before it is renamed over the config.
 - Retention could acknowledge a `Quorum` publish for records no broker held
   (#1094). With both followers of a shard down, a tight retention bound
   deleted records only the leader had, including ones publishes were still
