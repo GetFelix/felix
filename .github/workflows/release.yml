@@ -448,6 +448,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: ${{ matrix.platform.name }}
