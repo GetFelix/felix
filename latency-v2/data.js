@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791528450525,
+  "lastUpdate": 1791538816513,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -33462,6 +33462,72 @@ window.BENCHMARK_DATA = {
             "range": "256.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 476.00\nmean: 620.00\nstdev: 256.15\ncv: 41.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f263f80855517d7a5f4dac4b62b061cd1bf6260",
+          "message": "fix(retention): never trim above the commit mark (#1094) (#1102)\n\n* fix(retention): never trim above the commit mark (#1094)\n\nRetention and compaction's head trims looked only at their bounds. With\nboth followers of a Quorum shard down, a tight bound deleted records only\nthe leader held, including ones publishes were waiting on. The followers\ncame back below the new base, were rebuilt there, and their answers moved\nthe quorum mark over the deleted records, acknowledging the waiting\npublishes for records no broker held. Reproduced in a driver test: the\nmark reached 40 over offsets 2..36 that no replica held.\n\nDiskLog gains a hold that stops retention and head trims at the commit\noffset. Replication turns it on for the shard log of a Quorum stream or\ncache, on the leader each pass and on a follower with each applied batch.\nThe leader's commit offset is the mark written through, so the floor never\nruns ahead of the mark. As a second line, the leader does not bootstrap or\nrebuild a follower at a base above both the mark and its commit offset.\n\nCloses #1094\n\n* test(cluster): read the retained start from offsets, not the harness probe (#1094)",
+          "timestamp": "2026-10-09T02:36:09-07:00",
+          "tree_id": "dfd2687331bed7b52e8856ec7f6830c92c43087f",
+          "url": "https://github.com/GetFelix/felix/commit/4f263f80855517d7a5f4dac4b62b061cd1bf6260"
+        },
+        "date": 1791538812330,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 136,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 135.80\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 180,
+            "range": "16.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 187.60\nstdev: 16.02\ncv: 8.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 249,
+            "range": "401.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 432.80\nstdev: 401.73\ncv: 92.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.40\nstdev: 1.82\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 358,
+            "range": "5.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 358.00\nmean: 358.80\nstdev: 5.45\ncv: 1.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 475,
+            "range": "104.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 475.00\nmean: 524.00\nstdev: 104.44\ncv: 19.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
