@@ -673,6 +673,17 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Keep retention and compaction's head trims below the commit offset.
+    ///
+    /// For a log replicated under `Quorum`, where a record above the commit
+    /// offset may still be waiting for a majority. Deleting it there would let
+    /// a follower rebuilt at the new base be counted as holding it. Off by
+    /// default, since a log nobody advances the commit offset on would never
+    /// trim. Takes effect from the next pass.
+    pub fn hold_retention_at_commit(&self, hold: bool) {
+        self.inner.hold_at_commit.store(hold, Ordering::Release);
+    }
+
     /// Write the replica state if memory is ahead of disk.
     async fn persist_replica_state(&self) -> Result<()> {
         let inner = Arc::clone(&self.inner);
@@ -865,6 +876,7 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
+            hold_at_commit: std::sync::atomic::AtomicBool::new(false),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -1198,6 +1210,9 @@ struct LogInner {
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
+    /// Retention and head trims stop at `commit_offset`; see
+    /// [`DiskLog::hold_retention_at_commit`].
+    hold_at_commit: std::sync::atomic::AtomicBool,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the

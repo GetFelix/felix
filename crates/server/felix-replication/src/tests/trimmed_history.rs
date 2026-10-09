@@ -230,3 +230,90 @@ async fn a_follower_at_the_base_is_ordinary_catch_up() {
     );
     assert!(offers(&follower).is_empty());
 }
+
+/// **On a `Quorum` shard, no follower is moved to a base above the commit
+/// offset** (#1094). The records between the two are on this leader alone, or
+/// nowhere; a follower placed past them answers as holding them, and the mark
+/// would acknowledge them on its answer.
+#[tokio::test]
+async fn a_bootstrap_above_the_commit_offset_is_not_offered() {
+    let (log, base, _dir) = trimmed_leader().await;
+    assert!(log.commit_offset() < base, "the case is not set up");
+    let follower = ScriptedFollower::new([Ok(stored(base))]);
+    let mut cursor = cursor(0);
+
+    let progress = ship_once_with(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+        Some(0),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Retry);
+    assert!(
+        offers(&follower).is_empty(),
+        "offered a base above the commit offset"
+    );
+    assert_eq!(cursor.confirmed, 0);
+}
+
+/// The same holds for a rebuild, which would place the follower at the same
+/// base.
+#[tokio::test]
+async fn a_rebuild_above_the_commit_offset_is_not_requested() {
+    let (log, _base, _dir) = trimmed_leader().await;
+    let follower = ScriptedFollower::new([Ok(stored(0))]);
+    let mut cursor = cursor(0);
+    cursor.halted = Some(Halt::NeedsBootstrap);
+    let rebuilds = Rebuilds::new(crate::RebuildPolicy {
+        max_concurrent: 1,
+        bytes_per_sec: 0,
+    });
+
+    let progress = ship_once_with(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &rebuilds,
+        Some(0),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Halted(Halt::NeedsBootstrap));
+    assert!(
+        follower.rebuilds().is_empty(),
+        "rebuilt at a base above the commit offset"
+    );
+}
+
+/// Below the commit offset the offer goes as before: those records were held
+/// by a majority before retention removed them.
+#[tokio::test]
+async fn a_bootstrap_at_or_below_the_commit_offset_is_offered() {
+    let (log, base, _dir) = trimmed_leader().await;
+    let follower = ScriptedFollower::new([Ok(stored(base))]);
+    let mut cursor = cursor(0);
+
+    let progress = ship_once_with(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+        Some(base),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Resume { offset: base });
+    assert_eq!(offers(&follower), vec![base]);
+}

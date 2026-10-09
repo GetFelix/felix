@@ -1089,6 +1089,28 @@ pub fn quorum_offset_without(
     held.get(needed - 1).copied().unwrap_or(0)
 }
 
+/// Whether the shard acknowledges a write only once a majority holds it. A
+/// stream or cache this broker has not registered counts as no, which keeps
+/// the stricter test.
+pub(crate) async fn acknowledges_at_quorum(
+    broker: &felix_broker::Broker,
+    key: &felix_router::ShardKey,
+) -> bool {
+    let consistency = match key.kind {
+        felix_router::ShardKind::Cache => {
+            broker
+                .cache_consistency(&key.tenant_id, &key.namespace, &key.stream)
+                .await
+        }
+        felix_router::ShardKind::Stream => {
+            broker
+                .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
+                .await
+        }
+    };
+    consistency == Some(felix_broker::ConsistencyLevel::Quorum)
+}
+
 /// The highest offset a majority has answered that it holds at this leader's
 /// generation: `HeldAtGen` in `docs/formal/FelixShard.tla`, before
 /// [`counted_offset`] clamps it to the leader's own records.

@@ -9,6 +9,7 @@
 //! See `docs/durable-storage.md` for what a trimmed log means to a reader.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -147,7 +148,8 @@ impl LogInner {
             // Held until the unlinks are done: see `LogInner::manifest`.
             let manifest = inner.manifest.lock();
             let plan = inner.segments.read().retention_plan();
-            let mut chosen = plan.choose(bounds, now_micros(), &inner.label)?;
+            let mut chosen =
+                plan.choose(bounds, inner.retention_floor(), now_micros(), &inner.label)?;
             if inner.offloader.is_some() {
                 inner.keep_offloaded_prefix(&manifest, &mut chosen);
             }
@@ -192,6 +194,19 @@ impl LogInner {
         offloaded.map(|_| retained)
     }
 
+    /// The offset no retention pass or head trim may reach, if one is held:
+    /// the commit offset, on a log under `Quorum` replication. Records above it
+    /// may still be waiting for a majority, and a record deleted there is one a
+    /// rebuilt follower could later be counted as holding.
+    ///
+    /// The commit offset only rises, so a floor read before the plan is a
+    /// safe bound for the whole pass.
+    pub(super) fn retention_floor(&self) -> Option<crate::log::Offset> {
+        self.hold_at_commit
+            .load(Ordering::Acquire)
+            .then(|| self.commit_offset.load(Ordering::Acquire))
+    }
+
     /// Cut `chosen` back to the segments, from the head, whose copy the
     /// manifest records. The rest wait for a copy.
     fn keep_offloaded_prefix(
@@ -212,7 +227,8 @@ impl LogInner {
         chosen.truncate(recorded);
     }
 
-    /// Delete the sealed head segments that hold only offsets below `before`.
+    /// Delete the sealed head segments that hold only offsets below `before`,
+    /// and below the retention floor when one is held.
     ///
     /// For compaction, which has copied everything live out of them first.
     /// Out of the list under the lock, then unlinked without it, so a crash in
@@ -226,6 +242,9 @@ impl LogInner {
         let inner = Arc::clone(&self);
         tokio::task::spawn_blocking(move || {
             let manifest = inner.manifest.lock();
+            let before = inner
+                .retention_floor()
+                .map_or(before, |floor| floor.min(before));
             let removed = {
                 let mut segments = inner.segments.write();
                 let active = segments.active().id();

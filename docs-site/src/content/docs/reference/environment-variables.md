@@ -1808,6 +1808,10 @@ size and never below `FELIX_DURABLE_SEGMENT_BYTES` regardless of how small this
 is set. Records below the retained range report `CursorTooOld` to a resuming
 subscriber, naming the oldest offset still available.
 
+On a `Quorum` stream, retention never deletes records a majority has not yet
+acknowledged, so a stream whose followers are down can grow past this bound
+until they return.
+
 ### `FELIX_DURABLE_RETENTION_SECONDS`
 
 **Description**: Delete sealed segments whose newest record is older than this.

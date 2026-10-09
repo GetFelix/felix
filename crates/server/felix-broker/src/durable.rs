@@ -595,6 +595,12 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// Keep retention and compaction below the commit offset, for a log
+    /// replicated under `Quorum`. See `DiskLog::hold_retention_at_commit`.
+    pub fn hold_retention_at_commit(&self, hold: bool) {
+        self.log.hold_retention_at_commit(hold);
+    }
+
     /// Where each leadership generation began here, oldest first.
     pub fn generations(&self) -> Vec<felix_storage::log::Epoch> {
         self.log.generations()
