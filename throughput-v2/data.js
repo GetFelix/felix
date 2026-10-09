@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791508043772,
+  "lastUpdate": 1791510295668,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25948,6 +25948,58 @@ window.BENCHMARK_DATA = {
             "range": "10184.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1228816.82\nmean: 1223647.58\nstdev: 10184.41\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "acfb1dc45dceaca0349c73f4d6a9355df603fcb6",
+          "message": "fix(groups): send a refusal before closing the stream it ends (#1078) (#1089)\n\n* fix(groups): send a refusal before closing the stream it ends (#1078)\n\nThe broker's response writer raced the stream's cancellation against the\nqueue: a handler that refuses a request queues the error and ends the stream,\nand the writer could take the cancel first and finish the stream without the\nerror. The client then saw only the close.\n\nThe writer now checks cancellation first and writes what is already queued,\nbounded to a second, before finishing.\n\n* chore: note the TLA+ model is unaffected\n\nSpec-Unaffected: the stream writer now flushes a queued error before finishing a cancelled control stream; delivery order of one stream's frames, not the lease, quorum mark, reports, promotion or handoff.",
+          "timestamp": "2026-10-08T18:40:33-07:00",
+          "tree_id": "2e9e840781e4c6bf5e459edef10a8a00d040f581",
+          "url": "https://github.com/GetFelix/felix/commit/acfb1dc45dceaca0349c73f4d6a9355df603fcb6"
+        },
+        "date": 1791510295118,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 710271.52,
+            "range": "6189.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 710271.52\nmean: 711381.04\nstdev: 6189.76\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 710271.52,
+            "range": "6189.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 710271.52\nmean: 711381.04\nstdev: 6189.76\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163631.45,
+            "range": "3170.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163631.45\nmean: 162856.36\nstdev: 3170.09\ncv: 1.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1636314.54,
+            "range": "31700.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1636314.54\nmean: 1628563.64\nstdev: 31700.92\ncv: 1.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
