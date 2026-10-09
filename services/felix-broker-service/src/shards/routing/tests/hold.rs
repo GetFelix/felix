@@ -270,6 +270,39 @@ async fn settling_waits_for_routes_to_reach_the_requested_generation() {
     );
 }
 
+/// The owner's side again, for the broker a move cut over to: its routes
+/// already name it, but it is still fencing the replicas. A forward that
+/// lands then waits for the fence instead of being refused as not ready,
+/// which the requester's few quick retries could not outlast.
+#[tokio::test]
+async fn settling_waits_for_a_shard_still_fencing() {
+    let mut b = Broker::new("broker-b", hold(5_000, 16));
+    b.lifecycle.fence_promotions();
+    b.apply(draining(0, "broker-a", 2, "broker-b"));
+    b.apply(assignment(0, "broker-b", 3));
+    assert_eq!(b.ingress.fence().awaiting_promotion(&key(0)), Some(3));
+    assert_eq!(
+        b.ingress.dispatch(&key(0)),
+        Dispatch::Unavailable(Reason::NotReady)
+    );
+
+    let ingress = Arc::clone(&b.ingress);
+    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!settle.is_finished(), "still fencing, so it waits");
+
+    assert!(b.lifecycle.fenced(&key(0), 3));
+    b.publish();
+    tokio::time::timeout(Duration::from_secs(1), settle)
+        .await
+        .expect("settles once the shard serves")
+        .expect("settle");
+    assert_eq!(
+        b.ingress.dispatch(&key(0)),
+        Dispatch::Local { generation: 3 }
+    );
+}
+
 /// Nothing is held when nothing is moving.
 #[tokio::test]
 async fn a_shard_that_is_not_moving_is_dispatched_at_once() {

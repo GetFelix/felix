@@ -25,6 +25,11 @@ for what the current release guarantees.
   identities`.
 
 ### Fixed
+- A publish forwarded to a moved shard's new owner while it was still fencing
+  the replicas was refused as `not_ready` instead of held, so a planned move or
+  shutdown handoff whose fence took longer than the forwarding broker's retries
+  could refuse a publish (#1120). The owner now holds it until the shard
+  serves, as it already did for a publish sent to it directly.
 - A retention sweep after a restart could delete records above a `Quorum`
   shard's commit offset, on an idle leader or a follower cut off from its
   leader, until replication reached the shard again (#1109). The hold at the

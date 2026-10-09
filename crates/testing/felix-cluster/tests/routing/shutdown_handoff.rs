@@ -85,7 +85,7 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     .await
     .expect("writer");
     let acknowledged: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-    let refused = Arc::new(AtomicUsize::new(0));
+    let refused: Arc<Mutex<Vec<String>>> = Arc::default();
     let stop = Arc::new(AtomicBool::new(false));
     let publisher = {
         let (acknowledged, refused, stop) = (
@@ -110,8 +110,8 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
                     .await
                 {
                     Ok(_) => acknowledged.lock().await.push(payload),
-                    Err(_) => {
-                        refused.fetch_add(1, Ordering::Relaxed);
+                    Err(err) => {
+                        refused.lock().await.push(format!("{err:#}"));
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -156,14 +156,15 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     stop.store(true, Ordering::Relaxed);
     publisher.await.expect("publisher");
     let during = acknowledged.lock().await.clone();
-    let refused = refused.load(Ordering::Relaxed);
+    let refused = refused.lock().await.clone();
 
     assert!(
-        placed == 0 && moved > 0 && refused == 0,
+        placed == 0 && moved > 0 && refused.is_empty(),
         "the shard should be handed over, not failed over: {placed} placements, \
-         {moved} move steps, {refused} publishes refused (of {}); moved {moved_at:?} \
-         after SIGTERM, exited after {exited_after:?}",
-        during.len() + refused
+         {moved} move steps, {} publishes refused (of {}); moved {moved_at:?} \
+         after SIGTERM, exited after {exited_after:?}; refusals: {refused:?}",
+        refused.len(),
+        during.len() + refused.len()
     );
     assert!(status.success(), "the broker should exit cleanly: {status}");
     assert!(
