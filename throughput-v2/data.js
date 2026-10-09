@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791556676876,
+  "lastUpdate": 1791559405409,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26624,6 +26624,58 @@ window.BENCHMARK_DATA = {
             "range": "53052.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 925806.37\nmean: 900636.14\nstdev: 53052.03\ncv: 5.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a66cdfb37ccff6b56decaba48b06edd32874172",
+          "message": "fix(cache): start in-memory cache versions at the startup time (#1104)\n\n* fix(cache): start in-memory cache versions at the startup time\n\nAn in-memory cache's version counter started at 0 every run, so a\ncache_put_if or cache_delete_if holding a version read before a broker\nrestart could apply against a different value written after it. The\ncounter now starts at wall-clock microseconds, which keeps each run's\nversions above the previous run's. Log-backed caches use log offsets and\nare unchanged.\n\nPart of #1098\n\n* test(broker): learn the cache's first version instead of assuming 0",
+          "timestamp": "2026-10-09T08:18:25-07:00",
+          "tree_id": "3296868e7e4753eec9939461161c1d6c5e071812",
+          "url": "https://github.com/GetFelix/felix/commit/4a66cdfb37ccff6b56decaba48b06edd32874172"
+        },
+        "date": 1791559404629,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417090.23,
+            "range": "25423.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417090.23\nmean: 426479.76\nstdev: 25423.91\ncv: 5.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417090.23,
+            "range": "25423.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417090.23\nmean: 426479.76\nstdev: 25423.91\ncv: 5.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97165.38,
+            "range": "451.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97165.38\nmean: 97190.90\nstdev: 451.72\ncv: 0.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 971653.85,
+            "range": "4517.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 971653.85\nmean: 971909.02\nstdev: 4517.20\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
