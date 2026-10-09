@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791585627470,
+  "lastUpdate": 1791587096516,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34452,6 +34452,72 @@ window.BENCHMARK_DATA = {
             "range": "40.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 380.00\nmean: 383.60\nstdev: 40.40\ncv: 10.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6cab52c1377d6855230a4ed1ee7bd1fb1bffd98",
+          "message": "ci: run BuildKit from the GHCR copy instead of Docker Hub (#1125)\n\nEvery setup-buildx-action step in CI, nightly and release now names\nghcr.io/getfelix/buildkit:v0.33.1, mirrored by digest by mirror-buildkit.yml.\nWith the base images on ECR and no syntax directive, image builds pull nothing\nfrom Docker Hub.\n\nSpec-Unaffected: CI configuration only",
+          "timestamp": "2026-10-09T16:00:28-07:00",
+          "tree_id": "1275eca7102b692128ed796c63efed9373886f5f",
+          "url": "https://github.com/GetFelix/felix/commit/f6cab52c1377d6855230a4ed1ee7bd1fb1bffd98"
+        },
+        "date": 1791587092697,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.80\nstdev: 0.45\ncv: 0.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "6.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 245.60\nstdev: 6.19\ncv: 2.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 305,
+            "range": "18.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 305.00\nmean: 310.40\nstdev: 18.92\ncv: 6.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 216,
+            "range": "2.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 217.00\nstdev: 2.35\ncv: 1.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 436,
+            "range": "36.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 436.00\nmean: 452.00\nstdev: 36.21\ncv: 8.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 696,
+            "range": "285.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 696.00\nmean: 814.00\nstdev: 285.08\ncv: 35.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
