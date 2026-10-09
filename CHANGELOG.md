@@ -12,6 +12,19 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A late nack can no longer take a record from the consumer it was handed to
+  next (#1098). `group_nack` takes an optional `attempts` that names the
+  delivery, as on `group_extend`, and is refused with `stale_claim` once that
+  claim has lapsed or the record has gone out again. Without it, a delayed
+  nack arriving after a redelivery parked the new delivery behind its delay.
+  Left out at `0`, so a nack that does not name a delivery is the frame it
+  always was; a broker that predates the field ignores it. felix-client's
+  `group_nack_after` now takes the `GroupRecord` rather than its offset (on
+  `Client` and `ClusterClient`), and sends `attempts` to a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL`. felixctl sends it for a `nack --delay-ms`
+  claim given as `SHARD:OFFSET:ATTEMPTS`. In felix-broker,
+  `GroupReader::nack_after` takes the attempt count to check and nacks at once
+  for a zero delay.
 - Retention could acknowledge a `Quorum` publish for records no broker held
   (#1094). With both followers of a shard down, a tight retention bound
   deleted records only the leader had, including ones publishes were still

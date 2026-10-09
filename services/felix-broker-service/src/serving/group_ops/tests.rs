@@ -81,8 +81,14 @@ async fn an_ack_after_the_fence_is_refused() {
 
     for finish in [
         Settle::Ack,
-        Settle::Nack(Duration::ZERO),
-        Settle::Nack(Duration::from_secs(5)),
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
         Settle::DeadLetter,
     ] {
         assert!(
@@ -116,8 +122,14 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
 
     for finish in [
         Settle::Ack,
-        Settle::Nack(Duration::ZERO),
-        Settle::Nack(Duration::from_secs(5)),
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
         Settle::DeadLetter,
     ] {
         let refused = settle(
@@ -212,8 +224,14 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
         .expect("publish");
     for finish in [
         Settle::Ack,
-        Settle::Nack(Duration::ZERO),
-        Settle::Nack(Duration::from_secs(5)),
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
         Settle::DeadLetter,
     ] {
         for (offset, code, retry) in [
@@ -534,7 +552,10 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         0,
         GROUP,
         0,
-        Settle::Nack(Duration::ZERO),
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
     )
     .await
     .expect("nack");

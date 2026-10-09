@@ -228,9 +228,15 @@ owed again only once the delay has passed:
 
 ```rust
 client
-    .group_nack_after("t1", "default", "jobs", 0, "workers", record.offset, Duration::from_secs(30))
+    .group_nack_after("t1", "default", "jobs", 0, "workers", &record, Duration::from_secs(30))
     .await?;
 ```
+
+Like an extension, the nack is for the delivery you hold, named by
+`record.attempts`. Once the claim has lapsed and the record has gone out again
+it is refused with `stale_claim`, so a late nack cannot take the record from
+the consumer now working on it, or push its redelivery back. A plain
+`group_nack` names no delivery and hands back whatever claim stands.
 
 While it waits, the record holds a place under `FELIX_GROUP_MAX_IN_FLIGHT`, so
 a group cannot park more than that. Nobody holds it, so it cannot be extended,

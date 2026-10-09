@@ -121,6 +121,7 @@ fn message_cache_operations() {
             offset: 11,
             request_id: 42,
             delay_ms: 0,
+            attempts: 0,
         },
     ] {
         let frame = message.clone().encode().expect("encode");
@@ -146,6 +147,7 @@ fn message_cache_operations() {
         offset: 1,
         request_id: 1,
         delay_ms: 0,
+        attempts: 0,
     };
     assert_ne!(
         ack.encode().expect("encode"),
@@ -695,6 +697,7 @@ fn group_claim_control_messages_round_trip() {
             offset: 9,
             request_id: 3,
             delay_ms: 5_000,
+            attempts: 2,
         },
         Message::GroupPoll {
             tenant_id: "t1".to_string(),
@@ -729,6 +732,7 @@ fn claim_control_fields_are_left_out_at_their_defaults() {
         offset: 1,
         request_id: 1,
         delay_ms: 0,
+        attempts: 0,
     };
     let json = String::from_utf8(nack.encode().expect("encode").payload.to_vec()).expect("utf8");
     assert_eq!(
@@ -739,7 +743,9 @@ fn claim_control_fields_are_left_out_at_their_defaults() {
     let legacy = r#"{"type":"group_nack","tenant_id":"t1","namespace":"ns",
         "stream":"jobs","shard":0,"group":"g","offset":1,"request_id":1}"#;
     match serde_json::from_str::<Message>(legacy).expect("legacy nack") {
-        Message::GroupNack { delay_ms, .. } => assert_eq!(delay_ms, 0),
+        Message::GroupNack {
+            delay_ms, attempts, ..
+        } => assert_eq!((delay_ms, attempts), (0, 0)),
         other => panic!("expected a group nack, got {other:?}"),
     }
     let legacy = r#"{"type":"group_poll","tenant_id":"t1","namespace":"ns",

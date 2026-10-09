@@ -519,6 +519,19 @@ once, so the frame is the one a nack always was. Only a broker that advertised
 `FEATURE_GROUP_CLAIM_CONTROL` honours it; an older one ignores the field and
 redelivers at once, so a client sends it only after checking the bit.
 
+`group_nack` also takes an optional `attempts`, naming the delivery being
+handed back as `attempts` does on `group_extend`. When it is set, the nack is
+refused with `stale_claim` (`fatal`) once that claim no longer stands, for the
+same reasons an extension is: otherwise a nack arriving after the record went
+out again would take it from whoever holds it now and, with a delay, hold it
+back from everyone. A delayed nack is not a claim, so a second nack naming the
+same delivery is refused too. Omitted or `0` hands back whatever claim stands,
+as a nack always did. Sent only to a broker that advertised
+`FEATURE_GROUP_CLAIM_CONTROL`; felix-client sends it with every
+`group_nack_after`, delayed or not. A broker released before the field ignores
+it and hands back whatever claim stands, which is no worse than a nack that
+leaves it out.
+
 ### GroupExtend / GroupExtended
 ```
 { "type": "group_extend", "tenant_id": "...", "namespace": "...", "stream": "...",
@@ -1768,7 +1781,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 | `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time`. Offered by a client that reads `timestamp_micros` on a `GroupRecord`; the field is sent only to a client that offered it. See [Event batch timestamps](#event-batch-timestamps) |
-| `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
+| `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` and `attempts` on `group_nack` and `visibility_ms` on `group_poll`. See [GroupExtend](#groupextend--groupextended) |
 | `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. See [PublishIf](#publishif) |
 | `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing. See [StreamRead](#streamread) |
 | `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted value on `subscribed`. See [Subscribe](#subscribe) |
@@ -1920,7 +1933,7 @@ client MUST act on the class it received, not on this table.
 | `draining` | `retry` | 12 | The broker is shutting down and takes no new work. | In answer to `auth` on a control stream opened while the connection drains. Connect to another broker. |
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
-| `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. A client that does not know the code sees an unknown code with `retry`. |
+| `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. Also sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. A client that does not know the code sees an unknown code with `retry`. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 

@@ -658,6 +658,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 offset,
                 request_id,
                 delay_ms,
+                attempts,
             } => {
                 group::group_settle(
                     &cx,
@@ -670,9 +671,11 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         group,
                     },
                     offset,
-                    crate::serving::group_ops::Settle::Nack(std::time::Duration::from_millis(
-                        delay_ms,
-                    )),
+                    crate::serving::group_ops::Settle::Nack {
+                        delay: std::time::Duration::from_millis(delay_ms),
+                        // Zero is a client that did not name the delivery.
+                        attempts: (attempts != 0).then_some(attempts),
+                    },
                     request_id,
                 )
                 .await?

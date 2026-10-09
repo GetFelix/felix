@@ -131,7 +131,7 @@ impl ShardedGroup {
     /// [`Client::group_nack_after`].
     pub async fn nack_after(&self, record: &ShardedGroupRecord, delay: Duration) -> Result<()> {
         let shard = self.shard_of(record)?;
-        let offset = record.record.offset;
+        let record = &record.record;
         self.on_shard(shard, |client| async move {
             client
                 .group_nack_after(
@@ -140,7 +140,7 @@ impl ShardedGroup {
                     &self.stream,
                     shard,
                     &self.group,
-                    offset,
+                    record,
                     delay,
                 )
                 .await
