@@ -11,6 +11,14 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A consumer group's cursor can no longer move backwards after a cancelled
+  commit (#1097). The cancelled commit's write still finished on its own task,
+  but the next commit read the position from before it and wrote over it. A
+  commit now waits for a write to the cursor that is still applying. Finishing
+  a redrive had the same race against a cancelled return to dead and could
+  drop the dead letter; it waits the same way.
+
 ## [0.6.0-preview.3] - 2026-10-08
 
 The third preview of 0.6.0. felixctl now manages a cluster as well as using

@@ -58,9 +58,11 @@ impl ConsumerGroups {
         shard: u32,
         group: &str,
     ) -> Result<Option<u64>> {
+        // Settled, so a commit cancelled while its write was in flight is seen
+        // here rather than overwritten by the next one.
         let stored = self
             .cursors
-            .get_checked(tenant_id, namespace, stream, shard, group)
+            .get_settled_checked(tenant_id, namespace, stream, shard, group)
             .await
             .map_err(BrokerError::from)?;
         stored.as_deref().map(decode_offset).transpose()
