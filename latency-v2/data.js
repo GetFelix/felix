@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791577259162,
+  "lastUpdate": 1791580678936,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34254,6 +34254,72 @@ window.BENCHMARK_DATA = {
             "range": "363.87",
             "unit": "us",
             "extra": "trials: 5\nmedian: 301.00\nmean: 519.20\nstdev: 363.87\ncv: 70.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eceb2a9190f97383f3b1dec3d374214e6bccbf7c",
+          "message": "ci: pull base images and Postgres from AWS's mirror of Docker Hub (#1121)\n\nCI pulls postgres:16-alpine and the Dockerfiles' rust and debian bases from\nDocker Hub without logging in, and shared runners hit its anonymous pull limit\n(\"toomanyrequests\"). The same official images come from\npublic.ecr.aws/docker/library, which has no such limit. The Dockerfiles take\nthe base registry as a build argument that defaults to Docker Hub, so local\nbuilds are unchanged.\n\nSpec-Unaffected: CI and container build configuration only",
+          "timestamp": "2026-10-09T14:12:48-07:00",
+          "tree_id": "e0d1d64b2ca985c4eae29574fa66a5b8bed7f152",
+          "url": "https://github.com/GetFelix/felix/commit/eceb2a9190f97383f3b1dec3d374214e6bccbf7c"
+        },
+        "date": 1791580674347,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.20\nstdev: 0.45\ncv: 0.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 244.40\nstdev: 1.52\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "16.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 304.40\nstdev: 16.92\ncv: 5.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 217,
+            "range": "8.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 219.40\nstdev: 8.38\ncv: 3.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 441,
+            "range": "371.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 441.00\nmean: 608.20\nstdev: 371.93\ncv: 61.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 633,
+            "range": "955.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 633.00\nmean: 1271.60\nstdev: 955.05\ncv: 75.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
