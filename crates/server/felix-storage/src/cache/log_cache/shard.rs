@@ -1,11 +1,12 @@
 //! One cache shard: its log, and the index that maps each key to the record
 //! currently defining it.
 //!
-//! The index is derived from the log and never trusted from disk, so it is
-//! rebuilt by replay on first use and caught up whenever records reach the log
-//! by another route.
+//! The index is derived from the log, so it is rebuilt by replay on first use
+//! (from a checked snapshot when compaction left one) and caught up whenever
+//! records reach the log by another route.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +19,7 @@ use super::CacheOp;
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::DiskLog;
+use crate::index_snapshot::IndexEntry;
 use crate::log::{AppendOnlyLog, Offset, ReadRange};
 use crate::{Result, StorageError};
 
@@ -25,11 +27,13 @@ use crate::{Result, StorageError};
 ///
 /// Bounds peak memory during a rebuild: a cache far larger than this costs many
 /// reads, not one enormous allocation.
-const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// One cache: its log, and the index derived from it.
 pub(super) struct CacheShard {
     pub(super) label: String,
+    /// The log's directory, where the key index snapshot lives beside it.
+    pub(super) dir: PathBuf,
     pub(super) compactor: Arc<Compactor>,
     /// Set while a background compaction pass runs, so only one does.
     pub(super) compacting: AtomicBool,
@@ -60,9 +64,11 @@ impl CacheShard {
     /// Rebuild the index by replaying the log.
     ///
     /// Run once, lazily, the first time a cache is touched after opening. The
-    /// index is derived and never trusted from disk -- the same rule the segment
-    /// indexes follow, and for the same reason: anything recomputable from the
-    /// log must be, because then it cannot be stale in a way that matters.
+    /// index is derived -- the same rule the segment indexes follow, and for
+    /// the same reason: anything recomputable from the log must be, because
+    /// then it cannot be stale in a way that matters. A snapshot left by the
+    /// last compaction only moves where the replay starts, and only once it
+    /// has been checked against the log.
     pub(super) async fn ensure_index(&self, state: &mut ShardState) -> Result<()> {
         if state.closed {
             return Err(StorageError::Closed(self.label.clone()));
@@ -111,7 +117,10 @@ impl CacheShard {
         }
         let (mut offset, mut index) = match resume {
             Some(covered) => (covered, std::mem::take(&mut state.index)),
-            None => (state.log.base_offset(), Index::default()),
+            None => match self.restore(state, stop).await {
+                Some(index) => (index.covered_through.unwrap_or(stop), index),
+                None => (state.log.base_offset(), Index::default()),
+            },
         };
         'scan: while offset < stop {
             let records = state
@@ -149,20 +158,20 @@ impl CacheShard {
                     } => {
                         if let Some(previous) = index.entries.insert(
                             key,
-                            Entry {
+                            IndexEntry {
                                 offset: record.offset,
                                 version: version.unwrap_or(record.offset),
                                 expires_at_millis,
-                                bytes,
+                                bytes: bytes as u32,
                             },
                         ) {
-                            index.live_bytes -= previous.bytes;
+                            index.live_bytes -= u64::from(previous.bytes);
                         }
                         index.live_bytes += bytes;
                     }
                     CacheOp::Delete { key } => {
                         if let Some(previous) = index.entries.remove(&key) {
-                            index.live_bytes -= previous.bytes;
+                            index.live_bytes -= u64::from(previous.bytes);
                         }
                     }
                 }
@@ -198,20 +207,20 @@ impl CacheShard {
                 version,
                 ..
             } => {
-                let entry = Entry {
+                let entry = IndexEntry {
                     offset,
                     version: version.unwrap_or(offset),
                     expires_at_millis: *expires_at_millis,
-                    bytes,
+                    bytes: bytes as u32,
                 };
                 if let Some(previous) = state.index.entries.insert(key.clone(), entry) {
-                    state.index.live_bytes -= previous.bytes;
+                    state.index.live_bytes -= u64::from(previous.bytes);
                 }
                 state.index.live_bytes += bytes;
             }
             CacheOp::Delete { key } => {
                 if let Some(previous) = state.index.entries.remove(key) {
-                    state.index.live_bytes -= previous.bytes;
+                    state.index.live_bytes -= u64::from(previous.bytes);
                 }
             }
         }
@@ -221,7 +230,7 @@ impl CacheShard {
     pub(super) async fn read_value(
         &self,
         state: &ShardState,
-        entry: Entry,
+        entry: IndexEntry,
     ) -> Result<Option<Bytes>> {
         Self::read_from(&state.log, &self.label, entry).await
     }
@@ -231,7 +240,7 @@ impl CacheShard {
     pub(super) async fn read_from(
         log: &DiskLog,
         label: &str,
-        entry: Entry,
+        entry: IndexEntry,
     ) -> Result<Option<Bytes>> {
         let records = log
             .read_range(ReadRange {
@@ -334,12 +343,15 @@ pub(super) struct ShardState {
     /// Set by `LogCache::close_shard`. A caller that found this shard before
     /// the close must not touch the files: they may belong to a newer open.
     pub(super) closed: bool,
+    /// Bumped by `LogCache::forget_index`. A snapshot captured before the bump
+    /// describes records that may be gone, so it is not installed.
+    pub(super) index_epoch: u64,
 }
 
 /// The index over one cache's log, and the accounting compaction needs.
 #[derive(Debug, Default)]
 pub(super) struct Index {
-    pub(super) entries: HashMap<String, Entry>,
+    pub(super) entries: HashMap<String, IndexEntry>,
     /// Bytes held by records the index still points at.
     pub(super) live_bytes: u64,
     /// Payload bytes of every record still in the log, live or not.
@@ -351,25 +363,9 @@ pub(super) struct Index {
     /// an empty log: a shard whose log begins at a trimmed base has no offset
     /// zero to start from.
     pub(super) covered_through: Option<u64>,
-}
-
-/// Where one key's current value lives.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Entry {
-    pub(super) offset: Offset,
-    /// What a conditional write compares against: the offset of the put that
-    /// wrote this value, kept unchanged when compaction moves it.
-    pub(super) version: u64,
-    /// Absolute Unix milliseconds; zero means it never expires.
-    pub(super) expires_at_millis: u64,
-    /// What this record costs on disk, for deciding when to compact.
-    pub(super) bytes: u64,
-}
-
-impl Entry {
-    pub(super) fn is_expired(&self, now_millis: u64) -> bool {
-        self.expires_at_millis != 0 && self.expires_at_millis <= now_millis
-    }
+    /// Where replay started when this index was loaded from a snapshot.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) restored_through: Option<u64>,
 }
 
 pub(super) fn now_millis() -> u64 {

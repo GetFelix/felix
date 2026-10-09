@@ -201,7 +201,10 @@ live below it to the tail (a put of the same value, or a counter checkpoint),
 flushes, and deletes the sealed segments below the seal point, oldest first.
 No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
-`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`. A cache's pass then writes its key
+index to `keys.idx`, so the next open replays only the log past it; one that
+does not match the log is ignored (see
+[the storage format](/architecture/storage-format/#keysidx-a-caches-key-index)).
 
 A shard with `<shard>.compacting` or `<shard>.retired` siblings, left by a
 directory-swap compaction that stopped partway, is settled on open: a missing
