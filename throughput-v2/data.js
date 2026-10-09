@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791588562215,
+  "lastUpdate": 1791588859940,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27248,6 +27248,58 @@ window.BENCHMARK_DATA = {
             "range": "7625.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1230121.29\nmean: 1229205.72\nstdev: 7625.21\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b49a4e3030f2e9f409716574c0f16b77937033c7",
+          "message": "test(cluster): say why a subscription ended, and keep failing tests' logs (#1116)\n\nThe conformance scenarios reported a subscription that returned `None` as\n\"closed early\" and nothing else. A plain subscription ends cleanly when the\nbroker says the shard moved, which a lapsed lease also says (naming no\nowner), or when the broker finishes the stream without a word. The failure\nnow says which, with where the move pointed, and each broker's lease lapse\ncount.\n\nWith FELIX_TEST_CLUSTER_LOG_DIR set, each cluster copies its broker logs out\nof its temporary data root at teardown, and the in-process control plane\nlogs to a file there. CI sets it, keeps the test output, and uploads only\nthe folders of the tests libtest reported as failed.\n\nPart of #1115.",
+          "timestamp": "2026-10-09T16:28:39-07:00",
+          "tree_id": "9c79c4ecd67d06b8f6a4d5edff19c3fc0b25ac82",
+          "url": "https://github.com/GetFelix/felix/commit/b49a4e3030f2e9f409716574c0f16b77937033c7"
+        },
+        "date": 1791588859371,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510504.78,
+            "range": "34750.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510504.78\nmean: 510761.12\nstdev: 34750.36\ncv: 6.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510504.78,
+            "range": "34750.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510504.78\nmean: 510761.12\nstdev: 34750.36\ncv: 6.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112179.92,
+            "range": "1472.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112179.92\nmean: 112639.66\nstdev: 1472.58\ncv: 1.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1121799.22,
+            "range": "14725.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1121799.22\nmean: 1126396.61\nstdev: 14725.79\ncv: 1.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
