@@ -73,3 +73,43 @@ async fn closing_one_shard_leaves_the_others_open() {
         .await
         .expect("put");
 }
+
+/// A cache's retention hold reaches its open shards at once, and a shard
+/// reopened later before its first sweep.
+#[tokio::test]
+async fn a_caches_retention_hold_reaches_open_and_reopened_shards() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache
+        .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"v1"), None)
+        .await
+        .expect("put");
+    let open = cache.shard_log(T, NS, C, 0).await.expect("log");
+    cache
+        .set_retention_hold(T, NS, C, true)
+        .await
+        .expect("hold");
+    assert!(open.retention_held_at_commit());
+    assert!(
+        !cache
+            .shard_log(T, NS, "other", 0)
+            .await
+            .expect("log")
+            .retention_held_at_commit()
+    );
+
+    cache.close_shard(T, NS, C, 0).await.expect("close");
+    // Forget what the shard saved, so only the cache's hold can hold it.
+    let shard_dir = layout::shard_dir(
+        dir.path(),
+        &ShardKey {
+            tenant: T.into(),
+            namespace: NS.into(),
+            stream: C.into(),
+            shard: 0,
+        },
+    );
+    std::fs::remove_file(shard_dir.join("replica")).expect("remove replica state");
+    let reopened = cache.shard_log(T, NS, C, 0).await.expect("log");
+    assert!(reopened.retention_held_at_commit());
+}

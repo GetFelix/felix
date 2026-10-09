@@ -644,9 +644,14 @@ impl ReplicaHandler {
                     log_kind,
                     felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
                 ) {
-                    log.hold_retention_at_commit(
-                        crate::quorum::acknowledges_at_quorum(&self.broker, &key).await,
-                    );
+                    let hold = crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
+                    if let Err(err) = log.hold_retention_at_commit(hold).await {
+                        tracing::warn!(
+                            stream = %key.stream,
+                            error = %err,
+                            "could not write the retention hold through; it applies in memory",
+                        );
+                    }
                 }
                 // Only what this batch left level with the leader: past the
                 // durable offset nothing here has been compared.

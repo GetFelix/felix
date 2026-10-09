@@ -126,6 +126,26 @@ impl Broker {
                 &key.stream,
                 metadata.retention,
             )?;
+            // Held before anything is acknowledged under `Quorum`, and before
+            // a shard opens. Only on a change: a shard with no follower has
+            // its hold lifted by replication, and a resync must not put it
+            // back.
+            let previous = self
+                .streams
+                .read()
+                .await
+                .get(&key)
+                .map(|existing| existing.consistency);
+            if previous != Some(metadata.consistency) {
+                storage
+                    .set_stream_retention_hold(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        metadata.consistency == ConsistencyLevel::Quorum,
+                    )
+                    .await?;
+            }
         }
 
         // Cursor sequence numbers and durable offsets share one identity. An
@@ -286,6 +306,25 @@ impl Broker {
             });
         }
         let key = CacheKey::new(tenant_id, namespace, cache);
+        // Held before a write is acknowledged under `Quorum`; only on a
+        // change, as for a stream.
+        let previous = self
+            .caches
+            .read()
+            .await
+            .get(&key)
+            .map(|existing| existing.consistency);
+        if previous != Some(metadata.consistency) {
+            self.cache
+                .set_retention_hold(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.cache,
+                    metadata.consistency == ConsistencyLevel::Quorum,
+                )
+                .await
+                .map_err(BrokerError::from)?;
+        }
         self.caches.write().await.insert(key, metadata);
         Ok(())
     }
