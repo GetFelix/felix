@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791528082781,
+  "lastUpdate": 1791528453901,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26312,6 +26312,58 @@ window.BENCHMARK_DATA = {
             "range": "2666.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1247408.37\nmean: 1247416.03\nstdev: 2666.57\ncv: 0.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d422f8a0c6652a2d380a5f1c6990df5169220661",
+          "message": "fix(groups): a cursor commit waits for a cancelled one still writing (#1097) (#1100)\n\nA cancelled commit_unless left its put finishing on its own task after the\nshard lock was released, and the next commit read the old cursor and wrote\nover it, moving the group backwards. Reads that feed a write now go through\nLogCache::get_settled_checked, which waits for staged writes to the key.\nDeadLetters::state had the same race and uses it too.",
+          "timestamp": "2026-10-08T23:41:33-07:00",
+          "tree_id": "c11daca951783e908717af60a99545a43b65dff4",
+          "url": "https://github.com/GetFelix/felix/commit/d422f8a0c6652a2d380a5f1c6990df5169220661"
+        },
+        "date": 1791528453235,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364432.46,
+            "range": "13522.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364432.46\nmean: 359928.56\nstdev: 13522.97\ncv: 3.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364432.46,
+            "range": "13522.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364432.46\nmean: 359928.56\nstdev: 13522.97\ncv: 3.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84127.59,
+            "range": "534.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84127.59\nmean: 83958.12\nstdev: 534.59\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 841275.9,
+            "range": "5345.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 841275.90\nmean: 839581.19\nstdev: 5345.88\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
