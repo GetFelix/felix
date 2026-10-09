@@ -290,7 +290,8 @@ pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
 
 /// A consumer controls its own claims: `group_extend` keeps a claim
 /// standing, `group_dead_letter` gives up on a record, `delay_ms` on
-/// `group_nack` owes a record again only after a delay, and `visibility_ms`
+/// `group_nack` owes a record again only after a delay, `attempts` on
+/// `group_nack` hands back only the delivery it names, and `visibility_ms`
 /// on `group_poll` sets how long that poll's claims stand.
 ///
 /// Advertised by a *broker*. A client checks it before sending `delay_ms` or

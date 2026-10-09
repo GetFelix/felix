@@ -135,10 +135,12 @@ pub(crate) enum GroupCommand {
     /// Hand claimed records back
     #[command(
         long_about = "Hand each claimed record back to the group, to be delivered again at \
-                      once, or after --delay-ms.",
+                      once, or after --delay-ms. With --delay-ms, a claim given as \
+                      SHARD:OFFSET:ATTEMPTS is refused once that delivery's claim has lapsed \
+                      or the record has gone out again.",
         after_long_help = "Examples:
   felixctl group nack orders billing 0:15
-  felixctl group nack orders billing 0:15 --delay-ms 30000"
+  felixctl group nack orders billing 0:15:1 --delay-ms 30000"
     )]
     Nack {
         #[command(flatten)]
@@ -608,8 +610,9 @@ async fn settle(
                     .await
             }
             Settle::NackAfter(delay) => {
+                let record = claim_record(claim, claim.attempts.unwrap_or(0));
                 cluster
-                    .group_nack_after(tenant, namespace, stream, shard, group, offset, delay)
+                    .group_nack_after(tenant, namespace, stream, shard, group, &record, delay)
                     .await
             }
             Settle::DeadLetter => {
@@ -740,14 +743,20 @@ pub(crate) fn claimed_record(claim: &Claim) -> anyhow::Result<GroupRecord> {
             ),
         ));
     };
-    Ok(GroupRecord {
+    Ok(claim_record(claim, attempts))
+}
+
+/// The record a claim names, for the calls that take one. `attempts` of `0`
+/// names no particular delivery.
+fn claim_record(claim: &Claim, attempts: u32) -> GroupRecord {
+    GroupRecord {
         offset: claim.offset,
         payload: bytes::Bytes::new(),
         attempts,
         skipped_before: 0,
         publisher: None,
         timestamp_micros: None,
-    })
+    }
 }
 
 /// One polled record as printed: `CLAIM<TAB>payload`, or a JSON object.

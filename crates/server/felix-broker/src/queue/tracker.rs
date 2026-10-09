@@ -336,16 +336,23 @@ impl GroupTracker {
         now: Instant,
         deadline: Instant,
     ) -> bool {
-        self.expire(now);
-        if self.attempts(offset) != attempts || self.delayed.contains(&offset) {
+        if !self.claim_stands(offset, attempts, now) {
             return false;
         }
-        let Some(&lapses) = self.in_flight.get(&offset) else {
-            return false;
-        };
-        self.lapses.remove(&(lapses, offset));
+        if let Some(lapses) = self.in_flight.get(&offset).copied() {
+            self.lapses.remove(&(lapses, offset));
+        }
         self.hold(offset, deadline);
         true
+    }
+
+    /// Whether the claim the `attempts`th delivery of `offset` made still
+    /// stands at `now`. A delayed nack is not a claim.
+    pub(crate) fn claim_stands(&mut self, offset: u64, attempts: u32, now: Instant) -> bool {
+        self.expire(now);
+        self.attempts(offset) == attempts
+            && !self.delayed.contains(&offset)
+            && self.in_flight.contains_key(&offset)
     }
 
     /// Whether `offset` is still to be finished: handed out and unsettled, or

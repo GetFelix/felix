@@ -365,8 +365,12 @@ async fn read_end(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Settle {
     Ack,
-    /// Hand it back, owed again after the delay.
-    Nack(Duration),
+    /// Hand it back, owed again after `delay`. With `attempts`, only while
+    /// the claim that delivery made still stands.
+    Nack {
+        delay: Duration,
+        attempts: Option<u32>,
+    },
     /// Give up on it.
     DeadLetter,
 }
@@ -400,8 +404,11 @@ pub(crate) async fn settle(
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let settled = match action {
         Settle::Ack => reader.ack(&key, offset).await,
-        Settle::Nack(delay) if delay.is_zero() => reader.nack(&key, offset).await,
-        Settle::Nack(delay) => reader.nack_after(&key, offset, delay, Instant::now()).await,
+        Settle::Nack { delay, attempts } => {
+            reader
+                .nack_after(&key, offset, attempts, delay, Instant::now())
+                .await
+        }
         Settle::DeadLetter => match reader.dead_letter(&key, offset).await {
             Ok(true) => Ok(()),
             // Refused rather than answered as done: the consumer would look

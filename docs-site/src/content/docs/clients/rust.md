@@ -1299,15 +1299,16 @@ for record in &records {
         .await?;
     // Back off before the next try,
     client
-        .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record.offset, Duration::from_secs(30))
+        .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(30))
         .await?;
     // or give up on it now: it is listed as a dead letter and can be redriven.
     // client.group_dead_letter("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?;
 }
 ```
 
-An extension is refused with `stale_claim` once the claim has lapsed and the
-record has been handed out again. The client refuses a delay or a visibility
+An extension or a delayed nack is refused with `stale_claim` once the claim
+has lapsed and the record has been handed out again: both name the delivery by
+`record.attempts`. The client refuses a delay or a visibility
 to a broker without the bit, which would ignore it. `ClusterClient` has the
 same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`.
 

@@ -936,6 +936,14 @@ pub enum Message {
         /// older one would ignore it and redeliver at once.
         #[serde(default, skip_serializing_if = "is_zero")]
         delay_ms: u64,
+        /// The delivery being handed back, as `attempts` names it on
+        /// `group_extend`. When set, the nack is refused with `stale_claim`
+        /// once that claim has lapsed or the record has been handed out
+        /// again, so a late nack cannot hold back someone else's delivery.
+        /// Omitted or `0` nacks whatever claim stands, as before. Sent only
+        /// to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        attempts: u32,
     },
     /// Keep a claim standing for `extend_ms` from now. Answered with
     /// `group_extended`.
