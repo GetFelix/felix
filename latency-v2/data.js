@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791538816513,
+  "lastUpdate": 1791547559895,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -33528,6 +33528,72 @@ window.BENCHMARK_DATA = {
             "range": "104.44",
             "unit": "us",
             "extra": "trials: 5\nmedian: 475.00\nmean: 524.00\nstdev: 104.44\ncv: 19.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "98095dd0f8c3a211be396121a8679888ca4877cf",
+          "message": "feat(replication): fail a Quorum stream over on its followers' word (part of #1009) (#1093)\n\n* feat(replication): fail a Quorum stream over on its followers' word (part of #1009)\n\nFollowers ping the leaders of the shards they follow (internal Ping/Pong,\ncapability PING) and name in their heartbeat the ones silent for\nFELIX_LEADER_SUSPECT_AFTER_MS. Once majority_ack and lease_free_reads are\nfinalized, placement promotes a reported follower of a durable Quorum\nstream as soon as a majority of its set names the leader, without waiting\nfor the leader to be marked down. The promotion keeps the set and fences as\nbefore.\n\nTLA+: Suspicions constant, FelixShardSuspicion.cfg (pass) and\nFelixShardSuspicionLease.cfg (violates AtMostOneServing).\n\n* test(formal): stop time in FelixShardSuspicion so TLC finishes\n\nNothing on the follower-acked path reads a clock, and with time standing\nstill every promotion is necessarily one on suspicion. MaxTime 3 made the\npost-promotion space too large to finish in CI.",
+          "timestamp": "2026-10-09T05:02:39-07:00",
+          "tree_id": "23a8afaa3518774bfee5569907422c8e1dd95866",
+          "url": "https://github.com/GetFelix/felix/commit/98095dd0f8c3a211be396121a8679888ca4877cf"
+        },
+        "date": 1791547556363,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 82,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 82.00\nmean: 83.00\nstdev: 1.41\ncv: 1.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 112,
+            "range": "5.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 115.20\nstdev: 5.40\ncv: 4.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 140,
+            "range": "4.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 140.40\nstdev: 4.39\ncv: 3.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 99.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "8.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 220.00\nstdev: 8.34\ncv: 3.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 355,
+            "range": "1639.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 355.00\nmean: 1063.20\nstdev: 1639.18\ncv: 154.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
