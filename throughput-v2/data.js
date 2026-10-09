@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791538819382,
+  "lastUpdate": 1791547562146,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26416,6 +26416,58 @@ window.BENCHMARK_DATA = {
             "range": "44389.28",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 835958.75\nmean: 818290.46\nstdev: 44389.28\ncv: 5.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "98095dd0f8c3a211be396121a8679888ca4877cf",
+          "message": "feat(replication): fail a Quorum stream over on its followers' word (part of #1009) (#1093)\n\n* feat(replication): fail a Quorum stream over on its followers' word (part of #1009)\n\nFollowers ping the leaders of the shards they follow (internal Ping/Pong,\ncapability PING) and name in their heartbeat the ones silent for\nFELIX_LEADER_SUSPECT_AFTER_MS. Once majority_ack and lease_free_reads are\nfinalized, placement promotes a reported follower of a durable Quorum\nstream as soon as a majority of its set names the leader, without waiting\nfor the leader to be marked down. The promotion keeps the set and fences as\nbefore.\n\nTLA+: Suspicions constant, FelixShardSuspicion.cfg (pass) and\nFelixShardSuspicionLease.cfg (violates AtMostOneServing).\n\n* test(formal): stop time in FelixShardSuspicion so TLC finishes\n\nNothing on the follower-acked path reads a clock, and with time standing\nstill every promotion is necessarily one on suspicion. MaxTime 3 made the\npost-promotion space too large to finish in CI.",
+          "timestamp": "2026-10-09T05:02:39-07:00",
+          "tree_id": "23a8afaa3518774bfee5569907422c8e1dd95866",
+          "url": "https://github.com/GetFelix/felix/commit/98095dd0f8c3a211be396121a8679888ca4877cf"
+        },
+        "date": 1791547561608,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 582248.71,
+            "range": "19675.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 582248.71\nmean: 575269.08\nstdev: 19675.92\ncv: 3.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 582248.71,
+            "range": "19675.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 582248.71\nmean: 575269.08\nstdev: 19675.92\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116102.57,
+            "range": "4462.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116102.57\nmean: 117723.03\nstdev: 4462.34\ncv: 3.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1161025.67,
+            "range": "44623.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1161025.67\nmean: 1177230.32\nstdev: 44623.38\ncv: 3.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
