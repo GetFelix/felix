@@ -251,8 +251,11 @@ pub(super) async fn group_settle(
     };
     let (action, refused) = match action {
         Settle::Ack => (Settle::Ack, "group ack not served"),
-        Settle::Nack(delay) => (
-            Settle::Nack(delay.min(Duration::from_millis(config.group_max_visibility_ms))),
+        Settle::Nack { delay, attempts } => (
+            Settle::Nack {
+                delay: delay.min(Duration::from_millis(config.group_max_visibility_ms)),
+                attempts,
+            },
             "group nack not served",
         ),
         Settle::DeadLetter => (Settle::DeadLetter, "group dead letter not served"),

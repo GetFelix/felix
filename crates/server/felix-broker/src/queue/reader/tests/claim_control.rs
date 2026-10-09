@@ -120,6 +120,7 @@ async fn a_delayed_nack_is_redelivered_after_the_delay() {
         .nack_after(
             &key,
             0,
+            None,
             Duration::from_secs(10),
             base + Duration::from_secs(1),
         )
@@ -130,6 +131,73 @@ async fn a_delayed_nack_is_redelivered_after_the_delay() {
     let again = poll_at(&fx, &key, base, 12).await;
     assert_eq!(offsets(&again), [0]);
     assert_eq!(again[0].attempts, 2);
+}
+
+/// **A late nack cannot take a redelivery from whoever now holds it.** The
+/// first delivery's claim lapsed and the record went out again; that first
+/// consumer's delayed nack names its own delivery and is refused, so the
+/// second claim stands and the record is not parked behind the delay.
+#[tokio::test]
+async fn a_nack_naming_a_lapsed_delivery_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a"]).await;
+    let base = Instant::now();
+    let first = poll_at(&fx, &key, base, 0).await;
+    let second = poll_at(&fx, &key, base, 31).await;
+    assert_eq!(offsets(&second), [0]);
+    assert_eq!((first[0].attempts, second[0].attempts), (1, 2));
+
+    let now = base + Duration::from_secs(32);
+    for delay in [Duration::from_secs(600), Duration::ZERO] {
+        let err = fx
+            .reader
+            .nack_after(&key, 0, Some(first[0].attempts), delay, now)
+            .await
+            .expect_err("a stale nack was taken");
+        assert!(matches!(err, BrokerError::GroupClaimLapsed { offset: 0 }));
+    }
+
+    // The second delivery still holds its claim, and can extend and nack it.
+    assert!(poll_at(&fx, &key, base, 33).await.is_empty());
+    fx.reader
+        .extend(&key, 0, second[0].attempts, VIS, now)
+        .await
+        .expect("the current claim was disturbed");
+    fx.reader
+        .nack_after(&key, 0, Some(second[0].attempts), Duration::ZERO, now)
+        .await
+        .expect("nack the current delivery");
+    let third = poll_at(&fx, &key, base, 34).await;
+    assert_eq!(offsets(&third), [0]);
+    assert_eq!(third[0].attempts, 3);
+}
+
+/// A delayed nack is not a claim, so naming the same delivery twice is
+/// refused the second time rather than pushing the delay out again.
+#[tokio::test]
+async fn a_delivery_can_be_nacked_only_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a"]).await;
+    let base = Instant::now();
+    let claimed = poll_at(&fx, &key, base, 0).await;
+    let now = base + Duration::from_secs(1);
+    let attempts = Some(claimed[0].attempts);
+
+    fx.reader
+        .nack_after(&key, 0, attempts, Duration::from_secs(10), now)
+        .await
+        .expect("nack");
+    let err = fx
+        .reader
+        .nack_after(&key, 0, attempts, Duration::from_secs(600), now)
+        .await
+        .expect_err("a second nack moved the delay");
+    assert!(matches!(err, BrokerError::GroupClaimLapsed { offset: 0 }));
+    assert_eq!(offsets(&poll_at(&fx, &key, base, 12).await), [0]);
 }
 
 #[tokio::test]

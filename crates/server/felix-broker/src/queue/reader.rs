@@ -350,21 +350,38 @@ impl GroupReader {
         Ok(())
     }
 
-    /// Give one record back, to be owed again `delay` after `now`.
+    /// Give one record back, to be owed again `delay` after `now`, or at once
+    /// for a zero `delay`.
     ///
     /// Until then it holds a place in flight, as a claim would, so a group
     /// cannot park more records than its in-flight cap. Leader memory, like
     /// every claim: a failover redelivers it sooner.
+    ///
+    /// With `attempts`, only the claim that delivery made is handed back, as
+    /// for [`GroupReader::extend`]: refused with
+    /// [`BrokerError::GroupClaimLapsed`] once it no longer stands. Otherwise a
+    /// nack arriving after the record went out again would take the new
+    /// delivery away from whoever holds it.
     pub async fn nack_after(
         &self,
         key: &GroupKey,
         offset: u64,
+        attempts: Option<u32>,
         delay: Duration,
         now: Instant,
     ) -> Result<()> {
         let (_held, mut tracker) = self.current(key).await?;
         check_handed_out(&tracker, offset)?;
-        tracker.nack_after(offset, now + delay);
+        if let Some(attempts) = attempts
+            && !tracker.claim_stands(offset, attempts, now)
+        {
+            return Err(BrokerError::GroupClaimLapsed { offset });
+        }
+        if delay.is_zero() {
+            tracker.nack(offset);
+        } else {
+            tracker.nack_after(offset, now + delay);
+        }
         drop(tracker);
         // A waiting poll may have been sleeping until a later lapse.
         self.wake(key);

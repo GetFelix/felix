@@ -7,6 +7,10 @@ Felix has three clients today: Rust, Python, and TypeScript. This page covers
 how they relate to each other, which is worth understanding before you depend
 on one. Each client's own page covers using it.
 
+Browsers cannot speak QUIC, so they go through
+[felix-gateway](/clients/browsers/), a WebSocket relay built on the Rust
+client.
+
 ## One implementation, several bindings
 
 A Felix client does more than encode frames. It reconnects when the broker it

@@ -1267,7 +1267,7 @@ async fn a_consumer_extends_delays_and_dead_letters_its_claims() -> Result<()> {
             QUEUE,
             0,
             "workers",
-            retry.offset,
+            retry,
             Duration::from_millis(600),
         )
         .await?;
@@ -1312,6 +1312,31 @@ async fn a_consumer_extends_delays_and_dead_letters_its_claims() -> Result<()> {
         .await
         .expect_err("extended a claim that was handed out again");
     assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // Nor can it nack the record away from the second delivery.
+    let stale = client
+        .group_nack_after(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect_err("nacked a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            &again[0],
+            Duration::from_secs(60),
+        )
+        .await?;
 
     running.stop().await;
     Ok(())

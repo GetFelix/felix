@@ -10,7 +10,7 @@ Rust. The name is identical on crates.io, PyPI and npm. See
 [Choosing a Client](/clients/overview/) for why that choice was made.
 
 It runs in Node, not in a browser, because browsers cannot speak QUIC. For a
-browser, use [felix-gateway](https://github.com/GetFelix/felix-gateway), which relays WebSocket
+browser, use [felix-gateway](/clients/browsers/), which relays WebSocket
 messages to Felix and ships its own browser client.
 
 ## Installing

@@ -280,18 +280,27 @@ impl Client {
             shard,
             group,
             offset,
-            Settle::Nack(std::time::Duration::ZERO),
+            Settle::Nack {
+                delay: std::time::Duration::ZERO,
+                attempts: 0,
+            },
         )
         .await
     }
 
-    /// Hand one record back, to be redelivered once `delay` has passed rather
+    /// Hand `record` back, to be redelivered once `delay` has passed rather
     /// than at once. For a consumer that backs off before retrying.
     ///
     /// Until then the record holds a place under the group's in-flight cap.
     /// The broker caps the delay (`FELIX_GROUP_MAX_VISIBILITY_MS`), and the
     /// delay is the leader's memory: a failover redelivers the record sooner.
-    /// A zero delay is [`Client::group_nack`].
+    ///
+    /// Names the delivery by `record.attempts`, as [`Client::group_extend`]
+    /// does, so it is refused with `stale_claim` once the claim has lapsed or
+    /// the record has been handed out again, rather than taking the record
+    /// from whoever holds it now. A broker without
+    /// `FEATURE_GROUP_CLAIM_CONTROL` only takes a zero delay, and hands back
+    /// whatever claim stands, as [`Client::group_nack`] does.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_nack_after(
         &self,
@@ -300,20 +309,26 @@ impl Client {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: &felix_wire::GroupRecord,
         delay: std::time::Duration,
     ) -> Result<()> {
         if !delay.is_zero() {
             self.require_claim_control()?;
         }
+        // An older broker never sees the field, so its frames are unchanged.
+        let attempts = if self.supports_group_claim_control() {
+            record.attempts
+        } else {
+            0
+        };
         self.settle_group(
             tenant_id,
             namespace,
             stream,
             shard,
             group,
-            offset,
-            Settle::Nack(delay),
+            record.offset,
+            Settle::Nack { delay, attempts },
         )
         .await
     }
@@ -700,7 +715,7 @@ impl Client {
                     offset,
                     request_id,
                 },
-                Settle::Nack(delay) => Message::GroupNack {
+                Settle::Nack { delay, attempts } => Message::GroupNack {
                     tenant_id,
                     namespace,
                     stream,
@@ -714,6 +729,7 @@ impl Client {
                     } else {
                         (delay.as_millis() as u64).max(1)
                     },
+                    attempts,
                 },
                 Settle::DeadLetter => Message::GroupDeadLetter {
                     tenant_id,
@@ -821,7 +837,11 @@ impl Client {
 #[derive(Debug, Clone, Copy)]
 enum Settle {
     Ack,
-    Nack(std::time::Duration),
+    /// `attempts` names the delivery handed back; `0` names none.
+    Nack {
+        delay: std::time::Duration,
+        attempts: u32,
+    },
     DeadLetter,
 }
 

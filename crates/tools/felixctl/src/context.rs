@@ -57,17 +57,9 @@ impl ConfigFile {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let text = toml::to_string_pretty(self).context("encode the config")?;
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        let (temp, mut file) =
+            create_temp(dir, &name).with_context(|| format!("write {}", path.display()))?;
         let written = (|| {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            let mut file = options.open(&temp)?;
-            // `mode` applies only to a file it creates; one left by an
-            // interrupted save keeps whatever it had.
-            #[cfg(unix)]
-            std::fs::set_permissions(&temp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
             std::io::Write::write_all(&mut file, text.as_bytes())?;
             file.sync_all()?;
             std::fs::rename(&temp, path)?;
@@ -80,6 +72,41 @@ impl ConfigFile {
         }
         written.with_context(|| format!("write {}", path.display()))
     }
+}
+
+/// Create a temporary file for `name` in `dir` under a name nobody can guess,
+/// so another user of a shared directory cannot plant a file or symlink there
+/// first.
+fn create_temp(dir: &Path, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::hash::BuildHasher as _;
+    let mut attempt = 0u32;
+    loop {
+        // `RandomState` is seeded from the OS, which is all the randomness
+        // std offers without another dependency.
+        let random = std::hash::RandomState::new().hash_one((
+            std::process::id(),
+            std::time::SystemTime::now(),
+            attempt,
+        ));
+        let temp = dir.join(format!(".{name}.{random:016x}.tmp"));
+        match open_new_private(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 16 => {
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Create `path`, failing if anything is already there, a symlink included.
+/// Owner-only on Unix, since a context can hold a token.
+fn open_new_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }
 
 /// One named profile. Every field is optional; what is missing can come from

@@ -17,6 +17,24 @@ for what the current release guarantees.
   could apply against a value written after it (#1098). Versions now start
   each run at the wall-clock time in microseconds. Log-backed caches were
   not affected: their versions are log offsets.
+- A late nack can no longer take a record from the consumer it was handed to
+  next (#1098). `group_nack` takes an optional `attempts` that names the
+  delivery, as on `group_extend`, and is refused with `stale_claim` once that
+  claim has lapsed or the record has gone out again. Without it, a delayed
+  nack arriving after a redelivery parked the new delivery behind its delay.
+  Left out at `0`, so a nack that does not name a delivery is the frame it
+  always was; a broker that predates the field ignores it. felix-client's
+  `group_nack_after` now takes the `GroupRecord` rather than its offset (on
+  `Client` and `ClusterClient`), and sends `attempts` to a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL`. felixctl sends it for a `nack --delay-ms`
+  claim given as `SHARD:OFFSET:ATTEMPTS`. In felix-broker,
+  `GroupReader::nack_after` takes the attempt count to check and nacks at once
+  for a zero delay.
+- `felixctl` saved its config through a temporary file with a predictable
+  name, opened without `O_EXCL`, so a symlink planted at that path in a
+  shared directory was followed and the target overwritten (#1098). The
+  temporary file now gets a random name and is created exclusively,
+  owner-only on Unix, before it is renamed over the config.
 - A first segment whose header and records had all been zeroed was deleted at
   startup as a segment whose creation never finished, and the log came back
   empty (part of #1098). Creation syncs the header before anything appends,
@@ -51,6 +69,12 @@ for what the current release guarantees.
   without a fence, even once caches acknowledge by their followers and the
   lease no longer stops the old leader. It now stays closed and the next pass
   tries again (#1095).
+
+### Documentation
+- The docs site documents felix-gateway, the WebSocket relay that lets
+  browsers use Felix, under Clients, and has a Built on Felix section for
+  felix-canvas, felix-webhook-relay and felix-arena that says which Felix
+  features each one uses and what it relies on Felix to guarantee.
 
 ## [0.6.0-preview.3] - 2026-10-08
 
