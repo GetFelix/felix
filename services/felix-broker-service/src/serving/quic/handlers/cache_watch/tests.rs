@@ -41,32 +41,24 @@ async fn connection() -> Result<(
     Ok((client, client_conn, accept.await??))
 }
 
-/// **A watch that lands after a shard's watches were ended is refused.** The
-/// lifecycle closes the fence and ends the watches before this broker's
-/// routes catch up, so for a moment the routes still admit a watch. One
-/// registered then was never ended: it sat on a broker that no longer applies
-/// the cache's writes, which looks exactly like a quiet key.
-#[tokio::test]
-async fn a_watch_after_the_watches_were_ended_is_refused() -> Result<()> {
-    let mut fixture = Leader::start().await;
-    fixture.fence_move(&leader::cache_key());
-    let hub = Arc::clone(fixture.broker.cache_watches().expect("a log-backed cache"));
-    hub.end_shard(TENANT, NAMESPACE, CACHE, 0, None);
-    // The window: the routes still say the shard is served here.
-    assert!(
-        super::super::redirect::redirect_for(
-            Some(&fixture.ingress),
-            None,
-            TENANT,
-            NAMESPACE,
-            CACHE,
-            0,
-            crate::shards::ShardKind::Cache,
-            0,
-        )
-        .is_none()
-    );
+/// Whether the routing check made before a watch registers lets one through.
+fn admitted(fixture: &Leader) -> bool {
+    super::super::redirect::redirect_for(
+        Some(&fixture.ingress),
+        None,
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        0,
+        crate::shards::ShardKind::Cache,
+        0,
+    )
+    .is_none()
+}
 
+/// Register a watch on the cache, as the control stream does once the routing
+/// check let it through, and return the first answer to it.
+async fn watch_after_admission(fixture: &Leader) -> Result<Message> {
     let (_client, _client_conn, connection) = connection().await?;
     let publish_ctx = build_publish_context(
         Arc::clone(&fixture.broker),
@@ -114,14 +106,62 @@ async fn a_watch_after_the_watches_were_ended_is_refused() -> Result<()> {
         .await
         .context("ack timeout")?
         .context("ack missing")?;
-    let Outgoing::Message(Message::Error { code, .. }) = ack else {
-        panic!("expected a refusal, got {ack:?}");
+    let Outgoing::Message(answer) = ack else {
+        panic!("expected a control message, got {ack:?}");
+    };
+    Ok(answer)
+}
+
+/// The refusal in `answer`, and that it left no watch behind.
+fn assert_refused(fixture: &Leader, answer: Message, says: &str) {
+    let Message::Error { code, message, .. } = answer else {
+        panic!("expected a refusal, got {answer:?}");
     };
     assert_eq!(code, Some(felix_wire::ErrorCode::ShardUnavailable));
+    assert!(message.contains(says), "unexpected refusal: {message}");
+    let hub = fixture.broker.cache_watches().expect("a log-backed cache");
     assert_eq!(
         hub.registered_watchers(TENANT, NAMESPACE, CACHE, 0),
         0,
         "the refused watch left a registration behind"
     );
+}
+
+/// **A watch that lands after a shard's watches were ended is refused.** The
+/// lifecycle closes the fence and ends the watches before this broker's
+/// routes catch up, so for a moment the routes still admit a watch. One
+/// registered then was never ended: it sat on a broker that no longer applies
+/// the cache's writes, which looks exactly like a quiet key.
+#[tokio::test]
+async fn a_watch_after_the_watches_were_ended_is_refused() -> Result<()> {
+    let mut fixture = Leader::start().await;
+    fixture.fence_move(&leader::cache_key());
+    let hub = Arc::clone(fixture.broker.cache_watches().expect("a log-backed cache"));
+    hub.end_shard(TENANT, NAMESPACE, CACHE, 0, None);
+    // The window: the routes still say the shard is served here.
+    assert!(admitted(&fixture));
+
+    let answer = watch_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "stopped being served here");
     Ok(())
+}
+
+/// **An ending between admission and registration still reaches the watch.**
+/// The routing check and the registration are separate steps, and a lapse or
+/// deposal on another thread can end the shard's watches between them. The
+/// check made once the watch is registered is what catches that one.
+#[tokio::test]
+async fn a_watch_registered_after_its_shard_stopped_serving_is_let_go() {
+    use super::super::redirect::stopped_serving;
+
+    let key = leader::cache_key();
+    let lapsed = Leader::start().await;
+    let lease = lapsed.hold_lease();
+    assert!(stopped_serving(Some(&lapsed.ingress), &key).is_none());
+    lease.surrender();
+    assert!(stopped_serving(Some(&lapsed.ingress), &key).is_some());
+
+    let deposed = Leader::start().await;
+    deposed.ingress.fence().depose(&key, leader::GENERATION);
+    assert!(stopped_serving(Some(&deposed.ingress), &key).is_some());
 }

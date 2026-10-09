@@ -56,6 +56,7 @@ pub struct ControlPlane {
 impl ControlPlane {
     /// Start the control plane, holding the signing keys it will issue against.
     pub async fn start(tenant_id: &str) -> Result<Self> {
+        crate::cluster::capture_control_plane();
         let store = Arc::new(InMemoryStore::new(StoreConfig {
             changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
             change_retention_max_rows: Some(10_000),

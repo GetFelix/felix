@@ -8,6 +8,7 @@ mod caches;
 mod faults;
 mod fleet;
 mod groups;
+mod kept_logs;
 mod metrics;
 mod ownership;
 mod placement;
@@ -16,6 +17,7 @@ mod restarts;
 mod startup;
 mod streams;
 
+pub(crate) use kept_logs::capture_control_plane;
 pub(crate) use metrics::HaltedReplica;
 pub use ownership::Assignment;
 pub(crate) use placement::ShardStatus;
@@ -188,5 +190,6 @@ impl Drop for Cluster {
         // root is a `TempDir`, so it goes with this too — but only after the
         // processes holding it are gone.
         self.kill_brokers();
+        self.keep_logs();
     }
 }

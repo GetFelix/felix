@@ -30,6 +30,12 @@ for what the current release guarantees.
   shutdown handoff whose fence took longer than the forwarding broker's retries
   could refuse a publish (#1120). The owner now holds it until the shard
   serves, as it already did for a publish sent to it directly.
+- A subscription or cache watch that registered just after a lease lapse,
+  deposal or release ended its shard's readers is now refused instead of being
+  left attached to a shard the broker no longer serves, where it got nothing
+  and never heard the shard moved (#1117). The broker checks again after
+  registering, and a broker deposed at a shard's generation now refuses new
+  readers of it even while its lease holds.
 - A retention sweep after a restart could delete records above a `Quorum`
   shard's commit offset, on an idle leader or a follower cut off from its
   leader, until replication reached the shard again (#1109). The hold at the
