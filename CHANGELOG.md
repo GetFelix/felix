@@ -25,6 +25,15 @@ for what the current release guarantees.
   identities`.
 
 ### Fixed
+- Two brokers offloading to one directory could write the same object key,
+  because keys held only the shard directory name, which every replica of a
+  shard shares, so one broker could replace a copy the other had recorded
+  (#1109). Keys now start with the node id:
+  `<node id>/<shard directory>/<base>-<segment id>.segment`. The node id is
+  `FELIX_NODE_ID`, or, on a broker without one, an id generated once and kept
+  in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
+  Copies made by 0.6.0-preview.3 keep their old keys, which their manifest
+  entries still name.
 - One client acting for many users over a shared connection
   (`Client::with_identity`) no longer lets one user starve the rest (part of
   #1098). The broker's subscription cap (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`)
@@ -104,7 +113,19 @@ for what the current release guarantees.
   lease no longer stops the old leader. It now stays closed and the next pass
   tries again (#1095).
 
+### Changed
+- felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
+  and `LogConfig::validate` refuses a node id that is not one path segment
+  (letters, digits, `-`, `_`, `.`, not starting with `.`). In
+  felix-broker-service, `DurableStorageConfig::stream_log` takes the cluster
+  node id and returns a `Result` (#1109).
+
 ### Documentation
+- The docs said an in-memory cache's versions never repeat across a restart.
+  They can if the clock steps back across the restart or the last run averaged
+  more than one write per microsecond; `docs/protocol.md` and the cache page
+  now say so (#1109). That cache runs only on a broker with no data directory,
+  so there is nowhere to record where its counter stopped.
 - The docs site documents felix-gateway, the WebSocket relay that lets
   browsers use Felix, under Clients, and has a Built on Felix section for
   felix-canvas, felix-webhook-relay and felix-arena that says which Felix

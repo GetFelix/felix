@@ -618,7 +618,12 @@ value, so the same version read twice means nothing was written in between.
 It says nothing about order across shards. A broker with no durable storage
 keeps its cache in memory and has no log; there a version is a counter that
 starts each run at the wall-clock time in microseconds, so a version read
-before a restart does not match a value written after it.
+before a restart does not match a value written after it. Nothing records
+where the last run's counter stopped, since such a broker has no data
+directory to keep it in, so two cases can still reuse a version across a
+restart: the clock stepping back across the restart, and a run that averaged
+more than one write per microsecond since it started followed by a restart
+within that lead. A broker with durable storage is not affected.
 
 This is a new request rather than a field on `cache_put` because a broker that
 predates it ignores unknown fields, and would make the write unconditionally

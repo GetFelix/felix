@@ -12,6 +12,7 @@ use crate::segment::{ReadBudget, SegmentReader};
 
 const LABEL: &str = "t/ns/s/0";
 const RECORDS: usize = 24;
+const NODE: &str = "node-a";
 
 /// A log under `root/log` copying to `root/store`.
 fn offload_config(root: &Path, retention_bytes: Option<u64>) -> LogConfig {
@@ -19,7 +20,10 @@ fn offload_config(root: &Path, retention_bytes: Option<u64>) -> LogConfig {
         retention_bytes,
         // The tests drive passes themselves through `enforce_retention_now`.
         retention_check_interval: Duration::from_secs(3600),
-        offload: Some(OffloadTarget::LocalDir(root.join("store"))),
+        offload: Some(OffloadTarget::LocalDir {
+            dir: root.join("store"),
+            node: NODE.to_string(),
+        }),
         ..config(FsyncMode::None)
     }
 }
@@ -192,6 +196,92 @@ async fn retention_with_offload_deletes_only_recorded_segments() {
         .shutdown()
         .await
         .expect("shutdown");
+}
+
+/// Two brokers holding replicas of one shard: the same shard directory name,
+/// the same segment ids and offsets, different records, one archive.
+#[tokio::test]
+async fn brokers_sharing_an_archive_do_not_overwrite_each_others_copies() {
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("archive");
+    let mut logs = Vec::new();
+    for node in ["broker-a", "broker-b"] {
+        let config = LogConfig {
+            offload: Some(OffloadTarget::LocalDir {
+                dir: archive.clone(),
+                node: node.to_string(),
+            }),
+            ..offload_config(dir.path(), tight_retention())
+        };
+        let log = DiskLog::open(dir.path().join(node).join("log"), LABEL, config).expect("open");
+        // Same lengths on both nodes, so the segments line up exactly.
+        for i in 0..RECORDS {
+            log.append(&records(&[&format!("{node}-{i:02}")]))
+                .await
+                .expect("append");
+        }
+        log.sync().await.expect("sync");
+        logs.push((node, log));
+    }
+
+    // A copies and deletes. B's first copy fails verification, so B keeps its
+    // segments; with a shared key it would also have damaged A's copy.
+    let (_, a) = &logs[0];
+    a.enforce_retention_now().await.expect("a's pass");
+    assert!(a.base_offset() > 0);
+    let (_, b) = &logs[1];
+    offloader(b).faults.corrupt_next_upload();
+    b.enforce_retention_now()
+        .await
+        .expect_err("b's copy fails verification");
+    assert_eq!(b.base_offset(), 0, "b deleted a segment it has no copy of");
+    b.enforce_retention_now().await.expect("b's pass");
+    assert!(b.base_offset() > 0);
+
+    for (node, log) in &logs {
+        let base = log.base_offset();
+        let manifest = log.inner.manifest.lock().clone();
+        assert!(manifest.covers(0, base), "{node}: {manifest:?}");
+        for entry in manifest.entries() {
+            assert!(entry.key.starts_with(&format!("{node}/")), "{}", entry.key);
+            let expected: Vec<String> = (entry.base_offset..=entry.last_offset)
+                .map(|i| format!("{node}-{i:02}"))
+                .collect();
+            assert_eq!(
+                read_copy(&archive, entry),
+                expected,
+                "{node}: {}",
+                entry.key
+            );
+        }
+    }
+    for (_, log) in logs {
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+#[test]
+fn an_offload_node_id_must_be_one_path_segment() {
+    for node in ["", ".", "..", ".hidden", "a/b", "a b", "a\\b"] {
+        let config = LogConfig {
+            offload: Some(OffloadTarget::LocalDir {
+                dir: PathBuf::from("store"),
+                node: node.to_string(),
+            }),
+            ..LogConfig::default()
+        };
+        assert!(config.validate().is_err(), "{node:?} accepted");
+    }
+    for node in ["broker-a", "broker.example.com", "0f3a_b"] {
+        let config = LogConfig {
+            offload: Some(OffloadTarget::LocalDir {
+                dir: PathBuf::from("store"),
+                node: node.to_string(),
+            }),
+            ..LogConfig::default()
+        };
+        config.validate().expect(node);
+    }
 }
 
 #[tokio::test]
@@ -393,7 +483,10 @@ fn blocked_archive_config(root: &Path) -> (PathBuf, LogConfig) {
     let blocker = root.join("blocker");
     std::fs::write(&blocker, b"not a directory").expect("blocker");
     let config = LogConfig {
-        offload: Some(OffloadTarget::LocalDir(blocker.join("store"))),
+        offload: Some(OffloadTarget::LocalDir {
+            dir: blocker.join("store"),
+            node: NODE.to_string(),
+        }),
         ..offload_config(root, tight_retention())
     };
     (blocker, config)
@@ -471,7 +564,10 @@ async fn a_read_only_archive_does_not_fail_the_open_and_nothing_is_deleted() {
 fn offload_needs_a_check_interval() {
     let config = LogConfig {
         retention_check_interval: Duration::ZERO,
-        offload: Some(OffloadTarget::LocalDir(PathBuf::from("store"))),
+        offload: Some(OffloadTarget::LocalDir {
+            dir: PathBuf::from("store"),
+            node: NODE.to_string(),
+        }),
         ..LogConfig::default()
     };
     assert!(config.validate().is_err());

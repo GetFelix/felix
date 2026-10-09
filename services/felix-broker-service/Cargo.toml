@@ -102,6 +102,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+# The node id a broker without `FELIX_NODE_ID` offloads under.
+uuid = { workspace = true }
 # The `felix:principal:` URI SAN a token subject binds to (`serving::tls`).
 x509-parser = { workspace = true }
 
