@@ -559,6 +559,18 @@ difference between "lost a port" and "the control plane refused this identity".
 Broker output goes to `broker.log` in each node's data directory rather than
 being discarded, so that reason exists to be quoted.
 
+The data directory is a temporary one and goes with the cluster. Set
+`FELIX_TEST_CLUSTER_LOG_DIR` to keep the logs: at teardown each cluster copies
+its brokers' logs to `<dir>/<test>/cluster-<n>/<node>.log`, where `<test>` is
+the test's name with `::` written as `__`. The control plane runs inside the
+test process and has no log of its own, so the harness also installs a
+subscriber writing it to `<dir>/controlplane-<test binary>.log`. Every cluster
+is kept, not only failing ones, because a test that returns `Err` has dropped
+its cluster before anything decides it failed. CI sets the variable, keeps the
+test output, and uploads only the folders of the tests libtest reported as
+failed, with their binary's control-plane log, as the `failed-cluster-logs`
+artifact.
+
 ## Fault campaigns
 
 `felix_cluster::history` runs clients against `Quorum` streams and a `Quorum`

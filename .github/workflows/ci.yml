@@ -210,7 +210,50 @@ jobs:
       - name: Test
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
-        run: task test
+          # Every cluster test copies its broker logs here at teardown; the
+          # steps below upload the failing tests' share.
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+        shell: bash
+        run: task test 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+
+      # Only the tests libtest reported as failed, matched by name to the
+      # folder the harness kept for each, plus the control-plane log of the
+      # binary they ran in. A cluster test that passed is not worth the upload.
+      - name: Collect failing cluster tests' logs
+        if: failure()
+        shell: bash
+        run: |
+          logs="$RUNNER_TEMP/cluster-logs"
+          keep="$RUNNER_TEMP/failed-cluster-logs"
+          mkdir -p "$keep"
+          [ -f "$RUNNER_TEMP/test-output.log" ] || exit 0
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/test-output.log" | awk '
+            /Running .*\(.*\)$/ { bin = $0; sub(/.*\//, "", bin); sub(/\)$/, "", bin) }
+            /^---- .* stdout ----$/ { print bin "\t" $2 }
+          ' | sort -u | while IFS=$'\t' read -r bin test; do
+            dir="${test//::/__}"
+            if [ -d "$logs/$dir" ]; then
+              mkdir -p "$keep/$bin"
+              cp -R "$logs/$dir" "$keep/$bin/"
+              if [ -f "$logs/controlplane-$bin.log" ]; then
+                cp "$logs/controlplane-$bin.log" "$keep/$bin/"
+              fi
+            fi
+          done
+          if [ -n "$(ls -A "$keep")" ]; then
+            tar -czf "$RUNNER_TEMP/failed-cluster-logs.tar.gz" -C "$keep" .
+          fi
+
+      - name: Upload failing cluster tests' logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-cluster-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failed-cluster-logs.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+          # Already gzipped.
+          compression-level: 0
 
       # Failed 74 times in 640 under load, and never alone, before cache puts
       # staged on a task of their own.

@@ -23,6 +23,9 @@ use crate::Cluster;
 /// How long a delivery may take before the scenario calls it lost.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The broker's count of lapsed leases.
+const LEASE_EXPIRIES: &str = "felix_broker_lease_expiries_total";
+
 /// Which broker a scenario publishes through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ingress {
@@ -90,8 +93,17 @@ pub async fn delivery(cluster: &Cluster, stream: &str, ingress: Ingress) -> Resu
         .map_err(|err| {
             anyhow::anyhow!("{err}") // context is attached by the caller below
         })?
-        .context("subscription failed")?
-        .context("subscription closed before the record arrived")?;
+        .context("subscription failed")?;
+    let Some(event) = event else {
+        return Err(ended(
+            cluster,
+            stream,
+            &via,
+            &subscription,
+            "subscription closed before the record arrived",
+        )
+        .await);
+    };
 
     if event.payload != payload {
         bail!(
@@ -137,8 +149,17 @@ pub async fn ordering_and_integrity(
                     "only {index} of {count} records arrived within {DELIVERY_TIMEOUT:?}"
                 )
             })?
-            .context("subscription failed")?
-            .context("subscription closed early")?;
+            .context("subscription failed")?;
+        let Some(event) = event else {
+            return Err(ended(
+                cluster,
+                stream,
+                &via,
+                &subscription,
+                &format!("subscription closed early, after {index} of {count} records"),
+            )
+            .await);
+        };
         received.push(event.payload.to_vec());
     }
 
@@ -198,8 +219,10 @@ pub async fn payload_integrity(
     let event = tokio::time::timeout(DELIVERY_TIMEOUT, subscription.next_event())
         .await
         .map_err(|_| anyhow::anyhow!("no delivery within {DELIVERY_TIMEOUT:?}"))?
-        .context("subscription failed")?
-        .context("subscription closed")?;
+        .context("subscription failed")?;
+    let Some(event) = event else {
+        return Err(ended(cluster, stream, &via, &subscription, "subscription closed").await);
+    };
 
     if event.payload.as_ref() != payload.as_slice() {
         bail!(
@@ -319,6 +342,45 @@ async fn diagnose(cluster: &Cluster, stream: &str, ingress: &str) -> String {
         },
         Err(err) => format!("ingress={ingress} shard={key} (assignments unreadable: {err})"),
     }
+}
+
+/// Why a subscription ended with `None`, for a failure to say.
+///
+/// A plain subscription ends cleanly for two reasons with different fixes:
+/// the broker said the shard moved, or it closed the stream without a word. A
+/// lapsed lease also reads as a move, one that names no owner, so each
+/// broker's lapse count goes with it.
+async fn ended(
+    cluster: &Cluster,
+    stream: &str,
+    ingress: &str,
+    subscription: &felix_client::Subscription,
+    what: &str,
+) -> anyhow::Error {
+    let why = match subscription.shard_moved() {
+        Some(moved) => format!(
+            "the broker said the shard moved (to {}, generation {}, resume from {})",
+            moved.node_id.as_deref().unwrap_or("no named owner"),
+            moved.generation,
+            moved
+                .resume_from
+                .map_or_else(|| "nowhere".to_string(), |offset| offset.to_string()),
+        ),
+        None => "the broker finished the event stream without saying why".to_string(),
+    };
+    let mut lapses = Vec::new();
+    for node_id in cluster.node_ids() {
+        let count = match cluster.metric(&node_id, LEASE_EXPIRIES).await {
+            Ok(count) => count.unwrap_or(0.0).to_string(),
+            Err(_) => "?".to_string(),
+        };
+        lapses.push(format!("{node_id}={count}"));
+    }
+    anyhow::anyhow!(
+        "{what}: {why}; lease lapses {} ({})",
+        lapses.join(" "),
+        diagnose(cluster, stream, ingress).await
+    )
 }
 
 /// Resolve which broker to publish through, or say why the scenario cannot run.

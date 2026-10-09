@@ -50,6 +50,7 @@ NOT_OPERATIONAL = {
     "FELIX_STORAGE_FAULT_FILE",
     "FELIX_STORAGE_POWER_LOSS_ROOT",
     "FELIX_TEST_BROKER_OUTPUT",
+    "FELIX_TEST_CLUSTER_LOG_DIR",
     "FELIX_TEST_DATABASE_URL",
     # Debug builds only: the fleet features a broker reports, so a cluster
     # test can run one broker as an older or newer build.
