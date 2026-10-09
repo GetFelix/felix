@@ -219,6 +219,7 @@ fn expired_token(user: &str) -> Result<String> {
         iat: now - 4500,
         jti: None,
         perms: user_perms(user),
+        act: None,
     };
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
     header.kid = Some(KID.to_string());

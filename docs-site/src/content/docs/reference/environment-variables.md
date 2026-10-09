@@ -166,10 +166,11 @@ certificate to be issued to its token's subject (`sub`).
   or a DNS or IP name that `sub` matches the way a server name would.
 - Control-plane tokens carry a 64-hex principal id, longer than a DNS label
   may be, so issue those clients' certificates with the URI SAN.
-- A certificate with the URI `felix:delegate:<tenant id>` binds every `sub` of
-  that tenant and of no other. Issue it to a gateway that presents its users'
-  tokens over its own connections (`Client::with_identity`); each token is
-  still checked against its own grants.
+- A token minted by delegation (`/token/delegate`) names its actor in `act`,
+  and also binds a certificate issued to the actor, by the same rules. That is
+  how a gateway presents its users' tokens over its own connections
+  (`Client::with_identity`); each token is still checked against its own
+  grants.
 - Needs `FELIX_TLS_CLIENT_CA`. Set without it, startup fails.
 - Applies to the QUIC client listeners, and to the Kafka listener when it
   serves TLS: SASL/PLAIN checks the token against the certificate the client

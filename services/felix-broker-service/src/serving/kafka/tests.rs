@@ -139,3 +139,50 @@ async fn sasl_binds_the_token_to_the_client_certificate() {
         .await
         .expect("no certificate, nothing to bind to");
 }
+
+/// A token the control plane minted by delegation binds to its actor's
+/// certificate, checked from the signed claims, on SASL as on QUIC. Without
+/// `act` the gateway's certificate binds only the gateway's own tokens.
+#[tokio::test]
+async fn sasl_binds_a_delegated_token_to_its_actors_certificate() {
+    use crate::serving::auth::demo::demo_token_with_actor;
+    let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
+    let auth = Arc::new((*demo.auth).clone().with_subject_binding(true));
+    let cluster = BrokerCluster::new(auth, None, None, STANDALONE_NODE_ID, "127.0.0.1:9092")
+        .expect("cluster");
+    let issued_to = |principal: &str| {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.subject_alt_names.push(rcgen::SanType::URI(
+            format!("felix:principal:{principal}")
+                .try_into()
+                .expect("uri"),
+        ));
+        let key = rcgen::KeyPair::generate().expect("key");
+        params.self_signed(&key).expect("cert").der().to_vec()
+    };
+    let delegated = demo_token_with_actor("t1", "p:alice", Some("p:gateway")).expect("token");
+    let own = demo_token_with_actor("t1", "p:alice", None).expect("token");
+
+    cluster
+        .authenticate_peer("t1", &delegated, &[issued_to("p:gateway")])
+        .await
+        .expect("alice's token, delegated to the gateway presenting it");
+    assert!(
+        cluster
+            .authenticate_peer("t1", &delegated, &[issued_to("p:other-gateway")])
+            .await
+            .is_err(),
+        "a token delegated to one gateway was accepted from another"
+    );
+    assert!(
+        cluster
+            .authenticate_peer("t1", &own, &[issued_to("p:gateway")])
+            .await
+            .is_err(),
+        "the gateway presented alice's own token"
+    );
+    cluster
+        .authenticate_peer("t1", &delegated, &[issued_to("p:alice")])
+        .await
+        .expect("alice's own certificate still binds her subject");
+}

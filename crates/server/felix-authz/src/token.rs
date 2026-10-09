@@ -57,6 +57,17 @@ pub struct FelixClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
     pub perms: Vec<String>,
+    /// The party acting for `sub` (RFC 8693 `act`), on a token the control
+    /// plane minted by delegation. `sub` is still who the token authorizes;
+    /// `act` is who may present it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub act: Option<Actor>,
+}
+
+/// An RFC 8693 actor claim: the principal a delegated token was issued to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Actor {
+    pub sub: String,
 }
 
 #[cfg(test)]

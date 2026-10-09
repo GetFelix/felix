@@ -35,10 +35,15 @@ for what the current release guarantees.
   client that authenticates every stream as one identity sees the same limits,
   refusals and frames as before.
 - Subject binding (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`) refused every user's
-  token a gateway presented over its own certificate (part of #1098). A
-  certificate with the URI SAN `felix:delegate:<tenant id>` now binds every
-  subject of that tenant and no other; each token is still checked against its
-  own grants.
+  token a gateway presented over its own certificate (part of #1098). The
+  control plane has a new RFC 8693 token exchange,
+  `POST /v1/tenants/{tenant_id}/token/delegate`: a caller holding the new
+  `token.delegate:tenant:{tenant_id}` permission trades a user's broker token
+  for one with the same subject, no wider permissions and no later expiry, and
+  `act: {"sub": "<caller>"}`. The broker binds such a token to a certificate
+  issued to its actor, on QUIC and Kafka SASL alike; a token without `act`
+  binds only to its subject, as before. `token.delegate` is never put in a
+  broker token, so brokers that predate it are unaffected.
 - The docs said a delegated identity had its own publish budget when only the
   client's was per identity; they now describe what the broker enforces.
 - An in-memory cache's versions restarted at 0 with the broker, so a

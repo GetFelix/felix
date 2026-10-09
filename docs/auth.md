@@ -128,6 +128,10 @@ Actions:
   or one group's `group:{tenant_id}/{namespace}/{stream}/{group}`
 - `node.view`: cluster-scoped only
 - `node.manage`: over `node:{node_id}` or `cluster:*`
+- `token.delegate`: over `tenant:{tenant_id}`, to exchange a user's broker
+  token for one naming the caller as its actor (`/token/delegate`). Only the
+  control plane checks it, it is never put in a broker token, and
+  `tenant.manage` does not imply it.
 
 Consumer-group operations are split in two, over the stream's object:
 
@@ -444,10 +448,59 @@ How an identity behaves:
   gateway does not read can slow delivery to the other users on that
   connection, so drain each one promptly or drop it.
 - With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, the gateway's certificate is
-  presented with every user's token. Give it the URI SAN
-  `felix:delegate:<tenant id>`, which binds any subject of that tenant and no
-  other; without it, every user's token is refused.
+  presented with every user's token, and a user's own token is refused there.
+  The gateway exchanges each user's token for a delegated one first; see
+  [Delegated tokens](#delegated-tokens).
 - `ClusterClient` does not offer it yet.
+
+### Delegated tokens
+
+A delegated token is a user's broker token reissued to name the gateway that
+presents it: `sub` is still the user, and `act: {"sub": "<gateway principal>"}`
+names the actor (RFC 8693). The broker authorizes it with the user's
+permissions, as any token. Subject binding is the one place `act` matters: a
+client certificate binds a token whose `sub` it was issued to, or whose
+`act.sub` it was issued to, by the same `felix:principal:` URI or DNS/IP rules.
+Without `act`, only `sub` binds, so a gateway's certificate carries a user's
+token only after delegation. The claim is signed with the rest of the token,
+so nobody but the control plane can add it.
+
+```http
+POST /v1/tenants/{tenant_id}/token/delegate
+Authorization: Bearer <the gateway's felix-controlplane token>
+Content-Type: application/json
+
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "subject_token": "<the user's felix-broker token>",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "permissions": ["stream.publish:stream:t1/app/alice-feed"]
+}
+```
+
+```json
+{
+  "access_token": "<jwt>",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+- The caller is the actor. Its token must be a `felix-controlplane` token for
+  the same tenant carrying `token.delegate:tenant:{tenant_id}`.
+- `subject_token` must be a `felix-broker` token of that tenant that is not
+  itself delegated: one hop only.
+- The result is never wider than the subject token: the same tenant and
+  subject, its permissions or the subset `permissions` keeps (narrowed as on
+  `/token/exchange`, never widened), and an expiry no later than the subject
+  token's or `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` from now, whichever is sooner.
+- There is no refresh token. When the user's token is refreshed, delegate the
+  new one.
+- `400` for a wrong `grant_type` or `subject_token_type` or a malformed
+  permission, `401` for a missing or invalid caller token, `403` for a caller
+  without `token.delegate`, a subject token that does not verify, belongs to
+  another tenant or is already delegated, or nothing left after narrowing.
 
 ## Bootstrap Mode (Day-0)
 

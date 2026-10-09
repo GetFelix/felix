@@ -29,6 +29,10 @@ pub const ACTION_NODE_VIEW: &str = "node.view";
 /// speaking for another, or over `cluster:*` for an operator that manages the
 /// whole fleet.
 pub const ACTION_NODE_MANAGE: &str = "node.manage";
+/// Exchange a user's broker token for one naming the caller as its actor
+/// (`/token/delegate`). Granted over `tenant:{tenant_id}`, and never implied
+/// by `tenant.manage`: acting for a tenant's users is a separate decision.
+pub const ACTION_TOKEN_DELEGATE: &str = "token.delegate";
 
 /// Validate and normalize RBAC action names.
 pub fn canonical_action(action: &str) -> Option<&'static str> {
@@ -48,6 +52,7 @@ pub fn canonical_action(action: &str) -> Option<&'static str> {
         ACTION_GROUP_MANAGE => Some(ACTION_GROUP_MANAGE),
         ACTION_NODE_VIEW => Some(ACTION_NODE_VIEW),
         ACTION_NODE_MANAGE => Some(ACTION_NODE_MANAGE),
+        ACTION_TOKEN_DELEGATE => Some(ACTION_TOKEN_DELEGATE),
         _ => None,
     }
 }
