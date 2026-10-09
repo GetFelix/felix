@@ -1095,7 +1095,9 @@ The old owner ends its readers a moment before its own routes catch up with the
 move. A subscribe or cache watch that reaches it in that moment is answered
 `shard_unavailable` with reason `moving`, not accepted: nothing would end one
 registered after the others were ended, and it would wait on a shard no longer
-written there. The client retries and finds the new owner.
+written there. The client retries and finds the new owner. A lease lapse or a
+deposal ends readers the same way, so the broker checks again once a new reader
+is registered and refuses it if either landed in between.
 
 ## Stream Types and Lifecycle
 

@@ -2035,6 +2035,13 @@ stream. A subscribe or cache watch that reaches it after that, while its
 routes have not yet caught up, is answered `shard_unavailable` with reason
 `moving` rather than registered, since nothing would end it.
 
+The same holds for a lease lapse and a deposal, which end a shard's readers
+the same way with no owner named. The broker checks whether it still serves
+the shard again after registering the new reader, so a reader admitted just
+before one of these endings, and registered just after it, is refused
+(`shard_unavailable`, reason `fenced` for a lapse or `moving` for the rest)
+instead of being left with a feed nothing will write to or end.
+
 - `resume_from` is the first offset this broker did not offer the reader. For a
   stream subscription every record below it was sent to the subscriber or dropped
   by the subscriber's own queue, and none at or above it was. It is the stream's
