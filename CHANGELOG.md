@@ -12,6 +12,11 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- An in-memory cache's versions restarted at 0 with the broker, so a
+  `cache_put_if` or `cache_delete_if` holding a version read before a restart
+  could apply against a value written after it (#1098). Versions now start
+  each run at the wall-clock time in microseconds. Log-backed caches were
+  not affected: their versions are log offsets.
 - Retention could acknowledge a `Quorum` publish for records no broker held
   (#1094). With both followers of a shard down, a tight retention bound
   deleted records only the leader had, including ones publishes were still

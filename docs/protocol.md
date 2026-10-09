@@ -602,7 +602,10 @@ quorum as a plain `cache_put`, applied or not.
 A key's version is the log offset of the put that wrote its value. It is
 unique within the shard, only grows, and is kept when compaction moves the
 value, so the same version read twice means nothing was written in between.
-It says nothing about order across shards.
+It says nothing about order across shards. A broker with no durable storage
+keeps its cache in memory and has no log; there a version is a counter that
+starts each run at the wall-clock time in microseconds, so a version read
+before a restart does not match a value written after it.
 
 This is a new request rather than a field on `cache_put` because a broker that
 predates it ignores unknown fields, and would make the write unconditionally

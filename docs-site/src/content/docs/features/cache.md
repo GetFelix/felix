@@ -438,6 +438,9 @@ A refusal is an answer, not an error: `applied` is false and `version` is the
 key's current version (`None` when it has none). An expired entry counts as
 absent. A key's version is the log offset of the put that wrote it. It only
 grows and is never reused, and it survives compaction and restarts. The
+in-memory cache has no log, so its versions come from a counter that starts
+each run at the wall-clock time in microseconds; a version read before a
+restart is refused after it rather than matching a new value. The
 answer waits on the same durability and replication as a plain put. Negotiated
 as `FEATURE_CACHE_CONDITIONAL`; both cache backends support it.
 
