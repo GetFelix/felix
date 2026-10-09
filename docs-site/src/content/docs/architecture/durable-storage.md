@@ -201,7 +201,10 @@ live below it to the tail (a put of the same value, or a counter checkpoint),
 flushes, and deletes the sealed segments below the seal point, oldest first.
 No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
-`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`. A cache's pass then writes its key
+index to `keys.idx`, so the next open replays only the log past it; one that
+does not match the log is ignored (see
+[the storage format](/architecture/storage-format/#keysidx-a-caches-key-index)).
 
 A shard with `<shard>.compacting` or `<shard>.retired` siblings, left by a
 directory-swap compaction that stopped partway, is settled on open: a missing
@@ -269,6 +272,11 @@ segments only past their last index entry. Every read verifies the checksum of
 every record it returns, so bit rot in cold data is still caught, though when it
 is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
+
+Recovery plans every repair before it makes any, and
+`felix-broker inspect segments` runs that plan alone: it reports what startup would
+do with a data directory, read-only, without a broker. See
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 
 Anything that deletes segments does it one synced unlink at a time, in an
 order that keeps the chain whole. Retention and compaction go oldest first.

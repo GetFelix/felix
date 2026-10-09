@@ -643,6 +643,23 @@ default:
 Set `verify_all_on_open` to trade startup time for eager detection of bit rot in
 cold data.
 
+### Plan, then apply
+
+Recovery decides everything before it writes anything. `plan_recovery` in
+`disk_log/recovery/plan.rs` reads the directory and returns the writes it
+needs (segments to remove, indexes to rebuild, a retired segment to cut) and
+how the log ends up: fresh, resumed with the active segment's torn tail to cut,
+or refused with the corruption and its place. Where a repair changes what a
+later check reads, as when an unsealed retired segment is cut and the chain is
+checked again, the plan reads the files as if the earlier writes were made.
+Startup then makes the writes in order and opens the log. A refusal still
+makes the writes planned before the damage was found, as recovery always has.
+
+`felix_storage::inspect` runs only the plan, which is what lets
+`felix-broker inspect segments` report startup's verdict on a data directory
+without changing it. The plan never writes, and the `segment_recovery` fuzz
+target checks that the plan and the recovery that follows agree.
+
 ### A gap at the head left by an older build
 
 Up to 0.6.0-preview, retention unlinked segments without syncing the
@@ -826,6 +843,11 @@ running it again on a restored log changes nothing.
 
 ## Tools
 
+`felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
+segments, whether their records and indexes verify, and what startup would do
+with each one. See "A broker will not start" in the docs site's
+`deployment/diagnosing.md`.
+
 ```sh
 # Write, then verify what survived.
 felix-log-tool write  --dir /var/lib/felix/streams/shard --records 100000 --fsync on_commit
@@ -956,6 +978,11 @@ shard at a time. It:
 3. **Flushes the log**, whatever the fsync mode, so every copy is on the device.
 4. **Deletes the sealed segments below the cut**, oldest first, syncing the
    directory after each unlink.
+5. **Writes the key index** (caches only) to `keys.idx` in the shard
+   directory, through a flushed temporary and a rename, so the next open
+   replays only the records past it instead of the whole log. The file and the
+   checks an open makes before trusting it are in
+   [storage-format.md](storage-format.md#keysidx-a-caches-key-index).
 
 Writers keep going throughout. A cache key with a write staged but not yet
 applied is not copied: the copy would land after that write and bring the old
@@ -969,7 +996,9 @@ deleted until every live record has a copy above the cut and that copy has been
 flushed. A crash partway through the deletes leaves a longer log, not a broken
 one: the unlinks are synced one at a time, oldest first, so a power loss can
 only bring back segments at the head of the chain, never leave a gap in it.
-Recovery needs nothing compaction-specific.
+A crash before the key index is renamed leaves the previous one, which covers
+less than the trimmed log begins at and is ignored, so the open replays the
+whole log. Recovery needs nothing compaction-specific.
 
 **Offsets never rewind.** Copies are appended at the tail, so an offset names
 the same record for the life of the shard, and replication ships copies like
@@ -996,6 +1025,13 @@ pass after a restart reclaims. Closing a shard stops its pass the same way.
 > simulated power loss, with `FsyncMode::None` (Linux only).
 > `a_key_with_a_write_in_flight_is_not_copied`: a copy never undoes a write.
 > `shutdown_abandons_a_held_compaction`: shutdown does not wait on the budget.
+> `compaction_leaves_a_snapshot_a_restart_replays_past`: a restart starts from
+> the key index and still sees the puts and deletes after it.
+> `a_snapshot_written_but_not_renamed_is_not_used`,
+> `a_snapshot_ahead_of_its_log_is_ignored`,
+> `a_snapshot_behind_a_trimmed_log_is_ignored`, `a_corrupt_snapshot_is_ignored`
+> and `a_snapshot_of_a_log_cut_and_rewritten_is_ignored`: a key index that does
+> not match its log costs a full replay, never a wrong read.
 
 **Upgrading from 0.6.0-preview or earlier.** Older builds compacted by
 writing the live set into a sibling `<shard>.compacting` directory, renaming

@@ -73,6 +73,7 @@ a segment) should be rejected on its first four bytes rather than misparsed.
     ballot                                   ← the leader that generation was accepted from
     producers                                ← producer snapshot, when any producer wrote here
     offload.manifest                         ← segments copied to the object store, once offload has run
+    keys.idx                                 ← a cache shard's key index, once compaction has run
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -523,3 +524,59 @@ its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
+## `keys.idx`: a cache's key index
+
+A cache shard maps each key to the record that currently defines it. That index
+lives in memory and is otherwise rebuilt by replaying the whole log when the
+shard opens. At the end of each compaction pass, after the trim, it is written
+here, and an open loads it and replays only the records past it. Only cache
+shards have one.
+
+```text
+ 0   4  magic            u32  "FXIX"
+ 4   2  format           u16  1
+ 6   1  store            u8   0 for a cache (1 is reserved for collections)
+ 7   8  covered_through  u64  every record below this offset is reflected, none at or past it
+15   8  entry_count      u64
+23   8  log_bytes        u64  payload bytes of every record below covered_through, live or not
+31   4  last_checksum    u32  checksum of the record at covered_through - 1; 0 when nothing is covered
+35   …  entry_count × { key_len u32, key, offset u64, version u64,
+                        expires_at_millis u64, bytes u32 }
+     4  crc              u32  CRC-32C over everything before it
+```
+
+Each `key` is a composite key, and entries are sorted by it, compared as bytes:
+
+```text
+kind u8 | key_len u32 | key | slot u8 | field
+```
+
+Kind 0 is a cache value, which has no slot or field. Kinds 1, 2 and 3 are
+reserved for hashes, sets and lists, where slot 0 is the key's metadata and
+slot 1 a field. The 28 bytes after the key are the in-memory entry: where the
+record is, the version a conditional write compares against, the absolute
+expiry (0 for none), and the record's payload length. `log_bytes` carries
+compaction's garbage ratio across the restart.
+
+It is derived, so an open checks it against the log before using it, and a
+snapshot that fails any check is logged and ignored, and the whole log is
+replayed:
+
+- the length and the checksum match, and every key is a cache key;
+- `covered_through` lies between the log's oldest offset and its tail. Below
+  the oldest offset, a later pass trimmed records the snapshot never saw; past
+  the tail, records it did see are gone;
+- every entry points at an offset from the log's oldest up to
+  `covered_through`;
+- the record at `covered_through - 1` has `last_checksum`. Offsets alone cannot
+  tell this log from one replication cut back and refilled to the same length.
+
+A truncation removes it, durably, with the producer snapshot, and so does
+dropping the cache's index after replication cut its log. It is written to
+`keys.idx.tmp`, flushed, renamed over `keys.idx`, and the directory flushed;
+the log is flushed first, so the records it covers are on the device before it
+is. A temporary left by a crash is never read and is overwritten by the next
+pass. Unlike the producer snapshot it is flushed: losing it costs a replay of
+the whole log, which is what it exists to avoid.
+
+It shortens an open, not memory: the index is still held whole in memory.

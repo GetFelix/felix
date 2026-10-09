@@ -326,7 +326,13 @@ When the fence applies:
   (`a_counter_fence_older_than_the_cache_fence_is_refused`). Taking another
   log drops the cache's index or the counter sums above the cut, so the
   shard serves what its log now holds (`a_superseded_put_is_gone_from_the_index`).
-  A cache kept in memory has no log to fence and opens on the lease.
+  A cache kept in memory has no log to fence and opens on the lease. A cache
+  or counter log this broker has but cannot open (the shard is closing, out of
+  file descriptors, a failed recovery) is not the same: under `fenced_caches`
+  the shard stays closed and the next pass tries again
+  (`a_cache_log_that_fails_to_open_keeps_the_shard_closed`,
+  `a_counter_log_that_fails_to_open_keeps_the_shard_closed`); before it, the
+  shard opens on the lease.
 - Only when every replica in the new set offers both `FENCE` and
   `TAIL_FETCH`, and for a cache shard `CACHE_FENCE` too, as its latest
   handshake with this broker in either direction says, and this broker offers

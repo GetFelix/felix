@@ -210,9 +210,32 @@ pub fn scan_segment_with(
     start: ScanStart,
     repair: TailRepair,
 ) -> Result<ScanOutcome> {
+    scan_segment_upto(
+        path,
+        None,
+        segment_id,
+        shard_label,
+        index_spacing_bytes,
+        start,
+        repair,
+    )
+}
+
+/// [`scan_segment_with`] over the file as if it had been cut to `len` bytes,
+/// so recovery can plan what follows a truncation without making it.
+pub(crate) fn scan_segment_upto(
+    path: &Path,
+    len: Option<u64>,
+    segment_id: SegmentId,
+    shard_label: &str,
+    index_spacing_bytes: u64,
+    start: ScanStart,
+    repair: TailRepair,
+) -> Result<ScanOutcome> {
     let file = File::open(path)?;
-    let file_len = file.metadata()?.len();
-    let mut cursor = SegmentCursor::new(&file);
+    let on_disk = file.metadata()?.len();
+    let file_len = len.map_or(on_disk, |len| len.min(on_disk));
+    let mut cursor = SegmentCursor::ending_at(&file, file_len);
 
     let annotate = |err: Corruption, position: u64| -> StorageError {
         StorageError::Corruption(

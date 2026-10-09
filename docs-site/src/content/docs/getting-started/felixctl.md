@@ -586,6 +586,10 @@ With `--json` each broker prints one line: `node_id`, `subscriptions` (each
 with `behind` added when it has a position) and `next_cursor`, or `node_id` and
 `error` for a broker that did not answer.
 
+A broker that will not start cannot answer these. Its data directory is read
+offline by the broker binary itself, `felix-broker inspect segments`; see
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
+
 ### Permissions
 
 Every `inspect` command needs a broker token allowed `node.view` on
@@ -646,5 +650,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 State reads are planned. See
 [issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
 `felixctl inspect` is coming: connections, the control plane's placement
-decisions, a broker's segments read offline, and where one
+decisions, a data directory's records decoded offline, and where one
 record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).
