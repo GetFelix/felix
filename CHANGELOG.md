@@ -65,6 +65,12 @@ for what the current release guarantees.
   lease no longer stops the old leader. It now stays closed and the next pass
   tries again (#1095).
 
+### Documentation
+- The docs site documents felix-gateway, the WebSocket relay that lets
+  browsers use Felix, under Clients, and has a Built on Felix section for
+  felix-canvas, felix-webhook-relay and felix-arena that says which Felix
+  features each one uses and what it relies on Felix to guarantee.
+
 ## [0.6.0-preview.3] - 2026-10-08
 
 The third preview of 0.6.0. felixctl now manages a cluster as well as using
