@@ -156,20 +156,31 @@ pub async fn fence_shard<R: PeerRequester>(
             .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await
         else {
-            match kind {
+            // A log that should be here and could not be opened is not a
+            // shard with nothing to fence. Opening it anyway would serve
+            // unfenced where the lease no longer stops the old leader.
+            let lacking = match kind {
                 LogKind::Stream => {
                     return Outcome::pending("this broker has no log for the shard", Vec::new());
                 }
                 // A cache kept in memory replicates nothing, so there is no
                 // log to fence and none a pass could acknowledge on.
-                LogKind::Cache => {
+                LogKind::Cache if !broker.cache().has_log() => {
                     return Outcome::Lease {
                         lacking: "a cache log on this broker".to_string(),
                     };
                 }
+                LogKind::Cache => "this broker could not open the shard's cache log",
                 // No counter store here, so no counters to take.
-                _ => continue,
+                LogKind::Counters if broker.counters().is_none() => continue,
+                _ => "this broker could not open the shard's counter log",
+            };
+            if lease_fallback {
+                return Outcome::Lease {
+                    lacking: lacking.to_string(),
+                };
             }
+            return Outcome::pending(lacking, Vec::new());
         };
         let fenced = fence_log(
             requester,

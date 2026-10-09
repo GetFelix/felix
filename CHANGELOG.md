@@ -11,6 +11,13 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A promoted cache shard whose cache log or counter log failed to open (the
+  shard closing, too many open files, a failed recovery) opened on the lease
+  without a fence, even once caches acknowledge by their followers and the
+  lease no longer stops the old leader. It now stays closed and the next pass
+  tries again (#1095).
+
 ## [0.6.0-preview.3] - 2026-10-08
 
 The third preview of 0.6.0. felixctl now manages a cluster as well as using
