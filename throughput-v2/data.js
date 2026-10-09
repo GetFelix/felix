@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791518358154,
+  "lastUpdate": 1791520858393,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26104,6 +26104,58 @@ window.BENCHMARK_DATA = {
             "range": "5957.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 830404.72\nmean: 830717.89\nstdev: 5957.42\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb9fda8c6ea4c28f0f1ee61e296c7430dc4885ac",
+          "message": "feat(cache): snapshot the key index at compaction (part of #1073) (#1091)\n\nEach cache compaction pass now writes the shard's key index to keys.idx\n(temp file, fsync, rename, directory fsync), and an open loads it and\nreplays only the log past it. The snapshot is derived: a bad checksum or\nlength, a covered offset outside the log, an entry outside the covered\nrange, or a last-record checksum that does not match sends the open back\nto a full replay. Log truncation and forget_index remove it.\n\nThe entry shape (IndexEntry), the composite key encoding and the file\nformat are shared so the collections store can reuse them.",
+          "timestamp": "2026-10-08T21:14:18-07:00",
+          "tree_id": "c9f946d4c209368086763e53ebde0f115899f849",
+          "url": "https://github.com/GetFelix/felix/commit/fb9fda8c6ea4c28f0f1ee61e296c7430dc4885ac"
+        },
+        "date": 1791520857731,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343121.03,
+            "range": "5845.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343121.03\nmean: 341989.90\nstdev: 5845.71\ncv: 1.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343121.03,
+            "range": "5845.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343121.03\nmean: 341989.90\nstdev: 5845.71\ncv: 1.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80526.65,
+            "range": "739.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80526.65\nmean: 80362.80\nstdev: 739.39\ncv: 0.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805266.54,
+            "range": "7393.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805266.54\nmean: 803627.99\nstdev: 7393.94\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
