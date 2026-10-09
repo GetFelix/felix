@@ -323,6 +323,12 @@ wait. A cache put or delete stages there (append, then the guard that applies
 the write and tells the watchers), and a counter add appends and folds there.
 The broker's publish executors are never cancelled mid-claim.
 
+Such a write can still be applying after its caller has let go of any lock it
+held. A read that feeds a write, like a consumer group's cursor commit or a
+dead letter's state change, uses `LogCache::get_settled_checked`, which waits
+for the writes already staged to that key to apply. A plain read could see the
+old value, and the write that follows would land on top of the cancelled one.
+
 ## Segments and rollover
 
 A shard's log is one *active* segment plus any number of sealed ones, and the
@@ -643,6 +649,23 @@ default:
 Set `verify_all_on_open` to trade startup time for eager detection of bit rot in
 cold data.
 
+### Plan, then apply
+
+Recovery decides everything before it writes anything. `plan_recovery` in
+`disk_log/recovery/plan.rs` reads the directory and returns the writes it
+needs (segments to remove, indexes to rebuild, a retired segment to cut) and
+how the log ends up: fresh, resumed with the active segment's torn tail to cut,
+or refused with the corruption and its place. Where a repair changes what a
+later check reads, as when an unsealed retired segment is cut and the chain is
+checked again, the plan reads the files as if the earlier writes were made.
+Startup then makes the writes in order and opens the log. A refusal still
+makes the writes planned before the damage was found, as recovery always has.
+
+`felix_storage::inspect` runs only the plan, which is what lets
+`felix-broker inspect segments` report startup's verdict on a data directory
+without changing it. The plan never writes, and the `segment_recovery` fuzz
+target checks that the plan and the recovery that follows agree.
+
 ### A gap at the head left by an older build
 
 Up to 0.6.0-preview, retention unlinked segments without syncing the
@@ -787,7 +810,9 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
 | `felix_storage_offload_segments_total`, `felix_storage_offload_bytes_total` | segments and bytes copied to the object store, verified and recorded |
-| `felix_storage_offload_failures_total` | copies that failed; while one keeps failing, retention cannot delete that segment or any after it |
+| `felix_storage_offload_failures_total` | offload passes that failed, a missing or read-only directory included; while they keep failing, retention cannot delete a segment without a copy or any after it |
+| `felix_storage_offload_failing_logs` | logs whose last offload pass failed; non-zero means local disk is growing past retention |
+| `felix_storage_offload_held_bytes` | bytes retention would delete but keeps until offload copies them |
 
 The first two together answer the question that actually comes up: *is durability
 the bottleneck?* If sync dominates append, the fsync policy is the cost.
@@ -823,6 +848,11 @@ emptying it. Lowering first makes an interrupted restore safe to run again, and
 running it again on a restored log changes nothing.
 
 ## Tools
+
+`felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
+segments, whether their records and indexes verify, and what startup would do
+with each one. See "A broker will not start" in the docs site's
+`deployment/diagnosing.md`.
 
 ```sh
 # Write, then verify what survived.
@@ -881,7 +911,7 @@ and both off by default:
 | `retention_age` | delete sealed segments whose newest record is older than this |
 | `retention_check_interval` | how often the bounds are evaluated (default 60s) |
 
-Four properties are worth knowing, because each rules out a class of surprise:
+These properties are worth knowing, because each rules out a class of surprise:
 
 - **Whole segments, from the head only.** Records are never rewritten, which is
   what lets recovery keep trusting "valid bytes end at EOF". A partial segment is
@@ -902,6 +932,15 @@ Four properties are worth knowing, because each rules out a class of surprise:
   Without the syncs the device could keep a newer unlink and lose an older one.
   The surviving segments would then have an offset gap, and recovery treats a
   gap as corruption.
+- **On a `Quorum` shard it stops at the commit offset.** A segment holding any
+  offset at or above the log's commit offset is kept, whatever the bounds say,
+  and so is everything after it. Records up there may still be waiting for a
+  majority; see "Retention and the quorum mark" in
+  `docs/replication-design.md` for what deleting them would do. The same floor
+  applies to compaction's head trims. Replication turns it on per log
+  (`DiskLog::hold_retention_at_commit`), on the leader and on every follower;
+  a log nobody advances the commit offset on, `Leader` streams and those
+  without replication included, is not held.
 
 What a reader sees after a trim is the point of the feature. `read_range` below
 `base_offset` returns `StorageError::Trimmed { requested, oldest }`, which the
@@ -923,6 +962,9 @@ running. The control plane refuses a zero bound, which no log could meet.
 Group cursor and dead-letter logs keep the broker's bounds.
 
 > `a_streams_retention_bounds_its_log_and_updates_in_place`
+
+> `retention_held_at_the_commit_offset_stops_below_it` and
+> `a_head_trim_held_at_the_commit_offset_stops_below_it`
 
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.
@@ -954,6 +996,11 @@ shard at a time. It:
 3. **Flushes the log**, whatever the fsync mode, so every copy is on the device.
 4. **Deletes the sealed segments below the cut**, oldest first, syncing the
    directory after each unlink.
+5. **Writes the key index** (caches only) to `keys.idx` in the shard
+   directory, through a flushed temporary and a rename, so the next open
+   replays only the records past it instead of the whole log. The file and the
+   checks an open makes before trusting it are in
+   [storage-format.md](storage-format.md#keysidx-a-caches-key-index).
 
 Writers keep going throughout. A cache key with a write staged but not yet
 applied is not copied: the copy would land after that write and bring the old
@@ -967,7 +1014,9 @@ deleted until every live record has a copy above the cut and that copy has been
 flushed. A crash partway through the deletes leaves a longer log, not a broken
 one: the unlinks are synced one at a time, oldest first, so a power loss can
 only bring back segments at the head of the chain, never leave a gap in it.
-Recovery needs nothing compaction-specific.
+A crash before the key index is renamed leaves the previous one, which covers
+less than the trimmed log begins at and is ignored, so the open replays the
+whole log. Recovery needs nothing compaction-specific.
 
 **Offsets never rewind.** Copies are appended at the tail, so an offset names
 the same record for the life of the shard, and replication ships copies like
@@ -994,6 +1043,13 @@ pass after a restart reclaims. Closing a shard stops its pass the same way.
 > simulated power loss, with `FsyncMode::None` (Linux only).
 > `a_key_with_a_write_in_flight_is_not_copied`: a copy never undoes a write.
 > `shutdown_abandons_a_held_compaction`: shutdown does not wait on the budget.
+> `compaction_leaves_a_snapshot_a_restart_replays_past`: a restart starts from
+> the key index and still sees the puts and deletes after it.
+> `a_snapshot_written_but_not_renamed_is_not_used`,
+> `a_snapshot_ahead_of_its_log_is_ignored`,
+> `a_snapshot_behind_a_trimmed_log_is_ignored`, `a_corrupt_snapshot_is_ignored`
+> and `a_snapshot_of_a_log_cut_and_rewritten_is_ignored`: a key index that does
+> not match its log costs a full replay, never a wrong read.
 
 **Upgrading from 0.6.0-preview or earlier.** Older builds compacted by
 writing the live set into a sibling `<shard>.compacting` directory, renaming
@@ -1053,6 +1109,30 @@ leaves the recorded copy. So every record is in the local log or in a recorded,
 verified copy, at every point. A recorded copy is never rewritten: only
 segments without a recorded copy are uploaded.
 
+**When the archive is down.** Opening a log does not touch the offload
+directory; the first pass creates and opens it. So a missing mount, a
+read-only one or a full one never stops a stream log from opening or taking
+publishes. A pass that cannot open the directory or write a copy fails, adds
+to `felix_storage_offload_failures_total` and is tried again on the next tick.
+The broker logs `offload pass failed` at the first failure and then at most
+every 30 seconds, backing off to every 15 minutes, with the shard, the
+directory and the number of failed passes. When a pass succeeds again it logs
+`offload is copying again`.
+
+Retention does not give up on a copy. While passes keep failing, a segment
+past the retention bound with no recorded copy stays on local disk, however
+long that lasts, because deleting it would lose records nothing else holds. So
+an archive outage turns into local disk growth at the publish rate.
+`felix_storage_offload_held_bytes` says how much retention is keeping for that
+reason, `felix_storage_offload_failing_logs` how many logs are failing, and
+with each failure report the broker logs at error level `retention is keeping
+segments past their bound until offload can copy them`. Fix the archive (mount
+it, make it writable, free space on it) before the local disk fills; deletion
+resumes on the first pass after it is back. If the disk fills first, writes to
+it are refused as with any full disk (`felix_storage_full_total`); unsetting
+`FELIX_DURABLE_OFFLOAD_DIR` and restarting lets retention delete without a
+copy, which gives up the copies of those segments.
+
 **Recovery.** The manifest is authoritative, like `replica`: a manifest that
 does not decode fails the open. A gap in the local chain is still corruption,
 with one exception. If the manifest covers the gap and records a copy of every
@@ -1081,6 +1161,10 @@ manifest is rewritten whole for every copy it records.
 > `recovery_accepts_a_head_gap_the_manifest_covers` and
 > `recovery_still_refuses_a_gap_the_manifest_does_not_cover`.
 > `truncation_forgets_the_copies_it_cuts_into`.
+> `an_unreachable_archive_does_not_fail_the_open_or_publishes`,
+> `retention_keeps_and_reports_segments_while_the_archive_is_down_then_resumes`
+> and `a_read_only_archive_does_not_fail_the_open_and_nothing_is_deleted`: an
+> archive outage costs local disk and nothing else.
 
 Still to come: a cold read path (ranged reads of a copy, using its index),
 a bound on a local cold cache, cloud backends, and tail latency numbers for

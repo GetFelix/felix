@@ -405,7 +405,13 @@ When the fence applies:
   (`a_counter_fence_older_than_the_cache_fence_is_refused`). Taking another
   log drops the cache's index or the counter sums above the cut, so the
   shard serves what its log now holds (`a_superseded_put_is_gone_from_the_index`).
-  A cache kept in memory has no log to fence and opens on the lease.
+  A cache kept in memory has no log to fence and opens on the lease. A cache
+  or counter log this broker has but cannot open (the shard is closing, out of
+  file descriptors, a failed recovery) is not the same: under `fenced_caches`
+  the shard stays closed and the next pass tries again
+  (`a_cache_log_that_fails_to_open_keeps_the_shard_closed`,
+  `a_counter_log_that_fails_to_open_keeps_the_shard_closed`); before it, the
+  shard opens on the lease.
 - Only when every replica in the new set offers both `FENCE` and
   `TAIL_FETCH`, and for a cache shard `CACHE_FENCE` too, as its latest
   handshake with this broker in either direction says, and this broker offers
@@ -959,6 +965,33 @@ resumes; one holding records of its own refuses, because a log placed over them
 would have a hole nothing downstream could detect, and it is halted. The leader
 then rebuilds it under the policy below, or leaves it to an operator when the
 policy says so.
+
+**Retention and the quorum mark.** A follower bootstrapped or rebuilt at the
+leader's base answers as holding everything below its tail, and the mark counts
+it that way. That is only true if every record below the base was already on a
+majority. So on a `Quorum` shard, retention and compaction never delete at or
+above the log's commit offset, on the leader or on a follower. The leader's
+commit offset is the quorum mark written through after each pass, so it never
+runs ahead of the mark. Without the floor, a stream with a small retention
+bound and both followers down lost records: retention deleted what the leader
+alone held, the followers came back below the new base and were rebuilt
+there, and their answers carried the mark over the gap, acknowledging the
+publishes that were waiting on it for records no broker held (#1094).
+
+The leader also refuses to bootstrap or rebuild a follower at a base above
+both the mark and its own commit offset. With the floor in place that does not
+happen; if a log reaches that state some other way, the follower waits and the
+publishes time out rather than being acknowledged.
+
+A `Leader` stream acknowledges before shipping, so it has no mark to protect
+and retention applies in full. An RF 1 `Quorum` stream is its own majority:
+its mark follows its tail, and the floor costs nothing.
+
+> `retention_and_rebuilds_never_carry_the_mark_over_a_lost_record`,
+> `a_quorum_follower_keeps_what_is_above_its_commit_offset`,
+> `a_bootstrap_above_the_commit_offset_is_not_offered`,
+> `a_rebuild_above_the_commit_offset_is_not_requested`, and in the cluster
+> suite `retention_waits_for_the_followers_of_a_quorum_stream`.
 
 **A batch shipped again never winds the commit order back.** A follower
 answers a batch it already holds with that batch's end, and a broker moves its

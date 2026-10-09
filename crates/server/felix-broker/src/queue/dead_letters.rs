@@ -352,9 +352,11 @@ impl DeadLetters {
         self.entries.shutdown().await.map_err(BrokerError::from)
     }
 
+    /// Settled, because callers write based on it under the shard lock, and a
+    /// cancelled caller's write may still be landing.
     async fn state(&self, key: &GroupKey, entry: &str) -> Result<Option<bytes::Bytes>> {
         self.entries
-            .get_checked(
+            .get_settled_checked(
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,

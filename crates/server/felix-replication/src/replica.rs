@@ -638,6 +638,16 @@ impl ReplicaHandler {
                 )
             }
             Ok(Ok(applied)) => {
+                // Held like the leader's copy: this one counts toward the mark,
+                // and if it led, it would be the copy a client was promised.
+                if matches!(
+                    log_kind,
+                    felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+                ) {
+                    log.hold_retention_at_commit(
+                        crate::quorum::acknowledges_at_quorum(&self.broker, &key).await,
+                    );
+                }
                 // Only what this batch left level with the leader: past the
                 // durable offset nothing here has been compared.
                 if let Some(commit) = batch.commit_offset

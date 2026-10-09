@@ -26,6 +26,9 @@ pub(super) struct SegmentCursor<'a> {
     buf_start: u64,
     /// Valid bytes in `buf`.
     buf_len: usize,
+    /// Bytes at or past this position read as absent, as if the file ended
+    /// here.
+    end: u64,
 }
 
 impl<'a> SegmentCursor<'a> {
@@ -35,6 +38,15 @@ impl<'a> SegmentCursor<'a> {
             buf: vec![0u8; READ_CHUNK_BYTES],
             buf_start: 0,
             buf_len: 0,
+            end: u64::MAX,
+        }
+    }
+
+    /// A cursor that sees the file as if it were cut at `end`.
+    pub(super) fn ending_at(file: &'a File, end: u64) -> Self {
+        Self {
+            end,
+            ..Self::new(file)
         }
     }
 
@@ -54,7 +66,9 @@ impl<'a> SegmentCursor<'a> {
             if self.buf.len() < capacity {
                 self.buf.resize(capacity, 0);
             }
-            self.buf_len = read_at(self.file, &mut self.buf[..capacity], pos)?;
+            let read = read_at(self.file, &mut self.buf[..capacity], pos)?;
+            self.buf_len =
+                read.min(usize::try_from(self.end.saturating_sub(pos)).unwrap_or(usize::MAX));
             self.buf_start = pos;
         }
         let from = (pos - self.buf_start) as usize;

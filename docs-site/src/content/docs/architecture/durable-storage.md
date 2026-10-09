@@ -191,6 +191,13 @@ it is `Trimmed { requested, oldest }` rather than an empty answer, so a
 resuming subscriber can tell "those records existed and are gone" from
 "nothing here yet".
 
+On a `Quorum` shard retention also stops at the commit offset, on the leader and
+on every follower: a segment holding a record a majority may not have yet is
+kept, however far over its bound the log is. Without that, a follower rebuilt
+at the leader's new base would count as holding records nobody had, and a
+waiting publish would be acknowledged for them. Compaction's head trims stop
+at the same place. `Leader` streams are not held.
+
 The segments go oldest first, with a directory sync after each unlink, so a
 power loss partway through a sweep leaves a longer log rather than a gap that
 recovery would refuse.
@@ -201,7 +208,10 @@ live below it to the tail (a put of the same value, or a counter checkpoint),
 flushes, and deletes the sealed segments below the seal point, oldest first.
 No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
-`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`. A cache's pass then writes its key
+index to `keys.idx`, so the next open replays only the log past it; one that
+does not match the log is ignored (see
+[the storage format](/architecture/storage-format/#keysidx-a-caches-key-index)).
 
 A shard with `<shard>.compacting` or `<shard>.retired` siblings, left by a
 directory-swap compaction that stopped partway, is settled on open: a missing
@@ -269,6 +279,11 @@ segments only past their last index entry. Every read verifies the checksum of
 every record it returns, so bit rot in cold data is still caught, though when it
 is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
+
+Recovery plans every repair before it makes any, and
+`felix-broker inspect segments` runs that plan alone: it reports what startup would
+do with a data directory, read-only, without a broker. See
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 
 Anything that deletes segments does it one synced unlink at a time, in an
 order that keeps the chain whole. Retention and compaction go oldest first.
@@ -402,8 +417,13 @@ printing wrong numbers.
   and CRC-32, and recorded in a per-shard `offload.manifest` before retention
   may delete them. A crash at any step leaves the local segment or a recorded
   copy. Nothing reads the copies yet, so a read below the local head is still
-  `Trimmed`, and the only backend is a local directory. See
-  `docs/durable-storage.md`, "Tiered storage: offload".
+  `Trimmed`, and the only backend is a local directory. A missing or
+  read-only offload directory does not stop a log from opening or taking
+  publishes, but retention keeps every segment without a copy until the
+  directory is back, so an outage grows local disk; watch
+  `felix_storage_offload_held_bytes` and see
+  [Diagnosing a cluster](/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on).
+  See `docs/durable-storage.md`, "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

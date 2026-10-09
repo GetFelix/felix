@@ -187,3 +187,95 @@ async fn without_the_lease_fallback_a_cache_shard_waits_for_a_majority() {
 
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }
+
+/// Leave `store`'s root unusable, so the next shard it opens fails as an
+/// EMFILE or a failed recovery would.
+fn break_store(dir: &TempDir, store: &str) {
+    let root = dir.path().join(store);
+    std::fs::remove_dir_all(&root).expect("remove the store's root");
+    std::fs::write(&root, b"not a directory").expect("block the store's root");
+}
+
+/// **A cache log this broker cannot open keeps the shard closed once caches
+/// acknowledge by their followers.** Opening it on the lease would serve
+/// unfenced while the old leader still acknowledges through its followers.
+#[tokio::test]
+async fn a_cache_log_that_fails_to_open_keeps_the_shard_closed() {
+    let replicas = cache_replicas();
+    let (leader, dir) = cache_leader().await;
+    break_store(&dir, "caches");
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key_of(ShardKind::Cache),
+        &route_of(ShardKind::Cache),
+        false,
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// With the lease still in force, the same failure opens on the lease, as a
+/// mixed fleet does.
+#[tokio::test]
+async fn a_cache_log_that_fails_to_open_falls_back_to_the_lease() {
+    let replicas = cache_replicas();
+    let (leader, dir) = cache_leader().await;
+    break_store(&dir, "caches");
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key_of(ShardKind::Cache),
+        &route_of(ShardKind::Cache),
+        true,
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Lease { .. }), "{outcome:?}");
+}
+
+/// **A counter log this broker cannot open keeps the shard closed too**,
+/// rather than opening with the cache log fenced and the counters not.
+#[tokio::test]
+async fn a_counter_log_that_fails_to_open_keeps_the_shard_closed() {
+    let replicas = cache_replicas();
+    let (leader, dir) = cache_leader().await;
+    break_store(&dir, "counters");
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key_of(ShardKind::Cache),
+        &route_of(ShardKind::Cache),
+        false,
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// A cache kept in memory has no log to fence, which is not a failure: it
+/// still opens on the lease.
+#[tokio::test]
+async fn a_cache_kept_in_memory_opens_on_the_lease() {
+    let replicas = cache_replicas();
+    let leader = Arc::new(Broker::new(Box::new(felix_storage::EphemeralCache::new())));
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key_of(ShardKind::Cache),
+        &route_of(ShardKind::Cache),
+        false,
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Lease { .. }), "{outcome:?}");
+}

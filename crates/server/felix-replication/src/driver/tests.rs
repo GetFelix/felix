@@ -10,6 +10,7 @@ mod halts;
 mod learner;
 mod quorum;
 mod reports;
+mod retention;
 mod shipping;
 mod stragglers;
 mod throttle;

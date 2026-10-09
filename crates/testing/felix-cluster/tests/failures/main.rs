@@ -22,4 +22,5 @@ mod majority_ack;
 mod membership;
 mod partition;
 mod promotion_fence;
+mod retention_floor;
 mod writes;

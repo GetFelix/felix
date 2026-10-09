@@ -40,7 +40,7 @@ brew uninstall felixctl     # and `brew untap getfelix/tap` to drop the tap
 From crates.io, which puts `felixctl` in `~/.cargo/bin`:
 
 ```bash
-cargo install felixctl --version 0.6.0-preview.2
+cargo install felixctl --version 0.6.0-preview.3
 ```
 
 A preview has to be named with `--version`, because cargo skips pre-releases
@@ -54,7 +54,7 @@ archive is `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) with a
 pages in `man/`:
 
 ```bash
-tag=v0.6.0-preview.2 target=aarch64-apple-darwin
+tag=v0.6.0-preview.3 target=aarch64-apple-darwin
 base=https://github.com/GetFelix/felix/releases/download/$tag
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz"
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz.sha256"
@@ -68,7 +68,7 @@ written mode `0600`, so run as your own user to read a mounted one:
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" \
   -v "$HOME/.config/felixctl:/home/felix/.config/felixctl" \
-  ghcr.io/getfelix/felixctl:0.6.0-preview.2 stream ls
+  ghcr.io/getfelix/felixctl:0.6.0-preview.3 stream ls
 ```
 
 With rootless Podman, use `--userns=keep-id` in place of `--user`, so the
@@ -586,6 +586,10 @@ With `--json` each broker prints one line: `node_id`, `subscriptions` (each
 with `behind` added when it has a position) and `next_cursor`, or `node_id` and
 `error` for a broker that did not answer.
 
+A broker that will not start cannot answer these. Its data directory is read
+offline by the broker binary itself, `felix-broker inspect segments`; see
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
+
 ### Permissions
 
 Every `inspect` command needs a broker token allowed `node.view` on
@@ -646,5 +650,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 State reads are planned. See
 [issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
 `felixctl inspect` is coming: connections, the control plane's placement
-decisions, a broker's segments read offline, and where one
+decisions, a data directory's records decoded offline, and where one
 record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).

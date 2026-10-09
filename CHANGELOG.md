@@ -11,6 +11,52 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- Retention could acknowledge a `Quorum` publish for records no broker held
+  (#1094). With both followers of a shard down, a tight retention bound
+  deleted records only the leader had, including ones publishes were still
+  waiting on. The followers came back below the leader's new base, were
+  rebuilt there, and their answers moved the quorum mark over the deleted
+  records. Retention and compaction's head trims now stop at the commit
+  offset on every replica of a `Quorum` shard, and the leader will not
+  bootstrap or rebuild a follower at a base above it. A stream whose
+  followers are down can therefore grow past its retention bound until a
+  majority is back. `DiskLog::hold_retention_at_commit` and
+  `StreamLog::hold_retention_at_commit` are new.
+- A consumer group's cursor can no longer move backwards after a cancelled
+  commit (#1097). The cancelled commit's write still finished on its own task,
+  but the next commit read the position from before it and wrote over it. A
+  commit now waits for a write to the cursor that is still applying. Finishing
+  a redrive had the same race against a cancelled return to dead and could
+  drop the dead letter; it waits the same way.
+- A missing or read-only offload directory no longer fails every durable
+  stream log at open. The directory is opened by the offload pass, which
+  reports a failure through `felix_storage_offload_failures_total`, the new
+  `felix_storage_offload_failing_logs` and `felix_storage_offload_held_bytes`
+  gauges and a backed-off log line, and retries on the next tick. Retention
+  still never deletes a segment without a recorded copy, so an outage grows
+  local disk; deletion resumes once the directory is back (#1096).
+- A promoted cache shard whose cache log or counter log failed to open (the
+  shard closing, too many open files, a failed recovery) opened on the lease
+  without a fence, even once caches acknowledge by their followers and the
+  lease no longer stops the old leader. It now stays closed and the next pass
+  tries again (#1095).
+
+## [0.6.0-preview.3] - 2026-10-08
+
+The third preview of 0.6.0. felixctl now manages a cluster as well as using
+it: it creates, changes and deletes tenants, namespaces, streams and caches,
+works consumer groups, counters and RBAC rules, and shows a shard's or a
+subscriber's live state with `felixctl inspect`. It installs with Homebrew.
+Every change of a shard's leader is fenced, and replicas keep a ballot with
+each generation they accept. Sealed segments can be copied to an object store
+before retention deletes them, the first step toward tiered storage.
+`felix-capi` adds a C ABI over the Rust client, the base for Go and C# SDKs.
+Caches gain conditional writes and key-scoped grants, and a client can read a
+bounded range of a stream. Development works with Docker or Podman. Several
+move, failover and lease-timing bugs are fixed. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
+
 ### Added
 - Failover on the followers' word (part of #1009). Each broker pings the
   leaders of the shards it follows (new internal kinds `Ping` 38 and `Pong`
@@ -29,6 +75,30 @@ for what the current release guarantees.
   `run_heartbeat` and `membership::spawn` take the broker's `Suspects`.
   TLA+: `Suspicions` constant, `FelixShardSuspicion.cfg` (pass) and
   `FelixShardSuspicionLease.cfg` (violates `AtMostOneServing`).
+- `felix-broker inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]`
+  (part of #1077): a broker's data directory read from disk, by the broker
+  binary without starting a broker; it binds nothing and reads no
+  configuration. For every shard of every store (streams, `caches/`,
+  `groups/`, `dead-letters/`, `counters/`) it lists the segments, checks every
+  record's checksum and each index against one rebuilt from its segment, and
+  gives the verdict startup would reach: clean, repair (and what it would cut
+  or remove), or refuse (and the segment and byte). Strictly read-only: files
+  are opened for reading and nothing is created, cut, removed or re-indexed.
+  `--repair-checksum-tail`, `--index-spacing` and `--verify-all-on-open` match
+  the broker's settings, `--kind` narrows to one store, `--segments` lists
+  every shard's segments and `--json` prints one line per shard. It exits 0
+  when every shard would open as it is, 6 when startup would repair one, and 7
+  when it would refuse one or a record fails its checksum. Diagnosing a
+  cluster covers a broker that will not start, on Kubernetes, Docker and
+  Podman, and on a copy. Decoding records offline (`inspect records`) comes
+  next.
+- A cache shard's compaction pass now writes its key index to `keys.idx` in
+  the shard directory, and an open loads it and replays only the log past it
+  instead of the whole log (part of #1073). The snapshot is checked against
+  the log (CRC-32C, the offset range it covers, the checksum of the last
+  record it saw) and ignored for a full replay when anything disagrees; a log
+  truncation and `forget_index` remove it. Memory is unchanged: the index is
+  still held whole in memory. Format in `docs/storage-format.md`.
 - A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
   macOS and Linux, with completions and man pages (#1005). `release.yml`
   writes it from each release's archive checksums and pushes it to
@@ -362,6 +432,13 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Startup recovery of a shard now plans every write before it makes any
+  (`plan_recovery` in felix-storage's `disk_log/recovery/plan.rs`), then makes
+  them in the same order as before. What recovery does is unchanged; the plan
+  is what `felix_storage::inspect` and `felix-broker inspect segments` report.
+  An I/O error while planning now stops before any repair is written, where it
+  used to stop partway. The `segment_recovery` fuzz target also checks that
+  plan and recovery agree.
 - Containers run under Docker or Podman. `scripts/container_engine.sh` picks
   the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
   answers) for `task test`, `task coverage`, `task pg:*` and `task
@@ -550,8 +627,6 @@ for what the current release guarantees.
   `Cluster`'s `client_token`, `admin_token`, `operator_token`,
   `subscribe_only_token` and `group_operator_token` fields are now methods, and
   `ControlPlane`'s token methods moved to `felix_cluster::Credentials`.
-
-### Fixed
 - A cache follower that dropped a divergent suffix of its cache log, or of its
   counter log, kept the in-memory index or counter sums built from the dropped
   records, so after a promotion a key could read the value of whatever record
@@ -3658,7 +3733,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...HEAD
+[0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
 [0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2
 [0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
 [0.5.0]: https://github.com/GetFelix/felix/compare/v0.4.1...v0.5.0

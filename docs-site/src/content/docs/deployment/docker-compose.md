@@ -11,13 +11,13 @@ differ.
 The images are published to GHCR and are pullable without credentials:
 
 ```bash
-docker pull ghcr.io/getfelix/felix-broker:0.6.0-preview.2
-docker pull ghcr.io/getfelix/felix-controlplane:0.6.0-preview.2
+docker pull ghcr.io/getfelix/felix-broker:0.6.0-preview.3
+docker pull ghcr.io/getfelix/felix-controlplane:0.6.0-preview.3
 ```
 
 Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
 
-Each release publishes the full version (`0.6.0-preview.2`). A release without a
+Each release publishes the full version (`0.6.0-preview.3`). A release without a
 pre-release suffix also publishes its minor series (`0.6`) and `latest`. Use a
 full version tag in anything you deploy, because the other two move. A client
 negotiates its features with the broker it connects to, so a newer client
@@ -85,7 +85,7 @@ services:
       retries: 5
 
   felix-controlplane:
-    image: ghcr.io/getfelix/felix-controlplane:0.6.0-preview.2
+    image: ghcr.io/getfelix/felix-controlplane:0.6.0-preview.3
     environment:
       - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
       # Day 0 only: the bootstrap API is how the broker credential is made.
@@ -102,7 +102,7 @@ services:
         condition: service_healthy
 
   felix-broker:
-    image: ghcr.io/getfelix/felix-broker:0.6.0-preview.2
+    image: ghcr.io/getfelix/felix-broker:0.6.0-preview.3
     environment:
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token

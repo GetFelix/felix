@@ -56,7 +56,11 @@ pub async fn ship_once_with<R: PeerRequester>(
         let backing_off = cursor
             .rebuild_refused
             .is_some_and(|backoff| tokio::time::Instant::now() < backoff.retry_at);
-        if !halt.rebuildable() || backing_off || !rebuilds.try_begin() {
+        if !halt.rebuildable()
+            || backing_off
+            || base_above_commit(log, shard, commit_offset)
+            || !rebuilds.try_begin()
+        {
             return Progress::Halted(halt);
         }
         match request_rebuild(requester, log, shard, log_kind, cursor).await {
@@ -117,6 +121,10 @@ pub async fn ship_once_with<R: PeerRequester>(
                 oldest,
                 "the follower is below this leader's oldest record; offering a bootstrap",
             );
+            if base_above_commit(log, shard, commit_offset) {
+                cursor.stalled = true;
+                return Progress::Retry;
+            }
             return offer_bootstrap(requester, shard, log_kind, cursor, oldest).await;
         }
         Err(err) => {
@@ -338,6 +346,33 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
     }
+}
+
+/// Whether this leader's base lies above everything known committed on a
+/// `Quorum` shard (`commit_offset` is `Some`).
+///
+/// A follower bootstrapped or rebuilt there would answer as holding every
+/// offset below its tail, and the mark would move over records between the
+/// commit offset and the base that no replica has. Retention is held at the
+/// commit offset, so this should not happen; if it does, the follower waits
+/// rather than a publish being acknowledged for records that are gone.
+fn base_above_commit(log: &StreamLog, shard: &ShardRef, commit_offset: Option<u64>) -> bool {
+    let Some(mark) = commit_offset else {
+        return false;
+    };
+    let committed = mark.max(log.commit_offset());
+    let base = log.base_offset();
+    if base <= committed {
+        return false;
+    }
+    tracing::error!(
+        stream = %shard.stream,
+        shard = shard.shard,
+        base,
+        committed,
+        "not moving a follower to this leader's base: records below it were never committed",
+    );
+    true
 }
 
 /// The same batch as its log's own kind, for a follower that refused the
