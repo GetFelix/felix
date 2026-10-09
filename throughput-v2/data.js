@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791559405409,
+  "lastUpdate": 1791560894917,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26676,6 +26676,58 @@ window.BENCHMARK_DATA = {
             "range": "4517.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 971653.85\nmean: 971909.02\nstdev: 4517.20\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85a53d63289b1e789c2d3c944f29cf6bc48aa2af",
+          "message": "ci(formal): walk the shipping configuration and pair the persisted promise and routing (#1107)\n\nThe long walks ran with ballots and fence-every-change off. Turn both on,\nas the broker ships them. FelixShardWalkMovesDestination keeps the fence\noff, because its violation is the destination opening unfenced.\n\nSpec pairing now covers the replica's persisted promise in disk_log\n(ballot, replica_state, epochs) and the broker's ingress routing.\ncheck_ballot moves into disk_log/ballot.rs so the ballot refusal is\ninside that path without pairing all of disk_log.rs.\n\nPart of #1098",
+          "timestamp": "2026-10-09T08:39:00-07:00",
+          "tree_id": "aeed35278fe7d6929c95494eba02e1b14d6d7f84",
+          "url": "https://github.com/GetFelix/felix/commit/85a53d63289b1e789c2d3c944f29cf6bc48aa2af"
+        },
+        "date": 1791560894289,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349237.94,
+            "range": "5496.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349237.94\nmean: 350318.02\nstdev: 5496.34\ncv: 1.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349237.94,
+            "range": "5496.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349237.94\nmean: 350318.02\nstdev: 5496.34\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80196.22,
+            "range": "4336.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80196.22\nmean: 78694.02\nstdev: 4336.61\ncv: 5.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801962.23,
+            "range": "43366.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801962.23\nmean: 786940.20\nstdev: 43366.04\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
