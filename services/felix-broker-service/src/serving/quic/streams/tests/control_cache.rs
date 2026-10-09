@@ -828,6 +828,26 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
             felix_broker::CacheMetadata::default(),
         )
         .await?;
+    // Versions start from the broker's start time, so learn where they are.
+    broker
+        .cache()
+        .put(
+            "t1",
+            "default",
+            "leases",
+            0,
+            "probe",
+            Bytes::from_static(b"p"),
+            None,
+        )
+        .await?;
+    let first = broker
+        .cache()
+        .get_versioned("t1", "default", "leases", 0, "probe")
+        .await?
+        .expect("probe written")
+        .version
+        + 1;
     let auth = auth_fixture("t1", default_perms());
     let put_if = |request_id| {
         Ok(Some(frame_from_message(Message::CachePutIf {
@@ -870,7 +890,7 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
         put_if(2),
         get,
         delete_if(99, 4),
-        delete_if(0, 5),
+        delete_if(first, 5),
         Ok(None),
     ];
     let (result, messages) = run_control_loop_with_frames(
@@ -893,16 +913,16 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
         version,
         request_id,
     };
-    assert_eq!(answers[0], &result(true, Some(0), 1));
-    assert_eq!(answers[1], &result(false, Some(0), 2));
+    assert_eq!(answers[0], &result(true, Some(first), 1));
+    assert_eq!(answers[1], &result(false, Some(first), 2));
     assert!(matches!(
         answers[2],
         Message::CacheValue {
-            version: Some(0),
+            version: Some(version),
             ..
-        }
+        } if *version == first
     ));
-    assert_eq!(answers[3], &result(false, Some(0), 4));
+    assert_eq!(answers[3], &result(false, Some(first), 4));
     assert_eq!(answers[4], &result(true, None, 5));
 
     // A client that did not offer the bit gets the answer it always got.

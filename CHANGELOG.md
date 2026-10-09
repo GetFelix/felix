@@ -12,6 +12,11 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- An in-memory cache's versions restarted at 0 with the broker, so a
+  `cache_put_if` or `cache_delete_if` holding a version read before a restart
+  could apply against a value written after it (#1098). Versions now start
+  each run at the wall-clock time in microseconds. Log-backed caches were
+  not affected: their versions are log offsets.
 - A late nack can no longer take a record from the consumer it was handed to
   next (#1098). `group_nack` takes an optional `attempts` that names the
   delivery, as on `group_extend`, and is refused with `stale_claim` once that

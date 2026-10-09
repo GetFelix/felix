@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -37,7 +37,9 @@ pub struct EphemeralCache {
     // Optional size cap to enable future eviction policies.
     max_entries: Option<usize>,
     /// Source of entry versions. One counter for the whole store, so a key
-    /// deleted and written again never gets a version it had before.
+    /// deleted and written again never gets a version it had before. Starts
+    /// at [`incarnation_base`] so a version a client read before a restart
+    /// cannot name a value written after it.
     next_version: AtomicU64,
 }
 
@@ -51,7 +53,7 @@ impl EphemeralCache {
         Self {
             inner: RwLock::new(HashMap::new()),
             max_entries: Some(max_entries),
-            next_version: AtomicU64::new(0),
+            next_version: AtomicU64::new(incarnation_base()),
         }
     }
 }
@@ -88,6 +90,19 @@ impl EphemeralCache {
     }
 }
 
+/// The first version this process hands out: wall-clock microseconds at
+/// startup. An earlier incarnation's versions run from its own start time up
+/// by one per write, so they stay below this one unless it averaged more than
+/// a write per microsecond or the clock went back between runs. Microseconds
+/// keep versions under 2^53, exact as a JSON number in any client.
+fn incarnation_base() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_micros()).unwrap_or(u64::MAX / 2)
+        })
+}
+
 /// The entry under `key`, unless it has expired.
 fn live<'a>(map: &'a HashMap<CacheKey, CacheEntry>, key: &CacheKey) -> Option<&'a CacheEntry> {
     map.get(key)
@@ -99,7 +114,7 @@ impl Default for EphemeralCache {
         Self {
             inner: RwLock::new(HashMap::new()),
             max_entries: None,
-            next_version: AtomicU64::new(0),
+            next_version: AtomicU64::new(incarnation_base()),
         }
     }
 }

@@ -236,6 +236,49 @@ async fn conditional_writes_compare_versions() {
 }
 
 #[tokio::test]
+async fn a_version_from_before_a_restart_names_nothing_after_it() {
+    use crate::cache::CacheCondition;
+    async fn put(
+        cache: &EphemeralCache,
+        value: &'static [u8],
+        condition: CacheCondition,
+    ) -> crate::cache::ConditionalWrite {
+        cache
+            .put_if(
+                "t1",
+                "ns",
+                "c",
+                0,
+                "k",
+                Bytes::from_static(value),
+                None,
+                condition,
+            )
+            .await
+            .unwrap()
+    }
+
+    let before = EphemeralCache::new();
+    let seen = put(&before, b"old", CacheCondition::Absent)
+        .await
+        .version
+        .unwrap();
+    drop(before);
+    // A real restart takes far longer than this; it only keeps the two
+    // stores from starting in the same microsecond.
+    sleep(Duration::from_millis(2)).await;
+
+    let after = EphemeralCache::new();
+    assert!(put(&after, b"new", CacheCondition::Absent).await.applied);
+    let stale = put(&after, b"clobber", CacheCondition::Version(seen)).await;
+    assert!(!stale.applied, "a pre-restart version matched {stale:?}");
+    assert_eq!(
+        after.get("t1", "ns", "c", 0, "k").await.unwrap(),
+        Some(Bytes::from_static(b"new"))
+    );
+}
+
+#[tokio::test]
 async fn an_expired_entry_is_absent_to_a_condition() {
     use crate::cache::CacheCondition;
     let cache = EphemeralCache::new();
