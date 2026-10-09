@@ -26,8 +26,8 @@ binaries do not read, so pinning an older `image.tag` under it is not a match
 either. Use one of these:
 
 - **A release.** Check out the release tag and install the chart from there.
-  Its `appVersion` is that release's image tag (`v0.6.0-preview.2` renders
-  `ghcr.io/getfelix/felix-broker:0.6.0-preview.2`), and its templates match those
+  Its `appVersion` is that release's image tag (`v0.6.0-preview.3` renders
+  `ghcr.io/getfelix/felix-broker:0.6.0-preview.3`), and its templates match those
   binaries.
 - **`main`.** Build both images from the same commit as the chart (the
   [Docker Compose page](/deployment/docker-compose/) has the build
@@ -44,7 +44,7 @@ workflow's OIDC identity, so there is no key to store or rotate and the
 signature names the workflow that produced the image. Verify before you pin:
 
 ```bash
-cosign verify ghcr.io/getfelix/felix-broker:0.6.0-preview.2 \
+cosign verify ghcr.io/getfelix/felix-broker:0.6.0-preview.3 \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   --certificate-identity-regexp='^https://github.com/gabloe/felix/\.github/workflows/release\.yml@refs/tags/v'
 ```
