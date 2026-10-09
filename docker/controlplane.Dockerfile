@@ -6,7 +6,7 @@
 # the broker image.
 
 # --- build ---------------------------------------------------------------
-FROM rust:1.97-bookworm AS build
+FROM docker.io/library/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 COPY . .
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/release/${BIN}" /usr/local/bin/felix-controlplane
 
 # --- runtime -------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 
 # ca-certificates: two reasons, not one — the control plane fetches an IdP's
 #   JWKS over TLS, and it connects to Postgres, which is usually TLS too.

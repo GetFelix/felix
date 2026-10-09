@@ -39,7 +39,7 @@ pub struct ClusterConfig {
     pub node_env: Vec<Vec<(String, String)>>,
     /// Give every broker a plaintext Kafka listener. Off by default. It binds
     /// every interface and advertises the address a kcat container reaches
-    /// the host by, since the tests drive it from Docker.
+    /// the host by, since the tests drive it from Docker or Podman.
     pub kafka: bool,
     /// Route every broker-to-broker and broker-to-control-plane link through
     /// the harness's own proxies, so [`Fault::Drop`](crate::Fault::Drop) and

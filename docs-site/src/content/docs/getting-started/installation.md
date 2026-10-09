@@ -109,8 +109,8 @@ cargo test --workspace
 ```
 
 The control plane's Postgres tests sit behind a feature and do not run in a
-plain `cargo test`. `task test` starts a Postgres in Docker, when Docker is
-available, and runs them too.
+plain `cargo test`. `task test` starts a Postgres container, when Docker or
+Podman is available, and runs them too. See [Docker or Podman](/getting-started/containers/).
 
 ### Run the Conformance Suite
 
@@ -281,7 +281,9 @@ Native Windows support is not currently tested.
 
 ## Docker (Alternative)
 
-Released images are on GHCR and pull without credentials. Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
+Released images are on GHCR and pull without credentials. The commands work
+with Podman as written once `docker` is replaced with `podman`, except where
+[Docker or Podman](/getting-started/containers/) says otherwise. Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
 
 ```bash
 docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
@@ -343,7 +345,8 @@ The same, for the control plane:
 ```bash
 # Or build it: docker build -t felix-controlplane -f docker/controlplane.Dockerfile .
 
-# Without a Postgres URL it keeps its metadata in memory.
+# Without a Postgres URL it keeps its metadata in memory. Under Podman the
+# host is host.containers.internal.
 docker run -p 8443:8443 \
   -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.docker.internal:55432/postgres \
   ghcr.io/getfelix/felix-controlplane:0.6.0-preview.2

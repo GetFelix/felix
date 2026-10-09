@@ -1577,7 +1577,14 @@ wakes the driver; then it hands their exchanges to the driver. A shard being
 handed over waits for everyone, since its fence already holds the writes and the
 drained report needs the destination's answer. Until such an exchange ends,
 its follower is not shipped to again and counts at the position it had when
-the exchange began, a floor like any follower that has not answered yet. Its auxiliary logs wait too, so they do not
+the exchange began, a floor like any follower that has not answered yet. That
+busy follower may be the one a majority needs: with three replicas, one
+follower still answering an earlier pass and the other unreachable, the pass
+has shipped to nobody who can answer. So a pass with a busy follower that
+counts also stops waiting for a majority once the next pass is wanted, and an
+exchange that ends while a pass runs asks for the next one, which counts the
+busy follower's answer instead of waiting out the unreachable one (#1080).
+Its auxiliary logs wait too, so they do not
 dial the same slow peer again. When the exchange ends, the cursor goes back and
 the shard passes again if the follower moved; one that failed waits for the
 next wake, so a peer that fails fast is not redialled in a loop. The report

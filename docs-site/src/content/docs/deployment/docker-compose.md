@@ -4,6 +4,9 @@ description: "Run the control plane and a broker under Docker Compose, with the 
 ---
 
 Running Felix under Docker Compose, for local development and testing.
+With Podman, run the same files with `podman compose`; see
+[Docker or Podman](/getting-started/containers/) for the provider it needs and the few places the two
+differ.
 
 The images are published to GHCR and are pullable without credentials:
 
@@ -31,7 +34,8 @@ docker build -f docker/controlplane.Dockerfile -t felix-controlplane:dev .
 Both build from the repository root. The binaries are workspace members, so
 cargo needs the whole workspace to resolve them. Each Dockerfile takes one
 build argument, `BIN`, naming the binary to build. Docker warns about any
-other `--build-arg` and ignores it.
+other `--build-arg` and ignores it. `podman build` needs `--format docker`, or
+it drops the images' `HEALTHCHECK`.
 
 :::note[Compose vs Kubernetes]
 Use Docker Compose for local development and testing. For production, see the [Kubernetes guide](/deployment/kubernetes/).
@@ -69,7 +73,7 @@ A control plane over Postgres and one durable broker:
 ```yaml
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_USER: felix
       POSTGRES_PASSWORD: felix
@@ -195,7 +199,7 @@ that mounts it:
 ```yaml
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: docker.io/prom/prometheus:latest
     ports:
       - "9090:9090"
     volumes:
@@ -324,6 +328,8 @@ directory instead of a named volume, make it writable by uid 65532 first:
 
 ```bash
 sudo chown 65532:65532 /path/to/host/data
+# Rootless Podman maps container uids, so change it from inside its namespace:
+podman unshare chown 65532:65532 /path/to/host/data
 ```
 
 ```yaml
@@ -359,7 +365,7 @@ services:
 ```
 
 :::caution[Host networking]
-Host networking doesn't work on Docker Desktop for Mac or Windows. Use bridge networking there, or run on Linux.
+Host networking doesn't work on Docker Desktop or `podman machine` on Mac or Windows. Use bridge networking there, or run on Linux.
 :::
 
 ## Resource limits

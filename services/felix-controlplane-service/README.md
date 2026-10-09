@@ -47,7 +47,7 @@ Environment variables (take precedence over YAML):
 A minimal Postgres service is available at `services/felix-controlplane-service/docker-compose.yml`:
 ```bash
 cd services/felix-controlplane-service
-docker compose up -d
+docker compose up -d        # or: podman compose up -d
 export FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@localhost:5433/felix_controlplane
 cargo test -p felix-controlplane-service --features pg-tests -- --ignored   # runs Postgres-backed tests
 ```

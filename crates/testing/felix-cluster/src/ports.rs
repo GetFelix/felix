@@ -21,19 +21,6 @@ pub fn free_tcp_except(taken: impl Fn(u16) -> bool) -> Result<SocketAddr> {
     pick_except(free_tcp, taken)
 }
 
-/// The host a Docker container on this machine reaches the host's ports by.
-///
-/// On Linux a `--network host` container shares loopback. Docker Desktop runs
-/// containers in a VM, where loopback is the VM's own, so it goes through
-/// `host.docker.internal` -- and the listener has to bind every interface.
-pub fn docker_host() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "127.0.0.1"
-    } else {
-        "host.docker.internal"
-    }
-}
-
 /// A free UDP port on loopback, for the QUIC listeners.
 pub fn free_udp() -> Result<SocketAddr> {
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind ephemeral UDP port")?;

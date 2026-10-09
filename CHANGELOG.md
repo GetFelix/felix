@@ -18,6 +18,27 @@ for what the current release guarantees.
   `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
   `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap); dry runs keep it as an artifact and nightlies
   skip it.
+- `felixctl inspect subs` and the `subscriptions_list` request (part of
+  #1077). A broker advertising `FEATURE_INSPECT` now also answers
+  `subscriptions_list` with `subscriptions_list_info`: one page of the
+  subscriptions it serves, each with its stream and shard, subscriber and
+  subscription ids, connection id, client address and principal, overflow
+  policy, queue depth and capacity in batches, records dropped, position and
+  the shard's tail. The filter narrows by tenant, namespace, stream, shard,
+  principal, or to subscriptions that have dropped records. A page is 100 by
+  default and at most 1000, and a cursor of shard and subscriber id continues
+  it. It needs `node.view:cluster:*`. The broker reads each shard's fanout
+  snapshot and never touches a queue. On the delivery path, a subscriber's
+  receiver now stores one past the offset of each batch it takes (a relaxed
+  store), and a drop adds to a per-subscriber count beside the existing
+  metric. felixctl asks every broker, or only `--node`, and prints one table
+  or one JSON line per broker, with `--principal`, `--dropping`, `--limit` and
+  `--cursor`. felix-broker adds `Broker::list_subscriptions`,
+  `SubscriberStats`, `SubscriberOwner` and `Subscription::set_owner`;
+  felix-client adds `Client::list_subscriptions` and `SubscriptionsPage`, and
+  its inspect calls now report a broker's `unsupported` answer as such.
+  Diagnosing a cluster covers a subscriber missing records and one falling
+  behind.
 - Stream logs can copy their sealed segments to an object store before
   retention deletes them, the first part of tiered storage (#172). Off by
   default; `FELIX_DURABLE_OFFLOAD_DIR` turns it on, and the only backend is a
@@ -324,6 +345,15 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Containers run under Docker or Podman. `scripts/container_engine.sh` picks
+  the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
+  answers) for `task test`, `task coverage`, `task pg:*` and `task
+  tla:check`; the kcat tests read the same variable and run
+  `host.containers.internal` under Podman. Dockerfiles, the control plane's
+  compose file and the docs name images fully qualified
+  (`docker.io/library/...`). A new docs page, Docker or Podman, covers setup
+  and the differences. `felix_cluster::ports::docker_host` is now
+  `felix_cluster::container::host`.
 - `felix_replication::promotion::Outcome::Pending` is a struct variant
   carrying `why` and `took`, the replicas that took the fence in that
   attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`
@@ -433,6 +463,13 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A `Quorum` publish no longer waits out an unreachable follower when the
+  other follower already holds the record but is still answering an earlier
+  replication pass (#1080). The pass waiting for a majority had shipped only to
+  the unreachable one, and the busy follower's answer reached the driver, not
+  that pass, so the mark stayed put until the peer request timed out (5 s by
+  default, past most publish timeouts). The answer now ends that wait and the
+  next pass counts it.
 - `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
   so a promoted shard waiting for its fence was counted in no phase.
 - A broker accepts a token carrying `node.view` or `node.manage`. Neither was

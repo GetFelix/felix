@@ -29,7 +29,7 @@ with shell completions and man pages, to its
 container image:
 
 ```bash
-docker run --rm ghcr.io/getfelix/felixctl:0.6.0-preview.2 --help
+docker run --rm ghcr.io/getfelix/felixctl:0.6.0-preview.2 --help   # or podman run
 ```
 
 Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.

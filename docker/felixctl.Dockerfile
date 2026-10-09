@@ -6,7 +6,7 @@
 # not need: no init, no healthcheck, no ports.
 
 # --- build ---------------------------------------------------------------
-FROM rust:1.97-bookworm AS build
+FROM docker.io/library/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 COPY . .
@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/felixctl /usr/local/bin/felixctl
 
 # --- runtime -------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 
 # ca-certificates: felixctl verifies brokers and the control plane against the
 # system trust store unless a context names its own CA file.

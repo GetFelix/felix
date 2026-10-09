@@ -455,6 +455,15 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 let key = inspect::target(tenant_id, namespace, name, kind, shard);
                 inspect::shard_inspect(&cx, &mut session, key, request_id).await?
             }
+            Message::SubscriptionsList {
+                filter,
+                limit,
+                cursor,
+                request_id,
+            } => {
+                inspect::subscriptions_list(&cx, &mut session, filter, limit, cursor, request_id)
+                    .await?
+            }
             Message::Subscribe {
                 tenant_id,
                 namespace,
@@ -1090,6 +1099,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::CacheShardsView { .. }
             | Message::ShardOwnersView { .. }
             | Message::ShardInspectInfo { .. }
+            | Message::SubscriptionsListInfo { .. }
             | Message::NotLeader { .. }
             | Message::Ok => {
                 // Protocol hygiene: these message types should never arrive on the control stream

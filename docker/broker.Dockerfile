@@ -10,7 +10,7 @@
 # manager, nothing else for an attacker to find.
 
 # --- build ---------------------------------------------------------------
-FROM rust:1.97-bookworm AS build
+FROM docker.io/library/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 # Everything, rather than a manifest-first dependency-caching dance. That trick
@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/release/${BIN}" /usr/local/bin/felix-broker
 
 # --- runtime -------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 
 # ca-certificates: QUIC is TLS 1.3 only and the broker verifies the control
 #   plane's certificate, so the trust store is load-bearing.

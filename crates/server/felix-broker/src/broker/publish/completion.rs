@@ -325,6 +325,7 @@ impl Completion {
                             if let Some(base) = delivery.envelope.base_offset() {
                                 subscriber.lag.dropped(base);
                             }
+                            subscriber.stats.dropped(item_count as u64);
                             metrics::counter!("felix_subscribe_dropped_total")
                                 .increment(item_count as u64);
                             metrics::counter!("felix_sub_queue_dropped_total")

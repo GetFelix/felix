@@ -17,6 +17,8 @@ use crate::controlplane::{Api, assignments};
 use crate::error::{Exit, MarkExit, fail};
 use crate::output::{Output, table};
 
+mod subs;
+
 pub(crate) async fn run(
     command: &InspectCommand,
     settings: &Settings,
@@ -24,6 +26,7 @@ pub(crate) async fn run(
 ) -> anyhow::Result<()> {
     match command {
         InspectCommand::Shard(args) => shard(args, settings, out).await,
+        InspectCommand::Subs(args) => subs::run(args, settings, out).await,
     }
 }
 
@@ -208,6 +211,11 @@ impl Peers<'_> {
         target: &Target,
         shard: u32,
     ) -> anyhow::Result<ShardInspection> {
+        ask(self.client(node).await?, target, shard).await
+    }
+
+    /// A connection to `node` that can be inspected, opened on first use.
+    async fn client(&mut self, node: &str) -> anyhow::Result<&Client> {
         if !self.connected.contains_key(node) {
             let Some(addr) = self.addresses.get(node) else {
                 anyhow::bail!("{node} advertises no client address");
@@ -230,8 +238,7 @@ impl Peers<'_> {
             }
             self.connected.insert(node.to_string(), client);
         }
-        let client = &self.connected[node];
-        ask(client, target, shard).await
+        Ok(&self.connected[node])
     }
 }
 

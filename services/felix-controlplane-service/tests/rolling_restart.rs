@@ -240,7 +240,10 @@ async fn a_rolling_restart_serves_every_watch_and_heartbeat() {
         Ok(url) if !url.trim().is_empty() => (url, None),
         _ => {
             if !docker_available() {
-                eprintln!("skipping rolling_restart: docker not available");
+                eprintln!(
+                    "skipping rolling_restart: no FELIX_TEST_DATABASE_URL and no docker CLI \
+                     (testcontainers runs `docker`; with Podman, `task test` starts the database)"
+                );
                 return;
             }
             let docker = Box::leak(Box::new(Cli::default()));

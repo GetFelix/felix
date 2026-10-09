@@ -60,11 +60,13 @@ pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};
 
 // Streams.
-pub use broker::{Cursor, HistoryRange, JoinOffsets, ReadPage, ResumedSubscription, RingRecord};
+pub use broker::{
+    Cursor, HistoryRange, JoinOffsets, ReadPage, ResumedSubscription, RingRecord, SubscriptionPage,
+};
 pub use felix_wire::StartPosition;
 pub use stream::{
-    DeliveryEnvelope, FrameShape, ReadBound, ReadBounds, SubQueuePolicy, Subscription,
-    SubscriptionGuard, SubscriptionReceiver,
+    DeliveryEnvelope, FrameShape, ReadBound, ReadBounds, SubQueuePolicy, SubscriberOwner,
+    SubscriberStats, Subscription, SubscriptionGuard, SubscriptionReceiver,
 };
 
 // Atomic commits.

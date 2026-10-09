@@ -11,10 +11,11 @@ tasks, so a green local run of the ones below predicts a green CI run.
 - **Rust 1.97.1**, pinned in `rust-toolchain.toml` with `rustfmt` and `clippy`.
   The workspace is edition 2024 with `rust-version = "1.97"`.
 - **[Task](https://taskfile.dev)** for the shortcuts.
-- **Docker**, optional. `task test` uses it to start Postgres for the control
-  plane's Postgres tests and skips them without it.
+- **Docker or Podman**, optional. `task test` uses one to start Postgres for
+  the control plane's Postgres tests and skips them without either.
+  `CONTAINER_ENGINE` picks one; see [Docker or Podman](/getting-started/containers/).
 - For the extras only: nightly Rust and `cargo-fuzz` for
-  [fuzzing](/development/fuzzing/), Java or Docker for `task tla:check`,
+  [fuzzing](/development/fuzzing/), Java, Docker or Podman for `task tla:check`,
   Node for the docs site, and `helm` with PyYAML for `task chart:check`.
 
 ## Building
@@ -53,7 +54,7 @@ cargo test -p felix-broker-service --test quic_subscribe   # one QUIC integratio
    binary, and `cargo test` would not build it.
 2. Outside CI it runs `task pg:up`, a `postgres:16-alpine` container named
    `felix-pg-tests` on port 55432.
-3. With `FELIX_TEST_DATABASE_URL` set, or Docker available, it runs the
+3. With `FELIX_TEST_DATABASE_URL` set, or Docker or Podman available, it runs the
    workspace tests with `--features felix-controlplane-service/pg-tests`, so the
    Postgres store tests run too. Otherwise it runs plain `cargo test --workspace`.
 4. Outside CI it runs `task pg:down`.
