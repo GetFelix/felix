@@ -344,6 +344,46 @@ fn saving_over_a_readable_config_makes_it_private() {
     assert_eq!(leftovers, vec![std::ffi::OsString::from("config.toml")]);
 }
 
+/// A symlink planted where the temporary file would go is neither followed
+/// nor replaced: the save picks a name nobody can predict and creates it
+/// exclusively.
+#[cfg(unix)]
+#[test]
+fn a_planted_symlink_at_the_temp_path_is_not_followed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, "untouched").expect("write");
+    let guess = dir
+        .path()
+        .join(format!(".config.toml.{}.tmp", std::process::id()));
+    std::os::unix::fs::symlink(&victim, &guess).expect("symlink");
+
+    let config = config_with("dev", full_profile());
+    config.save(&path).expect("save");
+
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    assert!(std::fs::symlink_metadata(&guess).unwrap().is_symlink());
+    assert!(!std::fs::symlink_metadata(&path).unwrap().is_symlink());
+    assert_eq!(ConfigFile::load(&path).expect("load"), config);
+}
+
+/// The temporary file is only ever created, never opened if something is
+/// already at its path.
+#[cfg(unix)]
+#[test]
+fn the_temp_file_refuses_anything_already_at_its_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, "untouched").expect("write");
+    let temp = dir.path().join("temp");
+    std::os::unix::fs::symlink(&victim, &temp).expect("symlink");
+
+    let err = open_new_private(&temp).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+}
+
 #[test]
 fn an_unknown_key_in_the_config_file_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
