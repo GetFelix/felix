@@ -24,6 +24,10 @@ struct Calls {
     down_through_incarnation: Option<u64>,
     /// The enabled fleet features every answer carries.
     fleet_features: Vec<String>,
+    /// The cadence every answer asks for; 20 ms when unset.
+    heartbeat_interval_ms: Option<u64>,
+    /// Each heartbeat's body, in order.
+    heartbeat_bodies: Vec<serde_json::Value>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -64,13 +68,14 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                     }
                     let incarnation = body["incarnation"].as_u64().unwrap_or_default();
                     calls.heartbeats.push(incarnation);
+                    calls.heartbeat_bodies.push(body);
                     let lifecycle = match calls.down_through_incarnation {
                         Some(down) if incarnation <= down => "down",
                         _ => "live",
                     };
                     Ok(Json(json!({
                         "lifecycle": lifecycle,
-                        "heartbeat_interval_ms": 20,
+                        "heartbeat_interval_ms": calls.heartbeat_interval_ms.unwrap_or(20),
                         "fleet_features": calls.fleet_features,
                     })))
                 },
@@ -270,6 +275,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
             std::time::Duration::from_secs(30),
         )),
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
     ));
 
     // Wait for a few beats rather than a fixed sleep.
@@ -290,6 +296,72 @@ async fn heartbeats_carry_the_registered_incarnation() {
     assert!(sent.iter().all(|i| *i == 7), "{sent:?}");
     assert_eq!(failures.load(Ordering::Acquire), 0);
 
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// **A new suspicion goes out at once, not an interval later.** The control
+/// plane promotes on it, so waiting for the next beat would add the whole
+/// interval to a failover. With nothing suspected the field is left out.
+#[tokio::test]
+async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        heartbeat_interval_ms: Some(60_000),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let mut registration = register(
+        &client,
+        &base_url,
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+    )
+    .await
+    .expect("register");
+    registration.heartbeat_interval_ms = 60_000;
+
+    let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        client,
+        base_url,
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(crate::cluster::lease::LeaseState::new(
+            std::time::Duration::from_secs(30),
+        )),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::clone(&suspects),
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(calls.lock().expect("lock").heartbeat_bodies.is_empty());
+
+    suspects.publish(["broker-b".to_string()].into_iter().collect());
+    for _ in 0..200 {
+        if !calls.lock().expect("lock").heartbeat_bodies.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert_eq!(bodies[0]["suspects"], json!(["broker-b"]));
+
+    suspects.publish(Default::default());
+    for _ in 0..200 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() > 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    assert!(bodies[1].get("suspects").is_none(), "{bodies:?}");
+
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
     let _ = stop.send(());
     let _ = handle.await;
 }
@@ -325,6 +397,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
             std::time::Duration::from_secs(30),
         )),
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
     ));
 
     for _ in 0..400 {
@@ -513,6 +586,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         shutdown.clone(),
         Arc::clone(&lease),
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
     );
 
     for _ in 0..300 {
@@ -588,6 +662,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         Arc::clone(&failures),
         lease,
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
     ));
 
     let started = std::time::Instant::now();
@@ -689,6 +764,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
             std::time::Duration::from_secs(30),
         )),
         Arc::clone(&fleet),
+        Arc::default(),
     ));
 
     let beats = || calls.lock().expect("lock").heartbeats.len();

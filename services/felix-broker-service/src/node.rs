@@ -339,6 +339,8 @@ where
         &credential,
         &sync_shutdown,
     );
+    // Filled by the shard tasks, carried by the heartbeat.
+    let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     let membership = membership::spawn(
         &config,
         &membership_client,
@@ -347,6 +349,7 @@ where
         &lease,
         &fleet,
         &credential,
+        &suspects,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
@@ -375,6 +378,7 @@ where
         halted_replicas: &halted_replicas,
         shard_status: &shard_status,
         fleet: &fleet,
+        suspects: &suspects,
         sync_shutdown: &sync_shutdown,
     });
 

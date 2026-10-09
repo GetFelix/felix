@@ -448,6 +448,14 @@ impl ControlPlaneStore for PostgresStore {
         shards::list_replica_reports(self).await
     }
 
+    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
+        nodes::record_suspicion(self, suspicion).await
+    }
+
+    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
+        nodes::list_suspicions(self).await
+    }
+
     async fn moves_paused(&self) -> StoreResult<bool> {
         shards::moves_paused(self).await
     }

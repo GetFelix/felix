@@ -61,6 +61,24 @@ pub(crate) async fn report_health(
             ref other => api_internal("record node heartbeat", other),
         })?;
 
+    // Lost, it costs a failover the lease's wait, not the heartbeat.
+    if !request.suspects.is_empty() {
+        let suspicion = crate::model::NodeSuspicion {
+            node_id: node.node_id.clone(),
+            incarnation: request.incarnation,
+            suspects: request.suspects,
+            reported_at_millis: now,
+        };
+        match state.store.record_suspicion(suspicion).await {
+            Ok(()) => state.placement_wakes.request_pass(),
+            Err(err) => tracing::warn!(
+                node_id = %node.node_id,
+                error = %err,
+                "could not record which leaders this broker cannot reach",
+            ),
+        }
+    }
+
     let fleet_features = state
         .store
         .enabled_fleet_features()

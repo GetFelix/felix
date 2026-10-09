@@ -71,6 +71,14 @@ pub trait CaughtUp {
             .filter(|halt| halt.generation == generation)
     }
 
+    /// Whether `follower` said, recently enough to act on, that it cannot
+    /// reach `leader`, the leader of `key`. Only for a shard whose deposed
+    /// leader the fleet keeps out without the lease; for any other the
+    /// followers' word decides nothing, and this is `false`.
+    fn suspects(&self, _key: &ShardKey, _follower: &str, _leader: &str) -> bool {
+        false
+    }
+
     /// [`Self::halted`], where the halt still speaks for a member of the set
     /// at `generation`: reported at it, or carried into it from one of the
     /// generations just before and not yet contradicted.

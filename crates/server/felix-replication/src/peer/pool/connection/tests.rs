@@ -38,6 +38,8 @@ mod correlation {
             InternalMessage::Fence(m) => m.correlation_id,
             InternalMessage::FenceOk(m) => m.correlation_id,
             InternalMessage::ReplicateFetch(m) => m.correlation_id,
+            InternalMessage::Ping(m) => m.correlation_id,
+            InternalMessage::Pong(m) => m.correlation_id,
         }
     }
 
@@ -54,6 +56,8 @@ mod correlation {
     /// Every variant, each carrying the caller's id.
     fn every_variant() -> Vec<InternalMessage> {
         vec![
+            InternalMessage::Ping(Ping { correlation_id: 7 }),
+            InternalMessage::Pong(Pong { correlation_id: 7 }),
             InternalMessage::ForwardPublish(ForwardPublish {
                 correlation_id: 7,
                 shard: shard(),

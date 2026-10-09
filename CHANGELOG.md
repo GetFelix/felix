@@ -58,6 +58,23 @@ move, failover and lease-timing bugs are fixed. The Rust API has breaking
 changes, listed under Changed. `pip` will not install it without `--pre`.
 
 ### Added
+- Failover on the followers' word (part of #1009). Each broker pings the
+  leaders of the shards it follows (new internal kinds `Ping` 38 and `Pong`
+  39, capability `PING`, `1 << 7`) and names in its heartbeat the ones that
+  have not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s; `0` turns it
+  off). Once the fleet has finalized `majority_ack` and `lease_free_reads`,
+  placement promotes a reported follower of a durable `Quorum` stream as soon
+  as a majority of its set names the leader, without waiting for the leader
+  to be marked down, so failover takes about 5 s instead of `L + margin`, and
+  a leader cut off from its followers while still heartbeating is replaced
+  too. The promotion keeps the set and fences as before. `Leader` streams and
+  caches still fail over on the lease, and with the control plane down a dead
+  leader is still not replaced. The heartbeat request gains an optional
+  `suspects` list; the store gains `record_suspicion`/`list_suspicions`
+  (Postgres migration `0024_node_suspicions`, Raft leader soft state).
+  `run_heartbeat` and `membership::spawn` take the broker's `Suspects`.
+  TLA+: `Suspicions` constant, `FelixShardSuspicion.cfg` (pass) and
+  `FelixShardSuspicionLease.cfg` (violates `AtMostOneServing`).
 - `felix-broker inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]`
   (part of #1077): a broker's data directory read from disk, by the broker
   binary without starting a broker; it binds nothing and reads no

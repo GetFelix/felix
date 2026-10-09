@@ -332,7 +332,12 @@ impl Drop for PeerConnection {
 fn on_control_lane(message: &InternalMessage) -> bool {
     matches!(
         message,
-        InternalMessage::Hello(_) | InternalMessage::Fence(_) | InternalMessage::ReplicateFetch(_)
+        InternalMessage::Hello(_)
+            | InternalMessage::Fence(_)
+            | InternalMessage::ReplicateFetch(_)
+            // A ping queued behind a forwarded publish waiting on a quorum
+            // would time out and read as an unreachable leader.
+            | InternalMessage::Ping(_)
     )
 }
 
@@ -477,6 +482,8 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
             correlation_id,
             ..m
         }),
+        InternalMessage::Ping(_) => InternalMessage::Ping(Ping { correlation_id }),
+        InternalMessage::Pong(_) => InternalMessage::Pong(Pong { correlation_id }),
     }
 }
 

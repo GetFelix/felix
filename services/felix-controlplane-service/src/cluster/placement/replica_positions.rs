@@ -33,11 +33,11 @@
 //! survive exactly that long to be usable.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{HaltedCopy, ReplicaReport, ShardKey};
+use crate::model::{HaltedCopy, NodeSuspicion, ReplicaReport, ShardKey, ShardKind};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -62,6 +62,13 @@ pub(crate) fn report_ttl_millis(liveness: &NodeLivenessConfig) -> u64 {
     liveness.expiry_timeout_ms * 2 + liveness.heartbeat_interval_ms
 }
 
+/// Believe a suspicion for two heartbeats. A broker that still suspects
+/// says so on every heartbeat, and one that has stopped says nothing, so
+/// this is how long a cleared suspicion outlives the clearing.
+pub(crate) fn suspicion_ttl_millis(liveness: &NodeLivenessConfig) -> u64 {
+    liveness.heartbeat_interval_ms * 2
+}
+
 /// The store's reports, read as of one instant.
 ///
 /// A snapshot rather than a live view, so every shard in one planning pass is
@@ -74,6 +81,12 @@ pub struct ReplicaPositions {
     reports: HashMap<ShardKey, ReplicaReport>,
     ttl_millis: u64,
     now_millis: u64,
+    /// The fresh suspicions, by the broker that holds them.
+    suspicions: HashMap<String, NodeSuspicion>,
+    /// The fleet acknowledges `Quorum` stream writes by their followers and
+    /// confirms `Quorum` reads by a round, so a deposed stream leader is
+    /// kept out without its lease running out.
+    followers_decide: bool,
 }
 
 impl ReplicaPositions {
@@ -89,7 +102,37 @@ impl ReplicaPositions {
                 .collect(),
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
+            suspicions: HashMap::new(),
+            followers_decide: false,
         }
+    }
+
+    /// With what brokers said about the leaders they cannot reach, and the
+    /// fleet features that decide whether that may move a shard.
+    ///
+    /// Both features, not only `majority_ack`: without `lease_free_reads` a
+    /// deposed leader still serves reads on its lease, and replacing it
+    /// before that runs out would let it hand out what its successor has
+    /// since overwritten.
+    pub fn with_suspicions(
+        mut self,
+        suspicions: Vec<NodeSuspicion>,
+        liveness: &NodeLivenessConfig,
+        enabled: &BTreeSet<String>,
+    ) -> Self {
+        let ttl = suspicion_ttl_millis(liveness);
+        self.suspicions = suspicions
+            .into_iter()
+            .filter(|suspicion| self.now_millis.saturating_sub(suspicion.reported_at_millis) <= ttl)
+            .map(|suspicion| (suspicion.node_id.clone(), suspicion))
+            .collect();
+        self.followers_decide = [
+            felix_common::fleet::MAJORITY_ACK,
+            felix_common::fleet::LEASE_FREE_READS,
+        ]
+        .iter()
+        .all(|feature| enabled.contains(feature.name()));
+        self
     }
 
     /// Read every report the store holds, as of the store's clock.
@@ -111,6 +154,17 @@ impl ReplicaPositions {
 }
 
 impl CaughtUp for ReplicaPositions {
+    fn suspects(&self, key: &ShardKey, follower: &str, leader: &str) -> bool {
+        // Streams only for now. A `Quorum` cache would also need
+        // `fenced_caches`, and still fails over on the lease.
+        self.followers_decide
+            && key.kind == ShardKind::Stream
+            && self
+                .suspicions
+                .get(follower)
+                .is_some_and(|suspicion| suspicion.suspects.contains(leader))
+    }
+
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
         self.fresh(key)
             .is_some_and(|report| report.caught_up.contains(node_id))

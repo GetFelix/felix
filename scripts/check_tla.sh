@@ -180,6 +180,8 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectHandoffLeaders pass"
   "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
+  "FelixShardSuspicion pass"
+  "FelixShardSuspicionLease violates AtMostOneServing"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -251,6 +253,7 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardSessionsSubscriber 2"
   "FelixShardElectHandoffLeaders 10"
+  "FelixShardSuspicion 3"
 )
 
 weight_of() {

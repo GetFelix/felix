@@ -671,3 +671,44 @@ fn invalid_node(err: NodeValidationError) -> StoreError {
 fn invalid_node_transition(from: NodeLifecycle, to: NodeLifecycle) -> StoreError {
     invalid_node(NodeValidationError::UnsupportedTransition { from, to })
 }
+
+pub(super) async fn record_suspicion(
+    store: &PostgresStore,
+    suspicion: crate::model::NodeSuspicion,
+) -> StoreResult<()> {
+    sqlx::query(
+        r#"INSERT INTO node_suspicions (node_id, incarnation, suspects, reported_at_millis)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (node_id) DO UPDATE SET
+                   incarnation = EXCLUDED.incarnation,
+                   suspects = EXCLUDED.suspects,
+                   reported_at_millis = EXCLUDED.reported_at_millis"#,
+    )
+    .bind(&suspicion.node_id)
+    .bind(suspicion.incarnation as i64)
+    .bind(serde_json::to_value(&suspicion.suspects).unwrap_or_default())
+    .bind(suspicion.reported_at_millis as i64)
+    .execute(&store.pool)
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn list_suspicions(
+    store: &PostgresStore,
+) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
+    let rows: Vec<(String, i64, serde_json::Value, i64)> = sqlx::query_as(
+        "SELECT node_id, incarnation, suspects, reported_at_millis FROM node_suspicions",
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    rows.into_iter()
+        .map(|(node_id, incarnation, suspects, reported_at_millis)| {
+            Ok(crate::model::NodeSuspicion {
+                node_id,
+                incarnation: incarnation as u64,
+                suspects: serde_json::from_value(suspects)?,
+                reported_at_millis: reported_at_millis as u64,
+            })
+        })
+        .collect()
+}

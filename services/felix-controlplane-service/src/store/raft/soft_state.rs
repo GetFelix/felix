@@ -48,10 +48,27 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum LeaderRequest {
-    Heartbeat { node_id: String, incarnation: u64 },
-    ExpireStaleNodes { expiry_before_millis: u64 },
-    AcquirePlacementLease { holder: String, ttl_millis: u64 },
-    ReleasePlacementLease { holder: String },
+    Heartbeat {
+        node_id: String,
+        incarnation: u64,
+    },
+    /// The leaders a broker cannot reach. A leader that predates it fails
+    /// to read the request, and the suspicion is dropped.
+    Suspicion {
+        node_id: String,
+        incarnation: u64,
+        suspects: std::collections::BTreeSet<String>,
+    },
+    ExpireStaleNodes {
+        expiry_before_millis: u64,
+    },
+    AcquirePlacementLease {
+        holder: String,
+        ttl_millis: u64,
+    },
+    ReleasePlacementLease {
+        holder: String,
+    },
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -75,6 +92,8 @@ struct View {
     /// `since` on the wall clock, which is what listings carry.
     since_millis: u64,
     beats: HashMap<String, Beat>,
+    /// What each broker last said about the leaders it cannot reach.
+    suspicions: HashMap<String, crate::model::NodeSuspicion>,
     /// Nodes (re)registered during this term, and when: a later start for
     /// their silence than `since`.
     registered: HashMap<String, Instant>,
@@ -153,6 +172,19 @@ impl SoftState {
         node
     }
 
+    /// What brokers said this term about the leaders they cannot reach.
+    /// Empty on a follower: placement runs on the leader.
+    pub(crate) fn suspicions(&self) -> Vec<crate::model::NodeSuspicion> {
+        let Ok(term) = self.leading_term() else {
+            return Vec::new();
+        };
+        let view = self.view.lock().expect("soft state lock");
+        view.as_ref()
+            .filter(|view| view.term == term)
+            .map(|view| view.suspicions.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     async fn dispatch(&self, request: LeaderRequest) -> Result<MetaResult, NotLeader> {
         self.leading_term()?;
         // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
@@ -174,6 +206,24 @@ impl SoftState {
                 node_id,
                 incarnation,
             } => self.heartbeat(&node_id, incarnation).await,
+            LeaderRequest::Suspicion {
+                node_id,
+                incarnation,
+                suspects,
+            } => {
+                let term = self.leading_term()?;
+                let mut guard = self.view.lock().expect("soft state lock");
+                view_for(&mut guard, term).suspicions.insert(
+                    node_id.clone(),
+                    crate::model::NodeSuspicion {
+                        node_id,
+                        incarnation,
+                        suspects,
+                        reported_at_millis: crate::clock::now_millis(),
+                    },
+                );
+                Ok(Ok(MetaResponse::Unit))
+            }
             LeaderRequest::ExpireStaleNodes {
                 expiry_before_millis,
             } => self.expire(expiry_before_millis).await,
@@ -490,6 +540,7 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
             since: now,
             since_millis: crate::clock::now_millis(),
             beats: HashMap::new(),
+            suspicions: HashMap::new(),
             registered: HashMap::new(),
             lease: None,
             last_checkpoint: now,

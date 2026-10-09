@@ -93,6 +93,8 @@ fn every_message() -> Vec<InternalMessage> {
             shard: shard(),
             log: ReplicaLog::Stream,
         }),
+        InternalMessage::Ping(Ping { correlation_id: 42 }),
+        InternalMessage::Pong(Pong { correlation_id: 42 }),
         InternalMessage::FenceOk(FenceOk {
             correlation_id: 42,
             log_end: 120,

@@ -195,6 +195,16 @@
 (* a generation a candidate already opened (OneLeaderPerGeneration,        *)
 (* FelixShardElectHandoffUnfenced.cfg). `FenceEveryChange` fences them,    *)
 (* and the ballot refuses the second leader (FelixShardElectHandoff.cfg).  *)
+(*                                                                         *)
+(* `Suspicions` lets placement promote without waiting for the lease to    *)
+(* lapse, as it does once a majority of the set says it cannot reach the   *)
+(* leader, at generations up to `Suspicions`. A detector can be wrong, so  *)
+(* the model promotes on any read, the old leader alive and renewing. With *)
+(* follower acks and the fence that loses nothing                          *)
+(* (FelixShardSuspicion.cfg). With the lease and the report instead, TLC   *)
+(* finds the old leader still serving on its lease beside the new one      *)
+(* (AtMostOneServing, FelixShardSuspicionLease.cfg), which is why          *)
+(* placement acts on it only once the fleet acknowledges by its followers. *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -243,7 +253,8 @@ CONSTANTS
     CounterCatchUp, \* whether the fence takes the counter log furthest ahead too
     Ballots,        \* whether a promise names its leader, and refuses another at its generation
     Elections,      \* how many generations past the control plane's a replica may elect itself to
-    FenceEveryChange \* whether a cut-over, a hand-back and a promoted destination fence too
+    FenceEveryChange, \* whether a cut-over, a hand-back and a promoted destination fence too
+    Suspicions      \* up to which generation placement may promote on the followers' word, lapsed or not
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -280,6 +291,7 @@ ASSUME Eps < L /\ Margin >= 0
 ASSUME Ballots \in BOOLEAN /\ Elections \in Nat
 ASSUME Elections > 0 => /\ AckByFollowers /\ FenceOnPromote /\ ~Counters /\ ~StageMove
 ASSUME FenceEveryChange \in BOOLEAN /\ (FenceEveryChange => FenceOnPromote)
+ASSUME Suspicions \in Nat
 
 VARIABLES
     now,        \* real time
@@ -938,7 +950,10 @@ Cas(v) == CasWrites => v.ver = ver
 \* write per shard per pass. Every write bumps the store's generation.
 Promote(v, f, views) ==
     /\ f /= v.leader
-    /\ v.lapsed
+    \* Under `Suspicions` the followers' word is enough, and a detector can
+    \* be wrong, so any read will do: the leader may be alive, serving and
+    \* heartbeating. Bounded by generation, or promotions never end.
+    /\ v.lapsed \/ v.gen <= Suspicions
     /\ f \notin out
     \* With it off, a `Quorum` failover never names the destination: it ends
     \* the move instead (`promote` in services/felix-controlplane-service/src/

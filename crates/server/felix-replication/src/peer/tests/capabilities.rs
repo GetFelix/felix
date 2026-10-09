@@ -153,7 +153,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::FORWARD_OFFSETS)
         .union(PeerCapabilities::CACHE_FENCE)
         .union(PeerCapabilities::RECORD_TIMES)
-        .union(PeerCapabilities::BALLOTS);
+        .union(PeerCapabilities::BALLOTS)
+        .union(PeerCapabilities::PING);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     assert_eq!(noted.get("broker-a"), Some(offered));
@@ -260,6 +261,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
         PeerCapabilities::GENERATION_LABELS
             .union(PeerCapabilities::FORWARD_OFFSETS)
             .union(PeerCapabilities::RECORD_TIMES)
+            .union(PeerCapabilities::PING)
     );
     let err = pool
         .request(PEER, listener.addr, fence())
@@ -363,4 +365,35 @@ async fn the_fence_is_not_queued_behind_slow_requests() {
     }
     pool.shutdown().await;
     listener.stop().await;
+}
+
+/// **A current broker answers a ping; one that predates pings is not
+/// pinged.** The older broker is not counted as silent either, which would
+/// let a rolling upgrade read as a dead leader.
+#[tokio::test]
+async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
+    let (listener, _) = listener_noting(false).await;
+    let current = pool(config());
+    let within = Duration::from_secs(2);
+    assert_eq!(
+        crate::suspicion::ping(&current, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Pong
+    );
+    current.shutdown().await;
+    listener.stop().await;
+
+    let old = OldBroker::start(PEER).await;
+    let pool = pool(config());
+    let refused = old.refused.load(Ordering::SeqCst);
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, old.addr, within).await,
+        crate::suspicion::Answer::Unsupported
+    );
+    assert_eq!(
+        old.refused.load(Ordering::SeqCst),
+        refused + 1,
+        "only the capable Hello should have reached the older broker"
+    );
+    pool.shutdown().await;
+    old.stop();
 }

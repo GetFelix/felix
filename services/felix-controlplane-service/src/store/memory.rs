@@ -107,6 +107,9 @@ pub struct InMemoryStore {
     /// replaces it, and a report a restored snapshot carried would be judged
     /// stale by then anyway.
     replica_reports: Arc<RwLock<HashMap<ShardKey, ReplicaReport>>>,
+    /// What each broker last said about the leaders it cannot reach. As
+    /// transient as the reports, and not exported for the same reason.
+    suspicions: Arc<RwLock<HashMap<String, crate::model::NodeSuspicion>>>,
     /// Bounded change log for tenant changes.
     ///
     /// `next_seq` is per-entity-type (not a global sequence across all entities).
@@ -191,6 +194,7 @@ impl InMemoryStore {
                 placement: PlacementState::default(),
             })),
             replica_reports: Arc::new(RwLock::new(HashMap::new())),
+            suspicions: Arc::new(RwLock::new(HashMap::new())),
             tenant_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             namespace_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             stream_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
@@ -513,6 +517,18 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
         shards::list_replica_reports(self).await
+    }
+
+    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
+        self.suspicions
+            .write()
+            .await
+            .insert(suspicion.node_id.clone(), suspicion);
+        Ok(())
+    }
+
+    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
+        Ok(self.suspicions.read().await.values().cloned().collect())
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

@@ -106,6 +106,15 @@ plus the cadence expected of it:
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
 
+A broker that cannot reach the leader of a shard it follows also sends
+`"suspects": ["broker-2"]`, the leaders that have not answered its pings for
+`FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft
+state for two heartbeat intervals and asks for a placement pass; a broker
+suspecting nobody leaves the field out. Placement promotes on it only for a
+durable `Quorum` stream once `majority_ack` and `lease_free_reads` are
+finalized (`docs/replication-design.md`, "Failover on the followers' word").
+A record that cannot be stored is logged and does not fail the heartbeat.
+
 Four rules, each of which exists for a reason:
 
 - **The recorded time is the control plane's own clock.** A broker that could

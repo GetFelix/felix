@@ -347,6 +347,15 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
 
+    /// Keep what a broker's heartbeat said about the leaders it cannot reach,
+    /// replacing what it said before. Stamp it with
+    /// [`ControlPlaneStore::now_millis`], which placement judges it against.
+    /// Under Raft it is the leader's soft state, as heartbeats are, and a
+    /// leader that predates it drops it.
+    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
+    /// Every suspicion held, fresh or not; the reader judges freshness.
+    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
+
     /// Whether placement is paused: it starts no moves of its own, while
     /// moves in flight finish and an operator may still start one. Read by
     /// every instance's placement on every pass, so it lives in the store.
