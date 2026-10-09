@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791560894917,
+  "lastUpdate": 1791569497471,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26728,6 +26728,58 @@ window.BENCHMARK_DATA = {
             "range": "43366.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801962.23\nmean: 786940.20\nstdev: 43366.04\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5517a339750de907685b62a9e29d6b66851b24c2",
+          "message": "ci(formal): check suspicion promotions as the broker ships them (#1112)\n\nFelixShardSuspicion.cfg now runs with ballots and every change fenced, and\nchecks OneLeaderPerGeneration, which records who opened at each generation\nunder Suspicions as well as Elections. AtMostOneServing stays out: under\nfollower acks the old leader serves until it hears of its successor.\n\nThe moves and spares walks and their twins promote on suspicion up to the\ntenth generation, and the pass walks check OneLeaderPerGeneration.\n\naccept_generation and the open's reconciliation of the ballot and replica\nstate move to disk_log/ballot.rs, unchanged, so spec pairing covers them\nwithout pairing all of disk_log.rs.\n\nPart of #1109",
+          "timestamp": "2026-10-09T11:08:10-07:00",
+          "tree_id": "2b648caec90a9507fe99b47c1aba378d29381984",
+          "url": "https://github.com/GetFelix/felix/commit/5517a339750de907685b62a9e29d6b66851b24c2"
+        },
+        "date": 1791569496637,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 534630.1,
+            "range": "13643.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534630.10\nmean: 539790.48\nstdev: 13643.88\ncv: 2.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 534630.1,
+            "range": "13643.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534630.10\nmean: 539790.48\nstdev: 13643.88\ncv: 2.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121045.01,
+            "range": "7889.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121045.01\nmean: 117499.93\nstdev: 7889.42\ncv: 6.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1210450.05,
+            "range": "78894.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1210450.05\nmean: 1174999.29\nstdev: 78894.15\ncv: 6.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
