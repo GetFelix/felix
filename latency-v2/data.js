@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791571122662,
+  "lastUpdate": 1791572438104,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34056,6 +34056,72 @@ window.BENCHMARK_DATA = {
             "range": "52.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 606.00\nmean: 621.20\nstdev: 52.28\ncv: 8.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2f4d42dab4d6ad4631fcedbd781c2ae4da4cd300",
+          "message": "fix(storage): put the node id in offload keys (#1109) (#1114)\n\nOffload keys were <shard directory>/<base>-<id>.segment. Every replica of a\nshard has the same directory name, segment ids and offsets, so two brokers\nsharing one offload directory wrote to the same keys and one could replace a\ncopy the other had recorded. Keys now start with the node id: FELIX_NODE_ID,\nor on a broker without one an id generated once and kept in node-id under the\ndurable storage root. Manifest entries name their object by full key, so\ncopies made by 0.6.0-preview.3 stay valid where they are.\n\nAlso states the in-memory cache's version limit in protocol.md and the cache\npage: that cache only runs without a data directory, so a clock step back or\na run that outpaced the clock can still reuse a version across a restart.\n\nPart of #1109",
+          "timestamp": "2026-10-09T11:54:45-07:00",
+          "tree_id": "5f30a5293bc95a2ec17e8dda039ebdb818275ce6",
+          "url": "https://github.com/GetFelix/felix/commit/2f4d42dab4d6ad4631fcedbd781c2ae4da4cd300"
+        },
+        "date": 1791572433702,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 175,
+            "range": "3.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 177.00\nstdev: 3.74\ncv: 2.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "6.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 244.20\nstdev: 6.14\ncv: 2.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "200.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 395.40\nstdev: 200.52\ncv: 50.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 217,
+            "range": "4.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 218.20\nstdev: 4.15\ncv: 1.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 440,
+            "range": "183.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 440.00\nmean: 528.00\nstdev: 183.06\ncv: 34.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 632,
+            "range": "630.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 632.00\nmean: 1046.40\nstdev: 630.08\ncv: 60.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
