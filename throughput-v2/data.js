@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791569497471,
+  "lastUpdate": 1791571125481,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26780,6 +26780,58 @@ window.BENCHMARK_DATA = {
             "range": "78894.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1210450.05\nmean: 1174999.29\nstdev: 78894.15\ncv: 6.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d3823134bc9c179e7bd752aa7ec7ab2b226ef65",
+          "message": "fix(auth): per-identity limits, and delegated tokens bound through act (#1110)\n\n* fix(auth): give each delegated identity its own share of a connection's limits\n\nOne client acting for many users over a shared connection\n(Client::with_identity) shared the broker's per-connection subscription\ncap and publish byte budget, so one user could starve the rest. Both now\napply per tenant and token subject on a connection, under a new\nconnection-wide ceiling (FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES,\nFELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL, four identities' worth by\ndefault). A user's share is dropped once nothing of theirs is open or in\nflight. A client that authenticates as one identity sees the same limits,\nrefusals and frames as before.\n\nSubject binding refused every token a gateway presented for its users.\nA client certificate with the URI SAN felix:delegate:<tenant id> now\nbinds every subject of that tenant and no other.\n\nThe docs said the broker gave each identity its own publish budget; they\nnow say what it enforces.\n\nPart of #1098.\n\n* fix(auth): bind delegated tokens through an RFC 8693 act claim\n\nReplace the felix:delegate:<tenant> certificate grant with delegation the\ncontrol plane controls. POST /v1/tenants/{tenant_id}/token/delegate is a\ntoken exchange: a caller holding token.delegate:tenant:{tenant_id}\npresents a user's broker token and gets back one with the same subject,\nno wider permissions, no later expiry and act: {sub: <caller>}. The\nbroker's subject binding accepts a token whose act names the client\ncertificate's principal, on QUIC and Kafka SASL; a token without act\nbinds only to its subject, as before. token.delegate is never put in a\nbroker token, so a broker that predates it never sees it.\n\nPart of #1098.\n\nSpec-Unaffected: authentication and per-connection admission limits; no lease, quorum, report, promotion or handoff logic changes.",
+          "timestamp": "2026-10-09T11:33:23-07:00",
+          "tree_id": "44737f6926812620025221607d893e42c0f9dc8f",
+          "url": "https://github.com/GetFelix/felix/commit/9d3823134bc9c179e7bd752aa7ec7ab2b226ef65"
+        },
+        "date": 1791571124962,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346490.02,
+            "range": "6874.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346490.02\nmean: 345272.25\nstdev: 6874.05\ncv: 1.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346490.02,
+            "range": "6874.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346490.02\nmean: 345272.25\nstdev: 6874.05\ncv: 1.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80483.18,
+            "range": "287.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80483.18\nmean: 80587.64\nstdev: 287.68\ncv: 0.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804831.78,
+            "range": "2876.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804831.78\nmean: 805876.42\nstdev: 2876.80\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
