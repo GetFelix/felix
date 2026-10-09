@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791518354572,
+  "lastUpdate": 1791520855176,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -33132,6 +33132,72 @@ window.BENCHMARK_DATA = {
             "range": "86.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 531.00\nmean: 561.80\nstdev: 86.83\ncv: 15.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb9fda8c6ea4c28f0f1ee61e296c7430dc4885ac",
+          "message": "feat(cache): snapshot the key index at compaction (part of #1073) (#1091)\n\nEach cache compaction pass now writes the shard's key index to keys.idx\n(temp file, fsync, rename, directory fsync), and an open loads it and\nreplays only the log past it. The snapshot is derived: a bad checksum or\nlength, a covered offset outside the log, an entry outside the covered\nrange, or a last-record checksum that does not match sends the open back\nto a full replay. Log truncation and forget_index remove it.\n\nThe entry shape (IndexEntry), the composite key encoding and the file\nformat are shared so the collections store can reuse them.",
+          "timestamp": "2026-10-08T21:14:18-07:00",
+          "tree_id": "c9f946d4c209368086763e53ebde0f115899f849",
+          "url": "https://github.com/GetFelix/felix/commit/fb9fda8c6ea4c28f0f1ee61e296c7430dc4885ac"
+        },
+        "date": 1791520851500,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.20\nstdev: 1.10\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "2.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 244.00\nstdev: 2.55\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 316,
+            "range": "14.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 316.00\nmean: 316.20\nstdev: 14.86\ncv: 4.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 217,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 217.60\nstdev: 0.89\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 444,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 444.00\nmean: 442.80\nstdev: 2.39\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 619,
+            "range": "47.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 619.00\nmean: 639.60\nstdev: 47.16\ncv: 7.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
