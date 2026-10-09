@@ -342,7 +342,9 @@ it retries after 200 ms (`FENCE_RETRY`), doubling the wait with each failed
 attempt up to 2 s (`FENCE_RETRY_MAX`). Every other change of leader pays a round trip to a
 majority before it serves; a write that reaches the broker meanwhile waits
 for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
-being refused. It could not have acknowledged a `Quorum` write
+being refused. So does one that arrives while the shard's log is still
+opening, or in the moment between the fence settling and the broker
+publishing that it serves the shard (#1085). It could not have acknowledged a `Quorum` write
 without that majority anyway, but a `Leader` write it would have.
 
 **What this does not change on its own.** Until the fleet finalizes

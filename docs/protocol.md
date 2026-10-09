@@ -1061,6 +1061,71 @@ The answer is bounded by the shard's replica set. A broker not in a cluster
 answers `role` `leader` and `phase` `active` for a stream or cache it holds,
 with no generation, assignment or replicas.
 
+### SubscriptionsList
+```
+{ "type": "subscriptions_list", "request_id": <u64>,
+  "filter": { "tenant_id": "<string>", "namespace": "<string>",
+              "stream": "<string>", "shard": <u32>,
+              "principal": "<string>", "dropping": true },
+  "limit": <u32>,
+  "cursor": { "tenant_id": "<string>", "namespace": "<string>",
+              "stream": "<string>", "shard": <u32>, "subscriber_id": <u64> } }
+```
+
+Sent only to a broker that advertised `FEATURE_INSPECT`. Same permission as
+`shard_inspect`: `node.view:cluster:*`, exactly, and a token without it gets
+`error` with code `forbidden` while the stream stays open. The answer names
+principals and client addresses across every tenant, which is why a tenant
+grant does not reach it.
+
+An operator's question: one page of the subscriptions this broker serves.
+Every filter field is optional and each one set narrows the list. `principal`
+matches the `sub` of the token the subscribing connection authenticated with;
+`dropping` keeps only subscriptions whose queue has dropped records. `filter`
+may be left out entirely.
+
+`limit` defaults to 100 and is capped at 1000. Subscriptions are listed by
+shard (tenant, namespace, stream, shard) and then by subscriber id. `cursor`
+is the `next_cursor` of the previous page, and the next page starts after it.
+A subscriber id is never reused within a shard, so a subscriber that leaves or
+joins between pages neither repeats nor shifts what follows.
+
+The broker answers from each shard's fanout snapshot, the list a publish
+already reads without a lock. It never forwards the request and never touches
+a subscriber's queue.
+
+### SubscriptionsListInfo (server -> client)
+```
+{ "type": "subscriptions_list_info", "request_id": <u64>,
+  "node_id": "<string>",
+  "subscriptions": [
+    { "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>",
+      "shard": <u32>, "subscriber_id": <u64>, "subscription_id": <u64>,
+      "connection": <u64>, "peer": "<ip:port>", "principal": "<string>",
+      "policy": "block|drop_new|drop_old", "depth": <u64>, "capacity": <u64>,
+      "dropped": <u64>, "position": <u64>, "tail": <u64>, "age_ms": <u64> } ],
+  "next_cursor": { ... } }
+```
+
+- `node_id` is the answering broker, empty outside a cluster.
+- `subscriber_id` is the shard's own id for the subscriber.
+  `subscription_id` is the id the client sees on its `event_stream_hello`.
+- `connection` is the broker's id for the QUIC connection, `peer` its remote
+  address, and `principal` the token's `sub`. All three are left out for a
+  subscriber with no client connection, and for a moment while a new one is
+  set up.
+- `policy` is the stream's overflow policy. `depth` and `capacity` count
+  batches in the subscriber's queue, not records. With `drop_new` or
+  `drop_old`, a publish that finds the queue full drops that batch for this
+  subscriber only.
+- `dropped` counts records dropped since the subscription started.
+- `position` is one past the last offset taken from the queue to be written
+  to the client. It is left out on a stream without offsets (in memory), and
+  until the first live batch after a replay. `tail` is the shard's next
+  offset, so `tail - position` is how far behind the subscriber is.
+- `next_cursor` is left out on the last page.
+
+
 ### CacheValue (server -> client)
 ```
 { "type": "cache_value", "key": "<string>", "value": "<base64|null>",
@@ -1712,7 +1777,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 
 | Bit (`_hi` word) | Name | Meaning |
 |---|---|---|
-| `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) |
+| `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info` and `subscriptions_list` with `subscriptions_list_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) and [SubscriptionsList](#subscriptionslist) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1870,7 +1935,8 @@ longer than `FELIX_SHARD_MOVE_HOLD_MS` (2 s by default), or a burst beyond
 only the `publish_error` text, which names the stream and the reason, such as
 `publish to t1/ns/orders refused: shard is moving to another broker`. Cache
 and counter operations are held and forwarded the same way, under the same
-bounds. A consumer-group operation is held too, and once the move cuts over is
+bounds. A write that reaches the new owner while it is still opening or
+fencing the shard is held the same way until it serves. A consumer-group operation is held too, and once the move cuts over is
 answered with `NotLeader` naming the new owner (an error with code
 `not_leader` to a client without `FEATURE_REDIRECT`), because group operations
 are served only by the shard's leader and never forwarded. A group poll that

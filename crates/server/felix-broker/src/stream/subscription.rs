@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use super::delivery::{DeliveryEnvelope, QueuedDelivery};
 use super::state::StreamState;
+use super::stats::{SubscriberOwner, SubscriberStats};
 use crate::handoff::ShardMoved;
 
 /// Receiver wrapper that keeps the unsubscribe guard alive for the receiver lifetime.
@@ -93,6 +94,12 @@ impl Subscription {
         self.receiver.lag.covered_below(offset);
     }
 
+    /// Say who this subscription delivers to, for an operator listing
+    /// subscriptions. Only the first call counts.
+    pub fn set_owner(&self, owner: SubscriberOwner) {
+        self.receiver.stats.set_owner(owner);
+    }
+
     /// Split into the batch receiver and the guard that keeps the
     /// subscriber registered.
     ///
@@ -137,6 +144,7 @@ pub struct SubscriptionReceiver {
     pub(crate) receiver: mpsc::Receiver<QueuedDelivery>,
     moved: Arc<OnceLock<ShardMoved>>,
     lag: Arc<Lag>,
+    stats: Arc<SubscriberStats>,
     /// Set by [`Self::end_on_lag`].
     end_on_lag: bool,
     /// [`Subscription::skip_below`], carried over by
@@ -150,11 +158,13 @@ impl SubscriptionReceiver {
         receiver: mpsc::Receiver<QueuedDelivery>,
         moved: Arc<OnceLock<ShardMoved>>,
         lag: Arc<Lag>,
+        stats: Arc<SubscriberStats>,
     ) -> Self {
         Self {
             receiver,
             moved,
             lag,
+            stats,
             end_on_lag: false,
             skip_below: None,
         }
@@ -257,9 +267,18 @@ impl SubscriptionReceiver {
         past
     }
 
+    /// Note how far delivery has got, for an operator. One relaxed store
+    /// per batch, and only for a batch with offsets.
+    fn taken(&self, envelope: &DeliveryEnvelope) {
+        if let Some(base) = envelope.base_offset() {
+            self.stats.taken_below(base + envelope.len() as u64);
+        }
+    }
+
     /// Drop what lies below the resume point: the whole batch, or the prefix
     /// of one that straddles it. Same rule as `Subscription::extend_pending`.
     fn admit(&mut self, envelope: DeliveryEnvelope) -> Option<DeliveryEnvelope> {
+        self.taken(&envelope);
         let (Some(skip), Some(base)) = (self.skip_below, envelope.base_offset()) else {
             self.skip_below = None;
             return Some(envelope);

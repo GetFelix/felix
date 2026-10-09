@@ -303,3 +303,46 @@ async fn a_write_to_a_shard_still_fencing_waits_for_the_fence() {
     assert_eq!(dispatch, Dispatch::Local { generation: 3 });
     assert!(fenced, "a local write enters the fence");
 }
+
+/// A write that arrives after the fence has settled in the lifecycle but
+/// before the servable set saying so is published waits for it, rather than
+/// being told the shard is still opening.
+#[tokio::test]
+async fn a_write_between_the_fence_and_the_servable_set_waits() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    a.lifecycle.fence_promotions();
+    a.apply(assignment(0, "broker-a", 3));
+    assert!(a.lifecycle.fenced(&key(0), 3));
+    assert_eq!(a.ingress.fence().awaiting_promotion(&key(0)), None);
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(
+        !write.is_finished(),
+        "a write to a shard whose fence just settled is held"
+    );
+
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 3 });
+    assert!(fenced, "a local write enters the fence");
+}
+
+/// The same while the log is still opening: routes already name this broker,
+/// the lifecycle has not finished the open.
+#[tokio::test]
+async fn a_write_to_a_shard_still_opening_waits_for_the_open() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    let assignment = assignment(0, "broker-a", 1);
+    a.lifecycle.observe(&key(0), Some(&assignment));
+    a.assignments.insert(key(0), assignment);
+    a.publish();
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(!write.is_finished(), "a write to an opening shard is held");
+
+    a.lifecycle.opened(&key(0), 1);
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 1 });
+    assert!(fenced, "a local write enters the fence");
+}

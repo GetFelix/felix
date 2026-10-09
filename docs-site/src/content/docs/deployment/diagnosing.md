@@ -1,6 +1,6 @@
 ---
 title: "Diagnosing a Cluster"
-description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records, a client is refused, or a broker will not start."
+description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records or lags, a client is refused, or a broker will not start."
 ---
 
 This page is organised by what you see. Each section says what to run, in
@@ -15,8 +15,10 @@ Three places answer most questions.
 
 `felixctl inspect shard` asks the brokers that hold a shard for their own view
 of it: whether the leader serves and why not, the fence a promoted leader waits
-on, its lease, the tail and commit mark, and each follower's position. It goes
-over the authenticated client listener and needs a broker token allowed
+on, its lease, the tail and commit mark, and each follower's position.
+`felixctl inspect subs` asks each broker for the subscriptions it serves: each
+one's queue, the records it has dropped, and how far behind the tail it is.
+Both go over the authenticated client listener and need a broker token allowed
 `node.view` on `cluster:*`. See [felixctl](/getting-started/felixctl/#inspecting-a-cluster).
 
 The broker's metrics listener (`FELIX_BROKER_METRICS_BIND`, port `8080` in the
@@ -29,9 +31,8 @@ stored assignments, and `felix-controlplane admin plan` for what the next
 placement pass would do with each shard and why it is waiting.
 
 More `felixctl inspect` commands are coming
-([#1077](https://github.com/GetFelix/felix/issues/1077)): `inspect subs` and
-`inspect conns` for subscriptions and their queues, `inspect decisions` for the
-control plane's placement decisions, `inspect segments` and `inspect records`
+([#1077](https://github.com/GetFelix/felix/issues/1077)): `inspect conns` for
+connections, `inspect decisions` for the control plane's placement decisions, `inspect segments` and `inspect records`
 for a data directory read offline, and `inspect record` for which replicas
 hold one offset.
 
@@ -239,33 +240,109 @@ gone for `FELIX_SHARD_RESTORE_AFTER_MS` by copying the shard to another broker.
 ## A subscriber misses records
 
 **What you see.** A subscriber on a durable stream sees offsets jump, or ends
-with `subscription fell behind; records from offset N were dropped`.
+with `subscription fell behind; records from offset N were dropped`. On an
+in-memory stream there are no offsets, so records are simply missing.
+
+**What to run.** Find the subscriptions that have dropped records:
+
+```bash
+felixctl inspect subs orders --dropping
+```
+
+```
+NODE      STREAM/SHARD           SUB  CONNECTION          PRINCIPAL  POLICY    QUEUE    DROPPED  POSITION  TAIL     BEHIND
+broker-a  acme/default/orders/0  4    17 10.0.4.12:50122  p:billing  drop_new  512/512  3812     1040000   1048576  8576
+```
+
+Then confirm the gap from the subscriber's side, reading the shard from just
+before where it went missing:
+
+```bash
+felixctl sub orders --shard 0 --from 1039000 --format offsets
+```
+
+Each line is `shard`, `offset` and payload, tab-separated. A gap in the offsets
+your application saw is records this subscriber did not get.
+
+**How to read it.** Each subscriber has its own bounded queue on the broker
+that serves its shard, and the stream's overflow policy decides what a full one
+costs. `QUEUE` is the queue's depth and capacity, counted in batches, and
+`DROPPED` is the records lost from it since the subscription started. With
+`drop_new`, the default, a publish that finds the queue full drops that batch
+for this subscriber only, so a slow subscriber never slows a publisher.
+`drop_old` is accepted and behaves as `drop_new`. `CONNECTION` and `PRINCIPAL`
+say which client it is: the broker's connection id, the client's address and
+the token's `sub`.
+
+`DROPPED` matches the gap: a subscriber that has dropped 3812 records is
+missing exactly 3812 offsets. A client that offered
+`FEATURE_SUBSCRIPTION_LAGGED` has its subscription ended at the first drop, with
+`subscription_lagged` naming where to resume; any other client sees only the
+jump. `felix_sub_queue_dropped_total` on the broker's `/metrics` counts the same
+drops across every subscriber, without saying whose they were.
+
+**Likely causes.**
+
+- The application handles records more slowly than they arrive. The queue
+  stays full (`512/512`) and `DROPPED` keeps climbing.
+- A burst is larger than the queue. The queue is empty again now and `DROPPED`
+  no longer moves.
+- The client is on a slow or lossy network: QUIC flow control holds the writes
+  back and the queue fills behind them.
+
+**What to do.** Make the subscriber keep up, or give it a larger queue with
+`queue_capacity` on `subscribe` (up to `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`),
+then resubscribe from the offset the gap starts at. A subscriber that must not
+miss anything should read through a consumer group or `stream_read` instead.
+`FELIX_SUB_QUEUE_POLICY=block` makes the broker wait for room instead of
+dropping, but then every publisher of the shard waits for the slowest
+subscriber.
+
+## A subscriber falls behind
+
+**What you see.** Records arrive late, and the delay grows. Nothing is
+reported as dropped yet.
 
 **What to run.**
 
 ```bash
-felixctl sub orders --shard 0 --from 1500 --format offsets
+felixctl inspect subs orders --shard 0
 ```
 
-Each line is `shard`, `offset` and payload, tab-separated. A gap in the offsets
-is records this subscriber did not get. On the broker,
-`felix_sub_queue_dropped_total` counts records dropped from full subscriber
-queues.
+```
+NODE      STREAM/SHARD           SUB  CONNECTION          PRINCIPAL  POLICY    QUEUE    DROPPED  POSITION  TAIL     BEHIND
+broker-a  acme/default/orders/0  4    17 10.0.4.12:50122  p:billing  drop_new  498/512  0        1040000   1048576  8576
+broker-a  acme/default/orders/0  5    18 10.0.4.31:41870  p:audit    drop_new  0/512    0        1048576   1048576  0
+```
 
-**How to read it.** Each subscriber has its own bounded queue on the broker,
-and the stream's `SubQueuePolicy` decides what happens when it fills. The
-default, `drop_new`, drops the arriving record so a slow subscriber never slows
-a publisher. `drop_old` is accepted and behaves as `drop_new`. A client that
-offered `FEATURE_SUBSCRIPTION_LAGGED` has its subscription ended at the first
-dropped record, with `subscription_lagged` naming where to resume; any other
-client sees only the jump.
+Run it a few times and watch `QUEUE` and `BEHIND`.
 
-**What to do.** Make the subscriber keep up, give it a larger queue with
-`queue_capacity` on `subscribe`, or resubscribe from the offset the gap
-starts at. A subscriber that must not miss anything should read through a
-consumer group or `stream_read` instead. `inspect subs` will show each
-subscription's queue depth and drops
-([#1077](https://github.com/GetFelix/felix/issues/1077)).
+**How to read it.** `POSITION` is one past the last offset the broker has taken
+from the subscriber's queue to write to the client. `TAIL` is the shard's next
+offset, and `BEHIND` the difference. A subscriber that keeps up has a queue
+near `0` and `BEHIND` near `0`, like subscriber 5 above. Subscriber 4's queue is
+almost full: unless it catches up, the next batches are dropped and it moves
+to [the section above](#a-subscriber-misses-records).
+
+`POSITION` is `-` on an in-memory stream, which has no offsets, and for a new
+subscription until its first live batch. A subscription that started from an
+offset is caught up from disk first, and that history does not count here.
+
+With `--json` each broker prints one line with `node_id`, `subscriptions` and
+`next_cursor`, and every subscription carries `behind` when it has a position:
+
+```bash
+felixctl inspect subs --json | jq -c '.subscriptions[] | select(.behind > 10000)'
+```
+
+**Likely causes.** The same as for drops, earlier: a slow consumer, a burst,
+or a slow network. One subscriber behind while others on the same shard keep
+up points at that client. Every subscriber of the shard behind together points
+at the broker or its network.
+
+**What to do.** Speed up or scale out the consumer, for instance by splitting
+the work over a consumer group. If every subscriber of a broker falls behind
+together, look at that broker's CPU and network before the clients.
 
 ## A client is refused with `forbidden`
 
@@ -285,9 +362,10 @@ action on that object. What each request needs:
 | Cache put, delete, counters | `cache.write` on the cache or the key |
 | Consumer group poll, ack, nack | `group.consume`, or `stream.subscribe` |
 | Group seek, delete, redrive, discard | `group.manage`, or `stream.manage` |
-| `shard_inspect` (`felixctl inspect`) | `node.view` on `cluster:*` |
+| `shard_inspect`, `subscriptions_list` (`felixctl inspect`) | `node.view` on `cluster:*` |
 
-`felixctl inspect` refused with `shard_inspect needs node.view:cluster:*` needs
+`felixctl inspect` refused with `shard_inspect needs node.view:cluster:*` (or
+`subscriptions_list needs ...`) needs
 a token with exactly that grant. A wildcard such as `node.view:*` does not
 count, and no tenant admin can grant it.
 

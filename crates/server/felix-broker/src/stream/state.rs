@@ -467,17 +467,19 @@ impl StreamState {
         let id = state.next_id;
         state.next_id += 1;
         let lag = Arc::default();
+        let stats = Arc::default();
         state.senders.insert(
             id,
             RegisteredSubscriber {
                 sender: tx,
                 lag: Arc::clone(&lag),
+                stats: Arc::clone(&stats),
             },
         );
         self.rebuild_subscriber_snapshot(&state);
         (
             id,
-            SubscriptionReceiver::new(rx, Arc::clone(&state.moved), lag),
+            SubscriptionReceiver::new(rx, Arc::clone(&state.moved), lag, stats),
         )
     }
 
@@ -647,6 +649,7 @@ impl StreamState {
                 id: *id,
                 sender: registered.sender.clone(),
                 lag: Arc::clone(&registered.lag),
+                stats: Arc::clone(&registered.stats),
             });
         }
         // The fanout reads this in order and a HashMap does not have one.
@@ -664,6 +667,7 @@ pub(crate) struct SubscriberEntry {
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
     /// Told where this subscriber's queue first dropped a batch.
     pub(crate) lag: Arc<super::subscription::Lag>,
+    pub(crate) stats: Arc<super::stats::SubscriberStats>,
 }
 
 /// A live subscriber as the registry holds it.
@@ -671,6 +675,7 @@ pub(crate) struct SubscriberEntry {
 pub(crate) struct RegisteredSubscriber {
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
     pub(crate) lag: Arc<super::subscription::Lag>,
+    pub(crate) stats: Arc<super::stats::SubscriberStats>,
 }
 
 /// The stream's live subscribers, keyed by an id that is never reused.
