@@ -86,6 +86,12 @@ when the cache is opened. This is the same rule the segment indexes follow, and
 for the same reason: anything that can be recomputed from the log must be,
 because then it can never be stale in a way that matters.
 
+Each compaction pass writes the index to `keys.idx` beside the log, and an open
+loads it and replays only the records past it. It is checked against the log
+first (checksum, the offsets it covers, the last record it saw), and one that
+does not match is ignored for a full replay. See
+[storage-format.md](storage-format.md#keysidx-a-caches-key-index).
+
 **The index holds offsets, not values.** The log is the store; memory holds only
 where to look. This costs a read per `get` that a hash map would not pay, and it
 is what makes the durability real rather than a write-behind of an in-memory

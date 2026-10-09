@@ -13,6 +13,7 @@
 mod compaction;
 mod record;
 mod shard;
+mod snapshot;
 mod write;
 
 pub use record::CacheOp;
@@ -667,7 +668,8 @@ impl LogCache {
             .await
     }
 
-    /// Drop one shard's index, so the next touch replays its log.
+    /// Drop one shard's index and its snapshot, so the next touch replays
+    /// its whole log.
     ///
     /// For replication after it cut records from the log: the index can
     /// point at offsets that are gone, or that now hold other records, and
@@ -684,6 +686,8 @@ impl LogCache {
         let mut state = shard.state.lock().await;
         state.index = Index::default();
         state.sequenced_through = None;
+        state.index_epoch += 1;
+        crate::index_snapshot::remove(&shard.dir).map_err(StorageError::Io)?;
         Ok(())
     }
 
@@ -747,6 +751,7 @@ impl LogCache {
                 };
                 Ok(Arc::new(CacheShard {
                     label,
+                    dir,
                     compactor: Arc::clone(&self.compactor),
                     compacting: Default::default(),
                     keys_in_flight: Default::default(),
@@ -756,6 +761,7 @@ impl LogCache {
                         index: Index::default(),
                         sequenced_through: None,
                         closed: false,
+                        index_epoch: 0,
                     }),
                     // Aligned to the log's tail by the first `ensure_index`; until
                     // then nothing can reserve, because every writer passes through
@@ -848,6 +854,10 @@ impl StorageApi for LogCache {
     ) -> Result<Option<Bytes>> {
         self.delete_checked(tenant_id, namespace, cache, shard, key)
             .await
+    }
+
+    fn has_log(&self) -> bool {
+        true
     }
 
     async fn shard_log(

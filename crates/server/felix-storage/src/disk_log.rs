@@ -40,6 +40,7 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod inspect;
 pub mod layout;
 
 mod append;
@@ -796,6 +797,8 @@ impl DiskLog {
         // offloaded from one that was lost.
         let manifest = offload::manifest::load(&dir)?;
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
+        // Does not touch the archive: an unreachable one must not stop the
+        // log from serving. The first pass opens it.
         let offloader = config
             .offload
             .as_ref()
@@ -1402,12 +1405,14 @@ impl LogInner {
         }
     }
 
-    /// Rebuild producer state after the log was cut back. The snapshot may
-    /// describe records that are gone, so it is removed first, durably: one
-    /// that came back after a crash would be read as describing the records
-    /// that replaced them.
+    /// Rebuild producer state after the log was cut back. The producer
+    /// snapshot, and a cache's key index snapshot when this log backs a
+    /// cache, may describe records that are gone, so both are removed first,
+    /// durably: one that came back after a crash would be read as describing
+    /// the records that replaced them.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
+        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
         let state = producers::rebuild(&self.dir, segments, None)?;
         self.batch_open
