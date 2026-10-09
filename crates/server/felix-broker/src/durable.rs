@@ -71,6 +71,21 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// Hold one stream's logs at the commit offset, open and future, or
+    /// lift the hold. See `DiskLogProvider::set_stream_retention_hold`.
+    pub async fn set_stream_retention_hold(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        hold: bool,
+    ) -> Result<()> {
+        self.provider
+            .set_stream_retention_hold(tenant, namespace, stream, hold)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     pub fn config(&self) -> &LogConfig {
         self.provider.config()
     }
@@ -596,9 +611,13 @@ impl StreamLog {
     }
 
     /// Keep retention and compaction below the commit offset, for a log
-    /// replicated under `Quorum`. See `DiskLog::hold_retention_at_commit`.
-    pub fn hold_retention_at_commit(&self, hold: bool) {
-        self.log.hold_retention_at_commit(hold);
+    /// replicated under `Quorum`. Survives a restart. See
+    /// `DiskLog::hold_retention_at_commit`.
+    pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        self.log
+            .hold_retention_at_commit(hold)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Where each leadership generation began here, oldest first.

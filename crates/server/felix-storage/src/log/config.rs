@@ -137,6 +137,23 @@ pub struct LogConfig {
     /// Compaction's trimming honours it too, but the broker sets it only for
     /// stream logs.
     pub offload: Option<OffloadTarget>,
+    /// Whether retention is held at the commit offset from the moment the log
+    /// opens, before retention first runs. The default keeps what the log's
+    /// replica state recorded. See `DiskLog::hold_retention_at_commit`.
+    pub retention_hold: RetentionHold,
+}
+
+/// What a log does at open with the retention hold its replica state recorded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RetentionHold {
+    /// Keep the recorded hold, as replication last set it.
+    #[default]
+    AsSaved,
+    /// Hold, for a log its broker knows is replicated under `Quorum`.
+    Held,
+    /// Lift it: for a broker that does not replicate, where nothing would
+    /// ever advance the commit offset, or a log not under `Quorum`.
+    Lifted,
 }
 
 /// Where offloaded segments go.
@@ -319,6 +336,7 @@ impl Default for LogConfig {
             retention_check_interval: Duration::from_secs(60),
             max_open_sealed_segments: 256,
             offload: None,
+            retention_hold: RetentionHold::AsSaved,
         }
     }
 }

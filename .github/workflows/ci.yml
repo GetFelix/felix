@@ -86,6 +86,8 @@ jobs:
       - name: Build ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
@@ -155,7 +157,8 @@ jobs:
       FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
     services:
       postgres:
-        image: postgres:16-alpine
+        # The official image through AWS's mirror, which has no anonymous pull limit.
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         ports:
           - 55432:5432
         env:

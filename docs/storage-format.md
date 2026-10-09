@@ -494,13 +494,13 @@ for.
 
 A shard directory that has been replicated to, or led, holds a `replica` file:
 the highest leadership generation this broker accepted a leader of the shard
-at, and the commit offset it knows, one past the last record a majority
-acknowledged.
+at, the commit offset it knows, one past the last record a majority
+acknowledged, and whether retention is held at that offset.
 
 ```text
  0   4  magic        u32  "FLRS"
  4   2  version      u16
- 6   2  reserved     u16
+ 6   2  flags        u16  bit 0: retention held at the commit offset
  8   8  generation   u64  highest generation accepted
 16   8  commit       u64  one past the last record known committed
 24   4  crc          u32  crc32 over bytes 0..24
@@ -516,6 +516,13 @@ at most once a second and at shutdown, as its records are written behind too;
 read back behind after a crash, it permits *more* truncation than it should:
 records committed since are unguarded until the leader's next batch carries the
 offset again.
+
+The flags were a reserved zero before the hold was recorded, and no build
+checked them, so a file without the flag reads as not held and an older build
+reads a file with it unchanged. The hold is written when replication turns it
+on or off (`DiskLog::hold_retention_at_commit`), or when the log opens under a
+`LogConfig::retention_hold` that differs from it, and restored at open, before
+retention starts; see `docs/durable-storage.md`, "Retention".
 
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
 it, and reading a damaged one as zero would accept any leader, so a file that

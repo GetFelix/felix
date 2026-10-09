@@ -35,7 +35,7 @@ use crate::cache::{
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
-use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, ShardKey};
+use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -49,6 +49,9 @@ pub struct LogCache {
     /// Told about every applied write, while the shard's write lock is held —
     /// which is what makes the order it sees the shard's order.
     observer: Observer,
+    /// Whether each cache's logs are held at the commit offset, keyed by
+    /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
+    holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
 }
 
 impl LogCache {
@@ -67,6 +70,7 @@ impl LogCache {
             shards: ShardSlots::new(),
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
+            holds: SyncMutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -720,6 +724,24 @@ impl LogCache {
         self.shard_with_base(tenant, namespace, cache, shard, None)
     }
 
+    /// The configuration a shard of `cache` opens with: this store's, with
+    /// the cache's retention hold.
+    fn config_for(&self, tenant: &str, namespace: &str, cache: &str) -> LogConfig {
+        let mut config = self.config.clone();
+        if config.retention_hold == RetentionHold::Lifted {
+            return config;
+        }
+        let scope = (tenant.to_string(), namespace.to_string(), cache.to_string());
+        if let Some(hold) = self.holds.lock().get(&scope) {
+            config.retention_hold = if *hold {
+                RetentionHold::Held
+            } else {
+                RetentionHold::Lifted
+            };
+        }
+        config
+    }
+
     fn shard_with_base(
         &self,
         tenant: &str,
@@ -749,11 +771,10 @@ impl LogCache {
                 let dir = layout::shard_dir(&self.root, &key);
                 let label = layout::shard_label(&key);
                 crate::legacy_swap::recover_legacy_swap(&dir)?;
+                let config = self.config_for(tenant, namespace, cache);
                 let log = match base_offset {
-                    Some(base) => {
-                        DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
-                    }
-                    None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
+                    Some(base) => DiskLog::open_at(dir.clone(), label.clone(), config, base)?,
+                    None => DiskLog::open(dir.clone(), label.clone(), config)?,
                 };
                 Ok(Arc::new(CacheShard {
                     label,
@@ -923,6 +944,41 @@ impl StorageApi for LogCache {
         shard: u32,
     ) -> Result<()> {
         LogCache::forget_index(self, tenant_id, namespace, cache, shard).await
+    }
+
+    async fn set_retention_hold(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        hold: bool,
+    ) -> Result<()> {
+        if self.config.retention_hold == RetentionHold::Lifted {
+            return Ok(());
+        }
+        self.holds.lock().insert(
+            (
+                tenant_id.to_string(),
+                namespace.to_string(),
+                cache.to_string(),
+            ),
+            hold,
+        );
+        for ((tenant, ns, name, _), shard) in self.shards.open_entries() {
+            if tenant != tenant_id || ns != namespace || name != cache {
+                continue;
+            }
+            match shard
+                .current_log()
+                .await
+                .hold_retention_at_commit(hold)
+                .await
+            {
+                Err(StorageError::Closed(_)) => {}
+                other => other?,
+            }
+        }
+        Ok(())
     }
 
     fn open_shards(&self) -> Vec<(String, String, String, u32)> {
