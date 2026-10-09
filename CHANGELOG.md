@@ -11,6 +11,21 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.3] - 2026-10-08
+
+The third preview of 0.6.0. felixctl now manages a cluster as well as using
+it: it creates, changes and deletes tenants, namespaces, streams and caches,
+works consumer groups, counters and RBAC rules, and shows a shard's or a
+subscriber's live state with `felixctl inspect`. It installs with Homebrew.
+Every change of a shard's leader is fenced, and replicas keep a ballot with
+each generation they accept. Sealed segments can be copied to an object store
+before retention deletes them, the first step toward tiered storage.
+`felix-capi` adds a C ABI over the Rust client, the base for Go and C# SDKs.
+Caches gain conditional writes and key-scoped grants, and a client can read a
+bounded range of a stream. Development works with Docker or Podman. Several
+move, failover and lease-timing bugs are fixed. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
+
 ### Added
 - A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
   macOS and Linux, with completions and man pages (#1005). `release.yml`
@@ -533,8 +548,6 @@ for what the current release guarantees.
   `Cluster`'s `client_token`, `admin_token`, `operator_token`,
   `subscribe_only_token` and `group_operator_token` fields are now methods, and
   `ControlPlane`'s token methods moved to `felix_cluster::Credentials`.
-
-### Fixed
 - A cache follower that dropped a divergent suffix of its cache log, or of its
   counter log, kept the in-memory index or counter sums built from the dropped
   records, so after a promotion a key could read the value of whatever record
@@ -3641,7 +3654,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...HEAD
+[0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
 [0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2
 [0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
 [0.5.0]: https://github.com/GetFelix/felix/compare/v0.4.1...v0.5.0

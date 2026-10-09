@@ -71,7 +71,7 @@ edition = "2024"
 # This line is not the whole bump: intra-workspace path dependencies also pin a
 # `version`, which Cargo requires to match, so they move with it. The standalone
 # demos under demos/ keep their own literal version and are independent.
-version = "0.6.0-preview.2"
+version = "0.6.0-preview.3"
 # Fail-closed default: a new crate inherits the *restrictive* licence unless it
 # deliberately opts into Apache-2.0. The permissive crates (felix-wire,
 # felix-common, felix-transport, felix-client, felix-conformance) set

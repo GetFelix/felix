@@ -17,15 +17,15 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
-felix-broker-service = { path = "../../../services/felix-broker-service", version = "0.6.0-preview.2" }
+felix-broker-service = { path = "../../../services/felix-broker-service", version = "0.6.0-preview.3" }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
-felix-authz = { path = "../../server/felix-authz", version = "0.6.0-preview.2" }
-felix-broker = { path = "../../server/felix-broker", version = "0.6.0-preview.2" }
-felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview.2" }
-felix-storage = { path = "../../server/felix-storage", version = "0.6.0-preview.2" }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.2" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.2" }
+felix-authz = { path = "../../server/felix-authz", version = "0.6.0-preview.3" }
+felix-broker = { path = "../../server/felix-broker", version = "0.6.0-preview.3" }
+felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview.3" }
+felix-storage = { path = "../../server/felix-storage", version = "0.6.0-preview.3" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.3" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.3" }
 jsonwebtoken = { workspace = true }
 quinn = { workspace = true }
 rcgen = { workspace = true }

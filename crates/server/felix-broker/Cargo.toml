@@ -18,8 +18,8 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 metrics = { workspace = true }
-felix-storage = { path = "../felix-storage", version = "0.6.0-preview.2" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.2" }
+felix-storage = { path = "../felix-storage", version = "0.6.0-preview.3" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.3" }
 arc-swap = "1.8"
 ahash = { workspace = true }
 hashbrown = { workspace = true }
