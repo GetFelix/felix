@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791522280745,
+  "lastUpdate": 1791527236343,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26208,6 +26208,58 @@ window.BENCHMARK_DATA = {
             "range": "7139.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 843345.02\nmean: 847262.40\nstdev: 7139.45\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f437dcc629e80b82fd7225c4e55c6f5083f7169f",
+          "message": "fix(replication): don't open a cache or counter unfenced when its log fails to open (#1095) (#1099)\n\nLogCache::shard_log and the counter store return None on any open error\n(closing, EMFILE, failed recovery), and fence_shard read that as \"a cache\nkept in memory\" and opened the shard on the lease, or skipped the counter\nfence. Once caches acknowledge by their followers that serves unfenced while\nthe old leader still acknowledges. Now a log-backed store that fails to open\nthe log leaves the shard Pending without the lease fallback, and opens on the\nlease with it. StorageApi::has_log tells the in-memory case apart.\n\nSpec-Unaffected: FelixShardFencedCache already requires both logs fenced before OpenForWrites; the model has no state where the leader's own log cannot be opened, and this change makes the code match it rather than changing the protocol.\n\nCloses #1095",
+          "timestamp": "2026-10-08T23:22:56-07:00",
+          "tree_id": "01bf0f6b0292b8bac5a21077cd6e9c5b718082ac",
+          "url": "https://github.com/GetFelix/felix/commit/f437dcc629e80b82fd7225c4e55c6f5083f7169f"
+        },
+        "date": 1791527235474,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 526162.08,
+            "range": "19352.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526162.08\nmean: 517234.52\nstdev: 19352.96\ncv: 3.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 526162.08,
+            "range": "19352.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526162.08\nmean: 517234.52\nstdev: 19352.96\ncv: 3.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121287.91,
+            "range": "941.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121287.91\nmean: 121929.10\nstdev: 941.26\ncv: 0.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212879.11,
+            "range": "9412.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212879.11\nmean: 1219291.04\nstdev: 9412.57\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
