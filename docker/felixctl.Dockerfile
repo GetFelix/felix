@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # felixctl, as a container.
 #
 # Built from the workspace root (`docker build -f docker/felixctl.Dockerfile .`).
@@ -7,7 +6,8 @@
 
 # Docker Hub by default. CI passes a mirror of the same official images
 # (`--build-arg BASE_REGISTRY=public.ecr.aws/docker/library`) to stay clear
-# of Docker Hub's anonymous pull limit.
+# of Docker Hub's anonymous pull limit. There is no `# syntax=` line for the
+# same reason: BuildKit's built-in frontend handles the cache mounts below.
 ARG BASE_REGISTRY=docker.io/library
 
 # --- build ---------------------------------------------------------------
