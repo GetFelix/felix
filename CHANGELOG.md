@@ -23,15 +23,15 @@ next consumer. An offload outage no longer fails durable logs at open, and
 offload keys now start with the node id, so two brokers sharing a directory
 cannot overwrite each other's copies. A shared connection's subscription and
 publish limits now apply per identity, and a gateway can trade a user's token
-for a delegated one carrying `act`, which subject binding accepts. A `Quorum`
-stream fails over on its followers' word in about 5 s instead of waiting out
-the lease. A subscriber that registers just as its shard moves is refused
-rather than left attached to nothing, and a publish forwarded to a shard its
-new owner is still fencing is held rather than refused. `felix-broker inspect
-segments` checks a data directory offline and reports what startup would do.
-The docs site covers felix-gateway and the projects built on Felix. The Rust
-API has breaking changes, listed under Changed. `pip` will not install it
-without `--pre`.
+for a delegated one carrying `act`, which subject binding accepts. A durable
+`Quorum` stream with `majority_ack` and `lease_free_reads` finalized fails
+over on its followers' word in about 5 s instead of waiting out the lease. A
+subscriber that registers just as its shard moves is refused rather than left
+attached to nothing, and a publish forwarded to a shard its new owner is still
+fencing is held rather than refused. `felix-broker inspect segments` checks a
+data directory offline and reports what startup would do. The docs site covers
+felix-gateway and the projects built on Felix. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
 
 ### Added
 - Failover on the followers' word (part of #1009). Each broker pings the
