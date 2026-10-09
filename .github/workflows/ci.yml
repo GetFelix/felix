@@ -446,7 +446,10 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 scripts/check_spec_pairing.py --base "${{ github.event.pull_request.base.sha }}"
+        # HEAD is the PR merged into main; its first parent is the main it was
+        # merged onto. pull_request.base.sha can be older than that, which
+        # would count changes already on main as this PR's.
+        run: python3 scripts/check_spec_pairing.py --base HEAD^1
 
       - name: Java
         uses: actions/setup-java@v6
