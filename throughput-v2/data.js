@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791580682492,
+  "lastUpdate": 1791581703821,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27040,6 +27040,58 @@ window.BENCHMARK_DATA = {
             "range": "6022.28",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808477.58\nmean: 809481.62\nstdev: 6022.28\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a3c7611d806f7475b0e028bfa1501628aa339926",
+          "message": "ci: drop the Dockerfile syntax directive so builds don't pull its frontend from Docker Hub (#1123)\n\n`# syntax=docker/dockerfile:1.7` makes BuildKit fetch the frontend image from\nDocker Hub on every build, and a 504 from auth.docker.io failed the\ncontrol-plane image build on #1122. The only newer feature the Dockerfiles use\nis RUN --mount=type=cache, which BuildKit's built-in frontend (and buildah)\nsupport, so the line can go.\n\nSpec-Unaffected: container build configuration only",
+          "timestamp": "2026-10-09T14:27:54-07:00",
+          "tree_id": "c57c6d58c339413be8bc13179bf730f79a118806",
+          "url": "https://github.com/GetFelix/felix/commit/a3c7611d806f7475b0e028bfa1501628aa339926"
+        },
+        "date": 1791581703214,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 499940.82,
+            "range": "23584.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499940.82\nmean: 498267.71\nstdev: 23584.45\ncv: 4.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 499940.82,
+            "range": "23584.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499940.82\nmean: 498267.71\nstdev: 23584.45\ncv: 4.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112929.83,
+            "range": "662.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112929.83\nmean: 112695.58\nstdev: 662.39\ncv: 0.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1129298.27,
+            "range": "6623.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1129298.27\nmean: 1126955.81\nstdev: 6623.89\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
