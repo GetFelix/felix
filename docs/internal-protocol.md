@@ -107,12 +107,13 @@ never have dialled the one that shipped to it.
 | `1 << 4` | `CACHE_FENCE` | answers `Fence` and `ReplicateFetch` for a cache shard's counter log (`log` = `Counters`) as well as its cache log, refusing a counter fence older than the generation its cache log accepted, and reads cache and counter batches labelled with their generations |
 | `1 << 5` | `RECORD_TIMES` | reads `ReplicateTimedRecords` and stores each record's time as sent, and answers `ReplicateTimedFetch` |
 | `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
+| `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE` and
 `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
-still offers `GENERATION_LABELS`, `FORWARD_OFFSETS` and `RECORD_TIMES`, which
-are not the fence's.
+still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES` and `PING`,
+which are not the fence's.
 
 A promoted cache shard is fenced only when every replica offered `FENCE`,
 `TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
@@ -656,6 +657,22 @@ sequenceDiagram
     A->>C: ReplicateRecords(shard, G, ...)
     C-->>A: ReplicateError(FencedEpoch)
 ```
+
+### Pinging a leader
+
+A follower asks each broker that leads a shard it follows whether it is there:
+`Ping` (kind 38), answered with `Pong` (kind 39). Both bodies are the
+correlation id alone. It goes on the connection's control lane, so it never
+waits behind a forwarded publish, and the answer comes from the broker's
+serving runtime rather than the transport task, so a broker whose runtime is
+stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
+did not is not watched at all, so a rolling upgrade never reads as a dead
+leader.
+
+A leader that has not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` is named
+in the follower's heartbeat, and the control plane promotes once a majority of
+the set names it. See `docs/replication-design.md`, "Failover on the
+followers' word".
 
 ## Errors
 

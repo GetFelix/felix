@@ -231,7 +231,8 @@ impl PeerTransportConfig {
         use felix_wire::internal::PeerCapabilities;
         let labels = PeerCapabilities::GENERATION_LABELS
             .union(PeerCapabilities::FORWARD_OFFSETS)
-            .union(PeerCapabilities::RECORD_TIMES);
+            .union(PeerCapabilities::RECORD_TIMES)
+            .union(PeerCapabilities::PING);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)

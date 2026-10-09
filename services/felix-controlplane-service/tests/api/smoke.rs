@@ -1168,6 +1168,19 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn record_suspicion(
+        &self,
+        _suspicion: felix_controlplane_service::model::NodeSuspicion,
+    ) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_suspicions(
+        &self,
+    ) -> StoreResult<Vec<felix_controlplane_service::model::NodeSuspicion>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn moves_paused(&self) -> StoreResult<bool> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

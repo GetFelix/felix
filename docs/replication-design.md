@@ -251,6 +251,85 @@ brokers serving. `FelixShardRealMargins.cfg` adds a `Quorum` write carried
 across a promotion under the same margins and drift, and every acknowledged
 record survives.
 
+### Failover on the followers' word
+
+The lease decides when failover happens: a dead leader is replaced only once
+it is marked down, `L + margin` after its last heartbeat, and a leader that
+still heartbeats is never replaced at all, even when none of its followers
+can reach it. Once a deposed leader is kept out by the fence instead of the
+clock, the wait buys nothing. So the followers say when the leader is gone,
+and the control plane acts on that.
+
+**Which shards.** A durable `Quorum` stream, once the fleet has finalized
+both `majority_ack` and `lease_free_reads`. With `majority_ack` a deposed
+leader cannot get a write acknowledged once its successor has fenced a
+majority, and with `lease_free_reads` it cannot serve a read or a group
+commit without a round of fences either. Without the second it still serves
+reads on its lease, and replacing it before that runs out would let it hand
+out values its successor has since overwritten. `Leader` streams and caches
+keep the lease. `FelixShardSuspicion.cfg` lets placement promote on any read
+before the lease lapses, the old leader alive and renewing, and loses
+nothing; `FelixShardSuspicionLease.cfg`, the same where the lease still
+decides who serves, finds two brokers serving.
+
+**The followers' half.** Every broker pings each broker that leads a shard
+it follows, four times per `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s by default),
+with `Ping` on the peer connection's control lane, answered from the
+leader's serving runtime (`docs/internal-protocol.md`, "Pinging a leader").
+A leader that has not answered for the whole window is named in the
+follower's next heartbeat, which goes at once rather than an interval later.
+A leader first watched gets a whole window, and a peer that did not offer
+`PING` is not watched, so an upgrade does not read as a death.
+
+**The control plane's half.** It keeps the names as soft state, like a
+heartbeat: in the store under the memory and Postgres backends, and in the
+Raft leader's memory under Raft. A name counts for two heartbeat intervals,
+since a broker that still suspects says so on every beat and one that has
+stopped says nothing. Placement then treats a live leader as gone when the
+followers naming it are a majority of the set, the leader counted in the set
+but not among them, and a reported follower can take over
+(`deposed_by_followers` in `placement/plan.rs`). From there it is an
+ordinary `Quorum` promotion: the follower furthest ahead in the last report,
+the set kept with the old leader in it, and the new leader fencing a
+majority before it serves. Not while a move or a replacement is under way,
+since those change the set the fence counts and end through their own steps.
+With no reported follower the leader keeps the shard, since it is alive and
+may be the one the rest can still reach.
+
+A majority is the right number from both sides. A leader that a majority of
+its set cannot reach cannot get a write acknowledged anyway, so replacing it
+costs nothing that was working. And those followers are a majority that can
+answer the new leader's fence. One follower cut off alone moves nothing.
+
+**Failover time** is then the replica set's own: the suspect window, plus
+the heartbeat that carries it, which goes as soon as the window ends, plus
+the placement pass it wakes on the instance it reaches (or the next pass,
+`FELIX_SHARD_RECONCILE_INTERVAL_MS`, on another), plus the fence. With the
+defaults that is a little over 5 s, against at least `L + margin` (15 s plus
+3.75 s) for a lease lapse, and it does not depend on the control plane's
+expiry timeout. A leader partitioned from its followers but not from the
+control plane, which the lease never replaced, is replaced the same way.
+
+A detector that is wrong costs availability, never safety: the replaced
+leader rejoins as a follower. A slow leader that misses a whole window of
+pings from a majority is replaced, which is the trade a shorter window makes.
+
+**What it does not change.** The control plane still makes the decision, so
+with the control plane down a dead leader is not replaced. Replicas electing
+a leader among themselves is the rest of issue #1009, and needs the set
+check `FelixShardElectStaleSet.cfg` shows missing.
+
+Evidence: `a_leader_a_majority_cannot_reach_is_replaced_while_it_heartbeats`,
+`one_follower_alone_does_not_move_the_shard`,
+`a_leader_stream_is_not_moved_on_the_followers_word`,
+`with_nobody_caught_up_the_leader_keeps_the_shard` (placement);
+`a_suspicion_counts_only_with_both_features`,
+`a_suspicion_counts_for_two_heartbeats`; `a_leader_silent_for_the_window_is_suspected_until_it_answers`,
+`a_ping_is_answered_and_an_older_broker_is_not_pinged` (the follower);
+`a_suspicion_is_sent_without_waiting_for_the_next_beat` (the heartbeat);
+and the cluster test
+`a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats`.
+
 ### Fencing a promotion
 
 The lease keeps a deposed leader out only while clocks drift within the bound
@@ -1485,15 +1564,15 @@ multi-instance work and not before.
 
 | Situation | Behaviour |
 | --- | --- |
-| Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
+| Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. A durable `Quorum` stream, once `majority_ack` and `lease_free_reads` are finalized, is promoted as soon as a majority of its set has gone `FELIX_LEADER_SUSPECT_AFTER_MS` without an answer from the leader, about 5 s with the defaults (see [Failover on the followers' word](#failover-on-the-followers-word)). |
 | Leader of a `Quorum` stream or cache fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
 | A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
 | A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
-| Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |
+| Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. The leader still heartbeats, so the lease never replaces it; a durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized is failed over on its followers' word instead. |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. A leader that dies meanwhile is not replaced until the control plane is back, whatever its followers say (issue #1009). |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 

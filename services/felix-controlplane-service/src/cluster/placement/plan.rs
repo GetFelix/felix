@@ -312,11 +312,23 @@ pub(super) fn plan_abandoning(
         let is_live = |id: &str| is_live(id) && allowed(id);
         let is_draining = |id: &str| is_draining(id) || (!allowed(id) && is_serving(id));
 
+        // A majority of the set says the leader is gone, though the control
+        // plane still hears from it. Only where a promoted leader fences a
+        // majority before it serves and the old one serves nothing on its
+        // lease alone, so the old one is kept out without waiting for it.
+        let deposed = current.get(&key).is_some_and(|existing| {
+            fenced
+                && is_live(&existing.leader)
+                && deposed_by_followers(&key, existing, &is_live, caught_up)
+                && promote(&key, existing, &eligible, caught_up).is_some()
+        });
+
         // The leader is still serving: a move, not a reassignment, unless
         // there is no log to move.
         if let Some(existing) = current.get(&key)
             && is_serving(&existing.leader)
             && (durable || is_live(&existing.leader))
+            && !deposed
         {
             let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(
@@ -498,6 +510,37 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         move_started_at_millis: None,
         move_reason: None,
     }
+}
+
+/// Whether enough of `existing`'s followers say they cannot reach its leader
+/// to replace it while it still heartbeats.
+///
+/// Enough is a majority of the whole set, the leader counted in the set but
+/// not among those saying so. A leader that a majority cannot reach cannot
+/// get a write acknowledged anyway, and those followers are a majority that
+/// can answer the next leader's fence. Not while a move or a replacement is
+/// under way: those change the set, and finish or end through their own
+/// steps.
+fn deposed_by_followers(
+    key: &ShardKey,
+    existing: &ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> bool {
+    if existing.successor.is_some()
+        || existing.joining.is_some()
+        || existing.state == ShardState::Draining
+    {
+        return false;
+    }
+    let saying = existing
+        .replicas
+        .iter()
+        .filter(|follower| is_live(follower))
+        .filter(|follower| caught_up.suspects(key, follower, &existing.leader))
+        .count();
+    // A majority of the set, the leader in it.
+    saying * 2 > existing.replicas.len() + 1
 }
 
 /// The followers of a fenced shard promoted to `promoted`: the previous set,

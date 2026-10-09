@@ -512,7 +512,7 @@ The endpoints not covered above:
 | `PATCH /v1/tenants/{t}/namespaces/{ns}/streams/{s}` | change `retention`, `consistency`, `delivery` or `durable`; every field is optional | `stream.manage` |
 | `PATCH /v1/tenants/{t}/namespaces/{ns}/caches/{c}` | change `display_name` | `cache.manage` |
 | `POST /v1/nodes` | register a broker; the answer carries the heartbeat interval, the expiry timeout and the enabled fleet features | `node.manage` over the node |
-| `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration, plus `"suspects"`, the leaders it cannot reach, when there are any | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor; 409 if any shard's report was refused | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
 | `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |

@@ -52,7 +52,8 @@ async fn satisfies_the_node_store_contract() {
     let store = single_node_store(dir.path()).await;
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
-    crate::store::contract::nodes::run_fleet_contract(store).await;
+    crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
+    crate::store::contract::suspicions::run_suspicion_contract(store).await;
 }
 
 #[tokio::test]

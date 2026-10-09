@@ -316,6 +316,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
             Duration::from_secs(30),
         )),
         std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        std::sync::Arc::default(),
     );
 
     // Wait for registration to land.

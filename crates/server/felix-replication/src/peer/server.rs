@@ -18,7 +18,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
-    ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities,
+    ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities, Pong,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -453,6 +453,19 @@ async fn serve_connection(
                             break;
                         }
                         continue;
+                    }
+                    // Answered by the serving runtime, not the pump, so a
+                    // broker whose runtime is stuck reads as unreachable.
+                    InternalMessage::Ping(ping) => {
+                        let answer = app.spawn(async move {
+                            InternalMessage::Pong(Pong {
+                                correlation_id: ping.correlation_id,
+                            })
+                        });
+                        match answer.await {
+                            Ok(pong) => pong,
+                            Err(_) => break,
+                        }
                     }
                     // Off the pump's runtime; the pump only waits. The stream
                     // stays one request at a time, as the requester expects.

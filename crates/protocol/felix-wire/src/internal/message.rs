@@ -2,8 +2,9 @@
 
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, Ping, Pong,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -59,6 +60,8 @@ pub enum InternalMessage {
     Fence(Fence),
     FenceOk(FenceOk),
     ReplicateFetch(ReplicateFetch),
+    Ping(Ping),
+    Pong(Pong),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -122,6 +125,8 @@ impl InternalMessage {
             Self::ReplicateFetch(m) if m.labelled && m.timed => Kind::ReplicateTimedFetch,
             Self::ReplicateFetch(m) if m.labelled => Kind::ReplicateLabelledFetch,
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
+            Self::Ping(_) => Kind::Ping,
+            Self::Pong(_) => Kind::Pong,
         }
     }
 
@@ -158,6 +163,8 @@ impl InternalMessage {
             Self::Fence(m) => m.correlation_id,
             Self::FenceOk(m) => m.correlation_id,
             Self::ReplicateFetch(m) => m.correlation_id,
+            Self::Ping(m) => m.correlation_id,
+            Self::Pong(m) => m.correlation_id,
         }
     }
 }

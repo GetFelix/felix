@@ -243,6 +243,20 @@ pub struct NodeStatus {
     pub features: BTreeSet<String>,
 }
 
+/// The leaders a broker last said it cannot reach, from its heartbeat.
+///
+/// Soft state, like a heartbeat: placement acts on it only while it is
+/// recent, and a broker that suspects nobody sends nothing, so an old one
+/// ages out.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct NodeSuspicion {
+    pub node_id: String,
+    pub incarnation: u64,
+    pub suspects: BTreeSet<String>,
+    /// The store's clock when it arrived.
+    pub reported_at_millis: u64,
+}
+
 /// A broker process in the cluster.
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct Node {

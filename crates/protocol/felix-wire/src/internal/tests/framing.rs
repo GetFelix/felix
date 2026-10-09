@@ -87,6 +87,8 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (29, Kind::Fence),
         (30, Kind::FenceOk),
         (31, Kind::ReplicateFetch),
+        (38, Kind::Ping),
+        (39, Kind::Pong),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -136,6 +138,8 @@ fn every_body_begins_with_its_correlation_id() {
             shard: shard.clone(),
             log: ReplicaLog::Stream,
         }),
+        InternalMessage::Ping(Ping { correlation_id: id }),
+        InternalMessage::Pong(Pong { correlation_id: id }),
         InternalMessage::FenceOk(FenceOk {
             correlation_id: id,
             log_end: 1,

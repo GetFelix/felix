@@ -13,3 +13,4 @@ mod replica_reports;
 pub(crate) mod resources;
 pub(crate) mod shards;
 pub(crate) mod signing_keys;
+pub(crate) mod suspicions;

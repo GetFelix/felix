@@ -53,6 +53,9 @@ impl PeerCapabilities {
     /// refuses a fence, a batch or a fetch from any other node at that
     /// generation.
     pub const BALLOTS: Self = Self(1 << 6);
+    /// Answers [`Ping`](super::Ping), so a follower can tell a leader that
+    /// is quiet from one it cannot reach.
+    pub const PING: Self = Self(1 << 7);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -129,4 +132,17 @@ pub struct ReplicateFetch {
     /// can ask: it travels as `ReplicateTimedFetch`, sent only to a peer that
     /// advertised [`PeerCapabilities::RECORD_TIMES`].
     pub timed: bool,
+}
+
+/// A follower checking that the leader of a shard it follows is reachable.
+/// Carries nothing else: the answer is the whole point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ping {
+    pub correlation_id: u64,
+}
+
+/// The answer to [`Ping`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pong {
+    pub correlation_id: u64,
 }

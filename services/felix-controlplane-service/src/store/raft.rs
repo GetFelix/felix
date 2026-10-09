@@ -632,6 +632,21 @@ impl ControlPlaneStore for RaftStore {
         self.local().list_replica_reports().await
     }
 
+    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
+        // `None` is a leader without soft state, which keeps none.
+        self.ask_leader(LeaderRequest::Suspicion {
+            node_id: suspicion.node_id,
+            incarnation: suspicion.incarnation,
+            suspects: suspicion.suspects,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
+        Ok(self.soft.suspicions())
+    }
+
     async fn moves_paused(&self) -> StoreResult<bool> {
         self.local().moves_paused().await
     }

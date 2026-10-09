@@ -150,6 +150,13 @@ pub enum Kind {
     ReplicateTimedRecords = 36,
     /// `ReplicateLabelledFetch`, answered with `ReplicateTimedRecords`.
     ReplicateTimedFetch = 37,
+    /// A follower asks the broker leading one of its shards whether it is
+    /// there. Sent only to a peer that offered [`PeerCapabilities::PING`].
+    ///
+    /// [`PeerCapabilities::PING`]: super::PeerCapabilities::PING
+    Ping = 38,
+    /// The answer to `Ping`, given by the broker's serving runtime.
+    Pong = 39,
 }
 
 impl Kind {
@@ -194,6 +201,8 @@ impl Kind {
             35 => Ok(Kind::ConditionalForwardCacheOk),
             36 => Ok(Kind::ReplicateTimedRecords),
             37 => Ok(Kind::ReplicateTimedFetch),
+            38 => Ok(Kind::Ping),
+            39 => Ok(Kind::Pong),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

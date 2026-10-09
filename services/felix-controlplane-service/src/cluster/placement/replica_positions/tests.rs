@@ -278,3 +278,78 @@ fn lag_is_measured_against_the_reported_tail() {
         None
     );
 }
+
+fn suspicion(node_id: &str, leader: &str, reported_at_millis: u64) -> crate::model::NodeSuspicion {
+    crate::model::NodeSuspicion {
+        node_id: node_id.to_string(),
+        incarnation: 1,
+        suspects: [leader.to_string()].into_iter().collect(),
+        reported_at_millis,
+    }
+}
+
+fn features(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| name.to_string()).collect()
+}
+
+/// **A suspicion counts for two heartbeats.** A broker that still suspects
+/// says so on every beat; one that stopped says nothing, so an old one must
+/// stop counting on its own.
+#[test]
+fn a_suspicion_counts_for_two_heartbeats() {
+    let both = features(&["majority_ack", "lease_free_reads"]);
+    let now = 100_000;
+    let held = |stamped| {
+        at(Vec::new(), now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", stamped)],
+                &liveness(),
+                &both,
+            )
+            .suspects(&key("orders"), "broker-b", "broker-a")
+    };
+    assert!(held(now - 2 * HEARTBEAT_MS));
+    assert!(!held(now - 2 * HEARTBEAT_MS - 1));
+}
+
+/// **Only once the fleet keeps a deposed leader out without its lease.**
+/// `majority_ack` keeps its writes from being acknowledged; without
+/// `lease_free_reads` it still answers reads on the lease.
+#[test]
+fn a_suspicion_counts_only_with_both_features() {
+    let now = 100_000;
+    for (enabled, counts) in [
+        (features(&["majority_ack", "lease_free_reads"]), true),
+        (features(&["majority_ack"]), false),
+        (features(&["lease_free_reads"]), false),
+        (features(&[]), false),
+    ] {
+        let positions = at(Vec::new(), now).with_suspicions(
+            vec![suspicion("broker-b", "broker-a", now)],
+            &liveness(),
+            &enabled,
+        );
+        assert_eq!(
+            positions.suspects(&key("orders"), "broker-b", "broker-a"),
+            counts,
+            "{enabled:?}"
+        );
+        assert!(!positions.suspects(&key("orders"), "broker-b", "broker-c"));
+    }
+}
+
+/// **Not for a cache.** A `Quorum` cache still fails over on the lease.
+#[test]
+fn a_suspicion_does_not_move_a_cache() {
+    let now = 100_000;
+    let positions = at(Vec::new(), now).with_suspicions(
+        vec![suspicion("broker-b", "broker-a", now)],
+        &liveness(),
+        &features(&["majority_ack", "lease_free_reads", "fenced_caches"]),
+    );
+    let cache = ShardKey {
+        kind: crate::model::ShardKind::Cache,
+        ..key("profiles")
+    };
+    assert!(!positions.suspects(&cache, "broker-b", "broker-a"));
+}

@@ -193,6 +193,7 @@ pub(super) struct ShardTaskDeps<'a> {
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
     pub(super) shard_status: &'a Arc<replication::status::ShardStatusBoard>,
     pub(super) fleet: &'a Arc<felix_common::fleet::FleetGate>,
+    pub(super) suspects: &'a Arc<replication::suspicion::Suspects>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -213,6 +214,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         halted_replicas,
         shard_status,
         fleet,
+        suspects,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -355,6 +357,18 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     sync_shutdown.clone(),
                 )
             });
+            // Which leaders this broker cannot reach, for the heartbeat. Over
+            // the same pool, so a peer it cannot ship to or forward to is one
+            // it cannot ping either.
+            if let Some(pool) = peers {
+                drop(replication::suspicion::spawn(
+                    Arc::clone(pool),
+                    Arc::clone(router),
+                    Arc::clone(suspects),
+                    replication::suspicion::SuspicionConfig::from_env(),
+                    sync_shutdown.clone(),
+                ));
+            }
             Some(ShardTasks {
                 watch,
                 feed,

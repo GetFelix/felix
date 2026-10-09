@@ -198,8 +198,11 @@ impl PlacementRead {
         // within the same plan, and the same clock the reports and heartbeats
         // were stamped with.
         let reports = store.list_replica_reports().await?;
+        let suspicions = store.list_suspicions().await?;
+        let enabled = store.enabled_fleet_features().await?;
         let now_millis = store.now_millis().await?;
-        let positions = ReplicaPositions::new(reports, liveness, now_millis);
+        let positions = ReplicaPositions::new(reports, liveness, now_millis)
+            .with_suspicions(suspicions, liveness, &enabled);
         let nodes = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {

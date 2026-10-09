@@ -9,8 +9,8 @@ use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheCondition, ForwardCacheError,
     ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError,
     ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS,
-    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, ReplicaLog,
-    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, Ping, Pong,
+    ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
     ReplicateRecords, ShardRef,
 };
 use crate::error::{Error, Result};
@@ -100,6 +100,9 @@ impl InternalMessage {
                 body.put_u64(m.from_offset);
                 body.put_u32(m.max_bytes);
                 // `labelled` is the kind, not the body.
+            }
+            Self::Ping(Ping { correlation_id }) | Self::Pong(Pong { correlation_id }) => {
+                body.put_u64(*correlation_id);
             }
             Self::FenceOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -448,6 +451,15 @@ impl InternalMessage {
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
+            }
+            Kind::Ping | Kind::Pong => {
+                let correlation_id = take_u64(&mut body)?;
+                expect_empty(&body)?;
+                Ok(if header.kind == Kind::Ping {
+                    Self::Ping(Ping { correlation_id })
+                } else {
+                    Self::Pong(Pong { correlation_id })
+                })
             }
             Kind::FenceOk => {
                 let message = FenceOk {
