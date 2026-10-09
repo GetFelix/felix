@@ -23,9 +23,9 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 # The CRC of a record batch built by hand; kafka-protocol uses the same crate.
 crc32c = "0.6"
-felix-authz = { path = "../felix-authz", version = "0.6.0-preview.3" }
-felix-broker = { path = "../felix-broker", version = "0.6.0-preview.3" }
-felix-storage = { path = "../felix-storage", version = "0.6.0-preview.3" }
+felix-authz = { path = "../felix-authz", version = "0.6.0-preview.4" }
+felix-broker = { path = "../felix-broker", version = "0.6.0-preview.4" }
+felix-storage = { path = "../felix-storage", version = "0.6.0-preview.4" }
 # The producer codecs, used directly so decompression can be bounded. The
 # same versions kafka-protocol's codec features pull in.
 flate2 = "1.1"
@@ -45,7 +45,7 @@ zstd = "0.14"
 # test compress the batches a producer would.
 kafka-protocol = { workspace = true, features = ["broker", "client", "gzip", "snappy", "lz4", "zstd"] }
 # Replication's wire marks, to seed a log with a producer near the sequence wrap.
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.3" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.4" }
 tempfile = { workspace = true }
 
 [lints]

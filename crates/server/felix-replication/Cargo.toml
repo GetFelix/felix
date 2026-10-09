@@ -18,12 +18,12 @@ anyhow = { workspace = true }
 # `PeerRequestHandler` is a trait object with async methods.
 async-trait = { workspace = true }
 bytes = { workspace = true }
-felix-broker = { path = "../felix-broker", version = "0.6.0-preview.3" }
-felix-common = { path = "../felix-common", version = "0.6.0-preview.3", features = ["tls"] }
-felix-router = { path = "../felix-router", version = "0.6.0-preview.3" }
-felix-storage = { path = "../felix-storage", version = "0.6.0-preview.3" }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.3" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.3" }
+felix-broker = { path = "../felix-broker", version = "0.6.0-preview.4" }
+felix-common = { path = "../felix-common", version = "0.6.0-preview.4", features = ["tls"] }
+felix-router = { path = "../felix-router", version = "0.6.0-preview.4" }
+felix-storage = { path = "../felix-storage", version = "0.6.0-preview.4" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.4" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.4" }
 futures = "0.3"
 metrics = { workspace = true }
 parking_lot = { workspace = true }
