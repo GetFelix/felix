@@ -330,3 +330,62 @@ async fn looking_for_an_open_log_creates_nothing() {
     provider.close_shard(&shard("orders")).await.expect("close");
     assert!(provider.opened_shard(&shard("orders")).is_none());
 }
+
+/// A stream's hold reaches its open shards at once, and the ones opened
+/// later before their first sweep. Other streams keep their own.
+#[tokio::test]
+async fn a_streams_retention_hold_reaches_open_and_later_shards() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    let open = provider.open_shard(&shard("s")).expect("open");
+    let other = provider.open_shard(&shard("other")).expect("open");
+
+    provider
+        .set_stream_retention_hold("t", "ns", "s", true)
+        .await
+        .expect("hold");
+    assert!(open.retention_held_at_commit());
+    assert!(!other.retention_held_at_commit());
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("s")
+        })
+        .expect("open");
+    assert!(later.retention_held_at_commit());
+
+    provider
+        .set_stream_retention_hold("t", "ns", "s", false)
+        .await
+        .expect("lift");
+    assert!(!open.retention_held_at_commit());
+    assert!(!later.retention_held_at_commit());
+}
+
+/// A provider configured to lift every hold, as a broker that does not
+/// replicate is, ignores a stream asking for one.
+#[tokio::test]
+async fn a_lifted_provider_ignores_a_streams_hold() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(
+        dir.path(),
+        LogConfig {
+            retention_hold: crate::log::RetentionHold::Lifted,
+            ..config()
+        },
+    )
+    .expect("provider");
+    let open = provider.open_shard(&shard("s")).expect("open");
+    provider
+        .set_stream_retention_hold("t", "ns", "s", true)
+        .await
+        .expect("hold");
+    assert!(!open.retention_held_at_commit());
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("s")
+        })
+        .expect("open");
+    assert!(!later.retention_held_at_commit());
+}

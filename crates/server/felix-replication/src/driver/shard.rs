@@ -299,7 +299,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let quorum_shard = crate::quorum::acknowledges_at_quorum(broker, key).await;
     // Retention stops at the commit offset written through below, so nothing
     // a publish may still be waiting on is deleted before a majority has it.
-    log.hold_retention_at_commit(quorum_shard);
+    if let Err(err) = log.hold_retention_at_commit(quorum_shard).await {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            error = %err,
+            "could not write the retention hold through; it applies in memory",
+        );
+    }
     let acks_at_quorum = !route.draining && quorum_shard;
     let mark_key = watch_key(key);
     let mark_key = &mark_key;
