@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791553522465,
+  "lastUpdate": 1791554898030,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26520,6 +26520,58 @@ window.BENCHMARK_DATA = {
             "range": "7333.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 793863.79\nmean: 791548.17\nstdev: 7333.72\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b88cd1db9271f5d873ca4c0715c9c9e693522b6",
+          "message": "fix(felixctl): create the config's temp file exclusively under a random name (#1105)\n\nThe config save opened .<name>.<pid>.tmp with create+truncate, so a symlink\nplanted at that predictable path was followed and its target overwritten.\nThe temp file now gets a name from an OS-seeded RandomState and is created\nwith create_new (O_EXCL) and mode 0600, retrying on a collision.\n\nPart of #1098",
+          "timestamp": "2026-10-09T06:58:37-07:00",
+          "tree_id": "680a1fb2f85a561e2122a7d4671b9e0df3219f41",
+          "url": "https://github.com/GetFelix/felix/commit/8b88cd1db9271f5d873ca4c0715c9c9e693522b6"
+        },
+        "date": 1791554897266,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343582.2,
+            "range": "9242.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343582.20\nmean: 339886.42\nstdev: 9242.94\ncv: 2.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343582.2,
+            "range": "9242.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343582.20\nmean: 339886.42\nstdev: 9242.94\ncv: 2.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79859.13,
+            "range": "4140.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79859.13\nmean: 78347.74\nstdev: 4140.53\ncv: 5.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798591.33,
+            "range": "41405.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798591.33\nmean: 783477.35\nstdev: 41405.25\ncv: 5.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
