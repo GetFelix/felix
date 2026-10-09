@@ -17,6 +17,11 @@ for what the current release guarantees.
   could apply against a value written after it (#1098). Versions now start
   each run at the wall-clock time in microseconds. Log-backed caches were
   not affected: their versions are log offsets.
+- A first segment whose header and records had all been zeroed was deleted at
+  startup as a segment whose creation never finished, and the log came back
+  empty (part of #1098). Creation syncs the header before anything appends,
+  so only a file no longer than a header can be an unfinished creation.
+  Recovery now refuses a longer one as corruption.
 - Retention could acknowledge a `Quorum` publish for records no broker held
   (#1094). With both followers of a shard down, a tight retention bound
   deleted records only the leader had, including ones publishes were still
