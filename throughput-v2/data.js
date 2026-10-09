@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791577261499,
+  "lastUpdate": 1791580682492,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26988,6 +26988,58 @@ window.BENCHMARK_DATA = {
             "range": "31791.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1605548.44\nmean: 1602837.61\nstdev: 31791.52\ncv: 1.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eceb2a9190f97383f3b1dec3d374214e6bccbf7c",
+          "message": "ci: pull base images and Postgres from AWS's mirror of Docker Hub (#1121)\n\nCI pulls postgres:16-alpine and the Dockerfiles' rust and debian bases from\nDocker Hub without logging in, and shared runners hit its anonymous pull limit\n(\"toomanyrequests\"). The same official images come from\npublic.ecr.aws/docker/library, which has no such limit. The Dockerfiles take\nthe base registry as a build argument that defaults to Docker Hub, so local\nbuilds are unchanged.\n\nSpec-Unaffected: CI and container build configuration only",
+          "timestamp": "2026-10-09T14:12:48-07:00",
+          "tree_id": "e0d1d64b2ca985c4eae29574fa66a5b8bed7f152",
+          "url": "https://github.com/GetFelix/felix/commit/eceb2a9190f97383f3b1dec3d374214e6bccbf7c"
+        },
+        "date": 1791580681585,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343467.71,
+            "range": "8505.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343467.71\nmean: 343383.90\nstdev: 8505.18\ncv: 2.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343467.71,
+            "range": "8505.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343467.71\nmean: 343383.90\nstdev: 8505.18\ncv: 2.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80847.76,
+            "range": "602.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80847.76\nmean: 80948.16\nstdev: 602.23\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808477.58,
+            "range": "6022.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808477.58\nmean: 809481.62\nstdev: 6022.28\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
