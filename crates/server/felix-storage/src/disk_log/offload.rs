@@ -12,6 +12,11 @@
 //! or a recorded and verified copy, and usually both. The object is written
 //! under a key no recorded copy uses, so a recorded copy is never rewritten.
 //!
+//! The store is opened by the first pass, not by `DiskLog::open`, so a
+//! missing or read-only archive never stops a log from serving. While passes
+//! keep failing, nothing un-copied is deleted and the local disk grows; the
+//! failures and the bytes retention is holding are reported (see `Health`).
+//!
 //! Reads do not use the copies yet; below the local head they still report
 //! `Trimmed`.
 
@@ -20,10 +25,12 @@ pub(crate) mod manifest;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStoreExt, WriteMultipart};
+use parking_lot::Mutex;
 
 use self::manifest::ManifestEntry;
 use super::LogInner;
@@ -38,10 +45,16 @@ pub(crate) use self::manifest::Manifest;
 const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 /// Parts in flight at once during an upload.
 const UPLOAD_CONCURRENCY: usize = 2;
+/// How often a lasting failure is logged: first at once, then backing off
+/// to this cap, so an outage stays visible without flooding the log.
+const FIRST_REPORT_AFTER: Duration = Duration::from_secs(30);
+const MAX_REPORT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 /// Where one log's segments are copied.
 pub(super) struct Offloader {
-    store: LocalFileSystem,
+    /// Opened by a pass, and dropped after a failed one so the next pass
+    /// creates the directory again if the mount came back empty.
+    store: Mutex<Option<Arc<LocalFileSystem>>>,
     root: PathBuf,
     /// The shard's directory name, which is unique under a storage root and
     /// safe in a path. Every key starts with it.
@@ -49,8 +62,41 @@ pub(super) struct Offloader {
     /// Set when the log stops, so a pass ends between segments instead of
     /// holding shutdown up for the rest of its uploads.
     halted: AtomicBool,
+    pub(super) health: Mutex<Health>,
     #[cfg(test)]
     pub(super) faults: test_hooks::Faults,
+}
+
+/// Whether passes are failing, and what that is costing on local disk.
+#[derive(Debug, Default)]
+pub(super) struct Health {
+    /// Failed passes since the last one that succeeded.
+    pub(super) consecutive_failures: u64,
+    /// Bytes retention would delete but keeps because they have no recorded
+    /// copy. This log's share of `OFFLOAD_HELD_BYTES`.
+    pub(super) held_bytes: u64,
+    next_report: Option<Instant>,
+    report_interval: Duration,
+    /// The last pass's failure was logged, so the retention after it
+    /// reports what is being held too.
+    reported: bool,
+}
+
+impl Health {
+    /// Whether a lasting problem is due another log line, backing off from
+    /// `FIRST_REPORT_AFTER` to `MAX_REPORT_INTERVAL`.
+    fn report_due(&mut self, now: Instant) -> bool {
+        if self.next_report.is_some_and(|at| now < at) {
+            return false;
+        }
+        self.report_interval = if self.next_report.is_none() {
+            FIRST_REPORT_AFTER
+        } else {
+            (self.report_interval * 2).min(MAX_REPORT_INTERVAL)
+        };
+        self.next_report = Some(now + self.report_interval);
+        true
+    }
 }
 
 impl std::fmt::Debug for Offloader {
@@ -72,8 +118,6 @@ pub(super) struct OffloadOutcome {
 impl Offloader {
     pub(super) fn open(target: &OffloadTarget, shard_dir: &Path) -> Result<Self> {
         let OffloadTarget::LocalDir(root) = target;
-        crate::io::create_dir_all_durable(root)?;
-        let store = LocalFileSystem::new_with_prefix(root).map_err(object_error)?;
         let prefix = shard_dir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -81,10 +125,11 @@ impl Offloader {
                 "an offloaded log's directory must have a name",
             ))?;
         Ok(Self {
-            store,
+            store: Mutex::new(None),
             root: root.clone(),
             prefix,
             halted: AtomicBool::new(false),
+            health: Mutex::new(Health::default()),
             #[cfg(test)]
             faults: test_hooks::Faults::default(),
         })
@@ -92,6 +137,86 @@ impl Offloader {
 
     pub(super) fn halt(&self) {
         self.halted.store(true, Ordering::Release);
+    }
+
+    /// The store, opening it (and creating its directory) if no pass has
+    /// yet, or the last one failed.
+    async fn store(&self) -> Result<Arc<LocalFileSystem>> {
+        if let Some(store) = self.store.lock().as_ref() {
+            return Ok(Arc::clone(store));
+        }
+        let root = self.root.clone();
+        let store = blocking(move || {
+            crate::io::create_dir_all_durable(&root)?;
+            LocalFileSystem::new_with_prefix(&root).map_err(object_error)
+        })
+        .await?;
+        let store = Arc::new(store);
+        *self.store.lock() = Some(Arc::clone(&store));
+        Ok(store)
+    }
+
+    /// Count a pass's result and log a change, or a lasting failure on a
+    /// backoff.
+    fn note_pass(&self, label: &str, result: &Result<OffloadOutcome>) {
+        let mut health = self.health.lock();
+        match result {
+            Ok(_) => {
+                if health.consecutive_failures > 0 {
+                    metrics::gauge!(metrics_names::OFFLOAD_FAILING_LOGS).decrement(1.0);
+                    tracing::info!(
+                        shard = %label,
+                        failed_passes = health.consecutive_failures,
+                        archive = %self.root.display(),
+                        "offload is copying again"
+                    );
+                }
+                health.consecutive_failures = 0;
+                health.next_report = None;
+                health.reported = false;
+            }
+            Err(err) => {
+                *self.store.lock() = None;
+                metrics::counter!(metrics_names::OFFLOAD_FAILURES_TOTAL).increment(1);
+                if health.consecutive_failures == 0 {
+                    metrics::gauge!(metrics_names::OFFLOAD_FAILING_LOGS).increment(1.0);
+                }
+                health.consecutive_failures += 1;
+                health.reported = health.report_due(Instant::now());
+                if health.reported {
+                    tracing::warn!(
+                        shard = %label,
+                        error = %err,
+                        failed_passes = health.consecutive_failures,
+                        archive = %self.root.display(),
+                        "offload pass failed; un-copied segments stay on local disk until it succeeds"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Record how many bytes retention kept for want of a copy, and say so
+    /// loudly while it is keeping any.
+    pub(super) fn note_held(&self, label: &str, segments: usize, bytes: u64) {
+        let mut health = self.health.lock();
+        let delta = bytes as f64 - health.held_bytes as f64;
+        if delta != 0.0 {
+            metrics::gauge!(metrics_names::OFFLOAD_HELD_BYTES).increment(delta);
+        }
+        health.held_bytes = bytes;
+        // A failing pass logs its own error on the same backoff; this line
+        // adds what the outage is costing.
+        if bytes > 0 && std::mem::take(&mut health.reported) {
+            tracing::error!(
+                shard = %label,
+                held_segments = segments,
+                held_bytes = bytes,
+                failed_passes = health.consecutive_failures,
+                archive = %self.root.display(),
+                "retention is keeping segments past their bound until offload can copy them; local disk will keep growing"
+            );
+        }
     }
 
     fn key_for(&self, descriptor: &SegmentDescriptor) -> String {
@@ -103,7 +228,12 @@ impl Offloader {
 
     /// Copy one sealed segment and verify the copy. Returns the entry to
     /// record; recording it is the caller's job.
-    async fn copy(&self, locator: &SealedLocator, label: &str) -> Result<ManifestEntry> {
+    async fn copy(
+        &self,
+        store: &LocalFileSystem,
+        locator: &SealedLocator,
+        label: &str,
+    ) -> Result<ManifestEntry> {
         let descriptor = locator.descriptor().clone();
         let key = self.key_for(&descriptor);
         let location = ObjectPath::from(key.as_str());
@@ -125,11 +255,7 @@ impl Offloader {
         // segments are copied), so replacing it loses nothing. It is a copy
         // a crash interrupted, or one of a segment a truncation since cut.
         let file = Arc::new(std::fs::File::open(locator.path())?);
-        let upload = self
-            .store
-            .put_multipart(&location)
-            .await
-            .map_err(object_error)?;
+        let upload = store.put_multipart(&location).await.map_err(object_error)?;
         let mut writer = WriteMultipart::new_with_chunk_size(upload, CHUNK_BYTES);
         let mut hasher = crc32fast::Hasher::new();
         let mut position = 0u64;
@@ -176,10 +302,11 @@ impl Offloader {
         writer.finish().await.map_err(object_error)?;
         let checksum = hasher.finalize();
 
-        self.make_durable(&location).await?;
+        self.make_durable(store, &location).await?;
         #[cfg(test)]
-        self.faults.after_upload(&self.object_file(&location)?)?;
-        self.verify(&location, descriptor.size_bytes, checksum)
+        self.faults
+            .after_upload(&store.path_to_filesystem(&location).map_err(object_error)?)?;
+        self.verify(store, &location, descriptor.size_bytes, checksum)
             .await?;
 
         Ok(ManifestEntry {
@@ -198,8 +325,8 @@ impl Offloader {
     ///
     /// The local backend's own fsync option would do the same, but these go
     /// through `crate::io`, which is what the power-loss tests observe.
-    async fn make_durable(&self, location: &ObjectPath) -> Result<()> {
-        let path = self.object_file(location)?;
+    async fn make_durable(&self, store: &LocalFileSystem, location: &ObjectPath) -> Result<()> {
+        let path = store.path_to_filesystem(location).map_err(object_error)?;
         let root = self.root.clone();
         blocking(move || {
             crate::io::sync_all(&std::fs::File::open(&path)?)?;
@@ -217,8 +344,14 @@ impl Offloader {
     }
 
     /// Read the copy back and check it is the bytes that were sent.
-    async fn verify(&self, location: &ObjectPath, size_bytes: u64, checksum: u32) -> Result<()> {
-        let meta = self.store.head(location).await.map_err(object_error)?;
+    async fn verify(
+        &self,
+        store: &LocalFileSystem,
+        location: &ObjectPath,
+        size_bytes: u64,
+        checksum: u32,
+    ) -> Result<()> {
+        let meta = store.head(location).await.map_err(object_error)?;
         if meta.size != size_bytes {
             return Err(mismatch(location, "size", size_bytes, meta.size));
         }
@@ -226,8 +359,7 @@ impl Offloader {
         let mut position = 0u64;
         while position < size_bytes {
             let end = (position + CHUNK_BYTES as u64).min(size_bytes);
-            let chunk = self
-                .store
+            let chunk = store
                 .get_range(location, position..end)
                 .await
                 .map_err(object_error)?;
@@ -248,11 +380,18 @@ impl Offloader {
         }
         Ok(())
     }
+}
 
-    fn object_file(&self, location: &ObjectPath) -> Result<PathBuf> {
-        self.store
-            .path_to_filesystem(location)
-            .map_err(object_error)
+impl Drop for Offloader {
+    /// Take this log's share out of the process-wide gauges.
+    fn drop(&mut self) {
+        let health = self.health.get_mut();
+        if health.consecutive_failures > 0 {
+            metrics::gauge!(metrics_names::OFFLOAD_FAILING_LOGS).decrement(1.0);
+        }
+        if health.held_bytes > 0 {
+            metrics::gauge!(metrics_names::OFFLOAD_HELD_BYTES).decrement(health.held_bytes as f64);
+        }
     }
 }
 
@@ -262,11 +401,20 @@ impl LogInner {
     /// Stops at the first failure: the segments after it stay local, and
     /// retention deletes oldest first, so nothing behind a failed copy is at
     /// risk. The next pass starts again from there.
+    ///
+    /// A failure, opening the store included, is counted and logged here and
+    /// returned; the next pass retries.
     pub(super) async fn offload_pass(self: &Arc<Self>) -> Result<OffloadOutcome> {
-        let mut outcome = OffloadOutcome::default();
         let Some(offloader) = self.offloader.as_ref() else {
-            return Ok(outcome);
+            return Ok(OffloadOutcome::default());
         };
+        let result = self.copy_pending(offloader).await;
+        offloader.note_pass(&self.label, &result);
+        result
+    }
+
+    async fn copy_pending(self: &Arc<Self>, offloader: &Offloader) -> Result<OffloadOutcome> {
+        let mut outcome = OffloadOutcome::default();
         let (generation, sealed) = self.segments.read().sealed_locators();
         let pending: Vec<SealedLocator> = {
             let manifest = self.manifest.lock();
@@ -292,17 +440,15 @@ impl LogInner {
                 })
                 .collect()
         };
+        if pending.is_empty() {
+            return Ok(outcome);
+        }
+        let store = offloader.store().await?;
         for locator in pending {
             if offloader.halted.load(Ordering::Acquire) {
                 break;
             }
-            let entry = match offloader.copy(&locator, &self.label).await {
-                Ok(entry) => entry,
-                Err(err) => {
-                    metrics::counter!(metrics_names::OFFLOAD_FAILURES_TOTAL).increment(1);
-                    return Err(err);
-                }
-            };
+            let entry = offloader.copy(&store, &locator, &self.label).await?;
             #[cfg(test)]
             offloader.faults.stop(test_hooks::Stop::Uploaded)?;
             let recorded = {

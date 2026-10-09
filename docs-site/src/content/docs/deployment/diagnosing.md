@@ -1,6 +1,6 @@
 ---
 title: "Diagnosing a Cluster"
-description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records or lags, a client is refused, or a broker will not start."
+description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records or lags, a client is refused, local disk fills while offload is on, or a broker will not start."
 ---
 
 This page is organised by what you see. Each section says what to run, in
@@ -371,6 +371,47 @@ count, and no tenant admin can grant it.
 
 **What to do.** Mint a token with the grant, or fix the tenant the client
 authenticates under. See [Security](/features/security/).
+
+## Local disk is filling while offload is on
+
+**What you see.** With `FELIX_DURABLE_OFFLOAD_DIR` set, a broker's data disk
+keeps growing although the streams have a retention bound, and the broker logs:
+
+```
+offload pass failed; un-copied segments stay on local disk until it succeeds
+retention is keeping segments past their bound until offload can copy them; local disk will keep growing
+```
+
+**What to run.** On the broker's `/metrics`:
+
+```bash
+curl -s http://broker-a:8080/metrics | grep felix_storage_offload_
+```
+
+**How to read it.** Retention deletes a segment only once its copy is verified
+and recorded, and it keeps waiting however long that takes.
+`felix_storage_offload_failing_logs` is the number of shard logs whose last
+offload pass failed, `felix_storage_offload_held_bytes` the bytes retention
+is keeping for want of a copy, and `felix_storage_offload_failures_total`
+rises once per failed pass. The log lines name the shard, the directory and
+the error. They repeat at most every 30 seconds at first, backing off to every
+15 minutes. Publishes and reads are not affected until the disk is full.
+
+**Likely causes.**
+
+- The offload directory's mount is missing, so the directory cannot be created.
+- The mount is read-only, or the broker's user cannot write to it.
+- The offload volume is full.
+
+**What to do.** Fix the offload directory. The next pass, one
+`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS` later, copies the backlog oldest
+first, logs `offload is copying again`, and retention deletes what it was
+holding; `felix_storage_offload_held_bytes` drops back to 0. If the data disk
+will fill before the directory can be fixed, unset `FELIX_DURABLE_OFFLOAD_DIR`
+and restart the broker: retention then deletes without waiting for a copy, and
+the segments it deletes are not offloaded. Once the disk is full, writes to
+it are refused (`felix_storage_full_total`). See
+[Durable storage](/architecture/durable-storage/).
 
 ## A broker will not start, or will not open a shard
 

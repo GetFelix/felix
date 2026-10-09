@@ -11,6 +11,15 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A missing or read-only offload directory no longer fails every durable
+  stream log at open. The directory is opened by the offload pass, which
+  reports a failure through `felix_storage_offload_failures_total`, the new
+  `felix_storage_offload_failing_logs` and `felix_storage_offload_held_bytes`
+  gauges and a backed-off log line, and retries on the next tick. Retention
+  still never deletes a segment without a recorded copy, so an outage grows
+  local disk; deletion resumes once the directory is back (#1096).
+
 ## [0.6.0-preview.3] - 2026-10-08
 
 The third preview of 0.6.0. felixctl now manages a cluster as well as using
