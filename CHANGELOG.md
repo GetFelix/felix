@@ -12,6 +12,17 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- Retention could acknowledge a `Quorum` publish for records no broker held
+  (#1094). With both followers of a shard down, a tight retention bound
+  deleted records only the leader had, including ones publishes were still
+  waiting on. The followers came back below the leader's new base, were
+  rebuilt there, and their answers moved the quorum mark over the deleted
+  records. Retention and compaction's head trims now stop at the commit
+  offset on every replica of a `Quorum` shard, and the leader will not
+  bootstrap or rebuild a follower at a base above it. A stream whose
+  followers are down can therefore grow past its retention bound until a
+  majority is back. `DiskLog::hold_retention_at_commit` and
+  `StreamLog::hold_retention_at_commit` are new.
 - A consumer group's cursor can no longer move backwards after a cancelled
   commit (#1097). The cancelled commit's write still finished on its own task,
   but the next commit read the position from before it and wrote over it. A

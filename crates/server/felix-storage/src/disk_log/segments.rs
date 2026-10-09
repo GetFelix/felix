@@ -377,11 +377,13 @@ impl RetentionPlan {
     /// Head-only and whole-segment: partial segments are never rewritten,
     /// which is what lets recovery keep trusting "valid bytes end at EOF". The
     /// active segment is never a candidate, so a log always retains at least
-    /// the records written since the last roll. Runs without the lock: an age
-    /// check reads the newest record of each candidate, which may be cold.
+    /// the records written since the last roll. Nor is a segment holding any
+    /// offset at or above `floor`. Runs without the lock: an age check reads
+    /// the newest record of each candidate, which may be cold.
     pub(super) fn choose(
         &self,
         bounds: crate::log::Retention,
+        floor: Option<Offset>,
         now_micros: u64,
         label: &str,
     ) -> Result<Vec<SegmentId>> {
@@ -392,6 +394,9 @@ impl RetentionPlan {
         let mut total_bytes = self.total_bytes;
         let mut chosen = Vec::new();
         for candidate in &self.candidates {
+            if floor.is_some_and(|floor| candidate.descriptor().last_offset >= floor) {
+                break;
+            }
             let over_size = max_bytes.is_some_and(|max| total_bytes > max);
             let too_old = match max_age_micros {
                 // The newest record decides: a segment is only expired once

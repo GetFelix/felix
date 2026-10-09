@@ -1551,3 +1551,92 @@ mod labels {
         assert!(generations_over(&[], 0, 3).is_empty());
     }
 }
+
+/// A follower of a `Quorum` stream holds its retention at its commit offset,
+/// as the leader does: it counts toward the mark, and promoted, it is the
+/// copy a client was promised.
+mod retention {
+    use super::*;
+
+    async fn follower_of(consistency: felix_broker::ConsistencyLevel) -> (Arc<Broker>, TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = felix_broker::DurableStorage::open(
+            dir.path(),
+            LogConfig {
+                segment_size_bytes: 128,
+                index_spacing_bytes: 64,
+                fsync_mode: FsyncMode::None,
+                preallocate_segments: false,
+                retention_bytes: Some(256),
+                retention_check_interval: std::time::Duration::from_secs(3600),
+                ..LogConfig::default()
+            },
+        )
+        .expect("storage");
+        let broker =
+            Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+        broker.register_tenant(TENANT).await.expect("tenant");
+        broker
+            .register_namespace(TENANT, NAMESPACE)
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    consistency,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+        (broker, dir)
+    }
+
+    /// The base retention leaves after forty records, shipped in batches of
+    /// four, with the leader's commit offset at 2.
+    async fn base_after_retention(consistency: felix_broker::ConsistencyLevel) -> u64 {
+        let (broker, _dir) = follower_of(consistency).await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        let values: Vec<String> = (0..40).map(|i| format!("value-{i:03}")).collect();
+        for (i, chunk) in values.chunks(4).enumerate() {
+            let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let mut records = batch(4, i as u64 * 4, &chunk);
+            records.commit_offset = Some(2);
+            let answer = handler
+                .apply(SENDER, records, felix_broker::LogKind::Stream)
+                .await;
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{:?}",
+                answer.kind()
+            );
+        }
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        log.enforce_retention_now().await.expect("retention");
+        log.base_offset()
+    }
+
+    #[tokio::test]
+    async fn a_quorum_follower_keeps_what_is_above_its_commit_offset() {
+        let base = base_after_retention(felix_broker::ConsistencyLevel::Quorum).await;
+        assert!(
+            base <= 2,
+            "retention trimmed to {base}, past the commit offset 2"
+        );
+    }
+
+    /// A `Leader` stream acknowledges before shipping, so there is no mark to
+    /// protect and retention applies in full.
+    #[tokio::test]
+    async fn a_leader_follower_is_not_held() {
+        let base = base_after_retention(felix_broker::ConsistencyLevel::Leader).await;
+        assert!(base > 2, "retention was held on a `Leader` stream");
+    }
+}

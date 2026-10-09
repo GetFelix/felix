@@ -244,3 +244,79 @@ async fn zero_retention_bounds_are_rejected_at_open() {
         .is_err()
     );
 }
+
+/// A tight bound over eight records, which leaves about one sealed segment.
+async fn eight_records_over_a_tight_bound(dir: &TempDir) -> DiskLog {
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        retention_config(Some(crate::segment::SEGMENT_HEADER_LEN + 120), None),
+    )
+    .expect("open");
+    for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        log.append(&records(&[payload])).await.expect("append");
+    }
+    log
+}
+
+/// **Held at the commit offset, retention deletes nothing a majority may not
+/// hold yet.** A `Quorum` leader's records above its commit offset may be
+/// waiting for followers; deleted there, a follower rebuilt at the new base
+/// would be counted as holding them, and a publish acknowledged for records
+/// that are gone (#1094).
+#[tokio::test]
+async fn retention_held_at_the_commit_offset_stops_below_it() {
+    let unheld_dir = tempdir().expect("dir");
+    let unheld = eight_records_over_a_tight_bound(&unheld_dir).await;
+    unheld.enforce_retention_now().await.expect("retention");
+    assert_eq!(
+        unheld.base_offset(),
+        4,
+        "the bound does not delete the first segment, so the case is not set up",
+    );
+
+    let dir = tempdir().expect("dir");
+    let log = eight_records_over_a_tight_bound(&dir).await;
+    log.hold_retention_at_commit(true);
+    let outcome = log.enforce_retention_now().await.expect("retention");
+    assert_eq!(
+        outcome.segments_deleted, 0,
+        "deleted above a commit offset of 0"
+    );
+
+    // Offset 3 is not committed and shares the first segment, so it stays.
+    log.advance_commit_offset(3).await.expect("commit");
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(
+        log.base_offset(),
+        0,
+        "retention deleted offset 3 above the commit offset"
+    );
+
+    // Once the commit offset clears the segment, the bound applies in full.
+    log.advance_commit_offset(4).await.expect("commit");
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(log.base_offset(), unheld.base_offset());
+}
+
+/// Compaction's head trim is held at the same floor.
+#[tokio::test]
+async fn a_head_trim_held_at_the_commit_offset_stops_below_it() {
+    let dir = tempdir().expect("dir");
+    let log = eight_records_over_a_tight_bound(&dir).await;
+    log.hold_retention_at_commit(true);
+    log.advance_commit_offset(6).await.expect("commit");
+
+    log.roll_now().await.expect("roll");
+    log.trim_before(8).await.expect("trim");
+
+    assert!(
+        log.base_offset() <= 6,
+        "a head trim reached {} past the commit offset 6",
+        log.base_offset(),
+    );
+    assert!(
+        log.base_offset() > 0,
+        "the trim below the floor did not happen"
+    );
+}

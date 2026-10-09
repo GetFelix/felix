@@ -139,7 +139,11 @@ matching the model's treatment of the logs riding a shard as one log.
 
 Also not modelled: the storage layer (a commit is a commit), network partitions as
 such (they are lost heartbeats, lost reports, and delays), retention, and the
-bootstrap of a follower below the leader's base.
+bootstrap of a follower below the leader's base. Leaving them out relies on
+retention never deleting at or above a `Quorum` shard's commit offset, so a
+follower bootstrapped or rebuilt at the leader's base is missing only records
+a majority already held (see "Retention and the quorum mark" in
+`docs/replication-design.md`).
 
 ## What is checked
 

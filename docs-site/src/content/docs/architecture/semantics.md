@@ -184,6 +184,10 @@ leader. Retry through an
 idempotent producer, which re-sends under the same sequence and cannot land
 it twice.
 
+While it waits, retention does not reach those records. On a `Quorum` stream
+retention never deletes past the last acknowledged record, so a long outage
+can hold a stream's log above its size bound until a majority is back.
+
 Losing the leader does not stop a `Quorum` stream the same way. A follower that
 holds every record up to the quorum mark holds everything a client was told is
 stored, so it may be promoted even when the leader died holding newer records no

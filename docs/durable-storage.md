@@ -911,7 +911,7 @@ and both off by default:
 | `retention_age` | delete sealed segments whose newest record is older than this |
 | `retention_check_interval` | how often the bounds are evaluated (default 60s) |
 
-Four properties are worth knowing, because each rules out a class of surprise:
+These properties are worth knowing, because each rules out a class of surprise:
 
 - **Whole segments, from the head only.** Records are never rewritten, which is
   what lets recovery keep trusting "valid bytes end at EOF". A partial segment is
@@ -932,6 +932,15 @@ Four properties are worth knowing, because each rules out a class of surprise:
   Without the syncs the device could keep a newer unlink and lose an older one.
   The surviving segments would then have an offset gap, and recovery treats a
   gap as corruption.
+- **On a `Quorum` shard it stops at the commit offset.** A segment holding any
+  offset at or above the log's commit offset is kept, whatever the bounds say,
+  and so is everything after it. Records up there may still be waiting for a
+  majority; see "Retention and the quorum mark" in
+  `docs/replication-design.md` for what deleting them would do. The same floor
+  applies to compaction's head trims. Replication turns it on per log
+  (`DiskLog::hold_retention_at_commit`), on the leader and on every follower;
+  a log nobody advances the commit offset on, `Leader` streams and those
+  without replication included, is not held.
 
 What a reader sees after a trim is the point of the feature. `read_range` below
 `base_offset` returns `StorageError::Trimmed { requested, oldest }`, which the
@@ -953,6 +962,9 @@ running. The control plane refuses a zero bound, which no log could meet.
 Group cursor and dead-letter logs keep the broker's bounds.
 
 > `a_streams_retention_bounds_its_log_and_updates_in_place`
+
+> `retention_held_at_the_commit_offset_stops_below_it` and
+> `a_head_trim_held_at_the_commit_offset_stops_below_it`
 
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.

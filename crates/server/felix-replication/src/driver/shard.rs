@@ -296,7 +296,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // leaves every follower one short, and a leader dying then can never be
     // replaced. `Leader` acknowledges before shipping, and a move hands over an
     // exact copy, so both keep the tail.
-    let quorum_shard = acknowledges_at_quorum(broker, key).await;
+    let quorum_shard = crate::quorum::acknowledges_at_quorum(broker, key).await;
+    // Retention stops at the commit offset written through below, so nothing
+    // a publish may still be waiting on is deleted before a majority has it.
+    log.hold_retention_at_commit(quorum_shard);
     let acks_at_quorum = !route.draining && quorum_shard;
     let mark_key = watch_key(key);
     let mark_key = &mark_key;
@@ -1216,25 +1219,6 @@ pub(super) fn compare_from(generations: &[felix_storage::log::Epoch], generation
         .find(|epoch| epoch.generation == generation)
         .map(|epoch| epoch.start_offset.saturating_sub(1))
         .unwrap_or(0)
-}
-
-/// Whether the shard acknowledges a write only once a majority holds it. A
-/// stream or cache this broker has not registered counts as no, which keeps
-/// the stricter test.
-async fn acknowledges_at_quorum(broker: &Broker, key: &ShardKey) -> bool {
-    let consistency = match key.kind {
-        felix_router::ShardKind::Cache => {
-            broker
-                .cache_consistency(&key.tenant_id, &key.namespace, &key.stream)
-                .await
-        }
-        felix_router::ShardKind::Stream => {
-            broker
-                .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
-                .await
-        }
-    };
-    consistency == Some(felix_broker::ConsistencyLevel::Quorum)
 }
 
 /// The watch's key for a route, carrying the kind across rather than assuming

@@ -191,6 +191,13 @@ it is `Trimmed { requested, oldest }` rather than an empty answer, so a
 resuming subscriber can tell "those records existed and are gone" from
 "nothing here yet".
 
+On a `Quorum` shard retention also stops at the commit offset, on the leader and
+on every follower: a segment holding a record a majority may not have yet is
+kept, however far over its bound the log is. Without that, a follower rebuilt
+at the leader's new base would count as holding records nobody had, and a
+waiting publish would be acknowledged for them. Compaction's head trims stop
+at the same place. `Leader` streams are not held.
+
 The segments go oldest first, with a directory sync after each unlink, so a
 power loss partway through a sweep leaves a longer log rather than a gap that
 recovery would refuse.
