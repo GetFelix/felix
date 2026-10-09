@@ -253,7 +253,7 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardSessionsSubscriber 2"
   "FelixShardElectHandoffLeaders 10"
-  "FelixShardSuspicion 8"
+  "FelixShardSuspicion 3"
 )
 
 weight_of() {
