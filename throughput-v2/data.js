@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791574258508,
+  "lastUpdate": 1791577261499,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -26936,6 +26936,58 @@ window.BENCHMARK_DATA = {
             "range": "66166.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1227326.53\nmean: 1198837.33\nstdev: 66166.79\ncv: 5.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87a54c4cc0c9beabf39e1350ccf98273753cf595",
+          "message": "fix(storage): restore the retention hold at open (#1111)\n\n* fix(storage): restore the retention hold at open (#1109)\n\nThe hold at the commit offset lived only in memory and started off. It was\nset by the leader's replication pass or a follower's applied batch, so after\na restart a retention sweep on an idle shard or on a follower cut off from\nits leader could delete records above the commit offset before either ran.\n\nThe hold is now a flag in the shard's replica file, in what was a reserved\nfield no build checked, and is read back at open before retention starts.\nhold_retention_at_commit writes a change through. A leader whose shard has\nno followers left lifts the hold, since no pass runs to advance that\nshard's commit offset and a persisted hold would otherwise stop its\nretention for good.\n\nSpec-Unaffected: retention and its floor are not modelled; the lease, mark, reports, promotion and handoff are unchanged\n\n* fix(storage): hold on a raise to Quorum, lift on a standalone broker (#1109)\n\nA stream or cache raised to Quorum was not held until the first\nreplication pass, so a sweep in between could delete a record its publish\nwas waiting on. The broker now sets the hold as it applies the new\nconsistency: on the shards already open, written through, and through\nLogConfig::retention_hold on every shard opened later, before its first\nsweep. Only on a change, so a resync does not undo a lift on a shard with\nno followers.\n\nA saved hold on a broker that never replicates would stop retention for\ngood, since nothing there advances a commit offset. A broker with neither\nmembership nor a peer transport now opens its stream and cache logs with\nthe hold lifted. That is read from configuration, so a clustered broker\nwhose replication has not started keeps its holds.\n\nSpec-Unaffected: retention and its floor are not modelled; the lease, mark, reports, promotion and handoff are unchanged",
+          "timestamp": "2026-10-09T13:16:15-07:00",
+          "tree_id": "7438bfde426f75e4dc36648f4133624dd0df7a18",
+          "url": "https://github.com/GetFelix/felix/commit/87a54c4cc0c9beabf39e1350ccf98273753cf595"
+        },
+        "date": 1791577260881,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 675743.41,
+            "range": "68120.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 675743.41\nmean: 664289.08\nstdev: 68120.49\ncv: 10.25%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 675743.41,
+            "range": "68120.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 675743.41\nmean: 664289.08\nstdev: 68120.49\ncv: 10.25%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160554.84,
+            "range": "3179.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160554.84\nmean: 160283.76\nstdev: 3179.15\ncv: 1.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1605548.44,
+            "range": "31791.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1605548.44\nmean: 1602837.61\nstdev: 31791.52\ncv: 1.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
