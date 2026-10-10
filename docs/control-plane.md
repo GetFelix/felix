@@ -1543,11 +1543,14 @@ Four reasons it is the wrong trade for Felix today:
   window between them is a place to hide the split-brain that the lease
   arithmetic exists to close.
 - **Safety already does not rest on detection speed.** Data-plane failover is
-  lease-driven: a lost leader is replaced in about a second, bounded by lease
-  expiry plus the safety margin, not by the 15s liveness timeout, which only
-  gates *placement eligibility*. SWIM's sub-second detection would accelerate
-  a decision Felix deliberately does not take quickly, on a signal that
-  fencing renders non-load-bearing.
+  lease-driven: the 15 s liveness timeout is the lease, so a crashed leader is
+  replaced only after the timeout plus the regrant margin (18.75 s after its
+  last heartbeat with the defaults) and the next placement pass. That wait is
+  what keeps two brokers from leading at once. SWIM's sub-second detection
+  would accelerate a decision Felix deliberately does not take quickly. Where
+  the lease is not needed for safety, a lease-free `Quorum` stream already
+  fails over on its followers' word in about 5 s
+  (`FELIX_LEADER_SUSPECT_AFTER_MS`), with no gossip.
 - **The scale that justifies SWIM is not this scale.** SWIM pays off in the
   hundreds-to-thousands of nodes, where heartbeat fan-in to a hub becomes the
   bottleneck. A Felix cluster is tens of brokers; the fan-in is one tiny
