@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791616660121,
+  "lastUpdate": 1791639112804,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27664,6 +27664,58 @@ window.BENCHMARK_DATA = {
             "range": "5148.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811428.15\nmean: 808589.12\nstdev: 5148.77\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a7e6f33d81d0b2e27c8773dc2f1baa7baace68b",
+          "message": "fix(controlplane): refuse a bad actor token with its own code (#1146)\n\nAn exchange whose actor_token does not verify for the tenant or lacks\ntoken.delegate now answers 403 with code actor_refused, and counts as\nreason=actor_refused, instead of the forbidden a user without\npermissions gets. A gateway can tell the two apart by code.",
+          "timestamp": "2026-10-10T06:26:10-07:00",
+          "tree_id": "47ee9a77d089a4929dcc9bab47f4b1e3d9abb0ce",
+          "url": "https://github.com/GetFelix/felix/commit/4a7e6f33d81d0b2e27c8773dc2f1baa7baace68b"
+        },
+        "date": 1791639112169,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349234.29,
+            "range": "11688.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349234.29\nmean: 350055.12\nstdev: 11688.00\ncv: 3.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349234.29,
+            "range": "11688.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349234.29\nmean: 350055.12\nstdev: 11688.00\ncv: 3.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81933.15,
+            "range": "442.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81933.15\nmean: 82021.20\nstdev: 442.55\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819331.47,
+            "range": "4425.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819331.47\nmean: 820211.97\nstdev: 4425.53\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
