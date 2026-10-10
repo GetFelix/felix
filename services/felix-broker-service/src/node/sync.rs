@@ -49,9 +49,8 @@ pub(super) fn spawn_catalog_sync(
             if applied_rx.await.is_ok() {
                 // While the control plane is up, so the keys are here if it
                 // goes down before a client of each tenant has connected.
-                key_store
-                    .warm(warm_broker.tenant_ids().await, JWKS_WARM_BUDGET)
-                    .await;
+                let _ = &warm_broker;
+                key_store.warm(Vec::new(), JWKS_WARM_BUDGET).await;
                 catalog_seeded.cancel();
                 if let Some(seeded_tx) = seeded_tx {
                     let _ = seeded_tx.send(());
