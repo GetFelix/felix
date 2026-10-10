@@ -152,6 +152,9 @@ heartbeat only after a read-index round confirms it still leads, so a
 partitioned ex-leader cannot extend a broker's lease. A follower forwards
 heartbeats to the leader (`/internal/raft/leader`). If the leader is an older
 build without that route, the follower falls back to the old log command.
+A member that has shut down stops counting itself as leader, even though
+openraft still names it, and refuses leader-only requests at once, so the
+caller tries another instance instead of reading the dead term's view.
 
 The log carries only the consequences. `ExpireNodes` names the nodes the
 leader judged stale, each at an incarnation. `CheckpointHeartbeats`, written
