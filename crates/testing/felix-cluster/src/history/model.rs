@@ -177,14 +177,14 @@ impl History {
                 Action::Read { .. } => reads.push(took),
             }
         }
-        let (mut puts, mut gets) = (Vec::new(), Vec::new());
+        let (mut puts, mut unknown_puts, mut gets) = (Vec::new(), 0, Vec::new());
         for op in &self.registers {
             let took = op.complete - op.invoke;
             match op.action {
                 RegisterAction::Put {
                     acknowledged: true, ..
                 } => puts.push(took),
-                RegisterAction::Put { .. } => {}
+                RegisterAction::Put { .. } => unknown_puts += 1,
                 RegisterAction::Get { .. } => gets.push(took),
             }
         }
@@ -203,7 +203,7 @@ impl History {
         format!(
             "{} ops: {} appends ok (median {}), {fail} failed, {info} unknown; {} reads \
              (median {}); {records} records in the final reads; {} cache puts ok (median {}), \
-             {} cache gets (median {}); {deliveries} deliveries to {} subscribers ({dropped} \
+             {unknown_puts} unknown, {} cache gets (median {}); {deliveries} deliveries to {} subscribers ({dropped} \
              dropped, {resumes} resumes); {} fault events",
             self.ops.len(),
             ok.len(),
@@ -217,6 +217,30 @@ impl History {
             self.subscriptions.len(),
             self.faults.len(),
         )
+    }
+}
+
+impl History {
+    /// The fault events and cache operations in the order they started, one
+    /// per line: what to read when the cache did less than the lists did.
+    pub fn cache_timeline(&self) -> String {
+        let mut lines: Vec<(u64, String)> = self
+            .faults
+            .iter()
+            .map(|fault| (fault.at, format!("{} {}", millis(fault.at), fault.what)))
+            .chain(
+                self.registers
+                    .iter()
+                    .map(|op| (op.invoke, format!("{} {op}", millis(op.invoke)))),
+            )
+            .collect();
+        lines.sort_by_key(|(at, _)| *at);
+        lines.into_iter().fold(String::new(), |mut out, (_, line)| {
+            out.push_str("  ");
+            out.push_str(&line);
+            out.push('\n');
+            out
+        })
     }
 }
 

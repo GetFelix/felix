@@ -246,14 +246,15 @@ where
     let client_tls = ClientTls::from_config(&config.client_tls)?;
     client_tls.spawn_reload(&accept_shutdown);
     let quic_servers = listeners::bind(&config, &client_tls)?;
-    let key_store =
+    let key_store = Arc::new(
         ControlPlaneKeyStore::new(controlplane_url, Arc::new(TenantKeyCache::default()))
             .with_tenant_catalog(TenantCatalog::new(
                 Arc::clone(&broker),
                 catalog_seeded.clone(),
-            ));
+            )),
+    );
     let auth = Arc::new(
-        BrokerAuth::with_key_store(Arc::new(key_store))
+        BrokerAuth::with_key_store(Arc::clone(&key_store))
             .with_subject_binding(config.client_tls.bind_subject),
     );
     // One set for every client listener, so the per-address cap and each
@@ -323,6 +324,7 @@ where
         gate_readiness_on_sync,
         seeded_tx,
         &catalog_seeded,
+        &key_store,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,

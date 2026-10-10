@@ -341,6 +341,27 @@ impl ControlPlaneKeyStore {
         result
     }
 
+    /// Fetch JWKS for every tenant in `tenants` that is not cached yet,
+    /// giving up after `budget`. A failure is logged, not returned.
+    ///
+    /// Keys fetched only on demand leave a broker unable to verify any token
+    /// of a tenant it has not served yet while the control plane is down,
+    /// and that includes the credential on a write a peer forwards to it.
+    pub(crate) async fn warm(&self, tenants: Vec<String>, budget: Duration) {
+        use futures::StreamExt;
+        let fetches = futures::stream::iter(tenants).for_each_concurrent(
+            JWKS_FETCH_CONCURRENCY,
+            |tenant_id| async move {
+                if let Err(err) = self.ensure_cached(&tenant_id).await {
+                    tracing::warn!(tenant_id, error = %err, "could not fetch a tenant's jwks ahead of use");
+                }
+            },
+        );
+        if tokio::time::timeout(budget, fetches).await.is_err() {
+            tracing::warn!(?budget, "gave up fetching tenant jwks ahead of use");
+        }
+    }
+
     fn jwks_url(&self, tenant_id: &str) -> Result<reqwest::Url> {
         let mut url = reqwest::Url::parse(&self.base_url).context("parse control-plane url")?;
         // Pushed as a path segment, so the tenant id is percent-encoded and a
