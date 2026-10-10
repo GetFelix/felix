@@ -1563,7 +1563,30 @@ the next pass picks another live broker. If the lost broker comes back first,
 the copy is dropped too, because the returning broker still holds the shard. A
 copy that cannot catch up within the move timeout is dropped and waits behind
 other moves. Restores use the move slots, after drains and before rebalancing,
-and a pause stops them from starting. Leadership never changes during a
+and a pause stops them from starting.
+
+With one slot by default, a restore that can never finish would hold every
+other short shard back for the whole move timeout. So a restore whose new copy
+has not moved for `FELIX_SHARD_RESTORE_STALL_MS` (two minutes by default) is
+dropped too (`stalled`). Moved means the leader reported the copy at a higher
+offset than before. A copy the leader is shipping to moves every pass; one
+left out of the report, or reported where it was, does not. However large the
+log, a follower catching up hands its position back after five seconds of
+shipping (`CATCH_UP_SLICE` in `driver/shard.rs`) and the driver passes again
+at once, and one batch is bounded by the peer request timeout (five seconds
+by default), so a copy that is moving shows a higher offset every ten seconds
+or so. Neither the
+report nor the store keeps that history, and writing it to the assignment
+would start a new generation every pass, so the instance running placement
+watches it across passes. One that has not watched the copy, after a restart
+or a change of lease holder, starts the window again: it can be late to give
+up but never gives up a copy that is moving. A shard whose restore was dropped
+keeps its start time, which puts it behind every shard that has not had a
+slot. Among several that have, the one whose last attempt started earliest
+goes first, so a restore that never finishes takes turns with the rest instead
+of retaking the slot each time. Dropping a copy early changes nothing the
+copy limits rest on: it is a timeout before the fence, which the pacing model
+(`FelixPlacementPacing.tla`, `TimeOut`) already allows at any moment. Leadership never changes during a
 restore, and it never happens inside a promotion. A failover writes the set
 first, and the restore is a later write at its own generation.
 

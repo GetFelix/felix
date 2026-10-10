@@ -372,6 +372,7 @@ fn shard_move_pacing_comes_from_the_environment() {
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "2");
         env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
+        env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
     }
     let config = ControlPlaneConfig::from_env()
         .expect("from_env")
@@ -380,6 +381,7 @@ fn shard_move_pacing_comes_from_the_environment() {
     assert_eq!(config.max_per_node, Some(2));
     assert_eq!(config.fence_max_lag_records, 0);
     assert_eq!(config.timeout_millis, None);
+    assert_eq!(config.restore_stall_millis, None);
 
     unsafe {
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "0");
@@ -593,6 +595,7 @@ max_shard_moves_per_node: 2
 shard_move_fence_max_lag_records: 500
 shard_move_timeout_ms: 60000
 shard_restore_after_ms: 90000
+shard_restore_stall_ms: 45000
 oidc_allowed_algorithms: ["ES256", "RS256"]
 node_liveness:
   heartbeat_interval_ms: 1100
@@ -636,6 +639,7 @@ bootstrap:
                 fence_max_lag_records: 500,
                 timeout_millis: Some(60_000),
                 restore_after_millis: Some(90_000),
+                restore_stall_millis: Some(45_000),
                 paused: false,
                 ..Default::default()
             }

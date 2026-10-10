@@ -690,8 +690,9 @@ pub struct Pass {
     /// The metric cannot carry a shard without a label per tenant; this is what
     /// an operator reads instead.
     pub halted: Vec<HaltedReplica>,
-    /// A move's destination is still copying and was cut off at the end of
-    /// its slice. The next pass runs at once rather than on the next wake.
+    /// A follower still catching up, or a move's destination still copying,
+    /// was cut off at the end of its slice. The next pass runs at once rather
+    /// than on the next wake.
     pub copying: bool,
     /// A shard fenced here has not reported drained yet. The next pass runs
     /// after [`DRAIN_RETRY`] rather than on the next wake: the remainder of

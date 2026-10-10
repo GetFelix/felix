@@ -36,6 +36,18 @@ pub(super) const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// so the copy itself is not slowed.
 pub(super) const COPY_SLICE: Duration = Duration::from_millis(50);
 
+/// How long one exchange ships to any other follower before handing its
+/// cursor back.
+///
+/// A follower far behind, such as a new copy placement added to restore the
+/// replication factor, would otherwise take its whole catch-up in one
+/// exchange, and its position would not reach a report until the end.
+/// Placement gives up a restore whose copy's reported position has not moved
+/// for `FELIX_SHARD_RESTORE_STALL_MS` (two minutes by default), so a copy
+/// has to be seen moving well inside that. A follower near the tail answers
+/// long before this.
+pub(super) const CATCH_UP_SLICE: Duration = Duration::from_secs(5);
+
 /// Cursors for one shard, valid only at `generation`.
 pub struct ShardCursors {
     pub(super) generation: u64,
@@ -140,8 +152,8 @@ pub(super) struct ShardPass<'a> {
     /// The leader's tail as the pass last read it. `None` when the log could
     /// not be read.
     pub(super) tail: Option<u64>,
-    /// A destination still copying was cut off at [`COPY_SLICE`] with more to
-    /// send.
+    /// A destination still copying was cut off at [`COPY_SLICE`], or another
+    /// follower at [`CATCH_UP_SLICE`], with more to send.
     pub(super) copying: bool,
     /// Fenced here and not yet drained: the move is waiting on this broker.
     pub(super) drain_pending: bool,
@@ -493,7 +505,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     if !matches!(progress, Progress::Stored { .. }) {
                         break;
                     }
-                    if sliced && started.elapsed() >= COPY_SLICE {
+                    let slice = if sliced { COPY_SLICE } else { CATCH_UP_SLICE };
+                    if started.elapsed() >= slice {
                         cut = true;
                         break;
                     }

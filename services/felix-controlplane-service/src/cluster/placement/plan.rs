@@ -278,10 +278,16 @@ pub(super) fn plan_abandoning(
             })
         })
     };
-    keys.sort_by(|a, b| {
-        class(a)
-            .cmp(&class(b))
-            .then_with(|| order(a).cmp(&order(b)))
+    // Among shards whose last move was given up, the one that last had a slot
+    // longest ago goes first, so two that keep failing take turns. Stable, so
+    // key order breaks the remaining ties.
+    keys.sort_by_cached_key(|key| {
+        let class = class(key);
+        let retried = current
+            .get(key)
+            .filter(|_| class >= RETRIED)
+            .and_then(|existing| existing.move_started_at_millis);
+        (class, retried)
     });
 
     let is_empty_cluster = eligible.is_empty();
@@ -590,6 +596,10 @@ fn keep_replicas<'a>(
     kept.into_iter().map(str::to_string).collect()
 }
 
+/// Added to a shard's class in [`start_order`] while its last move's start
+/// is still recorded: one that was given up.
+const RETRIED: u8 = 3;
+
 /// Which shards get a move slot first. Only matters for shards that may
 /// start a move; one already moving holds its slot whatever its class.
 ///
@@ -622,7 +632,7 @@ fn start_order(
         2
     };
     if existing.move_started_at_millis.is_some() {
-        class + 3
+        class + RETRIED
     } else {
         class
     }

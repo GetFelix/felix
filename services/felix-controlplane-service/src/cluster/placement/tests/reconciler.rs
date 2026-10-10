@@ -302,9 +302,14 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
     report(&store, staged.generation, &["broker-y"], false).await;
 
     let liveness = Default::default();
-    let stale = super::super::reconciler::plan_pass(&store, &liveness, MovePolicy::default())
-        .await
-        .expect("plan");
+    let stale = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
     assert!(
         stale
             .plan()
@@ -355,12 +360,22 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
 async fn a_placement_planned_against_no_assignment_does_not_overwrite_one() {
     let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
     let liveness = Default::default();
-    let first = super::super::reconciler::plan_pass(&store, &liveness, MovePolicy::default())
-        .await
-        .expect("plan");
-    let second = super::super::reconciler::plan_pass(&store, &liveness, MovePolicy::default())
-        .await
-        .expect("plan");
+    let first = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
+    let second = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
 
     assert_eq!(
         super::super::reconciler::apply_pass(
@@ -428,9 +443,14 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
         .expect("down");
 
     let liveness = Default::default();
-    let stale = super::super::reconciler::plan_pass(&store, &liveness, MovePolicy::default())
-        .await
-        .expect("plan");
+    let stale = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
     let (_, first, _) = stale.plan().to_place().next().expect("a promotion");
     let first = first.to_string();
 

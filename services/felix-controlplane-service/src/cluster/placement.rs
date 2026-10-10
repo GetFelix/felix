@@ -41,6 +41,7 @@ mod metrics;
 mod moves;
 mod operator;
 mod plan;
+mod progress;
 mod reconciler;
 mod rendezvous;
 mod replica_positions;
@@ -54,7 +55,7 @@ pub(crate) use metrics::{MOVE_DURATION_BUCKETS, MOVE_FENCE_BUCKETS};
 pub use metrics::{SHARD_MOVE_DURATION_SECONDS, SHARD_MOVE_FENCE_SECONDS};
 pub use moves::{
     DEFAULT_FENCE_MAX_LAG_RECORDS, DEFAULT_MAX_CONCURRENT_MOVES, DEFAULT_MOVE_TIMEOUT_MILLIS,
-    DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy,
+    DEFAULT_RESTORE_AFTER_MILLIS, DEFAULT_RESTORE_STALL_MILLIS, MovePolicy,
 };
 pub use operator::{
     Catalog, OperatorError, OperatorStep, Refused, ZoneImpact, abandon_log, cancel_move,

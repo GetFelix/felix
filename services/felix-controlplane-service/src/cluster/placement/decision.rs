@@ -41,6 +41,10 @@ pub enum MoveStep {
     /// close enough within `MovePolicy::timeout_millis` and is dropped, giving
     /// its slot to the next move.
     TimedOut { successor: String },
+    /// A restore's new copy went `MovePolicy::restore_stall_millis` without
+    /// its reported position moving. Dropped as for `TimedOut`, and the shard
+    /// waits behind every other one for its next slot.
+    Stalled { successor: String },
     /// A follower on a draining node starts being replaced: `to` joins the
     /// replica set beside it.
     Reseat { from: String, to: String },
@@ -75,6 +79,7 @@ impl MoveStep {
             Self::Abandon { .. } => "abandon",
             Self::Halted { .. } => "halted",
             Self::TimedOut { .. } => "timed_out",
+            Self::Stalled { .. } => "stalled",
             Self::Reseat { .. } => "reseat",
             Self::Restore { .. } => "restore",
             Self::Seat { .. } => "seat",
