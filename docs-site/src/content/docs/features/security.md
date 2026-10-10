@@ -483,12 +483,20 @@ gets their own share of the connection's limits: the subscription cap
 on a connection, under a ceiling for the whole connection
 (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`,
 `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`, four users' worth by
-default). With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`, a user's own token is
-refused on the gateway's certificate. The gateway exchanges it first at
+default). The users share that ceiling, so with the defaults four users at
+their limits leave a fifth nothing. With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`,
+a user's own token is refused on the gateway's certificate. The gateway exchanges it first at
 `POST /v1/tenants/{tenant_id}/token/delegate`, an RFC 8693 token exchange that
 needs `token.delegate:tenant:{tenant_id}` and returns the user's token, no
 wider and no longer-lived, with `act: {"sub": "<gateway principal>"}`. The
-broker binds that token to a certificate issued to its actor. See
+broker binds that token to a certificate issued to its actor. Only a token
+minted for that gateway can be delegated: the gateway sends its own token as
+`actor_token` when it exchanges the user's sign-in, the user's token records
+it in `may_act`, and `/token/delegate` refuses a token whose `may_act` names
+another caller or nobody. A broker token stolen from a browser or another
+gateway therefore cannot be moved onto a gateway's certificate. Holding
+`token.delegate` still means acting as any user whose token was minted for
+you, so grant it to gateways only. See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
 See [Acting for many users](/clients/rust/#acting-for-many-users).
 

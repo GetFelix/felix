@@ -578,7 +578,7 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
 
-**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). A plain client authenticates as one identity, so for it this is the connection's cap. A client acting for many users over one connection gets this many per user, so one user at the cap does not stop the others subscribing.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). A plain client authenticates as one identity, so for it this is the connection's cap. A client acting for many users over one connection gets this many per user, so one user at the cap cannot take every slot. The users still share `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`: with the defaults, four users at their cap fill it and a fifth is refused.
 
 **Type**: Positive integer (count)
 
@@ -1135,7 +1135,7 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 
 ### `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
 
-**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. A plain client authenticates as one identity, so for it this is the connection's share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, and one connection publishing large batches can't starve every other connection's admission into the shared budget. A client acting for many users over one connection gets this much per user, so one user's unanswered publishes don't hold up the others.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. A plain client authenticates as one identity, so for it this is the connection's share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, and one connection publishing large batches can't starve every other connection's admission into the shared budget. A client acting for many users over one connection gets this much per user, so one user's unanswered publishes cannot take the whole connection. The users still share `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`: with the defaults, four users at this limit fill it and a fifth is refused or slowed.
 
 **Type**: Positive integer (bytes)
 
@@ -2055,6 +2055,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` | `false` | Allow IdP discovery and JWKS URLs that are, or resolve to, private, link-local or unique-local addresses. Without it those are refused (loopback is always allowed), so an issuer config cannot make the control plane fetch from internal services or a cloud metadata endpoint. |
 | `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` | `false` | Also accept `aud: felix-broker` tokens on the control plane's API, which otherwise takes only `felix-controlplane` ones. For migrating callers. It lets a broker replay a client's token against the API. |
 | `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | `false` | Also link each IdP group under its bare name (`group:{name}`) as well as its issuer-scoped one (`group:{issuer}#{name}`), while groupings are migrated. It lets any IdP the tenant trusts claim any bare group name, so turn it off afterwards. |
+| `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS` | `false` | Let `/token/delegate` take a subject token with no `may_act` claim. Any holder of `token.delegate` can then delegate any such broker token of the tenant it gets hold of, a stolen one included, so turn it on only while gateways move to sending `actor_token` on exchange. A token whose `may_act` names another caller is refused either way. |
 | `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` | `900` | Lifetime of a Felix access token minted by the token exchange. The default is short to limit blast radius if a token leaks. Prefer refresh over raising it: a long-running process should refresh rather than hold one long-lived bearer token. |
 | `FELIX_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Lifetime of a refresh token (30 days). This is how a long-running process stays authenticated without standing IdP credentials. Refresh tokens are single-use and rotate on every refresh, so this bounds a stolen and never used token. One that is used produces a replay, which revokes its whole chain immediately. |
 | `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |

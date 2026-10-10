@@ -62,6 +62,10 @@ Claims:
 - `tid`: tenant id
 - `exp`, `iat`
 - `perms`: array of permission strings
+- `act` (delegated tokens only): `{"sub": "<actor>"}`, the gateway that may
+  present the token (see [Delegated tokens](#delegated-tokens))
+- `may_act` (optional): `{"sub": "<actor>"}`, the one gateway that may have the
+  token delegated to it
 
 Algorithm:
 - **EdDSA (Ed25519)** (tenant-specific signing key).
@@ -440,10 +444,12 @@ How an identity behaves:
   The connection as a whole is capped at
   `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (four users' worth, at most
   `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
-  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (four users' worth), so a gateway
-  serving more users than that at full load does see them compete. A user's
-  share is dropped once they have no stream, subscription or publish in flight
-  on the connection.
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (four users' worth), and the users
+  share that ceiling: four users at their limits use all of it, and a fifth is
+  refused or slowed. A gateway that can have more users than that at full load
+  should raise the ceilings or spread its users over more than one `Client`.
+  A user's share is dropped once they have no stream, subscription or publish
+  in flight on the connection.
 - The connections' QUIC flow-control windows are shared. A subscription the
   gateway does not read can slow delivery to the other users on that
   connection, so drain each one promptly or drop it.
@@ -464,6 +470,40 @@ client certificate binds a token whose `sub` it was issued to, or whose
 Without `act`, only `sub` binds, so a gateway's certificate carries a user's
 token only after delegation. The claim is signed with the rest of the token,
 so nobody but the control plane can add it.
+
+A user's token can only be delegated to the gateway it was minted for. When
+the gateway exchanges the user's IdP token at `/token/exchange`, it sends its
+own `felix-controlplane` token as `actor_token`. The control plane checks that
+the actor token is valid for the tenant and holds `token.delegate` on it, and
+mints the user's broker token with `may_act: {"sub": "<gateway principal>"}`
+(RFC 8693, section 4.4). Every token refreshed from that exchange's refresh
+token carries the same claim. `/token/delegate` refuses a subject token whose
+`may_act.sub` is not the caller, so a broker token taken from a browser, a log
+or another gateway cannot be bound to a different gateway's certificate.
+
+```mermaid
+sequenceDiagram
+    participant G as Gateway
+    participant CP as Control plane
+    participant B as Broker
+    G->>CP: /token/exchange, Bearer user's IdP token, actor_token = gateway's token
+    CP-->>G: user's broker token with may_act.sub = gateway
+    G->>CP: /token/delegate, Bearer gateway's token, subject_token = that token
+    CP->>CP: may_act.sub equals the caller?
+    CP-->>G: delegated token with act.sub = gateway
+    G->>B: Auth with the delegated token over the gateway's certificate
+```
+
+A subject token without `may_act` is refused too, unless the control plane
+runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. That switch lets
+any holder of `token.delegate` delegate any `may_act`-less broker token of the
+tenant it has, which is how delegation behaved before `may_act`; turn it on
+only while gateways move to `actor_token`, and off again after. A token whose
+`may_act` names another actor is refused either way.
+
+Under the Raft store the actor is kept with the refresh token as a metadata
+version 6 field. Until every control-plane member reports that version, an
+exchange with `actor_token` is refused with `409` before anything is written.
 
 ```http
 POST /v1/tenants/{tenant_id}/token/delegate
@@ -490,7 +530,7 @@ Content-Type: application/json
 - The caller is the actor. Its token must be a `felix-controlplane` token for
   the same tenant carrying `token.delegate:tenant:{tenant_id}`.
 - `subject_token` must be a `felix-broker` token of that tenant that is not
-  itself delegated: one hop only.
+  itself delegated (one hop only), and its `may_act` must name the caller.
 - The result is never wider than the subject token: the same tenant and
   subject, its permissions or the subset `permissions` keeps (narrowed as on
   `/token/exchange`, never widened), and an expiry no later than the subject
@@ -500,7 +540,8 @@ Content-Type: application/json
 - `400` for a wrong `grant_type` or `subject_token_type` or a malformed
   permission, `401` for a missing or invalid caller token, `403` for a caller
   without `token.delegate`, a subject token that does not verify, belongs to
-  another tenant or is already delegated, or nothing left after narrowing.
+  another tenant, is already delegated, or names another actor or none in
+  `may_act`, or nothing left after narrowing.
 
 ## Bootstrap Mode (Day-0)
 
@@ -787,6 +828,12 @@ All three fields are optional. `audience` is `felix-broker` (the default) or
 pairs instead, send `"permissions": ["stream.subscribe:stream:t1/rooms/a", ...]`
 with `"requested": []`, as described in
 [Narrowing by pairs](#narrowing-by-pairs).
+
+A gateway exchanging a user's sign-in for a token it will delegate also sends
+`"actor_token": "<its own felix-controlplane token>"` (and optionally
+`"actor_token_type": "urn:ietf:params:oauth:token-type:jwt"`). The broker token
+then carries `may_act` naming the gateway; see
+[Delegated tokens](#delegated-tokens).
 
 Response:
 

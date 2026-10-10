@@ -40,6 +40,7 @@ fn narrowing() -> Narrowing {
             "stream.subscribe:stream:refresh-t/payments/audit".to_string(),
         ]),
         audience: "felix-controlplane".to_string(),
+        may_act: Some("p:gateway".to_string()),
     }
 }
 

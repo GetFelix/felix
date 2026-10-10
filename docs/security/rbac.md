@@ -29,7 +29,27 @@ Canonical actions:
 - `node.manage`: over `node:{node_id}` or `cluster:*`
 - `token.delegate`: over `tenant:{tenant_id}`, to exchange a user's broker
   token for one naming the caller as its actor (`/token/delegate`); not
-  implied by `tenant.manage`, and never put in a broker token
+  implied by `tenant.manage`, and never put in a broker token. See
+  [What `token.delegate` allows](#what-tokendelegate-allows)
+
+### What `token.delegate` allows
+
+Grant `token.delegate` only to gateways, and treat its holder as able to act
+as any user of the tenant whose broker token reaches it. The holder can turn
+such a token into one bound to its own certificate, and then present it over
+its own connections with all of the user's permissions until it expires. It
+cannot widen a token or make one up: the result is never wider or longer-lived
+than the token it came from.
+
+What limits it is which tokens it can delegate. By default only a broker token
+whose `may_act` names the caller qualifies, and a token gets `may_act` only
+when the exchange that minted it carried that same caller's own
+`felix-controlplane` token as `actor_token`. So a gateway can delegate the
+tokens minted for it, and not a token taken from a browser, a log or another
+gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for
+tokens with no `may_act`, which lets every holder of `token.delegate` delegate
+any such token of the tenant it gets hold of. See
+[Delegated tokens](../auth.md#delegated-tokens).
 
 Consumer groups have two actions, granted over the stream's object
 (`stream:{tenant_id}/{namespace}/{stream}`) or one group's object

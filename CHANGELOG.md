@@ -11,6 +11,35 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Changed
+
+- `POST /v1/tenants/{tenant_id}/token/exchange` takes an optional RFC 8693
+  `actor_token` (with `actor_token_type`): a gateway's own `felix-controlplane`
+  token holding `token.delegate` on the tenant. The broker token it mints, and
+  every token refreshed from it, carries `may_act: {"sub": "<gateway>"}`. The
+  refresh record keeps the actor as a Raft metadata version 6 field, so under
+  the Raft store an exchange with `actor_token` is a `409` until every member
+  is upgraded.
+- `POST /v1/tenants/{tenant_id}/token/delegate` refuses a subject token whose
+  `may_act` does not name the caller. A token with no `may_act` is refused too
+  unless `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. Gateways must send
+  `actor_token` on the exchanges whose tokens they delegate.
+
+### Fixed
+
+- Any holder of `token.delegate` could delegate any broker token of the tenant
+  it got hold of, a stolen one included, and present it over its own
+  certificate. Delegation now takes only tokens minted for the caller.
+
+### Documentation
+
+- The shared-connection docs said each user's limits kept one user at a limit
+  from blocking the others. The users share a connection ceiling of four
+  users' worth by default, so four at their limits can starve a fifth; the
+  docs now say so, and a test covers the per-user publish byte budget and the
+  ceiling over QUIC.
+- `docs/security/rbac.md` says what `token.delegate` lets its holder do.
+
 ## [0.6.0-preview.4] - 2026-10-09
 
 The fourth preview of 0.6.0, mostly fixes. A `Quorum` stream with a tight

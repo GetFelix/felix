@@ -636,6 +636,7 @@ async fn pair_narrowing_waits_for_every_member() {
             resources: None,
             permissions,
             audience: "felix-broker".to_string(),
+            may_act: None,
         });
         record
     };
@@ -664,6 +665,62 @@ async fn pair_narrowing_waits_for_every_member() {
         assert!(
             std::time::Instant::now() < deadline,
             "pairs still refused after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A member before `may_act` would drop it from a refresh record, and the
+/// chain's refreshed tokens could no longer be delegated by the gateway the
+/// exchange named. Refused until every member has the level.
+#[tokio::test]
+async fn a_may_act_record_waits_for_every_member() {
+    use crate::auth::refresh_token::Narrowing;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 5).await;
+    let record = |may_act: Option<&str>| {
+        let (mut record, _) = crate::auth::refresh::issue(
+            "t1",
+            "p:dev",
+            Vec::new(),
+            None,
+            1,
+            Duration::from_secs(60),
+        );
+        record.narrowing = Some(Narrowing {
+            requested: None,
+            resources: None,
+            permissions: None,
+            audience: "felix-broker".to_string(),
+            may_act: may_act.map(str::to_string),
+        });
+        record
+    };
+
+    let refused = store.insert_refresh_token(record(Some("p:gateway"))).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .insert_refresh_token(record(None))
+        .await
+        .expect("a record without may_act");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .insert_refresh_token(record(Some("p:gateway")))
+        .await
+        .is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "may_act still refused after every member reported the level"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

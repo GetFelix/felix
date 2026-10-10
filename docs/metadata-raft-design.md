@@ -495,6 +495,12 @@ It is one entry so the batch applies whole or not at all. Until every member is
 at level 5 that endpoint answers `503`, and single creates go through
 `create_stream` and `create_cache` as before.
 
+Level 6 is a refresh record's `narrowing.may_act`, the gateway an exchange's
+`actor_token` named (see [Delegated tokens](auth.md#delegated-tokens)). An
+older member would drop it, and the chain's refreshed tokens could no longer be
+delegated by that gateway, so until every member is at level 6 an exchange with
+`actor_token` is refused with `409`.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
