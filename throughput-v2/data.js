@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791645598909,
+  "lastUpdate": 1791657601224,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27768,6 +27768,58 @@ window.BENCHMARK_DATA = {
             "range": "8550.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 794587.91\nmean: 795068.69\nstdev: 8550.41\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f31b997ae1ddc637ad5d32b136c0c9b0077fbc70",
+          "message": "fix(broker): fetch every tenant's JWKS when the catalog is seeded (#1148) (#1149)\n\nA broker fetched a tenant's JWKS only when a client of that tenant connected to it, so one that restarted and then lost the control plane refused every write a peer forwarded to it. The first catalog sync now fetches every known tenant's JWKS, within five seconds, before the broker reports ready.\n\nSpec-Unaffected: JWKS caching for token verification is outside the replication protocol the model describes.",
+          "timestamp": "2026-10-10T11:35:59-07:00",
+          "tree_id": "6098be457a51adef606bbed921c9edfca5b75081",
+          "url": "https://github.com/GetFelix/felix/commit/f31b997ae1ddc637ad5d32b136c0c9b0077fbc70"
+        },
+        "date": 1791657600352,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351856.55,
+            "range": "9264.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351856.55\nmean: 347788.74\nstdev: 9264.07\ncv: 2.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351856.55,
+            "range": "9264.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351856.55\nmean: 347788.74\nstdev: 9264.07\ncv: 2.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81340.54,
+            "range": "571.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81340.54\nmean: 81647.42\nstdev: 571.09\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813405.41,
+            "range": "5710.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813405.41\nmean: 816474.21\nstdev: 5710.90\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
