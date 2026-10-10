@@ -1561,7 +1561,12 @@ other short shard back for the whole move timeout. So a restore whose new copy
 has not moved for `FELIX_SHARD_RESTORE_STALL_MS` (two minutes by default) is
 dropped too (`stalled`). Moved means the leader reported the copy at a higher
 offset than before. A copy the leader is shipping to moves every pass; one
-left out of the report, or reported where it was, does not. Neither the
+left out of the report, or reported where it was, does not. However large the
+log, a follower catching up hands its position back after five seconds of
+shipping (`CATCH_UP_SLICE` in `driver/shard.rs`) and the driver passes again
+at once, and one batch is bounded by the peer request timeout (five seconds
+by default), so a copy that is moving shows a higher offset every ten seconds
+or so. Neither the
 report nor the store keeps that history, and writing it to the assignment
 would start a new generation every pass, so the instance running placement
 watches it across passes. One that has not watched the copy, after a restart
