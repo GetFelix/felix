@@ -439,6 +439,93 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
     cluster.shutdown().await;
 }
 
+/// **A `Quorum` cache placed before every broker registered still takes writes
+/// after a broker dies (#1133).**
+///
+/// Placement that runs while one of three brokers is still starting gives
+/// every shard two copies, and restores add the third one shard at a time. A
+/// restore of a cache nothing had been written to never finished: with no
+/// records to ship, the new copy's position was never reported, so placement
+/// could not seat it, and the restore held the only move slot. The cache
+/// stayed on two brokers, and losing either left its owner with no majority.
+#[serial]
+#[tokio::test]
+async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
+    const OPS: &str = "ops";
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 2,
+        streams: vec![StreamSpec::quorum(OPS, 1, 3)],
+        caches: vec![CacheSpec::quorum(CACHE, 1, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    cluster.add_node().await.expect("start the third broker");
+
+    let full = felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the stream and the cache to have three copies each",
+        || async {
+            cluster.place_shards().await;
+            let Ok(assignments) = cluster.shard_assignments().await else {
+                return false;
+            };
+            let seated = [OPS, CACHE].iter().all(|name| {
+                assignments
+                    .iter()
+                    .any(|(key, a)| key.ends_with(&format!("/{name}/0")) && a.replicas.len() == 2)
+            });
+            seated && cluster.moving_shards().await.is_ok_and(|m| m.is_empty())
+        },
+    )
+    .await;
+    let moving = cluster.moving_shards().await.unwrap_or_default();
+    assert!(
+        full.is_ok(),
+        "the restores did not finish; still in flight: {moving:?}",
+    );
+
+    // The broker the canvas lost owned its stream, not its cache. When both
+    // landed on one broker here, a follower of the cache goes instead: either
+    // way the cache's owner is left with one of its two followers.
+    let cache_owner = cluster
+        .shard_owner_of("cache", CACHE, 0)
+        .await
+        .expect("cache shard owner");
+    let stream_owner = cluster
+        .shard_owner_of("stream", OPS, 0)
+        .await
+        .expect("stream shard owner");
+    let victim = if stream_owner != cache_owner {
+        stream_owner
+    } else {
+        cluster
+            .node_ids()
+            .into_iter()
+            .find(|id| *id != cache_owner)
+            .expect("another broker")
+    };
+    cluster.kill_node(&victim).expect("kill a broker");
+
+    felix_cluster::wait::until(
+        // One put may still wait out the quorum timeout on the dead peer's
+        // connection before it is declared dead.
+        Duration::from_secs(15),
+        "a cache put on the surviving owner",
+        || async {
+            cluster
+                .cache_put_via(&cache_owner, CACHE, "after", b"after")
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .unwrap_or_else(|err| {
+        panic!("{cache_owner} did not take a write after {victim} died: {err:#}")
+    });
+    cluster.shutdown().await;
+}
+
 /// **A deposed cache leader rejoins and keeps what was committed (#863).**
 ///
 /// The leader is cut off from its followers and takes one more write, so it

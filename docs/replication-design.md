@@ -1530,12 +1530,21 @@ the promoted leader and the one other live broker are all there is. Placement
 restores both on its own. A follower whose broker has been down or gone for
 `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default) is lost, and so is one
 its leader has reported halted for that long. A set with fewer seated members
-than the factor is short. For either, placement picks a
+than the factor is short. A set also starts short when placement runs while
+some brokers are still registering: each shard gets the brokers that are live,
+and restores add the rest one shard at a time. For either, placement picks a
 live broker outside the set (widening the zone spread where it can, never a
 down or draining broker) and adds it as `joining` with the move reason
 `restore`. From there the restore is the replacement above: the copy counts
 toward the quorum, and it is seated once it is within the lag bound. On a
 durable `Quorum` stream it must also hold what a majority of the old set holds.
+Both checks read the newcomer's position from the leader's report, and a
+report names only followers whose position is known. A leader whose log is
+empty has nothing to ship and never hears from the newcomer, so it reports a
+follower of an empty log at offset zero without asking: nothing below that
+offset can be missing. Otherwise a restore of a shard nothing has been
+written to, such as a cache used only for counters, would never be seated and
+would hold its move slot until the move timeout.
 The seat drops the lost follower in the same write, or drops nobody when the
 set was short. A short set is grown before any lost follower in it is
 replaced, for the reason given two paragraphs down: beside a set of two, a
