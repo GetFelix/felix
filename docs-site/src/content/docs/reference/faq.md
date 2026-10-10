@@ -35,8 +35,9 @@ same log also serves cache and queue semantics so you run one system instead
 of three.
 
 Use Kafka when you need long retention, stream processing, or its connector
-ecosystem. Felix keeps durable logs and replays by offset, but there is no
-tiered storage and retention is bounded by one machine's disk. It is built
+ecosystem. Felix keeps durable logs and replays by offset, but what a client
+can read is bounded by one machine's disk: sealed segments can be copied to a
+directory before retention deletes them, and nothing reads them back yet. It is built
 for live distribution, not for being your system of record.
 
 Felix does speak part of Kafka's wire protocol, so the two are not an
@@ -174,7 +175,8 @@ questions is the whole point of the
 
 ## How is Felix secured?
 
-Every connection uses TLS 1.3. The control plane does OIDC token exchange and
+Every QUIC connection uses TLS 1.3; the control-plane API is plain HTTP until
+you give it a certificate. The control plane does OIDC token exchange and
 issues tenant-scoped EdDSA tokens. The broker enforces RBAC, with delegation
 rules that prevent privilege escalation. Broker-to-broker traffic uses mTLS, bound to the
 node id, when certificates are configured. Not built: encryption at rest,
@@ -196,7 +198,8 @@ role permissions:
 Rust, Python and TypeScript ship today, the latter two as bindings over the
 Rust client rather than reimplementations. Both pass every required scenario in
 the client conformance catalogue, and CI is gated on it. Go and C# are not
-started.
+started; `felix-capi`, the C ABI they will bind to, covers connect, publish
+and a polled subscribe so far.
 The wire protocol is language-neutral and documented precisely for this
 reason (see [Wire Protocol](/architecture/wire-protocol/)), and a
 conformance runner exists to check an implementation against it.

@@ -186,14 +186,16 @@ Felix fits and where it does not.
       streams; no Kafka consumer groups or transactions
     - A control plane over REST, holding metadata in Raft (no external
       database) or in Postgres, and capability negotiation on the wire
-    - Tenant-scoped tokens, RBAC, and OIDC token exchange
+    - Tenant-scoped tokens, RBAC, OIDC token exchange, and delegated tokens
+      for a gateway acting for its users
     - Mutually authenticated broker-to-broker QUIC, when certificates are
       configured
   </Card>
   <Card title="Not built yet" icon="seti:plan">
     - Load-aware placement: shards are balanced by count, not by traffic, disk or CPU
     - End-to-end payload encryption, encryption at rest, and audit logging
-    - Tiered storage and cold-tier reads
+    - Reading offloaded segments back: tiered storage stops at copying sealed
+      segments to a directory
     - Cross-region bridges with explicit data movement
     - Clients in Go or C# (Rust, Python and TypeScript exist today)
   </Card>
