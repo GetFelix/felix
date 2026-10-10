@@ -308,9 +308,11 @@ backend.
 Replacing heartbeat-to-control-plane liveness with SWIM-style gossip
 membership was evaluated alongside this design and rejected for now. The
 heartbeat is also the lease renewal, so liveness and serving authority
-deliberately travel one channel to one authority. Failover speed is bound by
-the lease (~1s) rather than by liveness detection (15s), so faster detection
-buys nothing safety uses. And SWIM's constant-load advantage pays off at
+deliberately travel one channel to one authority. The 15 s liveness timeout is the
+lease, and a `Leader` shard has to wait it out (plus a 3.75 s margin) before
+another broker may lead, so faster detection buys nothing safety uses. A
+lease-free `Quorum` stream already fails over in about 5 s on its followers'
+word. And SWIM's constant-load advantage pays off at
 hundreds of nodes rather than tens. The full decision, including the asymmetric
 reachability gap that peer-reachability reports would cover more cheaply and
 the triggers for reopening, is in

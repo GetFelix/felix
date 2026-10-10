@@ -304,9 +304,10 @@ what a client sees.
 > `a_producer_keeps_its_sequence_across_a_planned_move`,
 > `a_durable_publish_claimed_after_the_fence_is_refused`.
 
-Stopping a broker is not a move: the shards it leads fail over, and the ones
-it holds the only copy of wait for it to return. Drain it first
-(`POST /v1/nodes/{id}/drain`) to hand them off.
+A broker stopped with SIGTERM hands the shards it leads to followers as
+planned moves before it exits, for up to `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
+(30 s). Whatever it still leads after that fails over as after a crash, and a
+shard it holds the only copy of waits for it to return.
 
 ## Routing
 
