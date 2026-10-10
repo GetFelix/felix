@@ -8,6 +8,18 @@
   <a href="https://github.com/GetFelix/felix/actions/workflows/coverage.yml">
     <img src="https://raw.githubusercontent.com/GetFelix/felix/badges/coverage.svg" alt="Coverage" />
   </a>
+  <a href="https://github.com/GetFelix/felix/releases">
+    <img src="https://img.shields.io/github/v/release/GetFelix/felix?include_prereleases&label=release" alt="Latest release" />
+  </a>
+  <a href="https://crates.io/crates/felix-client">
+    <img src="https://img.shields.io/crates/v/felix-client?label=crates.io" alt="felix-client on crates.io" />
+  </a>
+  <a href="https://pypi.org/project/felix-client/">
+    <img src="https://img.shields.io/badge/PyPI-felix--client-blue" alt="felix-client on PyPI (pip install --pre felix-client)" />
+  </a>
+  <a href="https://www.npmjs.com/package/felix-client">
+    <img src="https://img.shields.io/npm/v/felix-client/preview?label=npm" alt="felix-client on npm" />
+  </a>
   <a href="https://github.com/GetFelix/felix/blob/main/LICENSING.md">
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Apache--2.0-blue.svg" alt="License: AGPL-3.0 + Apache-2.0 (split, see LICENSING.md)" />
   </a>
