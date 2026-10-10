@@ -18,6 +18,11 @@ for what the current release guarantees.
   the control plane refused every write a peer forwarded to it, such as a
   cache put sent to a broker that does not own the key, until the control
   plane came back (#1148).
+- A control-plane Raft member that had shut down still reported itself as
+  leader and answered leader-only requests (heartbeats, expiry) from its last
+  term's view. It now reports no leadership and refuses them with the same
+  `unavailable` answer an instance without a leader gives, so callers move on
+  to a live member (#1144).
 
 ## [0.6.0-preview.5] - 2026-10-10
 

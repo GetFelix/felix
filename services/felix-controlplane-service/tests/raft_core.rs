@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use felix_controlplane_service::raft::{AppStateMachine, NodeId, RaftHandle, RaftSettings};
+use felix_controlplane_service::raft::{
+    AppStateMachine, LeaderService, NodeId, NotLeader, RaftHandle, RaftSettings,
+};
 
 /// A deterministic key/value app: `set k v` returns the previous value.
 #[derive(Default)]
@@ -156,6 +158,49 @@ async fn a_single_node_group_serves_writes() {
     assert_eq!(node.app.get("k").as_deref(), Some("v2"));
 
     node.stop().await;
+}
+
+struct Echo;
+
+#[async_trait::async_trait]
+impl LeaderService for Echo {
+    async fn handle(&self, request: &[u8]) -> Result<Vec<u8>, NotLeader> {
+        Ok(request.to_vec())
+    }
+}
+
+/// openraft's metrics keep naming a stopped node as leader. The handle must
+/// not: it reports no leadership and refuses leader-only requests at once.
+#[tokio::test]
+async fn a_stopped_leader_stops_claiming_leadership() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let node = start_node(dir.path().into(), settings(1, dir.path().into()), None).await;
+    node.handle.set_leader_service(Arc::new(Echo));
+    node.handle
+        .initialize(BTreeMap::from([(1, node.addr.to_string())]))
+        .await
+        .expect("initialize");
+    leader_of(&[&node]).await;
+    assert_eq!(
+        node.handle.ask_leader(b"ping".to_vec()).await.expect("ask"),
+        b"ping"
+    );
+
+    node.stop().await;
+    assert!(
+        !node.handle.is_leader(),
+        "a stopped member reports leadership"
+    );
+    assert_eq!(node.handle.status().leader, None);
+    let asked = Instant::now();
+    assert!(
+        node.handle.ask_leader(b"ping".to_vec()).await.is_err(),
+        "a stopped member answered a leader-only request",
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "the refusal waited out the write budget",
+    );
 }
 
 /// The acceptance test for the group itself: three members elect, writes
