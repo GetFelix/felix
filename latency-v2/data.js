@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791616657177,
+  "lastUpdate": 1791639110326,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -35112,6 +35112,72 @@ window.BENCHMARK_DATA = {
             "range": "15.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 583.00\nmean: 579.00\nstdev: 15.98\ncv: 2.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a7e6f33d81d0b2e27c8773dc2f1baa7baace68b",
+          "message": "fix(controlplane): refuse a bad actor token with its own code (#1146)\n\nAn exchange whose actor_token does not verify for the tenant or lacks\ntoken.delegate now answers 403 with code actor_refused, and counts as\nreason=actor_refused, instead of the forbidden a user without\npermissions gets. A gateway can tell the two apart by code.",
+          "timestamp": "2026-10-10T06:26:10-07:00",
+          "tree_id": "47ee9a77d089a4929dcc9bab47f4b1e3d9abb0ce",
+          "url": "https://github.com/GetFelix/felix/commit/4a7e6f33d81d0b2e27c8773dc2f1baa7baace68b"
+        },
+        "date": 1791639106312,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.00\nstdev: 1.00\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "2.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 242.00\nstdev: 2.35\ncv: 0.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 292,
+            "range": "4.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 292.00\nmean: 293.00\nstdev: 4.36\ncv: 1.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 215.20\nstdev: 1.64\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 444,
+            "range": "27.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 444.00\nmean: 451.60\nstdev: 27.36\ncv: 6.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 666,
+            "range": "737.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 666.00\nmean: 1068.80\nstdev: 737.04\ncv: 68.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
