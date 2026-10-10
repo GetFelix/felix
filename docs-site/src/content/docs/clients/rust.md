@@ -159,10 +159,14 @@ Dropping a handle closes its streams.
 A refused publish or cache request ends the stream it was sent on, as on any
 client, so a handle that has had one refused cannot publish or reach the cache
 afterwards; build a new one. The broker gives each user on a connection their
-own subscription cap and publish byte budget, under a ceiling for the whole
-connection, so one user at a limit does not block the others. Users share the
-connections' flow-control windows, so read every subscription promptly or drop
-it. A broker that binds tokens to client certificates accepts a user's token on
+own subscription cap and publish byte budget, so one user at a limit leaves the
+others room. The whole connection also has a ceiling that its users share, four
+users' worth by default (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` and
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`): four users at their limits
+use all of it, and a fifth is refused or slowed. If more users than that can be
+at full load at once, raise the ceilings or spread the users over more than one
+`Client`. Users also share the connections' flow-control windows, so read every
+subscription promptly or drop it. A broker that binds tokens to client certificates accepts a user's token on
 the gateway's certificate only once the control plane has delegated it to the
 gateway (`/token/delegate`). `ClusterClient` does
 not offer handles yet. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).

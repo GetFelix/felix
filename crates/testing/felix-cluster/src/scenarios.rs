@@ -133,11 +133,24 @@ pub async fn ordering_and_integrity(
     };
 
     let (_client, mut subscription) = cluster.subscribe_on(&owner, stream).await?;
+    // One connection for the whole batch, as an application would publish it.
+    // Acked one at a time, so each record is durable before the next is sent.
+    let publisher_client = cluster.client_on(&via).await?;
+    let publisher = publisher_client
+        .publisher()
+        .await
+        .context("open publisher")?;
     for index in 0..count {
-        cluster
-            .publish_via(&via, stream, record(index))
+        publisher
+            .publish(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                stream,
+                record(index),
+                felix_wire::AckMode::PerMessage,
+            )
             .await
-            .with_context(|| format!("publish {index}"))?;
+            .with_context(|| format!("publish {index} to {stream} via {via}"))?;
     }
 
     let mut received = Vec::with_capacity(count);

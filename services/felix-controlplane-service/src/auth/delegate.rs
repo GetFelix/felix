@@ -9,6 +9,11 @@
 //! user's subject with `act: {sub: <caller>}`, scoped no wider than the
 //! user's token: same tenant, a subset of its permissions, and an expiry no
 //! later than its own.
+//!
+//! The subject token must name the caller in `may_act`, which the exchange
+//! sets when the gateway sends its own token as `actor_token`. Without that, a
+//! holder of `token.delegate` could bind any broker token of the tenant it
+//! got hold of, a stolen one included, to its own certificate.
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -19,7 +24,10 @@ use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message, api_validation_error};
 use crate::auth::bearer::{Refusal, refused, tenant_claims};
 use crate::auth::exchange::{access_token_ttl, for_audience, narrow_permissions};
-use crate::auth::felix_token::{BROKER_AUDIENCE, mint_delegated_token, verify_token_for};
+use crate::auth::felix_token::{
+    BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, FelixClaims, TenantSigningKeys, mint_delegated_token,
+    verify_token_for,
+};
 use crate::auth::rbac::authorize::{
     ACTION_TOKEN_DELEGATE, ParsedObject, object_within_scope, parse_permission,
 };
@@ -29,6 +37,11 @@ use crate::auth::refresh_token::Narrowing;
 pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 /// RFC 8693's token type for a JWT, the only kind taken and issued here.
 pub const JWT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:jwt";
+
+/// Set to `true` to also delegate a subject token that names no actor in
+/// `may_act`. Any holder of `token.delegate` can then delegate any of the
+/// tenant's broker tokens it has, so it is off by default.
+pub const DELEGATE_UNBOUND_TOKENS_ENV: &str = "FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS";
 
 /// Clock skew tolerated on the subject token's `exp`, as on the caller's.
 const LEEWAY_SECS: u64 = 5;
@@ -76,8 +89,9 @@ impl std::fmt::Debug for TokenDelegateResponse {
 /// # Errors
 /// `400` for a malformed request, `401` for a missing or invalid caller
 /// token, `403` when the caller lacks `token.delegate` on the tenant, or the
-/// subject token is invalid, for another tenant, already delegated, or left
-/// with no permissions, `500` for store failures.
+/// subject token is invalid, for another tenant, already delegated, not
+/// issued for the caller (`may_act`), or left with no permissions, `500` for
+/// store failures.
 #[utoipa::path(
     post,
     path = "/v1/tenants/{tenant_id}/token/delegate",
@@ -122,17 +136,7 @@ pub async fn delegate_token(
     // The caller: a control-plane token for this tenant holding
     // `token.delegate` over it.
     let actor = tenant_claims(&state, &tenant_id, &headers).await?;
-    let tenant = ParsedObject::Tenant {
-        tenant_id: tenant_id.clone(),
-    };
-    let may_delegate = actor
-        .perms
-        .iter()
-        .filter_map(|perm| parse_permission(perm, &tenant_id).ok())
-        .any(|perm| {
-            perm.action == ACTION_TOKEN_DELEGATE && object_within_scope(&perm.object, &tenant)
-        });
-    if !may_delegate || actor.act.is_some() {
+    if !may_delegate(&actor, &tenant_id) {
         return Err(refused(
             Refusal::Forbidden,
             "missing token.delegate permission on the tenant",
@@ -160,12 +164,14 @@ pub async fn delegate_token(
             "the subject token is already delegated",
         ));
     }
+    check_may_act(&subject, &actor.sub, delegate_unbound_tokens())?;
 
     let narrowing = Narrowing {
         requested: None,
         resources: None,
         permissions: request.permissions.clone(),
         audience: BROKER_AUDIENCE.to_string(),
+        may_act: None,
     };
     let perms = for_audience(
         narrow_permissions(subject.perms, &narrowing, &tenant_id),
@@ -195,6 +201,74 @@ pub async fn delegate_token(
         token_type: "Bearer".to_string(),
         expires_in: (exp - now) as u64,
     }))
+}
+
+/// The `sub` of `actor_token`, a `felix-controlplane` token of `tenant_id`
+/// that may delegate. This is how an exchange learns which gateway the
+/// token it mints is for.
+///
+/// # Errors
+/// `403` when the token is invalid, for another audience or tenant, or does
+/// not hold `token.delegate` on the tenant.
+pub(crate) fn verified_actor(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    actor_token: &str,
+) -> Result<String, ApiError> {
+    let claims = verify_token_for(
+        keys,
+        tenant_id,
+        actor_token,
+        LEEWAY_SECS,
+        &[CONTROLPLANE_AUDIENCE],
+    )
+    .map_err(|_| refused(Refusal::Forbidden, "invalid actor token"))?;
+    if !may_delegate(&claims, tenant_id) {
+        return Err(refused(
+            Refusal::Forbidden,
+            "the actor token lacks token.delegate on the tenant",
+        ));
+    }
+    Ok(claims.sub)
+}
+
+/// Whether `claims` hold `token.delegate` over `tenant_id` in their own
+/// right. A delegated token never does.
+fn may_delegate(claims: &FelixClaims, tenant_id: &str) -> bool {
+    let tenant = ParsedObject::Tenant {
+        tenant_id: tenant_id.to_string(),
+    };
+    claims.act.is_none()
+        && claims
+            .perms
+            .iter()
+            .filter_map(|perm| parse_permission(perm, tenant_id).ok())
+            .any(|perm| {
+                perm.action == ACTION_TOKEN_DELEGATE && object_within_scope(&perm.object, &tenant)
+            })
+}
+
+/// Refuse a subject token whose `may_act` names someone other than
+/// `caller`, or names no one unless `allow_unbound`.
+fn check_may_act(subject: &FelixClaims, caller: &str, allow_unbound: bool) -> Result<(), ApiError> {
+    match &subject.may_act {
+        Some(bound) if bound.sub == caller => Ok(()),
+        Some(_) => Err(refused(
+            Refusal::Forbidden,
+            "the subject token was issued for another actor",
+        )),
+        None if allow_unbound => Ok(()),
+        None => Err(refused(
+            Refusal::Forbidden,
+            "the subject token names no actor (may_act)",
+        )),
+    }
+}
+
+fn delegate_unbound_tokens() -> bool {
+    std::env::var(DELEGATE_UNBOUND_TOKENS_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -66,6 +66,17 @@ until every member supports it. If nothing is left, the exchange returns `403`. 
 token is for: `felix-broker` (the default) or `felix-controlplane` for this
 API. A token is accepted by one of the two, never both.
 
+`actor_token` (RFC 8693) is for a gateway that will delegate the token it is
+exchanging for: its own `felix-controlplane` token, holding
+`token.delegate:tenant:{tenant_id}`. The broker token then carries
+`may_act: {"sub": "<gateway principal>"}`, and so does every token refreshed
+from it, and only that gateway can pass it to `/token/delegate`.
+`actor_token_type` is optional and must be
+`urn:ietf:params:oauth:token-type:jwt`. An `actor_token` with
+`"audience": "felix-controlplane"` is a `400`, and one that does not verify or
+lacks `token.delegate` is a `403`. With the Raft store it is a `409` until every
+member supports it.
+
 ### POST /v1/tenants/{tenant_id}/token/refresh
 
 Trade a refresh token for a new Felix token without going back to the IdP.
@@ -112,15 +123,18 @@ Content-Type: application/json
 
 The caller needs `token.delegate:tenant:{tenant_id}`; `tenant.manage` does not
 imply it. The subject token must be a broker token of the same tenant that is
-not already delegated. The result has the subject token's `sub`, `act:
+not already delegated, and its `may_act` must name the caller: it has to come
+from an exchange (or a refresh of one) that sent the caller's token as
+`actor_token`. A subject token with no `may_act` is refused unless the control
+plane runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. The result has the subject token's `sub`, `act:
 {"sub": "<caller>"}`, its permissions or the subset `permissions` keeps (never
 wider), and expires no later than the subject token. `subject_token_type` and
 `permissions` are optional. No refresh token is issued.
 
 `400` for a wrong `grant_type` or `subject_token_type` or a malformed
 permission, `401` for a missing or invalid caller token, `403` when the caller
-lacks the permission, the subject token does not verify or is already
-delegated, or nothing is left after narrowing.
+lacks the permission, the subject token does not verify, is already delegated
+or was not minted for the caller, or nothing is left after narrowing.
 
 ### Configuring Allowed IdPs
 

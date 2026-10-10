@@ -276,6 +276,7 @@
 1 import_state.state.refresh_tokens[].narrowing
 1 import_state.state.refresh_tokens[].narrowing.audience
 5 import_state.state.refresh_tokens[].narrowing.permissions
+6 import_state.state.refresh_tokens[].narrowing.may_act
 1 import_state.state.refresh_tokens[].narrowing.requested
 1 import_state.state.refresh_tokens[].narrowing.resources
 1 import_state.state.refresh_tokens[].principal_id
@@ -414,6 +415,7 @@
 1 insert_refresh_token.token.narrowing
 1 insert_refresh_token.token.narrowing.audience
 5 insert_refresh_token.token.narrowing.permissions
+6 insert_refresh_token.token.narrowing.may_act
 1 insert_refresh_token.token.narrowing.requested
 1 insert_refresh_token.token.narrowing.resources
 0 insert_refresh_token.token.principal_id
@@ -734,6 +736,7 @@
 1 snapshot.state.refresh_tokens[].narrowing
 1 snapshot.state.refresh_tokens[].narrowing.audience
 5 snapshot.state.refresh_tokens[].narrowing.permissions
+6 snapshot.state.refresh_tokens[].narrowing.may_act
 1 snapshot.state.refresh_tokens[].narrowing.requested
 1 snapshot.state.refresh_tokens[].narrowing.resources
 1 snapshot.state.refresh_tokens[].principal_id

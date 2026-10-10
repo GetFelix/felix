@@ -77,6 +77,11 @@ pub struct FelixClaims {
     /// token minted by delegation (`/token/delegate`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub act: Option<Actor>,
+    /// Who may have this token delegated to them (RFC 8693 `may_act`). Set
+    /// when the exchange that started the token's chain named an actor;
+    /// `/token/delegate` refuses a caller it does not name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may_act: Option<Actor>,
 }
 
 /// An RFC 8693 actor claim: the principal a delegated token was issued to.
@@ -211,6 +216,23 @@ pub fn mint_token_for(
     ttl: Duration,
     audience: &str,
 ) -> Result<String, TokenError> {
+    mint_token_may_act(keys, tenant_id, principal_id, perms, ttl, audience, None)
+}
+
+/// [`mint_token_for`], naming `may_act` as the one principal that may have
+/// the token delegated to it.
+///
+/// # Errors
+/// As [`mint_token_for`].
+pub fn mint_token_may_act(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    principal_id: &str,
+    perms: Vec<String>,
+    ttl: Duration,
+    audience: &str,
+    may_act: Option<&str>,
+) -> Result<String, TokenError> {
     let now = now_epoch_seconds();
     let claims = FelixClaims {
         iss: ISSUER.to_string(),
@@ -222,6 +244,9 @@ pub fn mint_token_for(
         jti: None,
         perms,
         act: None,
+        may_act: may_act.map(|sub| Actor {
+            sub: sub.to_string(),
+        }),
     };
     sign(keys, tenant_id, &claims)
 }
@@ -252,6 +277,7 @@ pub fn mint_delegated_token(
         act: Some(Actor {
             sub: actor.to_string(),
         }),
+        may_act: None,
     };
     sign(keys, tenant_id, &claims)
 }

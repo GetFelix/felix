@@ -74,6 +74,10 @@ pub struct Narrowing {
     pub permissions: Option<Vec<String>>,
     /// The audience the exchange minted for. A refresh keeps it.
     pub audience: String,
+    /// The actor the exchange named, carried as `may_act` on every token the
+    /// chain mints so the same caller can delegate them after a refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may_act: Option<String>,
 }
 
 impl RefreshToken {

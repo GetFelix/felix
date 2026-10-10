@@ -3,9 +3,12 @@ use std::time::Duration;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
 use super::*;
+use crate::auth::exchange::{TokenExchangeRequest, mint_for_principal};
 use crate::auth::felix_token::{
-    CONTROLPLANE_AUDIENCE, TenantSigningKeys, mint_token_for, verify_token,
+    CONTROLPLANE_AUDIENCE, TenantSigningKeys, mint_token_for, mint_token_may_act, verify_token,
 };
+use crate::auth::rbac::policy_store::PolicyRule;
+use crate::auth::refresh::{TokenRefreshRequest, refresh_token_handler};
 use crate::store::{AuthStore, ControlPlaneStore};
 
 const ALICE_FEED: &str = "stream.publish:stream:t1/ns/alice-feed";
@@ -50,14 +53,45 @@ fn caller(keys: &TenantSigningKeys, perms: &[&str]) -> HeaderMap {
     headers
 }
 
+/// Another gateway's control-plane credential, `p:gateway-b`, that may also
+/// delegate.
+fn gateway_b(keys: &TenantSigningKeys) -> HeaderMap {
+    let token = mint_token_for(
+        keys,
+        "t1",
+        "p:gateway-b",
+        vec!["token.delegate:tenant:t1".to_string()],
+        Duration::from_secs(900),
+        CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+    );
+    headers
+}
+
+/// Alice's broker token, minted for the gateway `p:test` to delegate.
 fn alice_token(keys: &TenantSigningKeys, tenant_id: &str, ttl: Duration) -> String {
-    mint_token_for(
+    alice_token_for(keys, tenant_id, ttl, Some("p:test"))
+}
+
+fn alice_token_for(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    ttl: Duration,
+    may_act: Option<&str>,
+) -> String {
+    mint_token_may_act(
         keys,
         tenant_id,
         "p:alice",
         vec![ALICE_FEED.to_string(), ALICE_READ.to_string()],
         ttl,
         BROKER_AUDIENCE,
+        may_act,
     )
     .expect("token")
 }
@@ -224,6 +258,190 @@ async fn only_a_users_own_broker_token_can_be_delegated() {
     assert_eq!(
         status(delegate(&fixture, "t1", headers(), wrong_grant).await),
         StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_token_minted_for_one_gateway_cannot_be_delegated_by_another() {
+    let fixture = fixture().await;
+    // Minted for `p:test`, presented by `p:gateway-b`, which also holds
+    // token.delegate: a token lifted from a browser or from gateway A.
+    let stolen = alice_token(&fixture.keys, "t1", Duration::from_secs(60));
+    let result = delegate(
+        &fixture,
+        "t1",
+        gateway_b(&fixture.keys),
+        request(stolen.clone()),
+    )
+    .await;
+    assert_eq!(status(result), StatusCode::FORBIDDEN);
+    // The gateway it was minted for can.
+    delegate(
+        &fixture,
+        "t1",
+        caller(&fixture.keys, &["token.delegate:tenant:t1"]),
+        request(stolen),
+    )
+    .await
+    .expect("delegated by its own gateway");
+}
+
+#[tokio::test]
+async fn a_token_that_names_no_actor_is_refused_by_default() {
+    let fixture = fixture().await;
+    let unbound = alice_token_for(&fixture.keys, "t1", Duration::from_secs(60), None);
+    let result = delegate(
+        &fixture,
+        "t1",
+        caller(&fixture.keys, &["token.delegate:tenant:t1"]),
+        request(unbound.clone()),
+    )
+    .await;
+    assert_eq!(status(result), StatusCode::FORBIDDEN);
+
+    // Only the explicit switch lets it through, and it never lets a token
+    // bound to someone else through.
+    let claims = verify_token(&fixture.keys, "t1", &unbound, 0).expect("verify");
+    assert!(check_may_act(&claims, "p:test", true).is_ok());
+    let bound = verify_token(
+        &fixture.keys,
+        "t1",
+        &alice_token(&fixture.keys, "t1", Duration::from_secs(60)),
+        0,
+    )
+    .expect("verify");
+    assert!(check_may_act(&bound, "p:gateway-b", true).is_err());
+}
+
+/// The whole path: alice's sign-in exchanged with the gateway's credential as
+/// `actor_token`, refreshed, then delegated.
+#[tokio::test]
+async fn an_exchange_with_an_actor_token_mints_a_token_only_that_actor_can_delegate() {
+    let fixture = fixture().await;
+    for action in ["stream.publish", "stream.subscribe"] {
+        fixture
+            .state
+            .store
+            .add_rbac_policy(
+                "t1",
+                PolicyRule {
+                    subject: "p:alice".to_string(),
+                    object: "stream:t1/ns/alice-feed".to_string(),
+                    action: action.to_string(),
+                },
+            )
+            .await
+            .expect("policy");
+    }
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let exchanged = mint_for_principal(
+        &fixture.state,
+        "t1",
+        "p:alice",
+        &[],
+        &TokenExchangeRequest {
+            actor_token: Some(gateway.clone()),
+            actor_token_type: Some(JWT_TOKEN_TYPE.to_string()),
+            ..TokenExchangeRequest::default()
+        },
+        BROKER_AUDIENCE,
+    )
+    .await
+    .expect("exchanged");
+    let claims = verify_token(&fixture.keys, "t1", &exchanged.felix_token, 0).expect("verify");
+    assert_eq!(
+        claims.may_act.map(|actor| actor.sub),
+        Some("p:test".to_string())
+    );
+
+    // A refreshed token keeps it, so the gateway can delegate again after
+    // each refresh.
+    let Json(refreshed) = refresh_token_handler(
+        Path("t1".to_string()),
+        State(fixture.state.clone()),
+        Json(TokenRefreshRequest {
+            refresh_token: exchanged.refresh_token,
+            audience: None,
+        }),
+    )
+    .await
+    .expect("refreshed");
+    for token in [exchanged.felix_token, refreshed.felix_token] {
+        assert_eq!(
+            status(
+                delegate(
+                    &fixture,
+                    "t1",
+                    gateway_b(&fixture.keys),
+                    request(token.clone())
+                )
+                .await
+            ),
+            StatusCode::FORBIDDEN,
+            "another gateway"
+        );
+        delegate(
+            &fixture,
+            "t1",
+            caller(&fixture.keys, &["token.delegate:tenant:t1"]),
+            request(token),
+        )
+        .await
+        .expect("delegated by the actor it names");
+    }
+}
+
+#[tokio::test]
+async fn an_actor_token_must_be_able_to_delegate() {
+    let fixture = fixture().await;
+    fixture
+        .state
+        .store
+        .add_rbac_policy(
+            "t1",
+            PolicyRule {
+                subject: "p:alice".to_string(),
+                object: "stream:t1/ns/alice-feed".to_string(),
+                action: "stream.publish".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    let exchange = |actor_token: String, audience: &'static str| {
+        let state = fixture.state.clone();
+        async move {
+            mint_for_principal(
+                &state,
+                "t1",
+                "p:alice",
+                &[],
+                &TokenExchangeRequest {
+                    actor_token: Some(actor_token),
+                    ..TokenExchangeRequest::default()
+                },
+                audience,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|err| err.status)
+        }
+    };
+    let without = crate::test_support::token(&fixture.keys, &[ALICE_FEED]);
+    assert_eq!(
+        exchange(without, BROKER_AUDIENCE).await,
+        Err(StatusCode::FORBIDDEN)
+    );
+    // A broker token is not a control-plane credential.
+    let broker = alice_token(&fixture.keys, "t1", Duration::from_secs(60));
+    assert_eq!(
+        exchange(broker, BROKER_AUDIENCE).await,
+        Err(StatusCode::FORBIDDEN)
+    );
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    assert_eq!(
+        exchange(gateway, CONTROLPLANE_AUDIENCE).await,
+        Err(StatusCode::BAD_REQUEST),
+        "only broker tokens are delegated"
     );
 }
 

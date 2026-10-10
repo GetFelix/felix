@@ -257,6 +257,7 @@ fn refresh_token() -> RefreshToken {
             resources: Some(vec![s("stream:t/n/s")]),
             permissions: Some(vec![s("stream.publish:stream:t/n/s")]),
             audience: s("felix-broker"),
+            may_act: Some(s("p:g")),
         }),
     }
 }
