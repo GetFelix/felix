@@ -206,8 +206,10 @@ stream that sets none, and the oldest segments are discarded, with a resume belo
 answered by a typed error rather than a silent restart at the tail. Unset,
 nothing deletes segments and a log grows without bound.
 
-Not yet implemented: **snapshots**, and **tiered storage**
-([#172](https://github.com/GetFelix/felix/issues/172)). Compaction exists, but for
+Tiered storage is partial ([#172](https://github.com/GetFelix/felix/issues/172)):
+with `FELIX_DURABLE_OFFLOAD_DIR` set, sealed segments are copied to a directory
+before retention deletes them, but nothing reads the copies back yet. Stream
+snapshots are not implemented. Compaction exists, but for
 the cache rather than for streams: a cache log reclaims superseded and expired
 records, and a stream log never rewrites a record at all.
 

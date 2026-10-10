@@ -234,12 +234,13 @@ placement, intra-region clustering with replication and failover, the log-backed
 cache, consumer groups, tenant-scoped RBAC, control-plane high availability
 over either Postgres or an embedded Raft group, broker-to-broker mTLS, moving a
 shard without pausing its publishes or ending its subscriptions, a Helm chart,
-and Python and TypeScript clients over the Rust one.
+per-stream retention, offload of sealed segments to a directory, and Python
+and TypeScript clients over the Rust one.
 
 Next, roughly in order:
 
-- Per-stream retention, so a stream's declared policy is the one enforced
-- Tiered storage and cold-tier reads
+- Tiered storage beyond offload: reading the copies back, and a cloud object
+  store as the target
 - Explicit cross-region bridges
 - Encryption at rest and audit logging
 

@@ -283,8 +283,8 @@ records, waiting up to `--wait-ms` on each.
 finishes a record, `nack` hands it back (after `--delay-ms`, if given), and
 `extend` keeps the claim standing longer. `extend` needs the attempt count,
 because the broker refuses to extend a record that has been handed out again
-since. A `nack --delay-ms` given the attempt count is refused the same way. The
-others accept `SHARD:OFFSET` as well.
+since. A `nack` given the attempt count, with or without `--delay-ms`, is
+refused the same way. The others accept `SHARD:OFFSET` as well.
 
 ```
 $ felixctl group poll orders billing --max 2
