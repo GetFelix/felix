@@ -87,7 +87,7 @@ task pg:down
 # The control plane over the Postgres from `task pg:up`, as in Installation
 podman run -p 8443:8443 \
   -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.containers.internal:55432/postgres \
-  ghcr.io/getfelix/felix-controlplane:0.6.0-preview.3
+  ghcr.io/getfelix/felix-controlplane:0.6.0-preview.4
 
 # Build the broker image, keeping its health check
 podman build --format docker -t felix-broker -f docker/broker.Dockerfile .

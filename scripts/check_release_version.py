@@ -52,9 +52,13 @@ def read(path: str, kind: str) -> str | None:
 
 
 #: Where the docs pin a released image, as `ghcr.io/getfelix/<image>:<version>`
-#: (or `ghcr.io/gabloe/...` for 0.6.0-preview and earlier).
+#: (or `ghcr.io/gabloe/...` for 0.6.0-preview and earlier). Only the images
+#: this repo releases: felix-gateway and the other projects built on Felix
+#: publish under the same org with versions of their own.
 DOC_ROOTS = ["docs", "docs-site/src/content/docs", "crates/tools/felixctl/README.md"]
-IMAGE_PIN = re.compile(r"ghcr\.io/(?:getfelix|gabloe)/felix[a-z-]*:(\d[0-9A-Za-z.+-]*)")
+IMAGE_PIN = re.compile(
+    r"ghcr\.io/(?:getfelix|gabloe)/(?:felix-broker|felix-controlplane|felixctl):(\d[0-9A-Za-z.+-]*)"
+)
 
 
 def stale_doc_pins(expected: str) -> list[str]:

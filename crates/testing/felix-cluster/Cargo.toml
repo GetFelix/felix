@@ -28,10 +28,10 @@ anyhow = { workspace = true }
 # runs under broker-to-broker mTLS.
 rcgen = { workspace = true, features = ["x509-parser"] }
 # The clock fault seam the in-process control plane reads time through.
-felix-common = { path = "../../server/felix-common", version = "0.6.0-preview.3" }
-felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.6.0-preview.3" }
-felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview.3" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.3" }
+felix-common = { path = "../../server/felix-common", version = "0.6.0-preview.4" }
+felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.6.0-preview.4" }
+felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview.4" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.4" }
 bytes = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
@@ -47,7 +47,7 @@ tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-felix-conformance = { version = "0.6.0-preview.3", path = "../felix-conformance" }
+felix-conformance = { version = "0.6.0-preview.4", path = "../felix-conformance" }
 
 [target.'cfg(unix)'.dependencies]
 # Suspending a broker needs a signal, not a kill: the point of the fault is a
@@ -56,7 +56,7 @@ libc = { workspace = true }
 
 [dev-dependencies]
 # The backup tests open a restored copy of a shard's logs directly.
-felix-storage = { path = "../../server/felix-storage", version = "0.6.0-preview.3" }
+felix-storage = { path = "../../server/felix-storage", version = "0.6.0-preview.4" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.
 kafka-protocol = { workspace = true, features = ["client"] }
 # These spawn several broker processes each. Run one cluster at a time: a CI

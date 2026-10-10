@@ -11,6 +11,71 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.4] - 2026-10-09
+
+The fourth preview of 0.6.0, mostly fixes. A `Quorum` stream with a tight
+retention bound could acknowledge a publish whose records no broker still
+held; retention now stops at the commit offset on every replica, and that hold
+survives a restart. A promoted cache or counter shard whose log fails to open
+no longer opens unfenced. A consumer group's cursor no longer moves backwards
+after a cancelled commit, and a late nack can no longer take a record from the
+next consumer. An offload outage no longer fails durable logs at open, and
+offload keys now start with the node id, so two brokers sharing a directory
+cannot overwrite each other's copies. A shared connection's subscription and
+publish limits now apply per identity, and a gateway can trade a user's token
+for a delegated one carrying `act`, which subject binding accepts. A durable
+`Quorum` stream with `majority_ack` and `lease_free_reads` finalized fails
+over on its followers' word in about 5 s instead of waiting out the lease. A
+subscriber that registers just as its shard moves is refused rather than left
+attached to nothing, and a publish forwarded to a shard its new owner is still
+fencing is held rather than refused. `felix-broker inspect segments` checks a
+data directory offline and reports what startup would do. The docs site covers
+felix-gateway and the projects built on Felix. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
+
+### Added
+- Failover on the followers' word (part of #1009). Each broker pings the
+  leaders of the shards it follows (new internal kinds `Ping` 38 and `Pong`
+  39, capability `PING`, `1 << 7`) and names in its heartbeat the ones that
+  have not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s; `0` turns it
+  off). Once the fleet has finalized `majority_ack` and `lease_free_reads`,
+  placement promotes a reported follower of a durable `Quorum` stream as soon
+  as a majority of its set names the leader, without waiting for the leader
+  to be marked down, so failover takes about 5 s instead of `L + margin`, and
+  a leader cut off from its followers while still heartbeating is replaced
+  too. The promotion keeps the set and fences as before. `Leader` streams and
+  caches still fail over on the lease, and with the control plane down a dead
+  leader is still not replaced. The heartbeat request gains an optional
+  `suspects` list; the store gains `record_suspicion`/`list_suspicions`
+  (Postgres migration `0024_node_suspicions`, Raft leader soft state).
+  `run_heartbeat` and `membership::spawn` take the broker's `Suspects`.
+  TLA+: `Suspicions` constant, `FelixShardSuspicion.cfg` (pass) and
+  `FelixShardSuspicionLease.cfg` (violates `AtMostOneServing`).
+- `felix-broker inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]`
+  (part of #1077): a broker's data directory read from disk, by the broker
+  binary without starting a broker; it binds nothing and reads no
+  configuration. For every shard of every store (streams, `caches/`,
+  `groups/`, `dead-letters/`, `counters/`) it lists the segments, checks every
+  record's checksum and each index against one rebuilt from its segment, and
+  gives the verdict startup would reach: clean, repair (and what it would cut
+  or remove), or refuse (and the segment and byte). Strictly read-only: files
+  are opened for reading and nothing is created, cut, removed or re-indexed.
+  `--repair-checksum-tail`, `--index-spacing` and `--verify-all-on-open` match
+  the broker's settings, `--kind` narrows to one store, `--segments` lists
+  every shard's segments and `--json` prints one line per shard. It exits 0
+  when every shard would open as it is, 6 when startup would repair one, and 7
+  when it would refuse one or a record fails its checksum. Diagnosing a
+  cluster covers a broker that will not start, on Kubernetes, Docker and
+  Podman, and on a copy. Decoding records offline (`inspect records`) comes
+  next.
+- A cache shard's compaction pass now writes its key index to `keys.idx` in
+  the shard directory, and an open loads it and replays only the log past it
+  instead of the whole log (part of #1073). The snapshot is checked against
+  the log (CRC-32C, the offset range it covers, the checksum of the last
+  record it saw) and ignored for a full replay when anything disagrees; a log
+  truncation and `forget_index` remove it. Memory is unchanged: the index is
+  still held whole in memory. Format in `docs/storage-format.md`.
+
 ### Changed
 - `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` and
   `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` are now per identity (tenant and token
@@ -23,6 +88,25 @@ for what the current release guarantees.
   below its per-identity value. A subscription past the connection's ceiling
   is refused with `max subscriptions per connection exceeded across
   identities`.
+
+- `Client::group_nack` and `ClusterClient::group_nack` in felix-client take the
+  `GroupRecord` instead of its offset, and send `record.attempts` to a broker
+  advertising `FEATURE_GROUP_CLAIM_CONTROL`. The Python `group_nack` takes the
+  `GroupRecord` and the Node `groupNack` takes the record (any object with
+  `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
+  a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
+- felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
+  and `LogConfig::validate` refuses a node id that is not one path segment
+  (letters, digits, `-`, `_`, `.`, not starting with `.`). In
+  felix-broker-service, `DurableStorageConfig::stream_log` takes the cluster
+  node id and returns a `Result` (#1109).
+- Startup recovery of a shard now plans every write before it makes any
+  (`plan_recovery` in felix-storage's `disk_log/recovery/plan.rs`), then makes
+  them in the same order as before. What recovery does is unchanged; the plan
+  is what `felix_storage::inspect` and `felix-broker inspect segments` report.
+  An I/O error while planning now stops before any repair is written, where it
+  used to stop partway. The `segment_recovery` fuzz target also checks that
+  plan and recovery agree.
 
 ### Fixed
 - A publish forwarded to a moved shard's new owner while it was still fencing
@@ -146,19 +230,6 @@ for what the current release guarantees.
   lease no longer stops the old leader. It now stays closed and the next pass
   tries again (#1095).
 
-### Changed
-- `Client::group_nack` and `ClusterClient::group_nack` in felix-client take the
-  `GroupRecord` instead of its offset, and send `record.attempts` to a broker
-  advertising `FEATURE_GROUP_CLAIM_CONTROL`. The Python `group_nack` takes the
-  `GroupRecord` and the Node `groupNack` takes the record (any object with
-  `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
-  a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
-- felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
-  and `LogConfig::validate` refuses a node id that is not one path segment
-  (letters, digits, `-`, `_`, `.`, not starting with `.`). In
-  felix-broker-service, `DurableStorageConfig::stream_log` takes the cluster
-  node id and returns a `Result` (#1109).
-
 ### Documentation
 - The docs said an in-memory cache's versions never repeat across a restart.
   They can if the clock steps back across the restart or the last run averaged
@@ -186,47 +257,6 @@ move, failover and lease-timing bugs are fixed. The Rust API has breaking
 changes, listed under Changed. `pip` will not install it without `--pre`.
 
 ### Added
-- Failover on the followers' word (part of #1009). Each broker pings the
-  leaders of the shards it follows (new internal kinds `Ping` 38 and `Pong`
-  39, capability `PING`, `1 << 7`) and names in its heartbeat the ones that
-  have not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s; `0` turns it
-  off). Once the fleet has finalized `majority_ack` and `lease_free_reads`,
-  placement promotes a reported follower of a durable `Quorum` stream as soon
-  as a majority of its set names the leader, without waiting for the leader
-  to be marked down, so failover takes about 5 s instead of `L + margin`, and
-  a leader cut off from its followers while still heartbeating is replaced
-  too. The promotion keeps the set and fences as before. `Leader` streams and
-  caches still fail over on the lease, and with the control plane down a dead
-  leader is still not replaced. The heartbeat request gains an optional
-  `suspects` list; the store gains `record_suspicion`/`list_suspicions`
-  (Postgres migration `0024_node_suspicions`, Raft leader soft state).
-  `run_heartbeat` and `membership::spawn` take the broker's `Suspects`.
-  TLA+: `Suspicions` constant, `FelixShardSuspicion.cfg` (pass) and
-  `FelixShardSuspicionLease.cfg` (violates `AtMostOneServing`).
-- `felix-broker inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]`
-  (part of #1077): a broker's data directory read from disk, by the broker
-  binary without starting a broker; it binds nothing and reads no
-  configuration. For every shard of every store (streams, `caches/`,
-  `groups/`, `dead-letters/`, `counters/`) it lists the segments, checks every
-  record's checksum and each index against one rebuilt from its segment, and
-  gives the verdict startup would reach: clean, repair (and what it would cut
-  or remove), or refuse (and the segment and byte). Strictly read-only: files
-  are opened for reading and nothing is created, cut, removed or re-indexed.
-  `--repair-checksum-tail`, `--index-spacing` and `--verify-all-on-open` match
-  the broker's settings, `--kind` narrows to one store, `--segments` lists
-  every shard's segments and `--json` prints one line per shard. It exits 0
-  when every shard would open as it is, 6 when startup would repair one, and 7
-  when it would refuse one or a record fails its checksum. Diagnosing a
-  cluster covers a broker that will not start, on Kubernetes, Docker and
-  Podman, and on a copy. Decoding records offline (`inspect records`) comes
-  next.
-- A cache shard's compaction pass now writes its key index to `keys.idx` in
-  the shard directory, and an open loads it and replays only the log past it
-  instead of the whole log (part of #1073). The snapshot is checked against
-  the log (CRC-32C, the offset range it covers, the checksum of the last
-  record it saw) and ignored for a full replay when anything disagrees; a log
-  truncation and `forget_index` remove it. Memory is unchanged: the index is
-  still held whole in memory. Format in `docs/storage-format.md`.
 - A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
   macOS and Linux, with completions and man pages (#1005). `release.yml`
   writes it from each release's archive checksums and pushes it to
@@ -560,13 +590,6 @@ changes, listed under Changed. `pip` will not install it without `--pre`.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
-- Startup recovery of a shard now plans every write before it makes any
-  (`plan_recovery` in felix-storage's `disk_log/recovery/plan.rs`), then makes
-  them in the same order as before. What recovery does is unchanged; the plan
-  is what `felix_storage::inspect` and `felix-broker inspect segments` report.
-  An I/O error while planning now stops before any repair is written, where it
-  used to stop partway. The `segment_recovery` fuzz target also checks that
-  plan and recovery agree.
 - Containers run under Docker or Podman. `scripts/container_engine.sh` picks
   the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
   answers) for `task test`, `task coverage`, `task pg:*` and `task
@@ -3861,7 +3884,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...HEAD
+[0.6.0-preview.4]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...v0.6.0-preview.4
 [0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
 [0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2
 [0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
