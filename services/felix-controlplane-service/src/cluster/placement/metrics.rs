@@ -108,6 +108,7 @@ impl MoveClock {
             MoveStep::Abandon { .. }
             | MoveStep::Halted { .. }
             | MoveStep::TimedOut { .. }
+            | MoveStep::Stalled { .. }
             | MoveStep::Cancel { .. }
             | MoveStep::Retake { .. }
             | MoveStep::Discard { .. } => {

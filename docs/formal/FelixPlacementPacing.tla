@@ -145,7 +145,8 @@ Seat(s) ==
     /\ WrittenByNobody
     /\ UNCHANGED << leader, fenced, holder, view >>
 
-\* Past `FELIX_SHARD_MOVE_TIMEOUT_MS`, which in this model may be any time
+\* Past `FELIX_SHARD_MOVE_TIMEOUT_MS`, or a restore whose copy has not moved
+\* for `FELIX_SHARD_RESTORE_STALL_MS`, which in this model may be any time
 \* before the fence.
 TimeOut(s) ==
     /\ Copying(s) /\ ~fenced[s]

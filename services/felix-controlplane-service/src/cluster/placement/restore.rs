@@ -196,6 +196,17 @@ pub(super) fn restore_step(
             },
         );
     }
+    // One that has stopped moving would otherwise hold the slot every other
+    // short shard needs until the move timeout. Its start stays, which puts
+    // it behind them for the next slot.
+    if moves.stalled(caught_up, &existing.key, joining) {
+        return undo(
+            MoveStep::Stalled {
+                successor: joining.to_string(),
+            },
+            existing.move_started_at_millis,
+        );
+    }
     if moves.timed_out(caught_up, existing.move_started_at_millis) {
         return undo(
             MoveStep::TimedOut {

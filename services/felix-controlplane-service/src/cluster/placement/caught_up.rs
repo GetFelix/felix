@@ -56,6 +56,14 @@ pub trait CaughtUp {
         None
     }
 
+    /// When this instance last saw `node_id`'s reported position in `key`
+    /// move while a restore copied it in. `None` when it has not watched that
+    /// copy, and then no restore is given up for want of progress: a pass
+    /// without the history must not mistake a moving copy for a stuck one.
+    fn progressed_at_millis(&self, _key: &ShardKey, _node_id: &str) -> Option<u64> {
+        None
+    }
+
     /// Whether the last report for `key` names `node_id`'s copy halted,
     /// whatever generation it was reported at. A node that has just been
     /// dropped from the set for a halt is still listed; see

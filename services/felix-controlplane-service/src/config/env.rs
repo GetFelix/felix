@@ -196,6 +196,12 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.restore_after_millis,
         },
+        // Zero waits out the move timeout.
+        restore_stall_millis: match parse("FELIX_SHARD_RESTORE_STALL_MS") {
+            Some(0) => None,
+            Some(millis) => Some(millis),
+            None => defaults.restore_stall_millis,
+        },
         // Read from the store each pass, not configured.
         paused: false,
         regions: defaults.regions,

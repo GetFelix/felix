@@ -87,6 +87,9 @@ pub struct ReplicaPositions {
     /// confirms `Quorum` reads by a round, so a deposed stream leader is
     /// kept out without its lease running out.
     followers_decide: bool,
+    /// When this instance last saw each restore's new copy move; see
+    /// `progress`.
+    progressed: HashMap<(ShardKey, String), u64>,
 }
 
 impl ReplicaPositions {
@@ -104,6 +107,7 @@ impl ReplicaPositions {
             now_millis,
             suspicions: HashMap::new(),
             followers_decide: false,
+            progressed: HashMap::new(),
         }
     }
 
@@ -133,6 +137,11 @@ impl ReplicaPositions {
         .iter()
         .all(|feature| enabled.contains(feature.name()));
         self
+    }
+
+    /// With when this instance last saw each restore's new copy move.
+    pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
+        self.progressed = progressed;
     }
 
     /// Read every report the store holds, as of the store's clock.
@@ -194,6 +203,12 @@ impl CaughtUp for ReplicaPositions {
 
     fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
         self.fresh(key)?.halted.get(node_id)
+    }
+
+    fn progressed_at_millis(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.progressed
+            .get(&(key.clone(), node_id.to_string()))
+            .copied()
     }
 
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
