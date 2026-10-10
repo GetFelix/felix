@@ -123,9 +123,12 @@ async fn a_shard_led_elsewhere_is_not_reported() {
     assert!(pass.reports.is_empty());
 }
 
-/// A shard with no replicas reports nobody rather than an empty promise.
+/// **A shard led alone still reports.** It names nobody, but placement adds a
+/// copy only once the leader has reported at the shard's generation, so a
+/// shard placed while its leader was the only live broker stayed at one copy
+/// for good (#1153).
 #[tokio::test]
-async fn a_shard_with_no_replicas_is_not_reported() {
+async fn a_shard_led_alone_reports_its_generation() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &[], 4);
     let follower = AcceptingFollower::default();
@@ -145,7 +148,170 @@ async fn a_shard_with_no_replicas_is_not_reported() {
     )
     .await;
 
-    assert!(pass.reports.is_empty());
+    assert_eq!(pass.reports.len(), 1);
+    let report = &pass.reports[0];
+    assert_eq!(report.key, key());
+    assert_eq!(report.generation, 4);
+    assert!(report.caught_up.is_empty());
+    assert!(report.offsets.is_empty());
+    assert_eq!(report.tail, 3);
+    assert!(follower.batches().is_empty());
+}
+
+/// The running driver reports a shard led alone too, at generation 0 as a
+/// first placement leaves it, and with an empty log.
+#[tokio::test]
+async fn the_driver_reports_a_shard_led_alone() {
+    let (broker, _dir) = leader_with(0).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        broker,
+        router(LOCAL, &[], 0),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(100),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("a shard led alone was never reported");
+    assert_eq!((report.stream.as_str(), report.generation), (STREAM, 0));
+    assert!(report.caught_up.is_empty());
+    assert!(report.replica_offsets.is_empty());
+    assert_eq!(report.leader_offset, Some(0));
+}
+
+/// **A promoted shard led alone reports nothing until its fence opens it.**
+/// The report is what lets placement grow the set, and a set written while
+/// the leader is still fencing would be the set it fences.
+#[tokio::test]
+async fn a_promoted_shard_led_alone_reports_only_once_open() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Gate {
+        closed: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::promotion::PromotionGate for Gate {
+        fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+            self.closed.load(Ordering::SeqCst).then_some(4)
+        }
+
+        async fn open(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+            !self.closed.load(Ordering::SeqCst)
+        }
+    }
+
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let gate = Arc::new(Gate {
+        closed: AtomicBool::new(true),
+    });
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        broker,
+        router(LOCAL, &[], 4),
+        Arc::new(Unfenced),
+        Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let early = first_report(&received, Duration::from_millis(500)).await;
+    gate.closed.store(false, Ordering::SeqCst);
+    let opened = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    assert!(
+        early.is_none(),
+        "reported while the fence was still pending: {early:?}"
+    );
+    let opened = opened.expect("never reported once open");
+    assert_eq!((opened.generation, opened.leader_offset), (4, Some(3)));
+}
+
+fn published() -> Published {
+    Published {
+        marks: Arc::new(QuorumMarks::new()),
+        halted: Arc::new(crate::halted::HaltedReplicas::new()),
+        status: Arc::default(),
+    }
+}
+
+/// A control plane that stores every report it is sent.
+struct RecordingControlPlane {
+    addr: SocketAddr,
+}
+
+impl RecordingControlPlane {
+    fn reporter(&self, shutdown: CancellationToken) -> crate::reporter::Reporter {
+        crate::reporter::Reporter::spawn(
+            ReportTo {
+                client: reqwest::Client::new(),
+                base_url: format!("http://{}", self.addr),
+                node_id: LOCAL.to_string(),
+                token: None,
+                incarnation: 0,
+            },
+            shutdown,
+        )
+        .0
+    }
+}
+
+async fn recording_control_plane() -> (RecordingControlPlane, Arc<Mutex<Vec<ShardReplicaStatus>>>) {
+    let received: Arc<Mutex<Vec<ShardReplicaStatus>>> = Arc::default();
+    let sink = Arc::clone(&received);
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/replica-status",
+        axum::routing::post(
+            move |axum::Json(request): axum::Json<ReplicaStatusRequest>| async move {
+                sink.lock().expect("lock").extend(request.shards);
+                axum::http::StatusCode::NO_CONTENT
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+    (RecordingControlPlane { addr }, received)
+}
+
+/// The first report received within `within`.
+async fn first_report(
+    received: &Mutex<Vec<ShardReplicaStatus>>,
+    within: Duration,
+) -> Option<ShardReplicaStatus> {
+    tokio::time::timeout(within, async {
+        loop {
+            if let Some(report) = received.lock().expect("lock").first().cloned() {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok()
 }
 
 /// A follower that refuses everything, so it never advances.

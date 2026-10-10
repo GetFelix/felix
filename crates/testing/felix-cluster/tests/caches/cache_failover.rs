@@ -526,6 +526,64 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
     cluster.shutdown().await;
 }
 
+/// **A shard placed on one broker gets its other copies once more join
+/// (#1153).** Placed while its leader was the only live broker, a shard has no
+/// followers. Placement adds a copy only after the leader has reported at the
+/// shard's generation, and a leader with no followers never reported, so the
+/// shards that rebalancing did not move stayed at one copy for good.
+#[serial]
+#[tokio::test]
+async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
+    const OPS: &str = "ops";
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 1,
+        streams: vec![StreamSpec::quorum(OPS, 3, 3)],
+        caches: vec![CacheSpec::quorum(CACHE, 1, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let first = cluster.node_ids()[0].clone();
+    let placed = cluster.shard_assignments().await.expect("assignments");
+    assert_eq!(placed.len(), 4, "{placed:?}");
+    assert!(
+        placed
+            .values()
+            .all(|a| a.leader == first && a.replicas.is_empty()),
+        "{placed:?}"
+    );
+
+    cluster.add_node().await.expect("start the second broker");
+    cluster.add_node().await.expect("start the third broker");
+
+    let full = felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "every shard to have three copies",
+        || async {
+            cluster.place_shards().await;
+            let Ok(assignments) = cluster.shard_assignments().await else {
+                return false;
+            };
+            assignments.values().all(|a| a.replicas.len() == 2)
+                && cluster.moving_shards().await.is_ok_and(|m| m.is_empty())
+        },
+    )
+    .await;
+    let assignments = cluster.shard_assignments().await.unwrap_or_default();
+    let moving = cluster.moving_shards().await.unwrap_or_default();
+    cluster.shutdown().await;
+    assert!(
+        full.is_ok(),
+        "shards stayed short: {assignments:?}; in flight: {moving:?}",
+    );
+    // A shard rebalancing moves gets its copies through the move; the ones
+    // still on the first broker are the ones a restore had to top up.
+    assert!(
+        assignments.values().any(|a| a.leader == first),
+        "every shard moved, so no restore was exercised: {assignments:?}",
+    );
+}
+
 /// **A deposed cache leader rejoins and keeps what was committed (#863).**
 ///
 /// The leader is cut off from its followers and takes one more write, so it

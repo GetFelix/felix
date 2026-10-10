@@ -1556,6 +1556,12 @@ and an empty newcomer. The model's `Regenerate` has the same guard. The delay is
 restart takes every broker down in turn, and copying each shard once per
 restart would cost far more than waiting.
 
+A leader with no followers reports too, naming nobody, so a shard placed
+while its leader was the only live broker is topped up once others join. It
+reports at each new generation and then once per replication tick, since the
+control plane believes a report only for a while, and like every other report
+only after its fence.
+
 The restore is stored in the assignment like any move, so a control plane that
 restarts, or another instance that takes the placement lease, carries on from
 where it was. If the broker being copied to goes down, the copy is dropped and

@@ -22,8 +22,8 @@ use super::shard::{
     AuxCursors, Exchange, ShardCursors, ShardPass, Shipped, Stragglers, replicate_shard,
 };
 use super::{
-    DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, fence_backoff, fence_one, open_fenced,
-    take_work, watch_key,
+    DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, alone_report, fence_backoff,
+    fence_one, open_fenced, take_work, watch_key,
 };
 use crate::halted::HaltedReplica;
 use crate::peer::PeerRequester;
@@ -46,6 +46,9 @@ pub(super) struct Context<'a, R> {
     pub(super) reporter: Option<&'a Reporter>,
     pub(super) rebuilds: &'a Rebuilds,
     pub(super) throttle: &'a MoveThrottle,
+    /// The tick: how often a shard led here alone repeats its report, which
+    /// the control plane believes only for a while.
+    pub(super) refresh: std::time::Duration,
 }
 
 impl<R> Clone for Context<'_, R> {
@@ -69,6 +72,22 @@ pub(super) enum Event<'a> {
     Fenced(FenceAttempt),
     /// An exchange a pass handed back has ended.
     Answered(Answered),
+    /// A report for a shard led here alone was read and queued.
+    Reported(Reported),
+}
+
+/// A shard led here alone, reported at `generation` with `tail`.
+pub(super) struct Reported {
+    key: ShardKey,
+    generation: u64,
+    tail: u64,
+}
+
+/// The last report sent for a shard led here alone.
+struct Alone {
+    generation: u64,
+    tail: u64,
+    at: tokio::time::Instant,
 }
 
 /// One fence attempt for a shard promoted here, ended.
@@ -159,6 +178,9 @@ pub(super) struct Shards<'a, R> {
     /// one succeeds.
     pub(super) fences: FuturesUnordered<BoxFuture<'a, FenceAttempt>>,
     pub(super) exchanges: FuturesUnordered<BoxFuture<'a, Answered>>,
+    /// Shards led here with no other copy, by when each last reported.
+    alone: HashMap<ShardKey, Alone>,
+    pub(super) reports: FuturesUnordered<BoxFuture<'a, Reported>>,
 }
 
 impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
@@ -175,6 +197,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             passes: FuturesUnordered::new(),
             fences: FuturesUnordered::new(),
             exchanges: FuturesUnordered::new(),
+            alone: HashMap::new(),
+            reports: FuturesUnordered::new(),
         }
     }
 
@@ -198,6 +222,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let led: HashSet<&ShardKey> = live.iter().collect();
         self.states
             .retain(|key, state| state.running.is_some() || led.contains(key));
+        self.alone.retain(|key, _| led.contains(key));
         for map in [
             &mut self.streams,
             &mut self.group,
@@ -353,6 +378,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             &mut self.counters,
         ) else {
             state.last = Some(LastPass::idle(self.scan));
+            self.report_alone(key, route.generation);
             self.cx.status.put(
                 watch_key(key),
                 ShardStatus {
@@ -366,7 +392,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             );
             return;
         };
+        self.alone.remove(key);
         let next_wanted = Arc::new(tokio::sync::Notify::new());
+        let state = self.states.entry(key.clone()).or_default();
         state.running = Some(Arc::clone(&next_wanted));
         let busy: HashSet<String> = self
             .busy
@@ -375,6 +403,54 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .unwrap_or_default();
         self.passes
             .push(self.pass(key.clone(), route.clone(), entry, aux, busy, next_wanted));
+    }
+
+    /// Report a shard led here alone at a new generation, and again each tick
+    /// so the report stays fresh. Every append wakes a scan, so not on each.
+    fn report_alone(&mut self, key: &ShardKey, generation: u64) {
+        let Some(reporter) = self.cx.reporter else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        let floor = match self.alone.get(key) {
+            Some(last) if last.generation == generation => {
+                // Half, so a tick landing a moment early does not skip one.
+                if now.duration_since(last.at) < self.cx.refresh / 2 {
+                    return;
+                }
+                last.tail
+            }
+            _ => 0,
+        };
+        self.alone.insert(
+            key.clone(),
+            Alone {
+                generation,
+                tail: floor,
+                at: now,
+            },
+        );
+        let broker = self.cx.broker;
+        let key = key.clone();
+        self.reports.push(Box::pin(async move {
+            let report = alone_report(broker, &key, generation, floor).await;
+            let tail = report.tail;
+            reporter.submit(report);
+            Reported {
+                key,
+                generation,
+                tail,
+            }
+        }));
+    }
+
+    /// Keep a shard's reported tail, so the next report does not go back.
+    pub(super) fn reported(&mut self, reported: Reported) {
+        if let Some(last) = self.alone.get_mut(&reported.key)
+            && last.generation == reported.generation
+        {
+            last.tail = last.tail.max(reported.tail);
+        }
     }
 
     fn pass(
