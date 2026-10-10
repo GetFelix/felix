@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791657601224,
+  "lastUpdate": 1791662502923,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27820,6 +27820,58 @@ window.BENCHMARK_DATA = {
             "range": "5710.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813405.41\nmean: 816474.21\nstdev: 5710.90\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86ce076302a51737c4a0df462c31945a3db88e7e",
+          "message": "fix(controlplane): a stopped raft member stops claiming leadership (#1144) (#1150)\n\nAfter shutdown, openraft's metrics still name the member as leader, so\nis_leader() stayed true and ask_leader served leader-only requests from\nthe dead term's view. The handle now records the stop: is_leader() and\nstatus() report no leadership, and ask_leader refuses at once with the\nsame no-quorum error an instance without a leader gives.\n\nraft_clock_step: silence the dying broker and wait out its last beat\nbefore stopping the leader, sweep through the survivors only, and time\nthe 5 s bound from the new leader's election.",
+          "timestamp": "2026-10-10T12:58:09-07:00",
+          "tree_id": "a1aa9f52de843ae6392176cdcecbb77bb97ed164",
+          "url": "https://github.com/GetFelix/felix/commit/86ce076302a51737c4a0df462c31945a3db88e7e"
+        },
+        "date": 1791662502355,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 480254.4,
+            "range": "38354.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 480254.40\nmean: 486947.18\nstdev: 38354.37\ncv: 7.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 480254.4,
+            "range": "38354.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 480254.40\nmean: 486947.18\nstdev: 38354.37\ncv: 7.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 111422.02,
+            "range": "941.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 111422.02\nmean: 111378.20\nstdev: 941.37\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1114220.21,
+            "range": "9413.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1114220.21\nmean: 1113782.01\nstdev: 9413.68\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
