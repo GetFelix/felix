@@ -300,6 +300,9 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
             RegisterAction::Put { .. } => (puts, gets),
             RegisterAction::Get { .. } => (puts, gets + 1),
         });
+    if puts < 10 || gets < 10 {
+        println!("cache timeline:\n{}", history.cache_timeline());
+    }
     assert!(
         puts >= 10 && gets >= 10,
         "seed {seed}: only {puts} cache puts were acknowledged and {gets} gets answered"

@@ -104,9 +104,12 @@ flowchart LR
     e3@{ animate: true }
 ```
 
-Felix never sees your IdP password, and the broker never calls the control plane
-on the request path: it verifies the signature against published JWKS and reads
-the permissions out of the token.
+Felix never sees your IdP password, and the broker does not ask the control
+plane about each request: it verifies the signature against the tenant's
+published JWKS, which it fetches for every tenant it knows when it starts and
+caches for an hour, and reads the permissions out of the token. A broker can
+therefore keep verifying tokens through a control-plane outage shorter than that
+hour.
 
 ### Bootstrap Mode (Day-0)
 

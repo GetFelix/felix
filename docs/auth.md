@@ -634,6 +634,12 @@ Bootstrap tokens **never** authorize normal admin endpoints.
    path segment. Concurrent misses for one tenant share a single request, a
    failed fetch is remembered for 5 seconds, at most 8 fetches run at once, and
    each has a 5 second timeout. A fetched JWKS is cached for an hour.
+
+   The broker also fetches the JWKS of every tenant in its catalog once the
+   first catalog sync lands, before it reports ready, spending at most 5
+   seconds on it. A broker that restarts and then loses the control plane can
+   still verify tokens of tenants it had not served yet, including the token a
+   peer forwards with a client's write.
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`

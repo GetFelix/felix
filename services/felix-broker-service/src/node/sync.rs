@@ -11,13 +11,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
+use crate::serving::auth::ControlPlaneKeyStore;
+
+/// How long the first sync may spend fetching every known tenant's JWKS
+/// before it reports the catalog seeded anyway.
+const JWKS_WARM_BUDGET: Duration = Duration::from_secs(5);
 
 /// Start a periodic control-plane sync to keep tenant/namespace/stream metadata
 /// refreshed. When disabled, the broker relies solely on local registrations.
 ///
-/// `seeded_tx` is signalled once the first pass is applied, but only when
-/// readiness is gated on it. `catalog_seeded` is cancelled at the same point
-/// either way.
+/// `seeded_tx` is signalled once the first pass is applied and `key_store`
+/// holds the JWKS of every tenant it named, but only when readiness is gated
+/// on it. `catalog_seeded` is cancelled at the same point either way.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_catalog_sync(
     config: &BrokerConfig,
     broker: &Arc<Broker>,
@@ -26,6 +32,7 @@ pub(super) fn spawn_catalog_sync(
     gate_readiness_on_sync: bool,
     seeded_tx: oneshot::Sender<()>,
     catalog_seeded: &CancellationToken,
+    key_store: &Arc<ControlPlaneKeyStore>,
 ) -> Option<JoinHandle<()>> {
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
@@ -35,9 +42,16 @@ pub(super) fn spawn_catalog_sync(
         let seeded_tx = gate_readiness_on_sync.then_some(seeded_tx);
         let (applied_tx, applied_rx) = oneshot::channel();
         let catalog_seeded = catalog_seeded.clone();
+        let warm_broker = Arc::clone(&broker);
+        let key_store = Arc::clone(key_store);
         // Ends with the sync task, which drops the sender if it never seeds.
         tokio::spawn(async move {
             if applied_rx.await.is_ok() {
+                // While the control plane is up, so the keys are here if it
+                // goes down before a client of each tenant has connected.
+                key_store
+                    .warm(warm_broker.tenant_ids().await, JWKS_WARM_BUDGET)
+                    .await;
                 catalog_seeded.cancel();
                 if let Some(seeded_tx) = seeded_tx {
                     let _ = seeded_tx.send(());
@@ -133,3 +147,6 @@ pub(super) fn spawn_readiness_flip(
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

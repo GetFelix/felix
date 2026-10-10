@@ -32,6 +32,11 @@ impl Broker {
         self.tenants.read().await.contains_key(tenant_id)
     }
 
+    /// Every registered tenant, in no particular order.
+    pub async fn tenant_ids(&self) -> Vec<String> {
+        self.tenants.read().await.keys().cloned().collect()
+    }
+
     /// Remove a tenant. `false` if it was not registered.
     pub async fn remove_tenant(&self, tenant_id: &str) -> Result<bool> {
         let mut guard = self.tenants.write().await;

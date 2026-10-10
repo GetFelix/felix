@@ -11,6 +11,14 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A broker fetches the JWKS of every tenant in its catalog when its first
+  catalog sync lands, before it reports ready. It used to fetch them only when
+  a client of that tenant connected, so a broker that restarted and then lost
+  the control plane refused every write a peer forwarded to it, such as a
+  cache put sent to a broker that does not own the key, until the control
+  plane came back (#1148).
+
 ## [0.6.0-preview.5] - 2026-10-10
 
 The fifth preview of 0.6.0, mostly fixes to shard restores and replication.
