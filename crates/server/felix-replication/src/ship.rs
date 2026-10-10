@@ -153,6 +153,12 @@ pub async fn ship_once_with<R: PeerRequester>(
             );
             metrics::record_rebuild(metrics::OUTCOME_REBUILD_COMPLETED);
         }
+        // Nothing below offset zero to hold, so a follower of an empty log is
+        // level without being asked. Left stalled, its position is never
+        // reported and placement cannot seat it as a new copy.
+        if cursor.next_offset == 0 {
+            cursor.stalled = false;
+        }
         return Progress::UpToDate;
     }
 

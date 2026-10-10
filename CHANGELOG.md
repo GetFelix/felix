@@ -11,6 +11,15 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A restore of a shard whose log was empty, such as a cache used only for
+  counters or one nothing had written to yet, was never seated: with nothing
+  to ship, the leader never reported the new copy's position. It held the
+  cluster's move slot until the 30-minute move timeout, so every other restore
+  waited behind it. A cluster whose brokers registered a moment apart placed
+  its shards on two of three brokers and stayed that way, and a `Quorum` cache
+  on such a pair refused every write once either broker died (#1133). A
+  follower of an empty log is now reported level at offset zero.
 ### Changed
 
 - `POST /v1/tenants/{tenant_id}/token/exchange` takes an optional RFC 8693

@@ -34,6 +34,37 @@ async fn a_pass_reports_who_could_take_the_shard_over() {
     assert_eq!(report.tail, 3);
 }
 
+/// **A follower of an empty shard is reported level with it.** Nothing is
+/// shipped, so the leader never hears from it; without its offset in the
+/// report, placement cannot seat it as a new copy, and the restore holds the
+/// cluster's move slot until it times out (#1133).
+#[tokio::test]
+async fn a_follower_of_an_empty_shard_is_reported_level() {
+    let (broker, _dir) = leader_with(0).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let follower = AcceptingFollower::default();
+    let marks = QuorumMarks::new();
+    let mut cursors = HashMap::new();
+
+    let pass = replicate_once(
+        &follower,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    assert_eq!(pass.reports.len(), 1);
+    let report = &pass.reports[0];
+    assert_eq!(report.tail, 0);
+    assert_eq!(report.offsets, vec![("broker-b".to_string(), 0)]);
+}
+
 /// **A follower that did not keep up is not reported as able to lead.**
 /// This is the whole point of the signal: the control plane promotes on it,
 /// and a follower named here while behind would be promoted into a shard it
