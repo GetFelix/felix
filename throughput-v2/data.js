@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791664443545,
+  "lastUpdate": 1791672429778,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27924,6 +27924,58 @@ window.BENCHMARK_DATA = {
             "range": "76863.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1259907.08\nmean: 1220086.71\nstdev: 76863.19\ncv: 6.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4a230d9b7f59403f990e0b7855278886615994e",
+          "message": "fix(placement): place a cluster started together on all its brokers (#1151) (#1155)\n\n* fix(placement): place a cluster started together on all its brokers (#1151)\n\nA new shard in a cluster younger than FELIX_PLACEMENT_SETTLE_MS (10 s)\nwaits for as many live brokers as its replication factor, and a broker\nregistering runs placement. A restore that only tops up a short shard\nwhose leader holds at most the fence lag of records takes no move slot,\nso shards that did go short fill together. The control plane logs when\nshards go short of their factor and when they are full again.\n\n* fix(controlplane): listen for a second signal before readiness flips\n\nA second SIGTERM sent once /v1/system/ready stopped answering 200 could\narrive before the drain installed its listener, and the hold-off then ran\nin full. a_second_signal_cuts_the_hold_off_short failed this way in CI.",
+          "timestamp": "2026-10-10T15:43:13-07:00",
+          "tree_id": "484f5023280b65ca86b197c0aa34a737a514d6cd",
+          "url": "https://github.com/GetFelix/felix/commit/f4a230d9b7f59403f990e0b7855278886615994e"
+        },
+        "date": 1791672429288,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352124.84,
+            "range": "5907.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352124.84\nmean: 351029.79\nstdev: 5907.41\ncv: 1.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352124.84,
+            "range": "5907.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352124.84\nmean: 351029.79\nstdev: 5907.41\ncv: 1.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81304.51,
+            "range": "1145.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81304.51\nmean: 80923.31\nstdev: 1145.91\ncv: 1.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813045.09,
+            "range": "11459.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813045.09\nmean: 809233.08\nstdev: 11459.12\ncv: 1.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
