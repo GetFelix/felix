@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791602631780,
+  "lastUpdate": 1791604386142,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34848,6 +34848,72 @@ window.BENCHMARK_DATA = {
             "range": "1147.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1666.00\nmean: 1522.40\nstdev: 1147.38\ncv: 75.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "660bae29118c10b03fff755e38ed3c0d8ff1e6a3",
+          "message": "test(cluster): run the harness control plane on its own runtime (#1131)\n\n* test(cluster): run the harness control plane on its own runtime (#1115)\n\nThe in-process control plane shared the test's runtime, usually\nsingle-threaded, with every client the test opens. A broker's lease is\nrenewed only by heartbeats answered within a few hundred milliseconds, so\ntest load could lapse a lease and end a subscription mid-batch.\n\nIt now runs on a dedicated two-thread runtime. Shutdown stops it and joins\nits threads; drop stops it without blocking, so dropping a cluster inside\nasync code stays safe. The ordering scenario also publishes its batch over\none client instead of connecting once per record.\n\n* test(cluster): wait for a caught-up report before pausing a Leader-ack leader\n\nThe fencing test waited on felix_broker_replication_shipped_total > 0,\nwhich the start-up probe already satisfies, so the wait was a no-op.\nPaused before a report naming a follower at the new tail lands, the\nleader's last report can list no caught-up follower, and placement\nrefuses to promote. Wait for that report instead.",
+          "timestamp": "2026-10-09T20:50:17-07:00",
+          "tree_id": "2e51c1fe0dc72bd260b355b560e31238115e0121",
+          "url": "https://github.com/GetFelix/felix/commit/660bae29118c10b03fff755e38ed3c0d8ff1e6a3"
+        },
+        "date": 1791604383014,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.20\nstdev: 0.45\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 91,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.00\nstdev: 1.22\ncv: 1.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 143,
+            "range": "73.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 161.80\nstdev: 73.05\ncv: 45.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.20\nstdev: 0.84\ncv: 0.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 196,
+            "range": "8.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 195.40\nstdev: 8.79\ncv: 4.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "31.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 288.60\nstdev: 31.74\ncv: 11.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
