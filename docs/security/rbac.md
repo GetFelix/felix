@@ -44,7 +44,10 @@ than the token it came from.
 What limits it is which tokens it can delegate. By default only a broker token
 whose `may_act` names the caller qualifies, and a token gets `may_act` only
 when the exchange that minted it carried that same caller's own
-`felix-controlplane` token as `actor_token`. So a gateway can delegate the
+`felix-controlplane` token as `actor_token`. (An actor token that does not
+verify or lacks `token.delegate` makes the exchange a `403` with code
+`actor_refused`, apart from the `forbidden` a user without permissions gets.)
+So a gateway can delegate the
 tokens minted for it, and not a token taken from a browser, a log or another
 gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for
 tokens with no `may_act`, which lets every holder of `token.delegate` delegate

@@ -73,8 +73,17 @@ exchanging for: its own `felix-controlplane` token, holding
 from it, and only that gateway can pass it to `/token/delegate`.
 `actor_token_type` is optional and must be
 `urn:ietf:params:oauth:token-type:jwt`. An `actor_token` with
-`"audience": "felix-controlplane"` is a `400`, and one that does not verify or
-lacks `token.delegate` is a `403`. With the Raft store it is a `409` until every
+`"audience": "felix-controlplane"` is a `400`. One that does not verify for the
+tenant (bad signature, expired, another tenant or audience) or lacks
+`token.delegate` is a `403` with code `actor_refused`:
+
+```json
+{"code": "actor_refused", "message": "invalid actor token", "request_id": null}
+```
+
+That code means the gateway's own token was refused. A user who lacks
+permissions is still a `403` with code `forbidden`, so a gateway can tell the
+two apart by `code` without reading `message`. With the Raft store it is a `409` until every
 member supports it.
 
 ### POST /v1/tenants/{tenant_id}/token/refresh

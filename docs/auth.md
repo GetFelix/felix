@@ -476,7 +476,10 @@ the gateway exchanges the user's IdP token at `/token/exchange`, it sends its
 own `felix-controlplane` token as `actor_token`. The control plane checks that
 the actor token is valid for the tenant and holds `token.delegate` on it, and
 mints the user's broker token with `may_act: {"sub": "<gateway principal>"}`
-(RFC 8693, section 4.4). Every token refreshed from that exchange's refresh
+(RFC 8693, section 4.4). An actor token that does not verify for the tenant
+or lacks `token.delegate` is refused with `403` and code `actor_refused`,
+never `forbidden`, so the gateway can tell a problem with its own credential
+from a user without permissions. Every token refreshed from that exchange's refresh
 token carries the same claim. `/token/delegate` refuses a subject token whose
 `may_act.sub` is not the caller, so a broker token taken from a browser, a log
 or another gateway cannot be bound to a different gateway's certificate.

@@ -493,7 +493,9 @@ broker binds that token to a certificate issued to its actor. Only a token
 minted for that gateway can be delegated: the gateway sends its own token as
 `actor_token` when it exchanges the user's sign-in, the user's token records
 it in `may_act`, and `/token/delegate` refuses a token whose `may_act` names
-another caller or nobody. A broker token stolen from a browser or another
+another caller or nobody. An actor token that is refused makes the exchange a
+`403` with code `actor_refused`, which is how the gateway tells its own
+credential's problem from a user's missing permission (`forbidden`). A broker token stolen from a browser or another
 gateway therefore cannot be moved onto a gateway's certificate. Holding
 `token.delegate` still means acting as any user whose token was minted for
 you, so grant it to gateways only. See

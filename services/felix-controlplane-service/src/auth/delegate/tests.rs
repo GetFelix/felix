@@ -391,57 +391,107 @@ async fn an_exchange_with_an_actor_token_mints_a_token_only_that_actor_can_deleg
     }
 }
 
-#[tokio::test]
-async fn an_actor_token_must_be_able_to_delegate() {
-    let fixture = fixture().await;
-    fixture
-        .state
-        .store
-        .add_rbac_policy(
-            "t1",
-            PolicyRule {
-                subject: "p:alice".to_string(),
-                object: "stream:t1/ns/alice-feed".to_string(),
-                action: "stream.publish".to_string(),
-            },
-        )
-        .await
-        .expect("policy");
-    let exchange = |actor_token: String, audience: &'static str| {
-        let state = fixture.state.clone();
-        async move {
-            mint_for_principal(
-                &state,
+/// Every way the gateway's own `actor_token` can be refused answers
+/// `actor_refused`, so the gateway can tell it from a user who lacks
+/// permissions, which stays `forbidden`.
+#[test]
+fn a_refused_actor_token_has_its_own_code() {
+    let recorder = crate::test_support::CountingRecorder::default();
+    recorder.run(async {
+        let fixture = fixture().await;
+        fixture
+            .state
+            .store
+            .add_rbac_policy(
                 "t1",
-                "p:alice",
-                &[],
-                &TokenExchangeRequest {
-                    actor_token: Some(actor_token),
-                    ..TokenExchangeRequest::default()
+                PolicyRule {
+                    subject: "p:alice".to_string(),
+                    object: "stream:t1/ns/alice-feed".to_string(),
+                    action: "stream.publish".to_string(),
                 },
-                audience,
             )
             .await
-            .map(|_| ())
-            .map_err(|err| err.status)
-        }
-    };
-    let without = crate::test_support::token(&fixture.keys, &[ALICE_FEED]);
+            .expect("policy");
+        let exchange = |principal: &'static str, actor_token: String, audience: &'static str| {
+            let state = fixture.state.clone();
+            async move {
+                mint_for_principal(
+                    &state,
+                    "t1",
+                    principal,
+                    &[],
+                    &TokenExchangeRequest {
+                        actor_token: Some(actor_token),
+                        ..TokenExchangeRequest::default()
+                    },
+                    audience,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|err| (err.status, err.body.code))
+            }
+        };
+        let actor_refused = Err((StatusCode::FORBIDDEN, "actor_refused".to_string()));
+
+        let without = crate::test_support::token(&fixture.keys, &[ALICE_FEED]);
+        assert_eq!(
+            exchange("p:alice", without, BROKER_AUDIENCE).await,
+            actor_refused
+        );
+        // A broker token is not a control-plane credential.
+        let broker = alice_token(&fixture.keys, "t1", Duration::from_secs(60));
+        assert_eq!(
+            exchange("p:alice", broker, BROKER_AUDIENCE).await,
+            actor_refused
+        );
+        let wrong_key =
+            crate::test_support::token(&fixture.other_keys, &["token.delegate:tenant:t1"]);
+        assert_eq!(
+            exchange("p:alice", wrong_key, BROKER_AUDIENCE).await,
+            actor_refused
+        );
+        let other_tenant = mint_token_for(
+            &fixture.other_keys,
+            "t2",
+            "p:test",
+            vec!["token.delegate:tenant:t2".to_string()],
+            Duration::from_secs(60),
+            CONTROLPLANE_AUDIENCE,
+        )
+        .expect("token");
+        assert_eq!(
+            exchange("p:alice", other_tenant, BROKER_AUDIENCE).await,
+            actor_refused
+        );
+        assert_eq!(
+            exchange("p:alice", "not-a-jwt".to_string(), BROKER_AUDIENCE).await,
+            actor_refused
+        );
+
+        let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+        assert_eq!(
+            exchange("p:bob", gateway.clone(), BROKER_AUDIENCE).await,
+            Err((StatusCode::FORBIDDEN, "forbidden".to_string())),
+            "a user without permissions is not the gateway's fault"
+        );
+        assert_eq!(
+            exchange("p:alice", gateway.clone(), CONTROLPLANE_AUDIENCE)
+                .await
+                .map_err(|(status, _)| status),
+            Err(StatusCode::BAD_REQUEST),
+            "only broker tokens are delegated"
+        );
+        exchange("p:alice", gateway, BROKER_AUDIENCE)
+            .await
+            .expect("a gateway that may delegate");
+    });
     assert_eq!(
-        exchange(without, BROKER_AUDIENCE).await,
-        Err(StatusCode::FORBIDDEN)
+        recorder.count("felix_controlplane_auth_rejected_total{reason=actor_refused}"),
+        5
     );
-    // A broker token is not a control-plane credential.
-    let broker = alice_token(&fixture.keys, "t1", Duration::from_secs(60));
     assert_eq!(
-        exchange(broker, BROKER_AUDIENCE).await,
-        Err(StatusCode::FORBIDDEN)
-    );
-    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
-    assert_eq!(
-        exchange(gateway, CONTROLPLANE_AUDIENCE).await,
-        Err(StatusCode::BAD_REQUEST),
-        "only broker tokens are delegated"
+        recorder.count("felix_controlplane_auth_rejected_total{reason=forbidden}"),
+        1
     );
 }
 
