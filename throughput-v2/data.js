@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791612680259,
+  "lastUpdate": 1791616660121,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27612,6 +27612,58 @@ window.BENCHMARK_DATA = {
             "range": "24903.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1233255.44\nmean: 1226878.88\nstdev: 24903.12\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac61f56403b8b8ba140ed34d52e0e80939deef6d",
+          "message": "fix(replication): ship a Quorum cache's counters in each follower's exchange (#1137) (#1142)\n\nBefore shipping a Quorum cache's log, the leader shipped its counter log to\nevery follower and waited for all of them, a dead one included, and shipped\nit again at the end of each pass. Right after a broker died, cache writes\nwaited out the 5 s request timeout on its half-open connection, then about\n2 s each time its reconnect backoff ran out, with a majority alive.\n\nThe counters now ride each follower's exchange, ahead of its cache log. A\nfollower that does not answer is handed to the driver like any straggler,\nthe pass stops waiting once a majority has answered (or both marks have one),\nand the end of the pass ships counters only to followers whose exchange did\nnot carry them. The counter level is measured from the followers' confirmed\npositions as before, the report still leaves out a follower short of the\ncounter mark, and the mark still moves only on a report that landed (or on\nthe followers' answers under fenced_caches).\n\nSpec-Unaffected: FelixShard.tla models ShipCounter and Ship as independent per-follower steps and AckCounters on a majority (CHeldAtGen); the change only picks a different interleaving of those steps and keeps the counter mark rule and the report limit",
+          "timestamp": "2026-10-10T00:13:44-07:00",
+          "tree_id": "0c3af794bc1757258afc4b8e656f0573d65625c6",
+          "url": "https://github.com/GetFelix/felix/commit/ac61f56403b8b8ba140ed34d52e0e80939deef6d"
+        },
+        "date": 1791616659604,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341248.58,
+            "range": "12219.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341248.58\nmean: 339523.68\nstdev: 12219.30\ncv: 3.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341248.58,
+            "range": "12219.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341248.58\nmean: 339523.68\nstdev: 12219.30\ncv: 3.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81142.82,
+            "range": "514.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81142.82\nmean: 80858.91\nstdev: 514.88\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811428.15,
+            "range": "5148.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811428.15\nmean: 808589.12\nstdev: 5148.77\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
