@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791608925065,
+  "lastUpdate": 1791612680259,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27560,6 +27560,58 @@ window.BENCHMARK_DATA = {
             "range": "5901.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1006034.55\nmean: 1005569.72\nstdev: 5901.39\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b085abf022729b7beb4b3ed3b7ab47e0085211bb",
+          "message": "fix(placement): drop a restore whose copy stops moving (#1138) (#1141)\n\n* fix(placement): drop a restore whose copy stops moving (#1138)\n\nRestores share the move slots, one by default, and a restore that could\nnot finish held its slot for the full 30-minute move timeout while every\nother short shard waited. A restore whose new copy's reported position has\nnot gone up for FELIX_SHARD_RESTORE_STALL_MS (two minutes) is now dropped\nas `stalled`, and the next pass gives the slot to the next shard.\n\nProgress is watched by the instance running placement across passes, since\nneither a report nor the store keeps history and writing it to the\nassignment would start a new generation every pass. A pass without the\nhistory starts the window again, so it can be late but never drops a copy\nthat is moving.\n\nShards whose last move was given up are now ordered by when that attempt\nstarted, so restores that keep failing take turns at the slot instead of\nthe first in key order retaking it every time.\n\nSpec-Unaffected: dropping a restore early is a TimeOut before the fence, which FelixPlacementPacing.tla already allows at any moment; slot counting is unchanged, so CopiesWithinLimit is checked as before\n\n* fix(replication): hand a catching-up follower's position back every 5 s\n\nA follower that counts toward the quorum took its whole catch-up in one\nexchange, so a restore's new copy of a large log was reported only once\nlevel. With the restore stall window, placement would drop such a restore\nevery time. Every exchange now ends after CATCH_UP_SLICE (5 s) of shipping,\nas a move's destination already does at COPY_SLICE, and the driver passes\nagain at once, so the copy's position reaches a report every few seconds.\n\nSpec-Unaffected: an exchange ending earlier changes when a follower's position is reported, not what it holds or what the quorum counts; FelixShard.tla ships records one at a time and does not model exchange length",
+          "timestamp": "2026-10-09T23:07:19-07:00",
+          "tree_id": "2e15f0ed4477923a52231a345b77614f45cbb3f7",
+          "url": "https://github.com/GetFelix/felix/commit/b085abf022729b7beb4b3ed3b7ab47e0085211bb"
+        },
+        "date": 1791612679467,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533762.86,
+            "range": "12943.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533762.86\nmean: 539827.88\nstdev: 12943.51\ncv: 2.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533762.86,
+            "range": "12943.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533762.86\nmean: 539827.88\nstdev: 12943.51\ncv: 2.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123325.54,
+            "range": "2490.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123325.54\nmean: 122687.89\nstdev: 2490.31\ncv: 2.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1233255.44,
+            "range": "24903.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1233255.44\nmean: 1226878.88\nstdev: 24903.12\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
