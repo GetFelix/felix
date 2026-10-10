@@ -18,7 +18,9 @@ use felix_router::{ShardKey, ShardRouter};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 
-use super::shard::{AuxCursors, Exchange, ShardCursors, ShardPass, Stragglers, replicate_shard};
+use super::shard::{
+    AuxCursors, Exchange, ShardCursors, ShardPass, Shipped, Stragglers, replicate_shard,
+};
 use super::{
     DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, fence_backoff, fence_one, open_fenced,
     take_work, watch_key,
@@ -88,6 +90,7 @@ pub(super) struct Answered {
     key: ShardKey,
     generation: u64,
     cursor: FollowerCursor,
+    counters: Option<FollowerCursor>,
     cut: bool,
 }
 
@@ -585,27 +588,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// follower that did not answer is left for the next wake, or a peer that
     /// fails fast would be dialled in a loop.
     fn merge(&mut self, answered: Answered) -> bool {
-        let Some(entry) = self
-            .streams
-            .get_mut(&answered.key)
-            .filter(|entry| entry.generation == answered.generation)
-        else {
-            return false;
-        };
-        let Some(slot) = entry
-            .followers
-            .iter_mut()
-            .find(|held| held.node_id == answered.cursor.node_id)
-        else {
-            return false;
-        };
-        let moved = slot.next_offset != answered.cursor.next_offset
-            || slot.halted != answered.cursor.halted;
-        // The route may have moved the follower to a new address meanwhile.
-        let addr = slot.addr;
-        *slot = answered.cursor;
-        slot.addr = addr;
-        moved || answered.cut
+        let Answered {
+            key,
+            generation,
+            cursor,
+            counters,
+            cut,
+        } = answered;
+        let mut moved = put_back(self.streams.get_mut(&key), generation, cursor);
+        if let Some(counters) = counters {
+            moved |= put_back(self.counters.get_mut(&key), generation, counters);
+        }
+        moved || cut
     }
 
     /// What the driver publishes after each event: every halted follower,
@@ -626,12 +620,39 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 }
 
+/// Put an ended exchange's cursor in place of its stale copy, if the cursors
+/// are still at the exchange's generation. True when the follower moved.
+fn put_back(entry: Option<&mut ShardCursors>, generation: u64, cursor: FollowerCursor) -> bool {
+    let Some(slot) = entry
+        .filter(|entry| entry.generation == generation)
+        .and_then(|entry| {
+            entry
+                .followers
+                .iter_mut()
+                .find(|held| held.node_id == cursor.node_id)
+        })
+    else {
+        return false;
+    };
+    let moved = slot.next_offset != cursor.next_offset || slot.halted != cursor.halted;
+    // The route may have moved the follower to a new address meanwhile.
+    let addr = slot.addr;
+    *slot = cursor;
+    slot.addr = addr;
+    moved
+}
+
 async fn answered(key: ShardKey, generation: u64, exchange: Exchange<'_>) -> Answered {
-    let (cursor, cut) = exchange.await;
+    let Shipped {
+        cursor,
+        counters,
+        cut,
+    } = exchange.await;
     Answered {
         key,
         generation,
         cursor,
+        counters,
         cut,
     }
 }

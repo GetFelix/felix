@@ -4,6 +4,7 @@
 //! around it — leading versus following, a replica set that changes, and a
 //! generation that moves.
 
+mod counters;
 mod cursors;
 mod drain;
 mod halts;

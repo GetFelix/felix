@@ -36,6 +36,11 @@ for what the current release guarantees.
 
 ### Fixed
 
+- A `Quorum` cache's writes stalled for seconds after one of its followers
+  died, even with a majority alive: the leader shipped the counter log to
+  every follower and waited for all of them before shipping the cache log,
+  and again at the end of each pass. The counters now ride each follower's
+  exchange, so a follower that does not answer holds neither mark (#1137).
 - One restore that could not finish held the only move slot for the whole
   30-minute move timeout, so every other shard short of its replication
   factor stayed short (#1138). A restore whose new copy's reported position

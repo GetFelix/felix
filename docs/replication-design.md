@@ -1763,6 +1763,25 @@ still lands before the mark moves, and a shard promoted here still ships
 nothing and moves no mark until a majority has taken its fence, so nothing here
 changes what an acknowledgement rests on.
 
+**A `Quorum` cache's counters ride the same exchanges.** A counter add is
+acknowledged at the counter log's own mark, under the same majority rule, and
+the report leaves out any follower short of that mark. Shipping the counter log
+to every follower before the cache log, and waiting for all of them, put a dead
+follower in front of every cache write: right after a broker died, writes
+waited out the request timeout on its half-open connection, then a dial each
+time its reconnect backoff ran out (#1137). So each follower's exchange ships
+its counters and then its cache log, and the pass stops waiting once a majority
+has answered or the cache log's mark and the whole counter log are on a
+majority. A follower that does not answer is handed to the driver like any
+other, and the end of the pass does not ship its counters again. The marks
+still count only what followers confirmed, and the counter mark moves only on
+a report that names no follower short of it (or, under `fenced_caches`, on the
+followers' answers). A move's destination, which counts toward neither mark,
+gets its counters at the end of the pass
+(`a_silent_follower_holds_no_counter_mark`,
+`a_follower_dialled_after_each_backoff_holds_no_counter_mark`,
+`with_no_follower_answering_no_counter_add_is_acknowledged`).
+
 The replica report goes to the control plane **before** the mark is published,
 and is awaited. Releasing the publish first leaves a window in which a leader
 has told a client its record is on a majority and has told the control plane
@@ -2021,10 +2040,12 @@ The report covers the logs that ride the shard as well as the shard's own. A
 stream shard carries its consumer groups' cursors and dead letters, a cache
 shard its counters; they are written through the same fence and shipped to
 the same replicas. Normally they go after the report and never hold it up,
-since no publish waits on group state. The drained pass is the exception: it
-ships them first, and reports `drained` only once the move's successor holds
-the shard's log and each of them. A dead letter or counter add the new leader
-lacks is lost at the cut-over: a dead-lettered record past the group's
+since no publish waits on group state. A `Quorum` cache's counters, which a
+counter add does wait on, ride each follower's exchange instead (see
+[What is implemented so far](#what-is-implemented-so-far)). The drained pass
+is the exception: it ships them first, and reports `drained` only once the
+move's successor holds the shard's log and each of them. A dead letter or
+counter add the new leader lacks is lost at the cut-over: a dead-lettered record past the group's
 cursor is skipped, and an acknowledged add is gone from the sum. Any other
 follower still behind on one of them is left out of the report's `caught_up`,
 so it is not promoted, but it does not hold the move. A move that has lost
