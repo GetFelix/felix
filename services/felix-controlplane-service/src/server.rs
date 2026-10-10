@@ -236,19 +236,24 @@ where
     };
 
     tokio::pin!(shutdown);
-    tokio::select! {
+    let second_signal = tokio::select! {
         result = &mut api_task => {
             // The listener failed on its own; there is nothing left to drain.
             result??;
             return Ok(());
         }
         _ = &mut shutdown => {
+            // Listen for a second signal before readiness flips: a caller that
+            // sees the flip and signals again must not land before the
+            // listener exists, or the hold-off runs in full.
+            let second = Box::pin(felix_common::lifecycle::termination_signal());
             // Step 1: stop advertising readiness so load balancers remove this
             // instance while it can still serve. Must precede the listener stopping.
             readiness.begin_draining();
             tracing::info!("readiness set to draining");
+            second
         }
-    }
+    };
 
     Running {
         config,
@@ -263,6 +268,7 @@ where
         raft_peer_task,
         peer_shutdown,
         metrics_task,
+        second_signal,
     }
     .drain()
     .await

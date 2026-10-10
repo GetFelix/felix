@@ -25,6 +25,9 @@ for what the current release guarantees.
   slot, so a cluster whose shards did go short fills them together. The control
   plane logs when shards go short of their factor and when they are full again
   (#1151).
+- A second SIGTERM sent to the control plane just after its readiness flipped
+  to draining could be missed, so the pre-drain hold-off ran in full. The
+  listener for it is now installed before readiness changes.
 - A shard placed while its leader was the only live broker now gets the
   copies its replication factor asks for once other brokers join. Placement
   adds a copy only after the leader has reported at the shard's generation,
