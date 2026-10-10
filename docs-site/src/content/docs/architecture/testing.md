@@ -154,7 +154,9 @@ leader has a caught-up replica, so a test can fail over straight away.
 `FELIX_TEST_TIMEOUT_SCALE` multiplies every harness deadline for slow machines;
 CI sets it to 3. With `FELIX_TEST_CLUSTER_LOG_DIR` set, each cluster copies its
 broker logs there when it is torn down, and the in-process control plane logs
-to a file there too. CI sets it and uploads the logs of the tests that failed
+to a file there too. That control plane runs on its own runtime, so a test
+that keeps its own runtime busy can't delay heartbeat answers and lapse a
+broker's lease. CI sets it and uploads the logs of the tests that failed
 as the `failed-cluster-logs` artifact, kept for a week.
 
 ### Faults
