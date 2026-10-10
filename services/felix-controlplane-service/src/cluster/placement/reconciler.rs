@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::metrics::MoveClock;
+use super::progress::CopyProgress;
 use super::{MovePolicy, PlacementWakes, Plan, ReplicaPositions, assignment_for, plan_with};
 use crate::model::{Cache, Node, ShardAssignment, ShardKey, Stream};
 use crate::store::AssignmentWrite;
@@ -40,8 +41,9 @@ pub const RECONCILE_FAILURES_TOTAL: &str = "felix_shard_reconcile_failures_total
 pub const SHARD_MOVE_STEPS_TOTAL: &str = "felix_shard_move_steps_total";
 
 /// Moves and follower replacements given up because they did not get close
-/// enough to the leader within the move timeout. Each one gave its slot to
-/// the next move; a steady count means a copy that cannot finish.
+/// enough to the leader within the move timeout, and restores whose new copy
+/// stopped moving. Each one gave its slot to the next move; a steady count
+/// means a copy that cannot finish.
 pub const SHARD_MOVES_TIMED_OUT_TOTAL: &str = "felix_shard_moves_timed_out_total";
 
 /// Moves that could not advance in the last pass.
@@ -150,7 +152,8 @@ pub async fn reconcile_once(
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
 ) -> ReconcileOutcome {
-    match plan_pass(store, liveness, policy).await {
+    // One pass watches nothing move, so it gives no restore up as stalled.
+    match plan_pass(store, liveness, policy, &mut CopyProgress::default()).await {
         Some(pass) => {
             apply_pass(
                 store,
@@ -253,6 +256,7 @@ pub(super) async fn plan_pass(
     store: &dyn crate::store::ControlPlaneStore,
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
+    progress: &mut CopyProgress,
 ) -> Option<PlannedPass> {
     let read = match PlacementRead::load_fenced(store, liveness).await {
         Ok(read) => read,
@@ -262,7 +266,9 @@ pub(super) async fn plan_pass(
             return None;
         }
     };
-    let (fence, read) = read;
+    let (fence, mut read) = read;
+    let progressed = progress.observe(&read.existing, &read.positions);
+    read.positions.set_progress(progressed);
     let plan = read.plan(policy);
     let existing = read.existing;
     let read = existing
@@ -366,6 +372,16 @@ pub(super) async fn apply_pass(
                         shard = key.shard,
                         destination = %successor,
                         "a shard move ran past its timeout and was abandoned",
+                    );
+                }
+                if let super::MoveStep::Stalled { successor } = step {
+                    metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = %successor,
+                        "a restore's new copy stopped moving; giving its slot to the next shard",
                     );
                 }
                 tracing::info!(
@@ -544,6 +560,7 @@ pub fn spawn_reconciler(
         // A pass that overruns must not then run back-to-back catching up.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut clock = MoveClock::default();
+        let mut progress = CopyProgress::default();
         let mut held = false;
         loop {
             let woken = tokio::select! {
@@ -575,7 +592,9 @@ pub fn spawn_reconciler(
             if !held && !woken {
                 continue;
             }
-            if let Some(pass) = plan_pass(store.as_ref(), &liveness, policy.clone()).await {
+            if let Some(pass) =
+                plan_pass(store.as_ref(), &liveness, policy.clone(), &mut progress).await
+            {
                 apply_pass(store.as_ref(), &pass, &mut clock, &wakes).await;
             }
         }

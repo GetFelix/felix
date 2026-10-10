@@ -34,6 +34,12 @@ pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 /// restart does not copy every shard once per broker.
 pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
 
+/// How long a restore's new copy may go without its reported position moving
+/// before the restore is given up. A copy being shipped to moves every pass;
+/// one that has not in two minutes is not going to, and it holds the move slot
+/// every other short shard is waiting for.
+pub const DEFAULT_RESTORE_STALL_MILLIS: u64 = 2 * 60 * 1_000;
+
 /// How moves are paced, and which regions a shard may be placed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovePolicy {
@@ -58,6 +64,10 @@ pub struct MovePolicy {
     /// `None` never replaces one; a replica set short of the factor is still
     /// topped up.
     pub restore_after_millis: Option<u64>,
+    /// How long a restore's new copy may go without its reported position
+    /// moving, as this instance watched it, before the restore is given up and
+    /// its slot goes to the next shard. `None` waits for `timeout_millis`.
+    pub restore_stall_millis: Option<u64>,
     /// Placement starts no moves or replacements of its own; those in flight
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
@@ -76,6 +86,7 @@ impl Default for MovePolicy {
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
+            restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             paused: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
@@ -165,6 +176,19 @@ impl Moves {
             caught_up.as_of_millis(),
         ) {
             (Some(timeout), Some(started), Some(now)) => now.saturating_sub(started) > timeout,
+            _ => false,
+        }
+    }
+
+    /// Whether a restore's copy into `joining` has gone the stall window
+    /// without its position moving, as this instance watched it.
+    pub(super) fn stalled(&self, caught_up: &dyn CaughtUp, key: &ShardKey, joining: &str) -> bool {
+        match (
+            self.policy.restore_stall_millis,
+            caught_up.progressed_at_millis(key, joining),
+            caught_up.as_of_millis(),
+        ) {
+            (Some(window), Some(progressed), Some(now)) => now.saturating_sub(progressed) > window,
             _ => false,
         }
     }
@@ -1004,6 +1028,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn as_of_millis(&self) -> Option<u64> {
         self.inner.as_of_millis()
+    }
+
+    fn progressed_at_millis(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.inner.progressed_at_millis(key, node_id)
     }
 
     // Not held to the generation: a copy that halted under the previous one

@@ -254,3 +254,54 @@ async fn a_copy_is_shipped_a_slice_at_a_time() {
         .next_offset;
     assert_eq!(destination, BATCHES as u64, "the copy reached the tail");
 }
+
+/// A new follower that counts toward the quorum, as a copy placement adds to
+/// restore the replication factor is, still hands its cursor back every
+/// [`CATCH_UP_SLICE`] while it catches up. Placement drops a restore whose
+/// copy's reported position stops moving, so a copy that took its whole
+/// catch-up in one exchange would be reported only at the end, and a large
+/// one would be dropped every time.
+#[tokio::test(start_paused = true)]
+async fn a_follower_catching_up_is_reported_a_slice_at_a_time() {
+    const PER_BATCH: Duration = Duration::from_secs(2);
+    const BATCHES: usize = 8;
+    let (broker, _dir) = leader_with_batches(BATCHES).await;
+    let router = router(LOCAL, &["broker-c"], 1);
+    let marks = QuorumMarks::new();
+    let mut cursors = Cursors::new();
+    let slow = SlowNode {
+        slow: "broker-b",
+        delay: PER_BATCH,
+    };
+    cursors.pass(&slow, &broker, &router, &marks).await;
+
+    // broker-b joins the set: a follower, not a move's destination.
+    publish_move(&router, &["broker-c", "broker-b"], None, 2);
+    let mut reported = Vec::new();
+    loop {
+        let started = tokio::time::Instant::now();
+        let pass = cursors.pass(&slow, &broker, &router, &marks).await;
+        let took = started.elapsed();
+        assert!(
+            took <= CATCH_UP_SLICE + PER_BATCH,
+            "one pass took {took:?}: it waited for the whole catch-up",
+        );
+        let offset = pass
+            .reports
+            .iter()
+            .flat_map(|report| report.offsets.iter())
+            .find(|(node, _)| node == "broker-b")
+            .map(|(_, offset)| *offset);
+        reported.push(offset);
+        if !pass.copying {
+            break;
+        }
+        assert!(reported.len() <= BATCHES, "the catch-up never finished");
+    }
+    assert!(reported.len() > 1, "caught up in one pass: {reported:?}");
+    assert!(
+        reported.windows(2).all(|pair| pair[0] < pair[1]),
+        "every pass reported broker-b further on: {reported:?}",
+    );
+    assert_eq!(reported.last(), Some(&Some(BATCHES as u64)));
+}

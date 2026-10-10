@@ -36,6 +36,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- One restore that could not finish held the only move slot for the whole
+  30-minute move timeout, so every other shard short of its replication
+  factor stayed short (#1138). A restore whose new copy's reported position
+  has not moved for `FELIX_SHARD_RESTORE_STALL_MS` (`shard_restore_stall_ms`,
+  default two minutes, `0` waits for the move timeout) is now dropped as
+  `stalled` and its slot goes to the next shard. Shards whose restores were
+  dropped take turns at the slot, oldest attempt first, instead of the first in
+  key order retaking it every time.
 - Any holder of `token.delegate` could delegate any broker token of the tenant
   it got hold of, a stolen one included, and present it over its own
   certificate. Delegation now takes only tokens minted for the caller.

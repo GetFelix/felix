@@ -877,6 +877,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
+| `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
 
 #### Moving a shard
 
@@ -1006,7 +1007,11 @@ control-plane restart or a change of placement lease holder. If the broker
 being copied to goes down, the copy is dropped (`abandon`) and the next pass
 picks another. If the lost broker comes back before the copy is seated, the
 copy is dropped as well. A copy that does not catch up within
-`shard_move_timeout_ms` is `timed_out` like any move. Restores take move
+`shard_move_timeout_ms` is `timed_out` like any move. A copy whose reported
+position has not moved for `shard_restore_stall_ms` is dropped sooner
+(`stalled`), so one restore that cannot finish does not hold the slot every
+other short shard is waiting for. The shard then waits behind those that have
+not had a slot. Restores take move
 slots after drains and before rebalancing, and pausing placement stops new
 ones. The details, and why a restore never happens inside a promotion, are in
 [replication-design.md](replication-design.md#who-may-be-promoted) under
@@ -1020,11 +1025,11 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
 | `felix_placement_writes_fenced_total` | passes and operator requests that stopped because another placement write landed after they read the store; the pass re-plans, the request is decided again |
@@ -1413,7 +1418,7 @@ Control plane:
 | `felix_shard_replicas_missing` | the copies under-replicated shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader has stopped shipping to them |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled` |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |
 | `felix_shard_assignment_write_conflicts_total` | placement writes skipped because the shard changed after the pass read it |
 | `felix_placement_writes_fenced_total` | passes and operator requests stopped because another placement write landed after they read the store |
