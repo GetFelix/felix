@@ -21,7 +21,7 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message};
 use crate::auth::bearer::{Refusal, refused};
-use crate::auth::felix_token::mint_token_for;
+use crate::auth::felix_token::mint_token_may_act;
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::refresh_token::{self, RefreshToken, RefreshTokenTake};
@@ -303,13 +303,17 @@ pub async fn refresh_token_handler(
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
 
     let access_ttl = crate::auth::exchange::access_token_ttl();
-    let felix_token = mint_token_for(
+    let felix_token = mint_token_may_act(
         &keys,
         &tenant_id,
         &record.principal_id,
         perms,
         access_ttl,
         audience,
+        record
+            .narrowing
+            .as_ref()
+            .and_then(|narrowing| narrowing.may_act.as_deref()),
     )
     .map_err(|_| api_internal_message("failed to mint token"))?;
 

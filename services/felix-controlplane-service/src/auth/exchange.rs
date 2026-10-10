@@ -19,7 +19,8 @@ use crate::api::error::{
     ApiError, api_conflict, api_internal, api_internal_message, api_validation_error,
 };
 use crate::auth::bearer::{Refusal, extract_bearer, refused};
-use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_for};
+use crate::auth::delegate::{JWT_TOKEN_TYPE, verified_actor};
+use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_may_act};
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
 use crate::auth::rbac::authorize::{
@@ -34,7 +35,7 @@ use crate::store::StoreError;
 
 /// Optional narrowing filter: keep only these actions and/or resources out of
 /// what RBAC already granted. Never widens scope.
-#[derive(Debug, Deserialize, ToSchema, Clone, Default)]
+#[derive(Deserialize, ToSchema, Clone, Default)]
 pub struct TokenExchangeRequest {
     /// Keep only these actions, on every resource the token keeps.
     pub requested: Option<Vec<String>>,
@@ -52,6 +53,31 @@ pub struct TokenExchangeRequest {
     /// one of the two, never both.
     #[serde(default)]
     pub audience: Option<String>,
+    /// RFC 8693 `actor_token`: the `felix-controlplane` token of the gateway
+    /// that will delegate this token, holding `token.delegate` on the tenant.
+    /// The broker token is minted with `may_act` naming it, and only that
+    /// principal can have it delegated. Broker audience only.
+    #[serde(default)]
+    pub actor_token: Option<String>,
+    /// `urn:ietf:params:oauth:token-type:jwt` when sent.
+    #[serde(default)]
+    pub actor_token_type: Option<String>,
+}
+
+impl std::fmt::Debug for TokenExchangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchangeRequest")
+            .field("requested", &self.requested)
+            .field("resources", &self.resources)
+            .field("permissions", &self.permissions)
+            .field("audience", &self.audience)
+            .field(
+                "actor_token",
+                &self.actor_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("actor_token_type", &self.actor_token_type)
+            .finish()
+    }
 }
 
 /// The minted Felix bearer token plus expiry. Treat `felix_token` as a secret.
@@ -177,7 +203,21 @@ pub(crate) async fn mint_for_principal(
     audience: &str,
 ) -> Result<TokenExchangeResponse, ApiError> {
     let tenant_id = tenant_id.to_string();
-    let narrowing = narrowing_for(request, &tenant_id, audience)?;
+    let mut narrowing = narrowing_for(request, &tenant_id, audience)?;
+    if request.actor_token.is_some() && audience != BROKER_AUDIENCE {
+        return Err(api_validation_error(
+            "actor_token is only taken for a felix-broker token",
+        ));
+    }
+    if request
+        .actor_token_type
+        .as_deref()
+        .is_some_and(|kind| kind != JWT_TOKEN_TYPE)
+    {
+        return Err(api_validation_error(&format!(
+            "actor_token_type must be {JWT_TOKEN_TYPE}"
+        )));
+    }
     let policies = state
         .store
         .list_rbac_policies(&tenant_id)
@@ -221,10 +261,21 @@ pub(crate) async fn mint_for_principal(
         .get_tenant_signing_keys(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
+    if let Some(actor_token) = &request.actor_token {
+        narrowing.may_act = Some(verified_actor(&keys, &tenant_id, actor_token)?);
+    }
 
     let ttl = access_token_ttl();
-    let felix_token = mint_token_for(&keys, &tenant_id, principal_id, perms, ttl, audience)
-        .map_err(|_| api_internal_message("failed to mint token"))?;
+    let felix_token = mint_token_may_act(
+        &keys,
+        &tenant_id,
+        principal_id,
+        perms,
+        ttl,
+        audience,
+        narrowing.may_act.as_deref(),
+    )
+    .map_err(|_| api_internal_message("failed to mint token"))?;
 
     // The refresh token is what makes the short access TTL above workable for
     // anything long-running. Its group claims are recorded rather than its
@@ -326,6 +377,7 @@ fn narrowing_for(
             .filter(|_| request.permissions.is_none()),
         permissions: request.permissions.clone(),
         audience: audience.to_string(),
+        may_act: None,
     })
 }
 

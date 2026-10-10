@@ -281,8 +281,9 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   is the connection's share of `pub_inflight_bytes`, and one connection publishing large
   batches can't starve every other connection's admission. A client acting for many users over
   one connection (`Client::with_identity`) gets this much per user, so one user's unanswered
-  publishes don't hold up the others. Must be smaller than `pub_inflight_bytes` to have any
-  effect.
+  publishes cannot take the whole connection. The users still share
+  `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a
+  fifth is refused or slowed. Must be smaller than `pub_inflight_bytes` to have any effect.
 - `pub_conn_total_inflight_bytes` bounds one connection across all its identities. Unset, it is
   four times `pub_conn_inflight_bytes`, capped at `pub_inflight_bytes`. Startup refuses a value
   below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.

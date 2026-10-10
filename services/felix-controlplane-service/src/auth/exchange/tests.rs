@@ -557,7 +557,7 @@ fn request(
         requested: owned(requested),
         resources: owned(resources),
         permissions: owned(permissions),
-        audience: None,
+        ..TokenExchangeRequest::default()
     }
 }
 

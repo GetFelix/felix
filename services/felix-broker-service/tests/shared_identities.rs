@@ -5,7 +5,9 @@
 //! still checks every request against the token of the user it is for: one
 //! user's grants never cover another's publish, subscribe, cache or group
 //! request, even though their streams sit on the same connections, and one
-//! user's token expiring or being cut off leaves the others alone.
+//! user's token expiring or being cut off leaves the others alone. Each user
+//! also has its own subscription cap and publish byte budget on the
+//! connection, under a ceiling they all share.
 //!
 //! Run with `cargo test -p felix-broker-service --test shared_identities`.
 use std::collections::HashMap;
@@ -66,6 +68,13 @@ impl Running {
     }
 
     async fn start_with(config: felix_broker_service::config::BrokerConfig) -> Result<Self> {
+        Self::start_tuned(config, |broker| broker).await
+    }
+
+    async fn start_tuned(
+        config: felix_broker_service::config::BrokerConfig,
+        tune: impl FnOnce(Broker) -> Broker,
+    ) -> Result<Self> {
         let dir = tempfile::tempdir()?;
         let root = dir.path();
         let log = || LogConfig {
@@ -77,7 +86,7 @@ impl Running {
         let dead_letters = felix_broker::DeadLetters::open(root.join("dead-letters"), log())?;
         let groups = felix_broker::ConsumerGroups::open(root.join("groups"), log())?;
         let storage = felix_broker::DurableStorage::open(root.join("streams"), log())?;
-        let broker = Arc::new(
+        let broker = Arc::new(tune(
             Broker::new(Box::new(cache))
                 .with_durable_storage(storage)
                 .with_consumer_groups(
@@ -86,7 +95,7 @@ impl Running {
                     Duration::from_secs(30),
                     3,
                 ),
-        );
+        ));
         broker.register_tenant(TENANT).await?;
         broker.register_namespace(TENANT, NS).await?;
         broker
@@ -532,5 +541,116 @@ async fn one_user_at_the_subscription_cap_leaves_the_others_room() -> Result<()>
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     freed.context("alice's dropped subscription never freed its slot")?;
+    Ok(())
+}
+
+const KIB: usize = 1024;
+/// Each identity's publish byte budget in the budget tests.
+const IDENTITY_BUDGET: usize = 64 * KIB;
+/// The connection's ceiling across identities: one full budget plus a
+/// quarter of another.
+const CONN_CEILING: usize = 80 * KIB;
+const CHUNK: usize = 16 * KIB;
+const OWN_BUDGET_REFUSAL: &str = "publish ingress per-connection byte budget exhausted";
+const CEILING_REFUSAL: &str = "across identities";
+
+/// A broker and one gateway connection on which alice holds her whole
+/// publish byte budget and keeps holding it.
+///
+/// Bytes count against a budget until the broker takes the publish off its
+/// queue. Alice's subscriber never reads and every queue on the way to it
+/// blocks when full, so her stream's flushes stall in fanout, its flush
+/// slots run out, and her later publishes stay queued with their bytes held.
+/// Publishes are acknowledged on enqueue (`ack_on_commit` off), so each
+/// refusal is the admission check answering, immediately.
+async fn alice_at_her_byte_budget() -> Result<(Running, Client, Client, Client, Subscription)> {
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    config.pub_conn_inflight_bytes = IDENTITY_BUDGET;
+    config.pub_conn_total_inflight_bytes = Some(CONN_CEILING);
+    config.subscriber_lane_queue_depth = 1;
+    config.subscriber_lane_queue_policy = felix_broker::SubQueuePolicy::Block;
+    let running = Running::start_tuned(config, |broker| {
+        broker.with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block)
+    })
+    .await?;
+    let gateway = running
+        .gateway_with(|config| {
+            config.ack_on_commit = false;
+            // One publish connection, so alice and bob share its budgets.
+            config.publish_conn_pool = 1;
+            config.event_conn_pool = 1;
+            config.broker_sub_queue_capacity = Some(1);
+            config.client_sub_queue_capacity = 1;
+            config.client_sub_queue_policy = felix_client::ClientSubQueuePolicy::Block;
+            config.event_stream_recv_window = 64 * KIB as u64;
+        })
+        .await?;
+    let alice = running.user(&gateway, "alice").await?;
+    let bob = running.user(&gateway, "bob").await?;
+    let stalled = alice.subscribe(TENANT, NS, "alice-feed").await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut refused_in_a_row = 0;
+    while refused_in_a_row < 3 {
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "alice never reached her byte budget"
+        );
+        match publish_bytes(&alice, "alice-feed", CHUNK).await {
+            Ok(()) => refused_in_a_row = 0,
+            Err(err) => {
+                let err = format!("{err:#}");
+                anyhow::ensure!(
+                    err.contains(OWN_BUDGET_REFUSAL) && !err.contains(CEILING_REFUSAL),
+                    "alice was refused by something other than her own budget: {err}"
+                );
+                // Refused for a moment while her queue drained is not the
+                // same as holding the budget; ask again.
+                refused_in_a_row += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Ok((running, gateway, alice, bob, stalled))
+}
+
+async fn publish_bytes(client: &Client, stream: &str, len: usize) -> Result<()> {
+    client
+        .publisher()
+        .await?
+        .publish(TENANT, NS, stream, vec![7u8; len], AckMode::PerMessage)
+        .await
+        .map(|_| ())
+}
+
+/// The publish byte budget is per user on a shared connection: alice holding
+/// all of hers is refused, and bob, on the same connection, still publishes.
+#[tokio::test]
+async fn one_user_at_the_publish_byte_budget_leaves_the_others_room() -> Result<()> {
+    let (_running, gateway, _alice, bob, _stalled) = alice_at_her_byte_budget().await?;
+    let held = gateway.connection_count();
+    publish_bytes(&bob, "bob-feed", CHUNK).await?;
+    assert_eq!(gateway.connection_count(), held, "bob published elsewhere");
+    Ok(())
+}
+
+/// The connection's ceiling bounds every identity on it together: with alice
+/// holding her whole budget, bob is refused a publish his own budget has
+/// room for once the two would pass the ceiling.
+#[tokio::test]
+async fn the_connection_ceiling_bounds_the_users_together() -> Result<()> {
+    let (_running, _gateway, _alice, bob, _stalled) = alice_at_her_byte_budget().await?;
+    // Alice's 64 KiB plus 32 KiB passes the 80 KiB ceiling, and is half of
+    // bob's own budget.
+    let refused = publish_bytes(&bob, "bob-feed", 2 * CHUNK)
+        .await
+        .err()
+        .context("bob went past the connection's ceiling")?;
+    assert!(
+        format!("{refused:#}").contains(CEILING_REFUSAL),
+        "{refused:#}"
+    );
+    // What is left under the ceiling is still his.
+    publish_bytes(&bob, "bob-feed", CHUNK).await?;
     Ok(())
 }

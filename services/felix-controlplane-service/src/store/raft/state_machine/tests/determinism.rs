@@ -116,6 +116,7 @@ async fn a_restored_machine_has_the_leaders_refresh_tokens() {
             resources: None,
             permissions: None,
             audience: "felix-broker".to_string(),
+            may_act: None,
         }),
     };
     let leader = machine();
