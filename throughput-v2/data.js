@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791592117512,
+  "lastUpdate": 1791602635207,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27404,6 +27404,58 @@ window.BENCHMARK_DATA = {
             "range": "4067.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817190.84\nmean: 816333.79\nstdev: 4067.38\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bcc534defbbc04635357b4177d2a8622e92cfee9",
+          "message": "fix(auth): delegate only tokens minted for the delegating gateway (#1134)\n\nAny holder of token.delegate could hand /token/delegate any broker token\nof the tenant it got hold of, a stolen one included, and get it back\nbound to its own certificate.\n\n/token/exchange now takes an RFC 8693 actor_token: the gateway's own\nfelix-controlplane token, which must hold token.delegate on the tenant.\nThe minted broker token carries may_act naming the gateway, and the\nrefresh record keeps it (Raft metadata level 6) so refreshed tokens do\ntoo. /token/delegate refuses a subject token whose may_act names another\ncaller, and one with no may_act unless\nFELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS is set.\n\nAlso corrects the shared-connection docs, which said per-user limits\nkept one user at a limit from blocking the others: the users share a\nconnection ceiling of four users' worth by default. New QUIC tests cover\nthe per-user publish byte budget and the ceiling.\n\nSpec-Unaffected: control-plane token exchange and broker tests only; no lease, replication or routing code changes.",
+          "timestamp": "2026-10-09T20:20:29-07:00",
+          "tree_id": "2e171fda98cfcea306caaa91a79e631e30927698",
+          "url": "https://github.com/GetFelix/felix/commit/bcc534defbbc04635357b4177d2a8622e92cfee9"
+        },
+        "date": 1791602634390,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 494365.59,
+            "range": "22976.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494365.59\nmean: 505550.51\nstdev: 22976.87\ncv: 4.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 494365.59,
+            "range": "22976.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494365.59\nmean: 505550.51\nstdev: 22976.87\ncv: 4.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122794.67,
+            "range": "452.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122794.67\nmean: 122636.73\nstdev: 452.99\ncv: 0.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1227946.73,
+            "range": "4529.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1227946.73\nmean: 1226367.32\nstdev: 4529.96\ncv: 0.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
