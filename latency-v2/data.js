@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791604386142,
+  "lastUpdate": 1791608921701,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34914,6 +34914,72 @@ window.BENCHMARK_DATA = {
             "range": "31.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 273.00\nmean: 288.60\nstdev: 31.74\ncv: 11.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4037b4bb31a69679005dd37aae05ac2ad9f4af6a",
+          "message": "fix(replication): report a follower of an empty log so a restore can seat it (#1133) (#1135)\n\n* fix(replication): report a follower of an empty log so a restore can seat it (#1133)\n\nA leader with nothing to ship never contacts a new follower, so its cursor\nstayed stalled and the report left its offset out. Placement seats a restore\non that offset, so a restore of an empty shard (a counter-only cache, or one\nnothing had written to yet) waited out the 30-minute move timeout and held\nthe only move slot. Shards placed while a broker was still registering stayed\non two of three brokers, and a Quorum cache on such a pair refused every\nwrite once either died.\n\nA follower whose cursor is at offset zero of an empty log is now level\nwithout being asked.\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: an empty log's new copy is now reported at offset 0; FelixShard.tla does not model replica reports, and Seat is guarded by HoldsPrefix, which an empty log always satisfies",
+          "timestamp": "2026-10-09T22:04:26-07:00",
+          "tree_id": "dacf3678bbb4d53110c95ac3be58d0c15a41284c",
+          "url": "https://github.com/GetFelix/felix/commit/4037b4bb31a69679005dd37aae05ac2ad9f4af6a"
+        },
+        "date": 1791608917042,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 102,
+            "range": "8.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 102.00\nmean: 106.60\nstdev: 8.23\ncv: 7.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 145,
+            "range": "15.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 152.00\nstdev: 15.80\ncv: 10.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 204,
+            "range": "25.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 196.20\nstdev: 25.96\ncv: 13.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 126.20\nstdev: 0.84\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 277,
+            "range": "25.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 288.20\nstdev: 25.05\ncv: 8.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 452,
+            "range": "1246.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 452.00\nmean: 995.80\nstdev: 1246.73\ncv: 125.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
