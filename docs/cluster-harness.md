@@ -128,6 +128,14 @@ shutdown are not. A harness that ran it as a process would need a fake IdP, or a
 way to issue a first credential without one. The latter is worth having on its
 own, and would let this become a fully out-of-process cluster.
 
+In process, it still gets its own runtime: two worker threads that nothing else
+schedules on. A broker keeps its leases only while heartbeats come back within
+a few hundred milliseconds (expiry is 1 s). A test's runtime is often
+single-threaded and also drives every client the test opens, so a control plane
+sharing it could answer late under load and lapse a lease the test never meant
+to touch. Shutting the control plane down stops that runtime and waits for its
+threads; dropping it instead stops the runtime without blocking.
+
 ## Waiting
 
 Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:

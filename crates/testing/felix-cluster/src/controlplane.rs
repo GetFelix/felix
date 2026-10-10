@@ -11,6 +11,11 @@
 //! The consequence is worth stating plainly: **the control plane is not under
 //! test as a process.** Its router, store, placement, and HTTP contract all are.
 //! What is not exercised is its `main`, its own configuration, and its shutdown.
+//!
+//! It runs on its own multi-thread runtime rather than the test's. Broker
+//! leases are renewed only by heartbeats answered within a few hundred
+//! milliseconds, and a test's runtime (often single-threaded) also drives every
+//! client the test opens, so sharing it lets test load lapse a lease.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +45,9 @@ const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     shard_reconcile_interval_ms: 500,
 };
 
+/// How long [`Runtime::stop`] waits for the runtime's threads to exit.
+const RUNTIME_STOP: Duration = Duration::from_secs(5);
+
 /// A running control plane, and the keys to mint credentials against it.
 pub struct ControlPlane {
     pub base_url: String,
@@ -51,6 +59,7 @@ pub struct ControlPlane {
     placement: std::sync::Mutex<Option<Duration>>,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
+    runtime: Runtime,
 }
 
 impl ControlPlane {
@@ -146,31 +155,43 @@ impl ControlPlane {
         };
         let placement_wakes = Arc::clone(&state.placement_wakes);
 
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("bind control plane on {addr}"))?;
-        let addr = listener
-            .local_addr()
-            .context("read control plane address")?;
+        let runtime = Runtime::new()?;
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, build_router(state).into_make_service())
-                .with_graceful_shutdown(async move { serve_shutdown.cancelled().await })
-                .await;
-        });
+        let sweep_store = Arc::clone(&store);
+        let (task, addr) = runtime
+            .handle()
+            .spawn(async move {
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .with_context(|| format!("bind control plane on {addr}"))?;
+                let addr = listener
+                    .local_addr()
+                    .context("read control plane address")?;
+                let sweep_shutdown = serve_shutdown.clone();
+                let task = tokio::spawn(async move {
+                    let _ = axum::serve(listener, build_router(state).into_make_service())
+                        .with_graceful_shutdown(async move { serve_shutdown.cancelled().await })
+                        .await;
+                });
 
-        // Expiry has to run, or a stopped broker stays `live` forever and no
-        // failure test can observe it leaving.
-        let expiry = felix_controlplane_service::cluster::membership::spawn_expiry_sweep(
-            Arc::clone(&store)
-                as Arc<dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync>,
-            LIVENESS,
-            felix_controlplane_service::raft::LeadershipGate::Always,
-            shutdown.clone(),
-        );
-        // Owned by the same token; nothing waits on it separately.
-        drop(expiry);
+                // Expiry has to run, or a stopped broker stays `live` forever
+                // and no failure test can observe it leaving.
+                let expiry = felix_controlplane_service::cluster::membership::spawn_expiry_sweep(
+                    sweep_store
+                        as Arc<
+                            dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync,
+                        >,
+                    LIVENESS,
+                    felix_controlplane_service::raft::LeadershipGate::Always,
+                    sweep_shutdown,
+                );
+                // Owned by the same token; nothing waits on it separately.
+                drop(expiry);
+                anyhow::Ok((task, addr))
+            })
+            .await
+            .context("start control plane")??;
 
         Ok(Self {
             base_url: format!("http://{addr}"),
@@ -180,6 +201,7 @@ impl ControlPlane {
             placement: std::sync::Mutex::new(None),
             shutdown,
             task,
+            runtime,
         })
     }
 
@@ -349,6 +371,7 @@ impl ControlPlane {
     /// [`Self::restart`].
     pub fn run_placement(&self, interval: Duration) {
         *self.placement.lock().expect("placement lock") = Some(interval);
+        let _runtime = self.runtime.handle().enter();
         drop(
             felix_controlplane_service::cluster::placement::spawn_reconciler(
                 Arc::clone(&self.store)
@@ -374,6 +397,47 @@ impl ControlPlane {
         // fault rather than a teardown.
         self.task.abort();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.task).await;
+        // Stopping the runtime also drops the connection tasks `axum::serve`
+        // spawned, which aborting the serve task alone leaves running.
+        self.runtime.stop().await;
+    }
+}
+
+/// The control plane's runtime, stopped without blocking when dropped.
+///
+/// Dropping a `tokio::runtime::Runtime` blocks, and panics inside async code,
+/// which is where a `Cluster` is usually dropped.
+struct Runtime(Option<tokio::runtime::Runtime>);
+
+impl Runtime {
+    fn new() -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("felix-cluster-controlplane")
+            .enable_all()
+            .build()
+            .context("build control plane runtime")?;
+        Ok(Self(Some(runtime)))
+    }
+
+    fn handle(&self) -> &tokio::runtime::Handle {
+        self.0.as_ref().expect("runtime is running").handle()
+    }
+
+    /// Shut down every task and wait for the worker threads to exit.
+    async fn stop(mut self) {
+        if let Some(runtime) = self.0.take() {
+            let _ =
+                tokio::task::spawn_blocking(move || runtime.shutdown_timeout(RUNTIME_STOP)).await;
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -397,3 +461,6 @@ impl StoppedControlPlane {
         Ok(control_plane)
     }
 }
+
+#[cfg(test)]
+mod tests;
