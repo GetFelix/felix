@@ -34,6 +34,11 @@ during an upgrade).
   refresh record keeps the actor as a Raft metadata version 6 field, so under
   the Raft store an exchange with `actor_token` is a `409` until every member
   is upgraded.
+- An exchange whose `actor_token` does not verify for the tenant or lacks
+  `token.delegate` answers `403` with code `actor_refused` instead of
+  `forbidden`, and counts as `reason="actor_refused"` in
+  `felix_controlplane_auth_rejected_total`. A gateway can now tell its own
+  token being refused from a user without permissions, which stays `forbidden`.
 - `POST /v1/tenants/{tenant_id}/token/delegate` refuses a subject token whose
   `may_act` does not name the caller. A token with no `may_act` is refused too
   unless `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. Gateways must send
