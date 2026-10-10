@@ -14,10 +14,10 @@
 //! Every refusal goes through [`refused`], so a credential that was presented
 //! and turned away is counted and logged: an unauthorized attempt is something
 //! an operator gets to see, not only something the caller gets told.
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_forbidden, api_internal, api_unauthorized};
+use crate::api::error::{ApiError, api_error, api_forbidden, api_internal, api_unauthorized};
 use crate::auth::felix_token::{
     BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, FelixClaims, verify_token_for,
 };
@@ -54,6 +54,10 @@ pub(crate) enum Refusal {
     /// A refresh token that cannot be used, for any reason. One label, like
     /// the one answer the caller gets, so the counter is no probing aid either.
     RefreshRefused,
+    /// The `actor_token` of an exchange, the gateway's own credential, did not
+    /// verify for the tenant or does not hold `token.delegate`. Its own code so
+    /// a gateway can tell its token was refused, not the user.
+    ActorRefused,
 }
 
 impl Refusal {
@@ -65,6 +69,7 @@ impl Refusal {
             Self::TenantMismatch => "tenant_mismatch",
             Self::Forbidden => "forbidden",
             Self::RefreshRefused => "refresh_refused",
+            Self::ActorRefused => "actor_refused",
         }
     }
 }
@@ -87,6 +92,7 @@ pub(crate) fn refused(reason: Refusal, message: &str) -> ApiError {
         Refusal::TenantMismatch | Refusal::Forbidden | Refusal::RefreshRefused => {
             api_forbidden(message)
         }
+        Refusal::ActorRefused => api_error(StatusCode::FORBIDDEN, reason.label(), message),
     }
 }
 

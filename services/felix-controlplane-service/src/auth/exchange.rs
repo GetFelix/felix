@@ -108,8 +108,9 @@ impl std::fmt::Debug for TokenExchangeResponse {
 ///
 /// # Errors
 /// `400` for a malformed narrowing, `401` for a missing or invalid bearer
-/// token, `403` when the issuer is not allowed or no permissions remain, `409`
-/// for `permissions` before every Raft member supports it, `500` for store
+/// token, `403` when the issuer is not allowed or no permissions remain, `403`
+/// with code `actor_refused` for an `actor_token` that is refused, `409` for
+/// `permissions` before every Raft member supports it, `500` for store
 /// failures.
 #[utoipa::path(
     post,
@@ -121,7 +122,7 @@ impl std::fmt::Debug for TokenExchangeResponse {
         (status = 200, description = "Exchange token", body = TokenExchangeResponse),
         (status = 400, description = "Invalid narrowing"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
+        (status = 403, description = "Forbidden; code `actor_refused` when the actor_token is refused"),
         (status = 409, description = "Pair narrowing needs every control-plane member upgraded")
     )
 )]

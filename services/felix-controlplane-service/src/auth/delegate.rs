@@ -208,8 +208,8 @@ pub async fn delegate_token(
 /// token it mints is for.
 ///
 /// # Errors
-/// `403` when the token is invalid, for another audience or tenant, or does
-/// not hold `token.delegate` on the tenant.
+/// `403` with code `actor_refused` when the token is invalid, expired, for
+/// another audience or tenant, or does not hold `token.delegate` on the tenant.
 pub(crate) fn verified_actor(
     keys: &TenantSigningKeys,
     tenant_id: &str,
@@ -222,10 +222,10 @@ pub(crate) fn verified_actor(
         LEEWAY_SECS,
         &[CONTROLPLANE_AUDIENCE],
     )
-    .map_err(|_| refused(Refusal::Forbidden, "invalid actor token"))?;
+    .map_err(|_| refused(Refusal::ActorRefused, "invalid actor token"))?;
     if !may_delegate(&claims, tenant_id) {
         return Err(refused(
-            Refusal::Forbidden,
+            Refusal::ActorRefused,
             "the actor token lacks token.delegate on the tenant",
         ));
     }
