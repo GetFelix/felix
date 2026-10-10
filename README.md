@@ -107,13 +107,13 @@ the test behind every claim, [`docs/projections.md`](docs/projections.md).
 
 ## Current Focus
 
-- Control-plane availability and resiliency: readiness that reflects real
-  dependencies, drains that a load balancer can act on, and surviving a rolling
-  restart
-- Hardening multi-node clusters with chaos testing and cluster-scale latency
-  budgets
-- Fanout, backpressure, and isolation as core product behavior
-- Protocol and conformance
+- Finishing 0.6.0: moving shards between brokers without downtime, backed by
+  cluster-scale numbers for replicated `Quorum` streams and durable storage
+- Bounded memory: subscriber queues, QUIC receive windows and the cache key
+  index held to a byte budget instead of growing with load
+- Many users over shared connections: gateways that act for their users, with
+  delegation, revocation and shard moves that respect each identity
+- A long-running public workload on Felix as stability evidence toward 1.0
 
 ## Docs
 
