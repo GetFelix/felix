@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791662502923,
+  "lastUpdate": 1791664443545,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27872,6 +27872,58 @@ window.BENCHMARK_DATA = {
             "range": "9413.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1114220.21\nmean: 1113782.01\nstdev: 9413.68\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a34e35364110a2cb54219257b9aba3e1dbf7932e",
+          "message": "fix(replication): report a shard led with no followers so a restore can top it up (#1153) (#1154)\n\nPlacement starts a restore only once the leader has reported at the shard's\ngeneration, which it does only after its promotion fence. The driver skipped\na shard with no followers entirely, so a shard placed while its leader was the\nonly live broker never reported and stayed at one copy for good.\n\nA leader with no followers now sends a report naming nobody, at each new\ngeneration and then once a replication tick so the report stays fresh. A\npromoted shard still fencing is skipped as before, so a restore still never\nstarts from a leader that has not proven it is current. The tail is read from\nan open log only and never goes back within a generation.\n\nSpec-Unaffected: FelixShard.tla does not model the report; it abstracts it as Regenerate's guard (bgen[leader] = gen /\\ ~fencing[leader]), and a report from a leader with no followers is sent under exactly that condition. The placement rule is unchanged.",
+          "timestamp": "2026-10-10T13:30:47-07:00",
+          "tree_id": "c5ba4dd59ec4dafc17fbde97e47c60ff4eec6bbd",
+          "url": "https://github.com/GetFelix/felix/commit/a34e35364110a2cb54219257b9aba3e1dbf7932e"
+        },
+        "date": 1791664442986,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 526830.36,
+            "range": "12518.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526830.36\nmean: 525515.53\nstdev: 12518.68\ncv: 2.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 526830.36,
+            "range": "12518.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526830.36\nmean: 525515.53\nstdev: 12518.68\ncv: 2.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125990.71,
+            "range": "7686.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125990.71\nmean: 122008.67\nstdev: 7686.32\ncv: 6.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1259907.08,
+            "range": "76863.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1259907.08\nmean: 1220086.71\nstdev: 76863.19\ncv: 6.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
