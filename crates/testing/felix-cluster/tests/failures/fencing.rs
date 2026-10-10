@@ -72,6 +72,36 @@ async fn publish_when_ready(cluster: &Cluster, node_id: &str, payload: &[u8]) {
     );
 }
 
+/// The leader's tail in the last replica report the control plane holds.
+async fn reported_tail(cluster: &Cluster) -> u64 {
+    let report = cluster
+        .replica_report(STREAM, 0)
+        .await
+        .expect("read the replica report")
+        .expect("start-up waits for a replica report");
+    report.leader_offset.expect("the leader reports its tail")
+}
+
+/// Wait until the control plane holds a report made past `tail` that names a
+/// follower caught up with the leader.
+async fn wait_for_caught_up_past(cluster: &Cluster, tail: u64) {
+    let deadline = std::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(10));
+    loop {
+        let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
+        if let Some(report) = &report
+            && report.leader_offset.is_some_and(|reported| reported > tail)
+            && !report.caught_up.is_empty()
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the control plane never heard of a follower holding the record: {report:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Wait for a broker other than `gone` to own the shard.
 async fn failover_from(cluster: &Cluster, gone: &str) -> Option<String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -221,17 +251,17 @@ async fn a_resumed_leader_acking_on_enqueue_does_not_acknowledge_writes_the_clus
     .await
     .expect("start cluster");
     let deposed = cluster.owner(STREAM).await.expect("owner");
+    let tail_before = reported_tail(&cluster).await;
 
     cluster
         .publish_via(&deposed, STREAM, b"before".to_vec())
         .await
         .expect("publish before the pause");
-    // A `Leader` ack does not wait for the followers. Wait here, so a promoted
-    // replica holds the record and the replay below has something to find.
-    cluster
-        .wait_for_replication(STREAM, Duration::from_secs(10))
-        .await
-        .expect("the record reaches a follower");
+    // A `Leader` ack does not wait for the followers, so wait until the control
+    // plane has heard that one holds the record. Paused before that, the
+    // leader's last report can name no follower at its tail, and placement
+    // rightly refuses to promote any of them.
+    wait_for_caught_up_past(&cluster, tail_before).await;
 
     cluster.pause_node(&deposed).expect("pause the leader");
     let promoted = failover_from(&cluster, &deposed)
