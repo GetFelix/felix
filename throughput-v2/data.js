@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791602635207,
+  "lastUpdate": 1791604388369,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27456,6 +27456,58 @@ window.BENCHMARK_DATA = {
             "range": "4529.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1227946.73\nmean: 1226367.32\nstdev: 4529.96\ncv: 0.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "660bae29118c10b03fff755e38ed3c0d8ff1e6a3",
+          "message": "test(cluster): run the harness control plane on its own runtime (#1131)\n\n* test(cluster): run the harness control plane on its own runtime (#1115)\n\nThe in-process control plane shared the test's runtime, usually\nsingle-threaded, with every client the test opens. A broker's lease is\nrenewed only by heartbeats answered within a few hundred milliseconds, so\ntest load could lapse a lease and end a subscription mid-batch.\n\nIt now runs on a dedicated two-thread runtime. Shutdown stops it and joins\nits threads; drop stops it without blocking, so dropping a cluster inside\nasync code stays safe. The ordering scenario also publishes its batch over\none client instead of connecting once per record.\n\n* test(cluster): wait for a caught-up report before pausing a Leader-ack leader\n\nThe fencing test waited on felix_broker_replication_shipped_total > 0,\nwhich the start-up probe already satisfies, so the wait was a no-op.\nPaused before a report naming a follower at the new tail lands, the\nleader's last report can list no caught-up follower, and placement\nrefuses to promote. Wait for that report instead.",
+          "timestamp": "2026-10-09T20:50:17-07:00",
+          "tree_id": "2e51c1fe0dc72bd260b355b560e31238115e0121",
+          "url": "https://github.com/GetFelix/felix/commit/660bae29118c10b03fff755e38ed3c0d8ff1e6a3"
+        },
+        "date": 1791604387768,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 709339.43,
+            "range": "36042.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 709339.43\nmean: 701854.74\nstdev: 36042.72\ncv: 5.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 709339.43,
+            "range": "36042.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 709339.43\nmean: 701854.74\nstdev: 36042.72\ncv: 5.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162359.46,
+            "range": "8010.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162359.46\nmean: 158226.99\nstdev: 8010.99\ncv: 5.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1623594.6,
+            "range": "80109.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1623594.60\nmean: 1582269.92\nstdev: 80109.95\ncv: 5.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
