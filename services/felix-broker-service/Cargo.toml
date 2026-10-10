@@ -61,18 +61,18 @@ anyhow = { workspace = true }
 # The shard lifecycle drives local state through a trait object, so its two
 # async methods need boxing.
 async-trait = { workspace = true }
-felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview.4" }
+felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview.5" }
 arc-swap = { workspace = true }
 base64 = { workspace = true }
-felix-broker = { path = "../../crates/server/felix-broker", version = "0.6.0-preview.4" }
-felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.4", features = ["lifecycle", "tls"] }
-felix-client = { path = "../../crates/sdk/felix-client", version = "0.6.0-preview.4" }
-felix-authz = { path = "../../crates/server/felix-authz", version = "0.6.0-preview.4" }
-felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.6.0-preview.4" }
-felix-transport = { path = "../../crates/protocol/felix-transport", version = "0.6.0-preview.4" }
-felix-wire = { path = "../../crates/protocol/felix-wire", version = "0.6.0-preview.4" }
-felix-storage = { path = "../../crates/server/felix-storage", version = "0.6.0-preview.4" }
-felix-replication = { path = "../../crates/server/felix-replication", version = "0.6.0-preview.4" }
+felix-broker = { path = "../../crates/server/felix-broker", version = "0.6.0-preview.5" }
+felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.5", features = ["lifecycle", "tls"] }
+felix-client = { path = "../../crates/sdk/felix-client", version = "0.6.0-preview.5" }
+felix-authz = { path = "../../crates/server/felix-authz", version = "0.6.0-preview.5" }
+felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.6.0-preview.5" }
+felix-transport = { path = "../../crates/protocol/felix-transport", version = "0.6.0-preview.5" }
+felix-wire = { path = "../../crates/protocol/felix-wire", version = "0.6.0-preview.5" }
+felix-storage = { path = "../../crates/server/felix-storage", version = "0.6.0-preview.5" }
+felix-replication = { path = "../../crates/server/felix-replication", version = "0.6.0-preview.5" }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -124,11 +124,11 @@ serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 # The tests use the demo signing key; see the `demo` feature.
-felix-broker-service = { path = ".", version = "0.6.0-preview.4", features = ["demo"] }
+felix-broker-service = { path = ".", version = "0.6.0-preview.5", features = ["demo"] }
 # The membership integration test drives the real control-plane router rather
 # than a stub, so a mismatch in the HTTP contract between the two services fails
 # here instead of in a cluster.
-felix-controlplane-service = { path = "../felix-controlplane-service", version = "0.6.0-preview.4" }
+felix-controlplane-service = { path = "../felix-controlplane-service", version = "0.6.0-preview.5" }
 
 [features]
 default = []

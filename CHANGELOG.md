@@ -11,17 +11,22 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
-### Fixed
-- A restore of a shard whose log was empty, such as a cache used only for
-  counters or one nothing had written to yet, was never seated: with nothing
-  to ship, the leader never reported the new copy's position. It held the
-  cluster's move slot until the 30-minute move timeout, so every other restore
-  waited behind it. A cluster whose brokers registered a moment apart placed
-  its shards on two of three brokers and stayed that way, and a `Quorum` cache
-  on such a pair refused every write once either broker died (#1133). A
-  follower of an empty log is now reported level at offset zero.
-### Changed
+## [0.6.0-preview.5] - 2026-10-10
 
+The fifth preview of 0.6.0, mostly fixes to shard restores and replication.
+A restore that could not finish no longer holds the only move slot for the
+30-minute move timeout: one whose new copy stops moving for
+`FELIX_SHARD_RESTORE_STALL_MS` (default two minutes) is dropped, and dropped
+shards take turns at the slot. A restore of an empty shard is now seated, so a
+cluster whose brokers registered a moment apart no longer stays on two of
+three brokers. A `Quorum` cache's writes no longer stall for seconds after one
+follower dies. Token delegation now takes only tokens minted for the
+delegating gateway: token exchange accepts an RFC 8693 `actor_token`, and
+gateways must send it on the exchanges whose tokens they delegate
+(`FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` keeps the old behaviour
+during an upgrade).
+
+### Changed
 - `POST /v1/tenants/{tenant_id}/token/exchange` takes an optional RFC 8693
   `actor_token` (with `actor_token_type`): a gateway's own `felix-controlplane`
   token holding `token.delegate` on the tenant. The broker token it mints, and
@@ -35,7 +40,14 @@ for what the current release guarantees.
   `actor_token` on the exchanges whose tokens they delegate.
 
 ### Fixed
-
+- A restore of a shard whose log was empty, such as a cache used only for
+  counters or one nothing had written to yet, was never seated: with nothing
+  to ship, the leader never reported the new copy's position. It held the
+  cluster's move slot until the 30-minute move timeout, so every other restore
+  waited behind it. A cluster whose brokers registered a moment apart placed
+  its shards on two of three brokers and stayed that way, and a `Quorum` cache
+  on such a pair refused every write once either broker died (#1133). A
+  follower of an empty log is now reported level at offset zero.
 - A `Quorum` cache's writes stalled for seconds after one of its followers
   died, even with a majority alive: the leader shipped the counter log to
   every follower and waited for all of them before shipping the cache log,
@@ -54,7 +66,6 @@ for what the current release guarantees.
   certificate. Delegation now takes only tokens minted for the caller.
 
 ### Documentation
-
 - The shared-connection docs said each user's limits kept one user at a limit
   from blocking the others. The users share a connection ceiling of four
   users' worth by default, so four at their limits can starve a fifth; the
@@ -3935,7 +3946,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.5...HEAD
+[0.6.0-preview.5]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...v0.6.0-preview.5
 [0.6.0-preview.4]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...v0.6.0-preview.4
 [0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
 [0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2

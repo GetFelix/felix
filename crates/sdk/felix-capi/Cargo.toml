@@ -22,7 +22,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
-felix-client = { path = "../felix-client", version = "0.6.0-preview.4" }
+felix-client = { path = "../felix-client", version = "0.6.0-preview.5" }
 tokio = { workspace = true }
 
 [dev-dependencies]
