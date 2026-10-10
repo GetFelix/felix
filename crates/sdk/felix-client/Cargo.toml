@@ -24,8 +24,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 serde_yaml_ng = { workspace = true }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.4" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.4" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview.5" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.5" }
 quinn = { workspace = true }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }

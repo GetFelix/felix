@@ -14,9 +14,9 @@ categories = ["network-programming"]
 publish = false
 
 [dependencies]
-felix-common = { path = "../felix-common", version = "0.6.0-preview.4" }
+felix-common = { path = "../felix-common", version = "0.6.0-preview.5" }
 # The key-to-shard mapping is protocol, shared with clients.
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.4" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.5" }
 # Routes are read on every publish and replaced wholesale; a swap keeps readers
 # off any lock a writer can hold.
 arc-swap = { workspace = true }

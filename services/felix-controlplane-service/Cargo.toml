@@ -19,8 +19,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
-felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.4", features = ["lifecycle", "openapi", "tls"] }
-felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview.4" }
+felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.5", features = ["lifecycle", "openapi", "tls"] }
+felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview.5" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true }
