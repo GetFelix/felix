@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791604388369,
+  "lastUpdate": 1791608925065,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -27508,6 +27508,58 @@ window.BENCHMARK_DATA = {
             "range": "80109.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1623594.60\nmean: 1582269.92\nstdev: 80109.95\ncv: 5.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4037b4bb31a69679005dd37aae05ac2ad9f4af6a",
+          "message": "fix(replication): report a follower of an empty log so a restore can seat it (#1133) (#1135)\n\n* fix(replication): report a follower of an empty log so a restore can seat it (#1133)\n\nA leader with nothing to ship never contacts a new follower, so its cursor\nstayed stalled and the report left its offset out. Placement seats a restore\non that offset, so a restore of an empty shard (a counter-only cache, or one\nnothing had written to yet) waited out the 30-minute move timeout and held\nthe only move slot. Shards placed while a broker was still registering stayed\non two of three brokers, and a Quorum cache on such a pair refused every\nwrite once either died.\n\nA follower whose cursor is at offset zero of an empty log is now level\nwithout being asked.\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: an empty log's new copy is now reported at offset 0; FelixShard.tla does not model replica reports, and Seat is guarded by HoldsPrefix, which an empty log always satisfies",
+          "timestamp": "2026-10-09T22:04:26-07:00",
+          "tree_id": "dacf3678bbb4d53110c95ac3be58d0c15a41284c",
+          "url": "https://github.com/GetFelix/felix/commit/4037b4bb31a69679005dd37aae05ac2ad9f4af6a"
+        },
+        "date": 1791608924308,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 437681.88,
+            "range": "27497.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 437681.88\nmean: 441861.75\nstdev: 27497.38\ncv: 6.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 437681.88,
+            "range": "27497.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 437681.88\nmean: 441861.75\nstdev: 27497.38\ncv: 6.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 100603.45,
+            "range": "590.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 100603.45\nmean: 100556.97\nstdev: 590.14\ncv: 0.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1006034.55,
+            "range": "5901.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1006034.55\nmean: 1005569.72\nstdev: 5901.39\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
