@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791608921701,
+  "lastUpdate": 1791612677745,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -34980,6 +34980,72 @@ window.BENCHMARK_DATA = {
             "range": "1246.73",
             "unit": "us",
             "extra": "trials: 5\nmedian: 452.00\nmean: 995.80\nstdev: 1246.73\ncv: 125.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b085abf022729b7beb4b3ed3b7ab47e0085211bb",
+          "message": "fix(placement): drop a restore whose copy stops moving (#1138) (#1141)\n\n* fix(placement): drop a restore whose copy stops moving (#1138)\n\nRestores share the move slots, one by default, and a restore that could\nnot finish held its slot for the full 30-minute move timeout while every\nother short shard waited. A restore whose new copy's reported position has\nnot gone up for FELIX_SHARD_RESTORE_STALL_MS (two minutes) is now dropped\nas `stalled`, and the next pass gives the slot to the next shard.\n\nProgress is watched by the instance running placement across passes, since\nneither a report nor the store keeps history and writing it to the\nassignment would start a new generation every pass. A pass without the\nhistory starts the window again, so it can be late but never drops a copy\nthat is moving.\n\nShards whose last move was given up are now ordered by when that attempt\nstarted, so restores that keep failing take turns at the slot instead of\nthe first in key order retaking it every time.\n\nSpec-Unaffected: dropping a restore early is a TimeOut before the fence, which FelixPlacementPacing.tla already allows at any moment; slot counting is unchanged, so CopiesWithinLimit is checked as before\n\n* fix(replication): hand a catching-up follower's position back every 5 s\n\nA follower that counts toward the quorum took its whole catch-up in one\nexchange, so a restore's new copy of a large log was reported only once\nlevel. With the restore stall window, placement would drop such a restore\nevery time. Every exchange now ends after CATCH_UP_SLICE (5 s) of shipping,\nas a move's destination already does at COPY_SLICE, and the driver passes\nagain at once, so the copy's position reaches a report every few seconds.\n\nSpec-Unaffected: an exchange ending earlier changes when a follower's position is reported, not what it holds or what the quorum counts; FelixShard.tla ships records one at a time and does not model exchange length",
+          "timestamp": "2026-10-09T23:07:19-07:00",
+          "tree_id": "2e15f0ed4477923a52231a345b77614f45cbb3f7",
+          "url": "https://github.com/GetFelix/felix/commit/b085abf022729b7beb4b3ed3b7ab47e0085211bb"
+        },
+        "date": 1791612673577,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 104.80\nstdev: 0.45\ncv: 0.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "39.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 157.20\nstdev: 39.59\ncv: 25.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 195,
+            "range": "70.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 226.60\nstdev: 70.06\ncv: 30.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 142.20\nstdev: 8.29\ncv: 5.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 278,
+            "range": "353.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 434.20\nstdev: 353.19\ncv: 81.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 414,
+            "range": "937.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 414.00\nmean: 816.20\nstdev: 937.71\ncv: 114.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
