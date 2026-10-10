@@ -651,3 +651,74 @@ async fn a_restore_resumes_after_a_control_plane_restart() {
     assert_eq!(seated.replicas, ["broker-b", "broker-d"]);
     assert_eq!(seated.joining, None);
 }
+
+/// **Placed with its leader alone.** A shard placed while one broker was live
+/// gets brokers later. Its leader reports with no followers to name (#1153),
+/// and that report is what starts the first copy; each copy then joins and is
+/// seated in turn until the shard is at its factor.
+#[tokio::test]
+async fn a_shard_placed_with_its_leader_alone_is_topped_up_once_brokers_join() {
+    let store = cluster(&["broker-a"]).await;
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the three-shard stream");
+    store
+        .create_stream(replicated_stream("orders", 1, 3))
+        .await
+        .expect("stream");
+    let liveness = NodeLivenessConfig::default();
+    let assignment = || async {
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get")
+    };
+
+    reconcile_once(&store, &liveness, MovePolicy::default()).await;
+    let placed = assignment().await;
+    assert_eq!(
+        (placed.leader.as_str(), placed.replicas.len()),
+        ("broker-a", 0)
+    );
+
+    for (i, id) in ["broker-b", "broker-c"].iter().enumerate() {
+        let mut joined = node(id, NodeLifecycle::Live, None);
+        joined.spec.advertise_addr = format!("10.0.0.5:{}", 7600 + i);
+        store.register_node(joined).await.expect("node");
+    }
+    reconcile_once(&store, &liveness, MovePolicy::default()).await;
+    assert_eq!(
+        assignment().await,
+        placed,
+        "a copy was added before the leader reported at its generation"
+    );
+
+    let mut seated = Vec::new();
+    let mut current = placed;
+    for _ in 0..2 {
+        // What the leader reports with nobody, or only seated copies, behind it.
+        super::reconciler::report(&store, current.generation, &[], false).await;
+        reconcile_once(&store, &liveness, MovePolicy::default()).await;
+        let started = assignment().await;
+        let joining = started.joining.clone().expect("a restore started");
+        assert_eq!(started.move_reason, Some(MoveReason::Restore));
+        assert!(!seated.contains(&joining) && joining != "broker-a");
+
+        seated.push(joining);
+        let level: Vec<&str> = seated.iter().map(String::as_str).collect();
+        super::reconciler::report(&store, started.generation, &level, false).await;
+        reconcile_once(&store, &liveness, MovePolicy::default()).await;
+        current = assignment().await;
+        assert_eq!(current.joining, None, "the copy was not seated");
+        assert_eq!(current.replicas, seated);
+    }
+    assert_eq!(current.leader, "broker-a");
+    let mut held = current.replicas.clone();
+    held.sort();
+    assert_eq!(held, ["broker-b", "broker-c"]);
+}

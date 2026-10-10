@@ -1,7 +1,8 @@
 //! The task that keeps every shard this broker leads shipping.
 //!
 //! One pass visits each shard this node leads that has followers, ships what it
-//! can to each, and reports the lag. Cursors live for as long as the assignment
+//! can to each, and reports the lag. A shard led with no followers is only
+//! reported. Cursors live for as long as the assignment
 //! does: a generation change discards them, because a cursor is a belief about
 //! a follower's position under a particular leadership, and a new generation
 //! invalidates the belief rather than the follower.
@@ -188,6 +189,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             reporter: reporter.as_ref(),
             rebuilds: &rebuilds,
             throttle: &move_throttle,
+            refresh: interval,
         });
         loop {
             // An append during the previous pass left a permit, so this
@@ -216,6 +218,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 Some(answered) = shards.exchanges.next(), if !shards.exchanges.is_empty() => {
                     Event::Answered(answered)
                 }
+                Some(reported) = shards.reports.next(), if !shards.reports.is_empty() => {
+                    Event::Reported(reported)
+                }
             };
             match event {
                 Event::Wake => {
@@ -228,6 +233,10 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 // Changes no pass's outcome, so there is nothing new to say.
                 Event::Answered(answered) => {
                     shards.apply(answered);
+                    continue;
+                }
+                Event::Reported(reported) => {
+                    shards.reported(reported);
                     continue;
                 }
             }
@@ -367,7 +376,6 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     let mut behind = false;
     let mut halted: Vec<HaltedReplica> = Vec::new();
     let mut live_shards = Vec::new();
-    let mut reports = Vec::new();
     let mut promoted = Vec::new();
 
     // Every shard this broker leads, each with the cursors it owns for the
@@ -397,10 +405,19 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
         ) {
             work.push((key.clone(), route.clone(), entry, aux));
         } else {
-            unreplicated.push(key.clone());
+            unreplicated.push((key.clone(), route.generation));
         }
     }
-    release_unreplicated(broker, &unreplicated).await;
+    let alone: Vec<ShardKey> = unreplicated.iter().map(|(key, _)| key.clone()).collect();
+    release_unreplicated(broker, &alone).await;
+    let mut reports = Vec::new();
+    for (key, generation) in &unreplicated {
+        let report = alone_report(broker, key, *generation, 0).await;
+        if let Some(reporter) = reporter {
+            reporter.submit(report.clone());
+        }
+        reports.push(report);
+    }
 
     let fencing = open_promoted(
         requester,
@@ -593,41 +610,9 @@ async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
     if keys.is_empty() {
         return;
     }
-    let open_caches: HashSet<(String, String, String, u32)> = if keys
-        .iter()
-        .any(|key| key.kind == felix_router::ShardKind::Cache)
-    {
-        broker.cache().open_shards().into_iter().collect()
-    } else {
-        HashSet::new()
-    };
+    let open_caches = open_caches(broker, keys);
     for key in keys {
-        let log = match key.kind {
-            felix_router::ShardKind::Stream => broker.durable_storage().and_then(|storage| {
-                storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            }),
-            felix_router::ShardKind::Cache => {
-                let id = (
-                    key.tenant_id.clone(),
-                    key.namespace.clone(),
-                    key.stream.clone(),
-                    key.shard,
-                );
-                if !open_caches.contains(&id) {
-                    continue;
-                }
-                broker
-                    .shard_log(
-                        felix_broker::LogKind::Cache,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                    )
-                    .await
-            }
-        };
-        if let Some(log) = log
+        if let Some(log) = opened_log(broker, key, &open_caches).await
             && let Err(err) = log.hold_retention_at_commit(false).await
         {
             tracing::warn!(
@@ -638,6 +623,70 @@ async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
             );
         }
     }
+}
+
+type OpenCaches = HashSet<(String, String, String, u32)>;
+
+fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
+    if keys
+        .iter()
+        .any(|key| key.kind == felix_router::ShardKind::Cache)
+    {
+        broker.cache().open_shards().into_iter().collect()
+    } else {
+        HashSet::new()
+    }
+}
+
+/// `key`'s log, only if it is already open: opening it here would create a
+/// log for every led shard that was never written.
+async fn opened_log(
+    broker: &Broker,
+    key: &ShardKey,
+    open_caches: &OpenCaches,
+) -> Option<felix_broker::StreamLog> {
+    match key.kind {
+        felix_router::ShardKind::Stream => broker.durable_storage().and_then(|storage| {
+            storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        }),
+        felix_router::ShardKind::Cache => {
+            let id = (
+                key.tenant_id.clone(),
+                key.namespace.clone(),
+                key.stream.clone(),
+                key.shard,
+            );
+            if !open_caches.contains(&id) {
+                return None;
+            }
+            broker
+                .shard_log(
+                    felix_broker::LogKind::Cache,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                )
+                .await
+        }
+    }
+}
+
+/// The report for a shard led here with no other copy. It names nobody, but
+/// placement adds a copy only once the leader has reported at the shard's
+/// generation, so without it a shard placed with its leader alone never gets
+/// another (#1153). Callers skip a promoted shard still fencing, as they do
+/// for every other report. The tail is read from an open log only, and never
+/// goes below `floor`: the control plane refuses a report whose tail went
+/// back.
+async fn alone_report(broker: &Broker, key: &ShardKey, generation: u64, floor: u64) -> ShardReport {
+    let open_caches = open_caches(broker, std::slice::from_ref(key));
+    let tail = match opened_log(broker, key, &open_caches).await {
+        Some(log) => log.tail_offset().await.unwrap_or(0),
+        None => 0,
+    }
+    .max(floor);
+    crate::reporter::shard_report(key, generation, tail, tail, &[], false)
 }
 
 /// Take a shard's cursors out of the maps for a pass over `route`.

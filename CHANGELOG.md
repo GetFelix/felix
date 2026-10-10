@@ -12,6 +12,12 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A shard placed while its leader was the only live broker now gets the
+  copies its replication factor asks for once other brokers join. Placement
+  adds a copy only after the leader has reported at the shard's generation,
+  and a leader with no followers never reported, so the shard stayed at one
+  copy with `under_replicated: true` and nothing logged. A leader with no
+  followers now reports itself, after its promotion fence as before (#1153).
 - A broker fetches the JWKS of every tenant in its catalog when its first
   catalog sync lands, before it reports ready. It used to fetch them only when
   a client of that tenant connected, so a broker that restarted and then lost

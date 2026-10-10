@@ -68,8 +68,9 @@ from `GET /v1/placement/replication`, every shard included.
 
 Placement fills these in on its own. Once a follower's broker has been down or
 gone for `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default), the shard
-is copied to a live broker outside its set. A set that a failover left short
-because too few brokers were live is topped up as soon as one is free. The copy
+is copied to a live broker outside its set. A set left short because too few
+brokers were live, after a failover or when the shard was placed, is topped up
+as soon as one is free, even one placed on its leader alone. The copy
 is seated once it has caught up, and on a `Quorum` stream once it also holds
 what a majority of the old set holds. The seat drops the lost follower in the
 same write. If the broker being copied to fails, the copy is dropped and
