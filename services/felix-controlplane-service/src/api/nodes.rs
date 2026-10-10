@@ -93,6 +93,8 @@ pub(crate) async fn register_node(
             StoreError::Conflict(ref message) => api_conflict("conflict", message),
             ref other => api_internal("register node", other),
         })?;
+    // A new broker is somewhere to put held-back shards and missing copies.
+    state.placement_wakes.request_pass();
 
     Ok(Json(NodeRegistrationResponse {
         node,

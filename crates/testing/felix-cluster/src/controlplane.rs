@@ -31,6 +31,18 @@ use tokio_util::sync::CancellationToken;
 use crate::credentials::{Credentials, TOKEN_TTL};
 use crate::ports;
 
+/// `policy` without the settle window. A test starts the brokers it wants
+/// before it places, so a wall-clock wait for more would only make a test
+/// that places on fewer than a stream's factor slower and timing-dependent.
+fn unsettled(
+    policy: felix_controlplane_service::cluster::placement::MovePolicy,
+) -> felix_controlplane_service::cluster::placement::MovePolicy {
+    felix_controlplane_service::cluster::placement::MovePolicy {
+        settle_millis: None,
+        ..policy
+    }
+}
+
 /// Liveness tuned for a harness: brokers are local, so a lapsed heartbeat means
 /// a broker that actually stopped rather than a slow network. Short windows make
 /// a stopped broker observable in seconds instead of tens of seconds, which is
@@ -271,7 +283,7 @@ impl ControlPlane {
         for node in read.nodes.iter_mut().filter(|node| node.node_id == down) {
             node.status.lifecycle = NodeLifecycle::Down;
         }
-        Ok(read.plan(MovePolicy::default()))
+        Ok(read.plan(unsettled(MovePolicy::default())))
     }
 
     /// Step placement once under an explicit move policy.
@@ -282,7 +294,7 @@ impl ControlPlane {
         felix_controlplane_service::cluster::placement::reconcile_once(
             self.store.as_ref(),
             &LIVENESS,
-            policy,
+            unsettled(policy),
         )
         .await
     }
@@ -377,7 +389,7 @@ impl ControlPlane {
                 Arc::clone(&self.store)
                     as Arc<dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync>,
                 LIVENESS,
-                felix_controlplane_service::cluster::placement::MovePolicy::default(),
+                unsettled(felix_controlplane_service::cluster::placement::MovePolicy::default()),
                 interval,
                 "felix-cluster".to_string(),
                 felix_controlplane_service::raft::LeadershipGate::Always,

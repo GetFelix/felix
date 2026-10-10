@@ -63,6 +63,15 @@ impl Plan {
         })
     }
 
+    /// New shards held back for more brokers to register, with how many
+    /// were live and when the hold ends.
+    pub fn settling(&self) -> impl Iterator<Item = (&ShardKey, u32, u64)> {
+        self.shards.iter().filter_map(|plan| match plan.decision {
+            Decision::Settling { live, until_millis } => Some((&plan.key, live, until_millis)),
+            _ => None,
+        })
+    }
+
     pub fn waiting(&self) -> impl Iterator<Item = (&ShardKey, &Blocked)> {
         self.shards.iter().filter_map(|plan| match &plan.decision {
             Decision::Waiting(reason) => Some((&plan.key, reason)),
@@ -256,12 +265,32 @@ pub(super) fn plan_abandoning(
         (keys.len() as u32).div_ceil(eligible.len() as u32).max(1)
     };
 
+    // Brokers started together register moments apart, and a shard placed
+    // before the last of them gets fewer copies than its factor, each added
+    // later by a restore. While the cluster is that young, a new shard waits
+    // for enough brokers instead.
+    let settling_until = match (policy.settle_millis, now) {
+        (Some(settle), Some(now)) => nodes
+            .iter()
+            .map(|node| node.status.registered_at_millis)
+            .min()
+            .map(|first| first.saturating_add(settle))
+            .filter(|until| now < *until),
+        _ => None,
+    };
+
     let regions = Arc::clone(&policy.regions);
     let region_of: HashMap<&str, &String> = nodes
         .iter()
         .map(|node| (node.node_id.as_str(), &node.spec.region))
         .collect();
-    let mut moves = Moves::counting(existing, policy);
+    let unpaced_max = policy.fence_max_lag_records;
+    let mut moves = Moves::counting(existing, policy, &|assignment| {
+        let replication_factor = placeable_of
+            .get(owner_of(&assignment.key).as_str())
+            .map_or(1, |p| p.replication_factor);
+        restore::unpaced(assignment, replication_factor, caught_up, unpaced_max)
+    });
 
     // Slots go to drains first, then to rebalancing, and last to shards whose
     // previous move timed out; see `start_order`. Planned in that order, and
@@ -427,6 +456,21 @@ pub(super) fn plan_abandoning(
                 decision: Decision::Unplaceable(reason),
             });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
+            continue;
+        }
+
+        if let Some(until_millis) = settling_until
+            && !current.contains_key(&key)
+            && !eligible.is_empty()
+            && (eligible.len() as u32) < replication_factor
+        {
+            shards.push(ShardPlan {
+                key,
+                decision: Decision::Settling {
+                    live: eligible.len() as u32,
+                    until_millis,
+                },
+            });
             continue;
         }
 

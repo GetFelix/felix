@@ -118,7 +118,17 @@ pub(super) fn restore<'a>(
     }
     let (widening, best) = newcomer(key, existing, eligible, is_halted, load, replacing);
     let to = widening.or(best)?;
-    if let Err(blocked) = moves.begin(&existing.leader, &to.node_id) {
+    let begun = if unpaced(
+        existing,
+        replication_factor,
+        caught_up,
+        moves.unpaced_max_records(),
+    ) {
+        moves.begin_unpaced()
+    } else {
+        moves.begin(&existing.leader, &to.node_id)
+    };
+    if let Err(blocked) = begun {
         return Some(Decision::Waiting(blocked));
     }
     *load.entry(to.node_id.as_str()).or_default() += 1;
@@ -228,6 +238,27 @@ pub(super) fn wanted(
     is_lost: &dyn Fn(&str) -> bool,
 ) -> bool {
     lost_follower(existing, is_lost).is_some() || short(existing, replication_factor)
+}
+
+/// Whether a copy into `existing` takes no move slot: it tops up a set short
+/// of its factor, replacing nobody, and the leader last reported holding at
+/// most `max_records`. That is within the lag a move may fence at, so there
+/// is nothing to pace, and a cluster that placed many new shards on too few
+/// brokers fills them all at once instead of one by one.
+pub(super) fn unpaced(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+    caught_up: &dyn CaughtUp,
+    max_records: u64,
+) -> bool {
+    short(existing, replication_factor)
+        && existing
+            .joining
+            .as_ref()
+            .is_none_or(|_| existing.move_reason == Some(MoveReason::Restore))
+        && caught_up
+            .leader_offset(&existing.key)
+            .is_some_and(|tail| tail <= max_records)
 }
 
 /// The live broker to copy a shard into beside its current copies: the best

@@ -6,7 +6,7 @@
 //! observable to the end.
 use std::time::Duration;
 
-use felix_common::lifecycle::{self, DrainBudget};
+use felix_common::lifecycle::DrainBudget;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -27,6 +27,8 @@ pub(super) struct Running {
     pub(super) raft_peer_task: Option<JoinHandle<()>>,
     pub(super) peer_shutdown: CancellationToken,
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
+    /// Resolves on a termination signal after the first.
+    pub(super) second_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 }
 
 impl Running {
@@ -45,6 +47,7 @@ impl Running {
             raft_peer_task,
             peer_shutdown,
             metrics_task,
+            second_signal,
         } = self;
 
         // Step 1b: keep serving while load balancers notice. Without this the
@@ -59,7 +62,7 @@ impl Running {
             tokio::select! {
                 _ = tokio::time::sleep(hold_off) => {}
                 // An operator who signals twice is asking to skip the wait.
-                _ = lifecycle::termination_signal() => {
+                _ = second_signal => {
                     tracing::info!("second termination signal; ending hold-off early");
                 }
             }

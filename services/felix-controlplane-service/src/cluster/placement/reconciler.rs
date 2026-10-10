@@ -103,6 +103,8 @@ pub struct ReconcileOutcome {
     pub fenced: bool,
     /// Failovers left for a later pass by [`FAILOVERS_PER_PASS`].
     pub deferred: usize,
+    /// New shards held back for more brokers to register.
+    pub settling: usize,
 }
 
 /// A plan, and the generation of every assignment it was planned from.
@@ -423,6 +425,16 @@ pub(super) async fn apply_pass(
         );
     }
 
+    if let Some((_, live, until_millis)) = plan.settling().next() {
+        outcome.settling = plan.settling().count();
+        tracing::info!(
+            shards = outcome.settling,
+            live,
+            until_millis,
+            "new shards wait for more brokers to register before they are placed",
+        );
+    }
+
     let mut failovers = 0;
     for (key, leader, replicas) in plan.to_place() {
         if outcome.fenced {
@@ -562,6 +574,7 @@ pub fn spawn_reconciler(
         let mut clock = MoveClock::default();
         let mut progress = CopyProgress::default();
         let mut held = false;
+        let mut under_replicated = 0;
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -596,6 +609,7 @@ pub fn spawn_reconciler(
                 plan_pass(store.as_ref(), &liveness, policy.clone(), &mut progress).await
             {
                 apply_pass(store.as_ref(), &pass, &mut clock, &wakes).await;
+                under_replicated = log_replication(under_replicated, &pass.plan);
             }
         }
         if held {
@@ -606,6 +620,23 @@ pub fn spawn_reconciler(
             metrics::gauge!(PLACEMENT_LEASE_HELD).set(0.0);
         }
     })
+}
+
+/// Log when shards start or stop being short of their replication factor,
+/// and return how many are. The gauges carry the count in between.
+fn log_replication(before: usize, plan: &Plan) -> usize {
+    let now = plan.under_replicated.len();
+    if before == 0 && now > 0 {
+        tracing::warn!(
+            shards = now,
+            missing_copies = plan.missing_copies,
+            "shards have fewer copies than their replication factor; \
+             GET /v1/placement/replication lists them",
+        );
+    } else if before > 0 && now == 0 {
+        tracing::info!("every shard has its replication factor");
+    }
+    now
 }
 
 /// Whether this instance holds the lease after an acquire, logged when that

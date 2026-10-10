@@ -76,7 +76,25 @@ what a majority of the old set holds. The seat drops the lost follower in the
 same write. If the broker being copied to fails, the copy is dropped and
 another broker is picked. If the lost broker comes back first, its copy is
 kept and the new one dropped. Restores take move slots after drains and before
-rebalancing, and `pause` stops new ones.
+rebalancing, and `pause` stops new ones. A top-up of a shard whose leader
+holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records takes no slot,
+since there is next to nothing to copy, so a cluster whose new shards went on
+too few brokers fills them all at once.
+
+A cluster started all at once avoids most of this. While its first broker
+registered less than `FELIX_PLACEMENT_SETTLE_MS` ago (ten seconds by default),
+a new shard with fewer live brokers than its replication factor is not placed
+yet: `plan` shows it as `settling`. It is placed as soon as enough brokers
+have registered, or on the brokers that are live when the window ends. An
+older cluster places new shards on what is live straight away, so a broker
+that is down for good does not hold up a new stream.
+
+The control plane logs `shards have fewer copies than their replication
+factor` when the first shard goes short and `every shard has its replication
+factor` when the last is filled. Broker `/ready` does not change: it says
+whether that broker can serve, and a short shard is still served. To wait for
+full replication, as a test harness about to stop a broker would, poll
+`GET /v1/placement/replication` for `under_replicated` reaching zero.
 
 A halted copy is replaced the same way once it has been halted for the restore
 delay. The wait gives its leader time to rebuild it, which usually clears the

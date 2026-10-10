@@ -356,8 +356,8 @@ fn raft_initial_cluster_state_and_peer_tls_parse_strictly() {
 }
 
 /// Move pacing from the environment. Zero means "no limit" for the per-node
-/// cap and "never" for the timeout, and a move limit of zero holds every
-/// move.
+/// cap, "never" for the timeout, and no wait for the settle window, and a
+/// move limit of zero holds every move.
 #[serial]
 #[test]
 fn shard_move_pacing_comes_from_the_environment() {
@@ -373,10 +373,12 @@ fn shard_move_pacing_comes_from_the_environment() {
         env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
+        env::set_var("FELIX_PLACEMENT_SETTLE_MS", "0");
     }
     let config = ControlPlaneConfig::from_env()
         .expect("from_env")
         .shard_moves;
+    assert_eq!(config.settle_millis, None);
     assert_eq!(config.max_concurrent, 0);
     assert_eq!(config.max_per_node, Some(2));
     assert_eq!(config.fence_max_lag_records, 0);
@@ -390,6 +392,14 @@ fn shard_move_pacing_comes_from_the_environment() {
         .expect("from_env")
         .shard_moves;
     assert_eq!(config.max_per_node, None);
+
+    unsafe {
+        env::set_var("FELIX_PLACEMENT_SETTLE_MS", "2500");
+    }
+    let config = ControlPlaneConfig::from_env()
+        .expect("from_env")
+        .shard_moves;
+    assert_eq!(config.settle_millis, Some(2_500));
     let _env = clear_felix_env();
 }
 

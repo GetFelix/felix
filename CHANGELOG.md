@@ -12,6 +12,22 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Fixed
+- A cluster started all at once now places its new shards on all the brokers
+  it starts with. Placement ran as soon as the first one or two brokers had
+  registered, so each shard got fewer copies than its replication factor, and
+  restores added the rest one shard at a time behind the single move slot:
+  eleven shards spent about 90 s short, and stopping a broker then could leave
+  some without a majority. While the cluster's first broker registered less
+  than `FELIX_PLACEMENT_SETTLE_MS` ago (10 s by default), a new shard waits for
+  as many live brokers as its factor, and a broker registering runs placement
+  at once. A restore that only tops up a short shard whose leader holds at
+  most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records no longer takes a move
+  slot, so a cluster whose shards did go short fills them together. The control
+  plane logs when shards go short of their factor and when they are full again
+  (#1151).
+- A second SIGTERM sent to the control plane just after its readiness flipped
+  to draining could be missed, so the pre-drain hold-off ran in full. The
+  listener for it is now installed before readiness changes.
 - A shard placed while its leader was the only live broker now gets the
   copies its replication factor asks for once other brokers join. Placement
   adds a copy only after the leader has reported at the shard's generation,

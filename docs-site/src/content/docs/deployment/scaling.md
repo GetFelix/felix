@@ -26,6 +26,9 @@ Three things, and an operator (see
   minutes by default) is replaced by a copy on a live broker. A set that a
   failover left smaller than the replication factor, because too few brokers
   were live, is topped up once a broker is free. Leadership does not move.
+  New shards in a cluster that started moments ago wait up to
+  `FELIX_PLACEMENT_SETTLE_MS` for enough brokers to register, so a cluster
+  started all at once is not left short to begin with.
   See [Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).
 - **A follower sharing a zone.** When brokers register zones
   (`FELIX_NODE_ZONE`), a follower in the same zone as another copy of its
@@ -309,11 +312,12 @@ fence and its tests are in `services/felix-broker-service/src/shards/lifecycle/f
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: moves, and followers being replaced on a draining broker. Each is a full copy of a shard's log; raise it to drain a broker with many shards faster, at the cost of that much more replication traffic at once. `0` holds every move. |
+| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: moves, followers being replaced on a draining broker, and restores. Each is a full copy of a shard's log; raise it to drain a broker with many shards faster, at the cost of that much more replication traffic at once. A restore that tops up a shard whose leader holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records does not count. `0` holds every move. |
 | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset | Copies in flight into or out of any one broker. Raise the cluster-wide limit and set this to keep any one broker's disk and network from carrying all of them. |
 | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader a destination may be when the leader is fenced. A busy shard's destination is almost never exactly level, so a move waits for this instead; the leader then stops and the rest is copied before the cut-over. Larger shortens the wait to fence and lengthens the switch-over by the time it takes to copy that many records. |
 | `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | How long a move may copy before its fence (or a replacement before it has caught up) before it is given up and its slot goes to the next move. Keep it well above the time the largest shard takes to copy. `0` never gives up. A fenced move is always finished, unless an operator cancels it. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone before placement copies the shard to another broker. Set it above your longest broker restart, or a rolling restart copies every shard once per broker. `0` never replaces a lost follower; a replica set short of its factor is still topped up. |
+| `FELIX_PLACEMENT_SETTLE_MS` | `10000` | How long after a cluster's first broker registered a new shard waits for as many live brokers as its replication factor before it is placed on fewer. Placement runs when a broker registers, so the shards go out as soon as enough brokers are live. Only a cluster younger than this waits. `0` places new shards on whatever is live. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long a restore's new copy may go without its reported position moving before the restore is dropped and its slot goes to the next short shard. Without it, one restore that cannot finish holds every other one back for the move timeout. `0` waits for the move timeout. |
 | `FELIX_SHARD_MOVE_BYTES_PER_SEC` (broker) | `0` | Bytes per second a broker ships to move destinations, across every shard it leads. Applied only to a destination the quorum does not need (one still copying is left out of it), so `Quorum` publishes never wait on it, and not to the remainder after the fence. `0` is unlimited. |
 | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | `5000` | How often placement runs on its own. A report a move is waiting for (the successor caught up, the leader drained) runs a pass straight away when the control-plane instance that receives it is the one running placement. |

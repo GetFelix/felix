@@ -544,12 +544,14 @@ pub struct PlannedShard {
     #[serde(flatten)]
     pub key: crate::model::ShardKey,
     /// `place`, a move step (`stage`, `fence`, `cut_over`, `abandon`,
-    /// `timed_out`, `reseat`, `seat`), `waiting` or `unplaceable`.
+    /// `timed_out`, `reseat`, `seat`), `waiting`, `settling` (a new shard
+    /// waiting for more brokers to register) or `unplaceable`.
     pub action: String,
     /// What the step would write, for `place` and move steps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignment: Option<crate::model::ShardAssignment>,
-    /// Why nothing can be done yet, for `waiting` and `unplaceable`.
+    /// Why nothing can be done yet, for `waiting`, `settling` and
+    /// `unplaceable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

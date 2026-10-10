@@ -278,6 +278,14 @@ pub(crate) async fn placement_plan(
                 Decision::Waiting(blocked) => {
                     ("waiting".to_string(), None, Some(blocked.to_string()))
                 }
+                Decision::Settling { live, until_millis } => (
+                    "settling".to_string(),
+                    None,
+                    Some(format!(
+                        "{live} brokers live, fewer than the replication factor; \
+                         placed on those at {until_millis} unless more register"
+                    )),
+                ),
                 Decision::Unplaceable(why) => {
                     ("unplaceable".to_string(), None, Some(why.to_string()))
                 }
