@@ -1531,8 +1531,17 @@ restores both on its own. A follower whose broker has been down or gone for
 `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default) is lost, and so is one
 its leader has reported halted for that long. A set with fewer seated members
 than the factor is short. A set also starts short when placement runs while
-some brokers are still registering: each shard gets the brokers that are live,
-and restores add the rest one shard at a time. For either, placement picks a
+some brokers are still registering, as it does when a whole cluster starts at
+once and the first brokers register a moment before the rest. So a new shard
+waits: while the cluster's first broker registered less than
+`FELIX_PLACEMENT_SETTLE_MS` ago (ten seconds by default) and fewer brokers are
+live than the shard's factor, it is not placed (`settling` in
+`GET /v1/placement/plan`). A broker registering wakes placement, so the shards
+are placed as soon as enough brokers are live, or on whatever is live when the
+window ends. Only a young cluster waits. In one whose first broker registered
+earlier, a stream created while a broker is down for good is placed on the
+brokers that are live straight away, and so is a stream on a single broker
+with a factor of one. For either, placement picks a
 live broker outside the set (widening the zone spread where it can, never a
 down or draining broker) and adds it as `joining` with the move reason
 `restore`. From there the restore is the replacement above: the copy counts
@@ -1569,7 +1578,15 @@ the next pass picks another live broker. If the lost broker comes back first,
 the copy is dropped too, because the returning broker still holds the shard. A
 copy that cannot catch up within the move timeout is dropped and waits behind
 other moves. Restores use the move slots, after drains and before rebalancing,
-and a pause stops them from starting.
+and a pause stops them from starting. One kind does not: a restore that only
+tops up a short set, on a shard whose leader last reported at most
+`FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records, neither waits for a slot nor
+holds one. That copy starts within the lag a move may fence at, so there is
+nothing to pace, and a cluster whose shards were placed on too few brokers
+fills them all in one round rather than one shard per slot. A top-up of a
+shard with more history, or whose leader has not said how much it holds, takes
+a slot as before. Everything else about it, the reported-generation guard and
+the seat rule included, is the restore above.
 
 With one slot by default, a restore that can never finish would hold every
 other short shard back for the whole move timeout. So a restore whose new copy

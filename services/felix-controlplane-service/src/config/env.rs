@@ -202,6 +202,12 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.restore_stall_millis,
         },
+        // Zero places new shards on whatever is live.
+        settle_millis: match parse("FELIX_PLACEMENT_SETTLE_MS") {
+            Some(0) => None,
+            Some(millis) => Some(millis),
+            None => defaults.settle_millis,
+        },
         // Read from the store each pass, not configured.
         paused: false,
         regions: defaults.regions,

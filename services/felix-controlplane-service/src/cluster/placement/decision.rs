@@ -16,6 +16,15 @@ pub enum Decision {
     Move(MoveStep, ShardAssignment),
     /// A move is in progress and this pass can do nothing for it yet.
     Waiting(Blocked),
+    /// A new shard waits for more brokers to register before it is placed:
+    /// `live` are, fewer than its replication factor, and the cluster is
+    /// within `MovePolicy::settle_millis` of its first broker registering.
+    /// Placed on what is live at `until_millis`, on the store's clock, if no
+    /// more have come.
+    Settling {
+        live: u32,
+        until_millis: u64,
+    },
     Unplaceable(Unplaceable),
 }
 

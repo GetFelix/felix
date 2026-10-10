@@ -40,6 +40,11 @@ pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
 /// every other short shard is waiting for.
 pub const DEFAULT_RESTORE_STALL_MILLIS: u64 = 2 * 60 * 1_000;
 
+/// How long after a cluster's first broker registered a new shard waits for
+/// enough brokers to hold all its copies before it is placed on fewer.
+/// Brokers started together register within a second or two of each other.
+pub const DEFAULT_PLACEMENT_SETTLE_MILLIS: u64 = 10_000;
+
 /// How moves are paced, and which regions a shard may be placed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovePolicy {
@@ -68,6 +73,12 @@ pub struct MovePolicy {
     /// moving, as this instance watched it, before the restore is given up and
     /// its slot goes to the next shard. `None` waits for `timeout_millis`.
     pub restore_stall_millis: Option<u64>,
+    /// How long after the cluster's first broker registered a new shard
+    /// waits for as many live brokers as its replication factor before it
+    /// is placed on fewer. Only a young cluster waits: one whose oldest
+    /// broker registered longer ago places on whatever is live. `None` never
+    /// waits.
+    pub settle_millis: Option<u64>,
     /// Placement starts no moves or replacements of its own; those in flight
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
@@ -87,6 +98,7 @@ impl Default for MovePolicy {
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
+            settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
@@ -101,8 +113,13 @@ pub(super) struct Moves {
 }
 
 impl Moves {
-    /// The copies `existing` already has in flight.
-    pub(super) fn counting(existing: &[ShardAssignment], policy: MovePolicy) -> Self {
+    /// The copies `existing` already has in flight, except a copy joining a
+    /// shard that is `unpaced`.
+    pub(super) fn counting(
+        existing: &[ShardAssignment],
+        policy: MovePolicy,
+        unpaced: &dyn Fn(&ShardAssignment) -> bool,
+    ) -> Self {
         let mut moves = Self {
             in_flight: 0,
             per_node: HashMap::new(),
@@ -112,11 +129,27 @@ impl Moves {
             if assignment.successor.is_some() || assignment.state == ShardState::Draining {
                 moves.take(&assignment.leader, assignment.successor.as_deref());
             }
-            if let Some(joining) = assignment.joining.as_deref() {
+            if let Some(joining) = assignment.joining.as_deref()
+                && !unpaced(assignment)
+            {
                 moves.take(&assignment.leader, Some(joining));
             }
         }
         moves
+    }
+
+    /// The most records a shard's leader may hold for a copy into it to
+    /// start without a slot.
+    pub(super) fn unpaced_max_records(&self) -> u64 {
+        self.policy.fence_max_lag_records
+    }
+
+    /// Start a copy that takes no slot, unless placement is paused.
+    pub(super) fn begin_unpaced(&self) -> Result<(), Blocked> {
+        if self.policy.paused {
+            return Err(Blocked::Paused);
+        }
+        Ok(())
     }
 
     /// Take a slot for a copy placement wants from `from` to `to`, if

@@ -385,8 +385,10 @@ move in progress it is 409 `not_moving`.
 `replace`, `restore`), start
 time, and from the leader's latest report `lag_records`, `caught_up` and
 `drained`. `GET /v1/placement/plan` lists each shard the next pass would act
-on with its `action` (`place`, a move step, `waiting` or `unplaceable`) and
-the assignment it would write or the reason it cannot.
+on with its `action` (`place`, a move step, `waiting`, `settling` or
+`unplaceable`) and the assignment it would write or the reason it cannot.
+`settling` is a new shard held back while a young cluster has fewer live
+brokers than its replication factor (`FELIX_PLACEMENT_SETTLE_MS`).
 
 ### Tenants, namespaces, streams and caches
 
