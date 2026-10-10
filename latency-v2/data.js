@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791662500760,
+  "lastUpdate": 1791664440573,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -35376,6 +35376,72 @@ window.BENCHMARK_DATA = {
             "range": "963.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 351.00\nmean: 791.40\nstdev: 963.31\ncv: 121.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a34e35364110a2cb54219257b9aba3e1dbf7932e",
+          "message": "fix(replication): report a shard led with no followers so a restore can top it up (#1153) (#1154)\n\nPlacement starts a restore only once the leader has reported at the shard's\ngeneration, which it does only after its promotion fence. The driver skipped\na shard with no followers entirely, so a shard placed while its leader was the\nonly live broker never reported and stayed at one copy for good.\n\nA leader with no followers now sends a report naming nobody, at each new\ngeneration and then once a replication tick so the report stays fresh. A\npromoted shard still fencing is skipped as before, so a restore still never\nstarts from a leader that has not proven it is current. The tail is read from\nan open log only and never goes back within a generation.\n\nSpec-Unaffected: FelixShard.tla does not model the report; it abstracts it as Regenerate's guard (bgen[leader] = gen /\\ ~fencing[leader]), and a report from a leader with no followers is sent under exactly that condition. The placement rule is unchanged.",
+          "timestamp": "2026-10-10T13:30:47-07:00",
+          "tree_id": "c5ba4dd59ec4dafc17fbde97e47c60ff4eec6bbd",
+          "url": "https://github.com/GetFelix/felix/commit/a34e35364110a2cb54219257b9aba3e1dbf7932e"
+        },
+        "date": 1791664437039,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 106.20\nstdev: 0.84\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 141,
+            "range": "3.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 141.60\nstdev: 3.29\ncv: 2.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 190,
+            "range": "285.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 315.60\nstdev: 285.35\ncv: 90.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "3.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 140.40\nstdev: 3.71\ncv: 2.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 273,
+            "range": "188.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 360.40\nstdev: 188.31\ncv: 52.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 355,
+            "range": "843.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 355.00\nmean: 885.20\nstdev: 843.59\ncv: 95.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
