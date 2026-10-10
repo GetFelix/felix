@@ -109,8 +109,17 @@ pub(super) enum Stragglers {
 }
 
 /// One exchange with a follower, as a future the driver can hold across
-/// passes: the cursor it took, and whether a copy was cut at its slice.
-pub(super) type Exchange<'a> = futures::future::BoxFuture<'a, (FollowerCursor, bool)>;
+/// passes.
+pub(super) type Exchange<'a> = futures::future::BoxFuture<'a, Shipped>;
+
+/// What an exchange hands back: the cursors it took, and whether a copy was
+/// cut at its slice.
+pub(super) struct Shipped {
+    pub(super) cursor: FollowerCursor,
+    /// The follower's counter log cursor, when the counters rode the exchange.
+    pub(super) counters: Option<FollowerCursor>,
+    pub(super) cut: bool,
+}
 
 /// One shard's pass: what it shipped, and the cursors it owned while doing it.
 pub(super) struct ShardPass<'a> {
@@ -366,25 +375,31 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         }
     };
     // Counters on a `Quorum` cache are acknowledged at their own mark, under
-    // the same rule as the shard's: shipped first, so the reports below can
-    // leave out a follower missing an acknowledged counter update.
-    let counters = if acks_at_quorum && key.kind == felix_router::ShardKind::Cache {
-        counter_level(
-            requester,
-            broker,
-            marks,
-            key,
-            route,
-            &log,
-            &mut aux,
-            learner.as_deref(),
-            rebuilds,
-            busy,
-            by_followers,
-        )
-        .await
+    // the same rule as the shard's. They ride each follower's exchange, ahead
+    // of the cache log, so the reports below can leave out a follower missing
+    // an acknowledged counter update, and a follower that does not answer
+    // holds neither mark: it is handed off like any other straggler.
+    let counter_log = if acks_at_quorum && key.kind == felix_router::ShardKind::Cache {
+        counter_cursors(broker, key, route, &mut aux.counters).await
     } else {
         None
+    };
+    let counters_of = |followers: Vec<FollowerCursor>| {
+        let counter_log = counter_log.clone();
+        let (log, learner) = (log.clone(), learner.clone());
+        async move {
+            counter_level(
+                marks,
+                key,
+                route,
+                &log,
+                &counter_log?,
+                &followers,
+                learner.as_deref(),
+                by_followers,
+            )
+            .await
+        }
     };
     let mut positions: Vec<FollowerCursor> = entry.followers.clone();
     // Not once the leader is fenced: the shard is not serving until the
@@ -407,15 +422,43 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .filter(|cursor| !busy.contains(&cursor.node_id))
         .map(|cursor| {
             let mut cursor = cursor.clone();
+            let sliced = learner.as_deref() == Some(cursor.node_id.as_str());
+            // Not to a destination still copying, which does not count toward
+            // the counter mark; the end of the pass ships its counters.
+            let mut counters = counter_log
+                .as_ref()
+                .filter(|_| !sliced)
+                .and_then(|_| {
+                    aux.counters
+                        .followers
+                        .iter()
+                        .find(|held| held.node_id == cursor.node_id)
+                })
+                .cloned();
+            let may_rebuild =
+                |cursor: &FollowerCursor| cursor.halted.is_some() || cursor.rebuilding;
             launched.push((
                 cursor.node_id.clone(),
-                cursor.halted.is_some() || cursor.rebuilding,
+                may_rebuild(&cursor) || counters.as_ref().is_some_and(may_rebuild),
             ));
-            let sliced = learner.as_deref() == Some(cursor.node_id.as_str());
             let paced = paced.as_deref() == Some(cursor.node_id.as_str());
             let (log, shard, mark_key) = (log.clone(), shard.clone(), mark_key.clone());
+            let counter_log = counter_log.clone();
             let generation = route.generation;
             let exchange: Exchange<'a> = Box::pin(async move {
+                if let (Some(counter_log), Some(counters)) = (&counter_log, counters.as_mut()) {
+                    while let Progress::Stored { .. } = crate::ship_once(
+                        requester,
+                        counter_log,
+                        &shard,
+                        felix_broker::LogKind::Counters,
+                        counters,
+                        MAX_BATCH_BYTES,
+                        rebuilds,
+                    )
+                    .await
+                    {}
+                }
                 // Keep going while there is more to send, so a follower
                 // catching up is not limited to one batch per tick. It ends on
                 // the first answer that is not progress, which bounds the work
@@ -455,7 +498,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         break;
                     }
                 }
-                (cursor, cut)
+                Shipped {
+                    cursor,
+                    counters,
+                    cut,
+                }
             });
             exchange
         })
@@ -499,9 +546,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     false,
                 ),
                 offset,
+                counters_of(aux.counters.followers.clone()).await,
             ));
         }
     }
+    let voters = positions.iter().filter(|c| counts(&c.node_id)).count();
+    let mut voted = 0;
     // A follower still busy with an earlier pass's exchange can be the one
     // that makes the majority, but its answer goes to the driver, not here.
     // Waiting only on the followers launched would then hold the mark on
@@ -534,18 +584,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         } else {
             in_flight.next().await
         };
-        let Some((cursor, cut)) = next else {
+        let Some(shipped) = next else {
             break;
         };
-        copying |= cut;
-        if counts(&cursor.node_id) {
+        copying |= shipped.cut;
+        if counts(&shipped.cursor.node_id) {
             waiting -= 1;
+            voted += 1;
         }
-        answered.insert(cursor.node_id.clone());
-        settle(&mut positions, cursor);
+        answered.insert(shipped.cursor.node_id.clone());
+        settle(&mut positions, shipped.cursor);
+        if let Some(counters) = shipped.counters {
+            settle(&mut aux.counters.followers, counters);
+        }
         let tail = log.tail_offset().await.unwrap_or(tail);
         let offset = held_offset(tail, &positions);
-        if offset > 0 {
+        let counters = counters_of(aux.counters.followers.clone()).await;
+        // With counters riding along, a majority that has answered is all
+        // this pass can wait for: the cache log may have nothing to count (a
+        // cache used only for counters), and the rest may include a follower
+        // that is gone.
+        let enough = match &counters {
+            Some(level) => {
+                (offset > 0 && level.whole) || voted + 1 >= crate::quorum::majority_of(voters)
+            }
+            None => offset > 0,
+        };
+        if enough {
             majority = Some((
                 shard_report(
                     key,
@@ -556,6 +621,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     false,
                 ),
                 offset,
+                counters,
             ));
             break;
         }
@@ -567,7 +633,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // of the replica set — the same head-of-line block this change exists to
     // remove, just moved onto the reporting hop.
     let report = async {
-        let (mut report, offset) = majority?;
+        let (mut report, offset, counters) = majority?;
         if let Some(counters) = &counters {
             counters.limit(&mut report);
         }
@@ -593,7 +659,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // by another route. The publish waits, the next pass retries, and a
         // client is told a timeout rather than an acknowledgement this
         // broker cannot stand behind.
-        if publish_mark(
+        let landed = publish_mark(
             broker,
             reporter,
             marks,
@@ -603,12 +669,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             offset,
             by_followers,
         )
-        .await
-            && let Some(counters) = &counters
-        {
+        .await;
+        if landed && let Some(counters) = &counters {
             counters.publish(marks, key, route.generation);
         }
-        Some(report)
+        Some((report, landed))
     };
     let mut rest = Vec::new();
     let reported = match stragglers {
@@ -646,18 +711,36 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             futures::future::join(drain, report).await.1
         }
     };
-    for (cursor, cut) in rest {
-        copying |= cut;
-        answered.insert(cursor.node_id.clone());
-        settle(&mut positions, cursor);
+    for shipped in rest {
+        copying |= shipped.cut;
+        answered.insert(shipped.cursor.node_id.clone());
+        settle(&mut positions, shipped.cursor);
+        if let Some(counters) = shipped.counters {
+            settle(&mut aux.counters.followers, counters);
+        }
     }
+    // Their counters rode the exchange, so the end of the pass leaves them be:
+    // shipping again there would hold the pass on any of them that is gone.
+    // A destination still copying gets its counters there.
+    let counters_rode: HashSet<String> = if counter_log.is_some() {
+        launched
+            .iter()
+            .filter(|(node, _)| counts(node))
+            .map(|(node, _)| node.clone())
+            .collect()
+    } else {
+        HashSet::new()
+    };
     // Only non-empty when the next pass was wanted first.
     let straggling: Vec<(String, bool)> = launched
         .into_iter()
         .filter(|(node, _)| !answered.contains(node))
         .collect();
     let exchanges: Vec<Exchange<'a>> = in_flight.into_iter().collect();
-    let mut report_out = reported;
+    let (mut report_out, landed) = match reported {
+        Some((report, landed)) => (Some(report), landed),
+        None => (None, false),
+    };
 
     entry.followers = positions;
 
@@ -721,6 +804,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
+    let counters = counters_of(aux.counters.followers.clone()).await;
     if let Some(counters) = &counters {
         counters.limit(&mut settled);
     }
@@ -750,6 +834,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             counters.publish(marks, key, route.generation);
         }
         report_out = Some(settled);
+    } else if landed && let Some(counters) = &counters {
+        // A follower answering after the report can raise the counter level
+        // without changing the report. Every follower that report names holds
+        // the new level, so it may be released on it.
+        counters.publish(marks, key, route.generation);
     }
 
     // The leader's own copy is bound by its mark as a follower's is: a later
@@ -770,16 +859,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // either: no publish waits on group state or counters, and those lagging
     // must not hold up the records they describe.
     if !quiesced {
-        ship_aux_logs(
-            requester,
-            broker,
-            key,
-            route,
-            &mut aux,
-            rebuilds,
-            &still_busy,
-        )
-        .await;
+        let skip: HashSet<String> = still_busy.union(&counters_rode).cloned().collect();
+        ship_aux_logs(requester, broker, key, route, &mut aux, rebuilds, &skip).await;
     }
 
     // Named, not counted. The metric cannot carry the shard without a label
@@ -832,6 +913,8 @@ pub(super) struct CounterLevel {
     acknowledged: u64,
     /// Followers holding the counter log up to `acknowledged`.
     level: Vec<String>,
+    /// A majority holds the whole counter log.
+    whole: bool,
     /// The followers decided the mark, as for the cache log: it moves without
     /// waiting on the report.
     by_followers: bool,
@@ -859,26 +942,15 @@ impl CounterLevel {
     }
 }
 
-/// Ship a cache shard's counter log and measure it, for [`CounterLevel`].
-/// `None` when the shard has no counter log here.
-///
-/// Counted under the shard's own rules: only past where this leader's
-/// generation begins once the fleet finalized `generation_start`, and on the
-/// followers' answers at this generation with `by_followers`.
-#[allow(clippy::too_many_arguments)]
-async fn counter_level<R: PeerRequester>(
-    requester: &R,
-    broker: &Arc<Broker>,
-    marks: &QuorumMarks,
+/// The counter log of a cache shard and its followers' cursors, reset at a
+/// new generation and matched to the replica set. `None` when the shard has
+/// no counter log here.
+async fn counter_cursors(
+    broker: &Broker,
     key: &ShardKey,
     route: &Route,
-    cache_log: &felix_broker::StreamLog,
-    aux: &mut AuxCursors,
-    learner: Option<&str>,
-    rebuilds: &Rebuilds,
-    busy: &HashSet<String>,
-    by_followers: bool,
-) -> Option<CounterLevel> {
+    entry: &mut ShardCursors,
+) -> Option<felix_broker::StreamLog> {
     let log = broker
         .shard_log(
             felix_broker::LogKind::Counters,
@@ -888,36 +960,41 @@ async fn counter_level<R: PeerRequester>(
             key.shard,
         )
         .await?;
-    // Not to a destination still copying, which does not count toward this
-    // mark, nor to a follower still answering an earlier exchange: either may
-    // be the slow peer the mark must not wait on, and a skipped follower counts
-    // at the position it already had.
-    let skip: HashSet<String> = busy
-        .iter()
-        .cloned()
-        .chain(learner.map(str::to_string))
-        .collect();
-    ship_aux_log(
-        requester,
-        broker,
-        key,
-        route,
-        felix_broker::LogKind::Counters,
-        &mut aux.counters,
-        rebuilds,
-        &skip,
-    )
-    .await;
+    if entry.generation != route.generation {
+        *entry = ShardCursors::at(route.generation);
+    }
+    // Base stays zero, as in `ship_aux_log`.
+    reconcile_followers(entry, route);
+    Some(log)
+}
+
+/// Measure a cache shard's counter log, for [`CounterLevel`]. `None` when its
+/// tail cannot be read.
+///
+/// Counted under the shard's own rules: only past where this leader's
+/// generation begins once the fleet finalized `generation_start`, and on the
+/// followers' answers at this generation with `by_followers`.
+#[allow(clippy::too_many_arguments)]
+async fn counter_level(
+    marks: &QuorumMarks,
+    key: &ShardKey,
+    route: &Route,
+    cache_log: &felix_broker::StreamLog,
+    log: &felix_broker::StreamLog,
+    followers: &[FollowerCursor],
+    learner: Option<&str>,
+    by_followers: bool,
+) -> Option<CounterLevel> {
     let tail = log.tail_offset().await.ok()?;
-    let held = if by_followers {
+    let majority = if by_followers {
         // Read after the tail. A newer leader fences the cache log before the
         // counter log, and once either has answered it, what this broker
         // writes next is in no fence answer.
         let current = cache_log.accepted_generation() <= route.generation
             && log.accepted_generation() <= route.generation;
-        crate::quorum::held_at_generation(tail, current, &aux.counters.followers, learner)
+        crate::quorum::held_at_generation(tail, current, followers, learner)
     } else {
-        quorum_offset_without(tail, &aux.counters.followers, learner)
+        quorum_offset_without(tail, followers, learner)
     };
     let start = log
         .generations()
@@ -926,7 +1003,7 @@ async fn counter_level<R: PeerRequester>(
         .find(|epoch| epoch.generation == route.generation)
         .map(|epoch| epoch.start_offset);
     let held = crate::quorum::counted_offset(
-        held,
+        majority,
         marks
             .own_generation_only()
             .then_some(start.unwrap_or(u64::MAX)),
@@ -950,7 +1027,8 @@ async fn counter_level<R: PeerRequester>(
     };
     Some(CounterLevel {
         acknowledged,
-        level: caught_up(floor, &aux.counters.followers),
+        level: caught_up(floor, followers),
+        whole: majority >= tail,
         by_followers,
     })
 }

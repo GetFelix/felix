@@ -36,6 +36,11 @@ for what the current release guarantees.
 
 ### Fixed
 
+- A `Quorum` cache's writes stalled for seconds after one of its followers
+  died, even with a majority alive: the leader shipped the counter log to
+  every follower and waited for all of them before shipping the cache log,
+  and again at the end of each pass. The counters now ride each follower's
+  exchange, so a follower that does not answer holds neither mark (#1137).
 - Any holder of `token.delegate` could delegate any broker token of the tenant
   it got hold of, a stolen one included, and present it over its own
   certificate. Delegation now takes only tokens minted for the caller.
