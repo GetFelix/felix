@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791612677745,
+  "lastUpdate": 1791616657177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -35046,6 +35046,72 @@ window.BENCHMARK_DATA = {
             "range": "937.71",
             "unit": "us",
             "extra": "trials: 5\nmedian: 414.00\nmean: 816.20\nstdev: 937.71\ncv: 114.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac61f56403b8b8ba140ed34d52e0e80939deef6d",
+          "message": "fix(replication): ship a Quorum cache's counters in each follower's exchange (#1137) (#1142)\n\nBefore shipping a Quorum cache's log, the leader shipped its counter log to\nevery follower and waited for all of them, a dead one included, and shipped\nit again at the end of each pass. Right after a broker died, cache writes\nwaited out the 5 s request timeout on its half-open connection, then about\n2 s each time its reconnect backoff ran out, with a majority alive.\n\nThe counters now ride each follower's exchange, ahead of its cache log. A\nfollower that does not answer is handed to the driver like any straggler,\nthe pass stops waiting once a majority has answered (or both marks have one),\nand the end of the pass ships counters only to followers whose exchange did\nnot carry them. The counter level is measured from the followers' confirmed\npositions as before, the report still leaves out a follower short of the\ncounter mark, and the mark still moves only on a report that landed (or on\nthe followers' answers under fenced_caches).\n\nSpec-Unaffected: FelixShard.tla models ShipCounter and Ship as independent per-follower steps and AckCounters on a majority (CHeldAtGen); the change only picks a different interleaving of those steps and keeps the counter mark rule and the report limit",
+          "timestamp": "2026-10-10T00:13:44-07:00",
+          "tree_id": "0c3af794bc1757258afc4b8e656f0573d65625c6",
+          "url": "https://github.com/GetFelix/felix/commit/ac61f56403b8b8ba140ed34d52e0e80939deef6d"
+        },
+        "date": 1791616653719,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 179.60\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "4.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 243.80\nstdev: 4.02\ncv: 1.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 302,
+            "range": "8.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 302.00\nmean: 301.00\nstdev: 8.49\ncv: 2.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 215.00\nstdev: 1.41\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 434,
+            "range": "4.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 434.00\nmean: 432.20\nstdev: 4.92\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 583,
+            "range": "15.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 583.00\nmean: 579.00\nstdev: 15.98\ncv: 2.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
