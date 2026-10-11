@@ -246,6 +246,13 @@ pub struct BrokerConfig {
     /// a client acting for many users cannot grow broker memory without bound. Unset, four
     /// identities' worth. See [`Self::conn_subscription_ceiling`].
     pub max_subscriptions_per_conn_total: Option<usize>,
+    /// Payload bytes one subscriber's queue may hold before the queue policy
+    /// applies, as it does for a full count. Zero for no byte bound.
+    pub subscriber_queue_max_bytes: usize,
+    /// Payload bytes all subscriber queues together may hold. Zero, the
+    /// default, for no bound. Caps queued memory, but a slow subscriber can
+    /// then cost a fast one records.
+    pub subscriber_queue_max_bytes_total: usize,
     /// Subscriber queue policy for publish->fanout enqueue.
     #[serde(serialize_with = "print::queue_policy")]
     pub subscriber_queue_policy: SubQueuePolicy,
@@ -476,6 +483,8 @@ impl Default for BrokerConfig {
             subscriber_queue_capacity_max: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX,
             max_subscriptions_per_conn: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN,
             max_subscriptions_per_conn_total: None,
+            subscriber_queue_max_bytes: DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES,
+            subscriber_queue_max_bytes_total: 0,
             subscriber_queue_policy: DEFAULT_SUBSCRIBER_QUEUE_POLICY,
             subscriber_writer_lanes: DEFAULT_SUBSCRIBER_WRITER_LANES,
             subscriber_lane_queue_depth: DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH,
