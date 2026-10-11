@@ -433,7 +433,7 @@ subscriber_queue_capacity_max: 4096
 
 #### `subscriber_queue_max_bytes`
 
-**Description**: Payload bytes one subscriber's queue in broker core may hold. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. When either bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
+**Description**: Payload bytes one subscriber's queue in broker core may hold. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. A batch keeps counting after it leaves the queue, until the frame carrying it is written to the subscriber's QUIC stream, so the frames waiting in the writer lanes are bounded too. When either bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
 
 **Type**: `usize` (bytes)
 

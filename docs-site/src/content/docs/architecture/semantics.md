@@ -314,7 +314,9 @@ Each subscription has its own bounded queue and its own QUIC stream.
 
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
   and holds at most `subscriber_queue_max_bytes` of payload in them (default:
-  64 MiB), since one slot can hold a whole batch
+  64 MiB), since one slot can hold a whole batch. Frames taken from the queue
+  but not yet written to the subscription's QUIC stream count toward the
+  bytes too
 - When either fills, new events are **dropped for that subscriber only**
 - Other subscribers continue receiving events normally
 - On a durable stream a drop ends the subscription. The broker delivers what was queued before it, then sends `subscription_lagged` with the first dropped offset, without waiting for another publish; felix-client returns it from `next_event` as a `SubscriptionLagged` error, and does the same for drops in its own queue. A client that did not offer `FEATURE_SUBSCRIPTION_LAGGED` keeps its subscription and can still *detect* a drop, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.

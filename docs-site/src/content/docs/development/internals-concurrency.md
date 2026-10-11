@@ -26,7 +26,7 @@ In publish → delivery order:
 | 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | none, always waits (within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
 | 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
 | 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
-| 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
+| 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream; their bytes count toward checkpoint 5's byte bound | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
 
 Checkpoints 1-2 are client-side (see
 [Internals: The Publish Path](/development/internals-publish/#client-side-publisherpublish)),
@@ -56,9 +56,19 @@ The subscriber queue at checkpoint 5 has the same problem, since one entry is
 a whole published batch, and the same answer: each subscriber has a byte
 semaphore (`stream/budget.rs`), plus an optional broker-wide one. The fanout
 takes the batch's payload bytes with `try_acquire_many_owned` alongside the
-channel slot, and the permit rides in the `QueuedDelivery`, so the bytes come
-back exactly when the entry does. A refusal is handled by the queue policy
-like a full channel, and under `Block` the fanout waits for the bytes.
+channel slot, and the permit rides in the `QueuedDelivery`. A refusal is
+handled by the queue policy like a full channel, and under `Block` the fanout
+waits for the bytes.
+
+The bytes do not come back when the feeder takes the batch. The feeder reads
+with `SubscriptionReceiver::recv_held`, and the permit travels with the frame
+built from it through the writer lane, the connection writer's queue at
+checkpoint 6, and the write itself; a frame built from several batches carries
+all their permits (`HeldBytes::absorb`). So one byte bound covers a
+subscription's whole egress path: frames piling up behind a flow-controlled
+stream fill it, and the next batch meets the policy at checkpoint 5 instead of
+another frame queueing in the lanes. The lanes' entry counts still apply, but
+memory is decided by the byte bound.
 
 ### Why two queue-policy checkpoints on egress (5 and 6)
 

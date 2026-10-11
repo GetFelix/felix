@@ -4,7 +4,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use bytes::Bytes;
-use felix_broker::{DeliveryEnvelope, SubscriptionReceiver};
+use felix_broker::{DeliveryEnvelope, HeldBytes, SubscriptionReceiver};
 
 use crate::observability::tenants::TenantDelivery;
 use crate::observability::timings;
@@ -67,15 +67,18 @@ pub(super) async fn run_lane_feeder(
         config.flush_max_delay,
         config.max_bytes_per_write,
     );
-    let mut pending: Option<DeliveryEnvelope> = None;
+    // Each batch keeps its bytes held against the subscriber's byte bounds
+    // until the frame carrying it is written, so a frame waiting in the lanes
+    // counts toward them like one waiting in the broker queue.
+    let mut pending: Option<(DeliveryEnvelope, HeldBytes)> = None;
     let mut busy = false;
 
     loop {
-        let envelope = match pending.take() {
-            Some(envelope) => envelope,
+        let (envelope, mut held) = match pending.take() {
+            Some(next) => next,
             None => tokio::select! {
-                envelope = event_rx.recv() => match envelope {
-                    Some(envelope) => envelope,
+                next = event_rx.recv_held() => match next {
+                    Some(next) => next,
                     None => break,
                 },
                 () = &mut revoked => {
@@ -121,12 +124,15 @@ pub(super) async fn run_lane_feeder(
                     frame,
                     payloads.len(),
                     first_enqueued_at,
+                    held,
                 )
                 .await;
                 delivery.record(payloads.len(), payload_bytes);
                 continue;
             }
 
+            // The last piece carries the bytes: it is written after the others.
+            let mut held = Some(held);
             let mut start = 0usize;
             while start < payloads.len() {
                 let mut end = start;
@@ -167,6 +173,11 @@ pub(super) async fn run_lane_feeder(
                             frame,
                             batch.len(),
                             first_enqueued_at,
+                            if end == payloads.len() {
+                                held.take().unwrap_or_default()
+                            } else {
+                                HeldBytes::default()
+                            },
                         )
                         .await;
                         delivery.record(batch.len(), bytes);
@@ -217,45 +228,36 @@ pub(super) async fn run_lane_feeder(
         let mut found_queued = false;
 
         while !config.single_event_mode && batch.len() < max_events && batch_bytes < max_bytes {
-            let next = match event_rx.try_recv() {
-                Ok(envelope) => {
+            let next = match event_rx.try_recv_held() {
+                Ok(next) => {
                     found_queued = true;
-                    Some(envelope)
+                    Some(next)
                 }
                 Err(_) => match deadline {
-                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv())
+                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv_held())
                         .await
                         .ok()
                         .flatten(),
                     None => None,
                 },
             };
-            let Some(envelope) = next else {
+            let Some((envelope, next_held)) = next else {
                 break;
             };
-            if envelope.len() != 1 {
-                pending = Some(envelope);
-                break;
-            }
-            if config.offsets_enabled && envelope.base_offset() != expected_next {
+            let payload_len = envelope.payloads().first().map_or(0, Bytes::len);
+            let ends_batch = envelope.len() != 1
                 // Numbering this into the current frame would misreport it.
-                pending = Some(envelope);
-                break;
-            }
-            if config.publisher_enabled && envelope.publisher() != batch_publisher.as_ref() {
-                pending = Some(envelope);
-                break;
-            }
-            // A frame carries a time for every event or for none.
-            if batch_times.is_some() && envelope.timestamp_micros().is_none() {
-                pending = Some(envelope);
+                || (config.offsets_enabled && envelope.base_offset() != expected_next)
+                || (config.publisher_enabled && envelope.publisher() != batch_publisher.as_ref())
+                // A frame carries a time for every event or for none.
+                || (batch_times.is_some() && envelope.timestamp_micros().is_none())
+                || batch_bytes.saturating_add(payload_len) > max_bytes;
+            if ends_batch {
+                pending = Some((envelope, next_held));
                 break;
             }
             let payload = envelope.payloads()[0].clone();
-            if batch_bytes.saturating_add(payload.len()) > max_bytes {
-                pending = Some(envelope);
-                break;
-            }
+            held.absorb(next_held);
             batch_bytes += payload.len();
             batch.push(payload);
             if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
@@ -300,6 +302,7 @@ pub(super) async fn run_lane_feeder(
             frame,
             batch.len(),
             first_enqueued_at,
+            held,
         )
         .await;
         delivery.record(batch.len(), batch_bytes);
@@ -358,6 +361,7 @@ pub(super) async fn enqueue_lane_frame(
     frame: Bytes,
     item_count: usize,
     first_enqueued_at: Instant,
+    held: HeldBytes,
 ) {
     let cmd = LaneCommand::Delivery {
         subscriber_id,
@@ -365,6 +369,7 @@ pub(super) async fn enqueue_lane_frame(
         item_count,
         first_enqueued_at,
         enqueue_at: Instant::now(),
+        held,
     };
     // Fails only once the connection's lanes are gone, and its subscriptions
     // with them.
