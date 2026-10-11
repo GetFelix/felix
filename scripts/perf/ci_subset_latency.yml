@@ -1,14 +1,23 @@
 {
   "defaults": {
-    "trials": 5
+    "trials": 20
   },
   "workload": {
-    "fanout": [1, 10],
-    "batch": [1],
-    "payload_bytes": [256],
+    "fanout": [
+      10
+    ],
+    "batch": [
+      64
+    ],
+    "payload_bytes": [
+      1024
+    ],
     "warmup": 500,
     "total": 5000,
-    "binary": false
+    "binary": true,
+    "_comment_total": "total is a floor; scaled so payload*total >= min_run_bytes (see presets.yml).",
+    "min_run_bytes": 134217728,
+    "max_total": 200000
   },
   "profiles": {
     "balanced": {
@@ -25,12 +34,20 @@
     }
   },
   "presets": {
-    "P1_hash": {
+    "P8_hash": {
       "args": [
-        "--pub-conns", "1", "--pub-streams-per-conn", "1", "--pub-sharding", "hash_stream",
-        "--idle-ms", "10000"
+        "--pub-conns",
+        "4",
+        "--pub-streams-per-conn",
+        "2",
+        "--pub-sharding",
+        "hash_stream",
+        "--idle-ms",
+        "10000"
       ]
     }
   },
-  "preset_order": ["P1_hash"]
+  "preset_order": [
+    "P8_hash"
+  ]
 }
