@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791708131164,
+  "lastUpdate": 1791714823816,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28340,6 +28340,58 @@ window.BENCHMARK_DATA = {
             "range": "4494.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802413.46\nmean: 801256.44\nstdev: 4494.71\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e45c7fce8e8df596803df81d6e61591056337ddc",
+          "message": "fix(placement): seat a new copy only once the leader names it caught up (#1139) (#1162)\n\n* fix(placement): seat a new copy only once the leader names it caught up (#1139)\n\nSeating checked the shard log's offsets, which for a Quorum cache leave\nout the counter log. A copy level on the cache log but missing an\nacknowledged counter update could be seated and counted toward the\nmajority while promotion refused it. On fenced shards the seat now also\nrequires the leader's report to name the copy caught up, which on a\nQuorum cache is limited by the counter level.\n\n* chore(formal): note that #1139 leaves FelixShard unchanged\n\nThe seat guard only gets stricter, so it removes behaviours and every\nsafety property TLC proves under SeatHoldsCopy still holds. For a\nQuorum stream the leader's caught-up set (confirmed >= acknowledged)\nalready implies the spec's HoldsPrefix(j, leader, joinedAt). The cache\nconfigurations never seat a copy (MaxMoves = 0, no spares), and the\ncounter case is availability: promotion already refuses a copy without\nthe counter log, which CounterCatchUp covers.\n\nSpec-Unaffected: the seat guard only narrows; for streams caught_up implies HoldsPrefix, and cache seating is unmodeled and an availability gap only",
+          "timestamp": "2026-10-11T01:06:58-07:00",
+          "tree_id": "65542ecf51fd8d221112f4e287a482014bf80b30",
+          "url": "https://github.com/GetFelix/felix/commit/e45c7fce8e8df596803df81d6e61591056337ddc"
+        },
+        "date": 1791714822712,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341791.61,
+            "range": "8748.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341791.61\nmean: 342496.08\nstdev: 8748.26\ncv: 2.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341791.61,
+            "range": "8748.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341791.61\nmean: 342496.08\nstdev: 8748.26\ncv: 2.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80598.01,
+            "range": "376.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80598.01\nmean: 80464.74\nstdev: 376.88\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805980.15,
+            "range": "3768.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805980.15\nmean: 804647.38\nstdev: 3768.80\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
