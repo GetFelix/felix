@@ -50,7 +50,7 @@ use keys::{CacheKey, NamespaceKey, StreamKey, TopicKey};
 const DEFAULT_TOPIC_CAPACITY: usize = 1024;
 const DEFAULT_LOG_CAPACITY: usize = 1024;
 const DEFAULT_SUB_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
-const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// In-process broker for pub/sub messaging.
 ///
@@ -254,7 +254,7 @@ impl Broker {
     /// How many payload bytes one subscriber's queue may hold; zero for no
     /// bound. When it is full the queue policy applies, as for a full count.
     /// A batch larger than the bound is still queued into an empty queue.
-    /// Defaults to 64 MiB.
+    /// Defaults to 256 MiB.
     pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
         self.subscriber_queue_bytes.per_subscriber = bytes;
         self

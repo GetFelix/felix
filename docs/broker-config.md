@@ -54,7 +54,7 @@ subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
 max_subscriptions_per_conn_total: 16384
-subscriber_queue_max_bytes: 67108864
+subscriber_queue_max_bytes: 268435456
 subscriber_queue_max_bytes_total: 0
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
@@ -324,13 +324,15 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
   chooses only the size, never the policy: under `block` one slow reader would stall every
   publisher on the shard.
-- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 64 MiB) bounds the
+- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 256 MiB) bounds the
   payload bytes one subscriber's broker-core queue holds, since one entry can be a whole frame.
   A batch keeps counting until the frame carrying it has been written to the subscriber's QUIC
   stream, so frames waiting in the writer lanes are inside the bound too. The queue policy
   applies when either bound is full; under `block` the batch goes to every subscriber with
   room before the fanout waits on the full ones. A batch larger than the bound still goes
-  into an empty queue. `0` turns it off.
+  into an empty queue. `0` turns it off. Because the bound reaches the writer lanes, it has to
+  fit what a subscriber that is keeping up has in flight: at 64 MiB, a subscriber reading 4 MiB
+  batches (64 x 64 KiB) at fanout 10 was throttled.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
   bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
   once slow subscribers fill it, fast ones drop too.

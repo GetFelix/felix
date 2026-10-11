@@ -295,7 +295,7 @@ drops across every subscriber, without saying whose they were.
 - The client is on a slow or lossy network: QUIC flow control holds the writes
   back and the queue fills behind them.
 - The records are large. The queue drops once its batches, together with
-  the frames waiting to be written, hold `FELIX_SUB_QUEUE_MAX_BYTES` (64 MiB
+  the frames waiting to be written, hold `FELIX_SUB_QUEUE_MAX_BYTES` (256 MiB
   by default), however few of them there are, so `QUEUE` can show room, even
   `0`, while `DROPPED` climbs.
   `felix_sub_queue_byte_dropped_total` says so.
