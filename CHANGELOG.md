@@ -11,6 +11,15 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+
+- Right after a broker died, a stream with consumer groups could hold each
+  replication pass on it for a request timeout or a dial: the group cursor and
+  dead-letter logs shipped to every follower at the end of the pass, and the
+  next publish waited behind that pass. They now ride each follower's
+  exchange, as a `Quorum` cache's counters do since #1137, and so do a
+  non-`Quorum` cache's counters (#1143).
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
