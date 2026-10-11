@@ -11,6 +11,21 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+- Subscriber queues on the broker are bounded by bytes as well as entries.
+  An entry is a whole published batch, so the count alone let one slow
+  subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  none), and the queue policy handles a full byte bound as it handles a full
+  count: `drop_new` drops the batch for that subscriber, with the same offset
+  gap and drop counters, and `block` waits. A batch larger than the bound
+  still goes into an empty queue. `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` (off by
+  default) caps the bytes held across all subscriber queues, at the cost of
+  isolation between subscribers. New metrics: `felix_sub_queue_bytes` and
+  `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
+  `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
+  (#1157).
+
 ### Fixed
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
   a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
