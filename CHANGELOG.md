@@ -61,6 +61,11 @@ for what the current release guarantees.
   next publish waited behind that pass. They now ride each follower's
   exchange, as a `Quorum` cache's counters do since #1137, and so do a
   non-`Quorum` cache's counters (#1143).
+- A new copy of a `Quorum` cache is no longer seated before it holds the
+  cache's counter log. Seating checked only the cache log's offsets, so the
+  set could count toward its majority a copy that promotion would refuse.
+  A seat on a `Quorum` stream or cache now also waits until the leader's
+  report names the copy caught up (#1139).
 
 ## [0.6.0-preview.6] - 2026-10-10
 
