@@ -25,6 +25,14 @@ for what the current release guarantees.
   `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
   `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
   (#1157).
+- The subscriber byte bounds also cover the broker's writer lanes. A batch's
+  bytes stay held until the frame carrying it is written to the subscriber's
+  QUIC stream, so frames queued behind a flow-controlled subscription count
+  toward `FELIX_SUB_QUEUE_MAX_BYTES` instead of piling up in the lanes by entry
+  count alone (up to 64 frames of up to 16 MiB each per subscription). Under
+  `drop_new` the next batch is dropped at the subscriber queue as before;
+  publishers still never wait. `SubscriptionReceiver` gains `recv_held` and
+  `try_recv_held`, and `HeldBytes` is public (#1163).
 
 ## [0.6.0-preview.6] - 2026-10-10
 

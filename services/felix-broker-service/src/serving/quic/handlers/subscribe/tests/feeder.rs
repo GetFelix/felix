@@ -50,7 +50,20 @@ async fn spawn_feeder(flush_delay: Duration) -> Result<Harness> {
 }
 
 async fn spawn_feeder_capped(flush_delay: Duration, max_bytes: usize) -> Result<Harness> {
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    spawn_feeder_on(
+        Broker::new(EphemeralCache::new().into()),
+        flush_delay,
+        max_bytes,
+    )
+    .await
+}
+
+async fn spawn_feeder_on(
+    broker: Broker,
+    flush_delay: Duration,
+    max_bytes: usize,
+) -> Result<Harness> {
+    let broker = Arc::new(broker);
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
@@ -104,6 +117,42 @@ async fn publish(broker: &Broker) -> Result<()> {
     broker
         .publish("t1", "default", "orders", make_payload(b"event"))
         .await?;
+    Ok(())
+}
+
+async fn publish_len(broker: &Broker, len: usize) -> Result<usize> {
+    Ok(broker
+        .publish("t1", "default", "orders", Bytes::from(vec![7u8; len]))
+        .await?)
+}
+
+/// A frame waiting in the writer lanes still counts against its
+/// subscriber's byte bound, so the broker queue sheds instead of the lanes
+/// piling up frames behind a slow subscriber.
+#[tokio::test]
+async fn lane_feeder_keeps_a_frames_bytes_held_until_it_leaves_the_lanes() -> Result<()> {
+    let broker = Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100);
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_on(broker, Duration::ZERO, 64 * 1024).await?;
+    settle().await;
+
+    assert_eq!(publish_len(&broker, 60).await?, 1);
+    settle().await;
+    let frame = lane_rx.try_recv().expect("the feeder sent the batch on");
+    assert_eq!(
+        publish_len(&broker, 60).await?,
+        0,
+        "the frame in the lane still holds 60 of the 100 bytes"
+    );
+
+    drop(frame);
+    assert_eq!(publish_len(&broker, 60).await?, 1, "room once it is gone");
+    feeder.abort();
     Ok(())
 }
 

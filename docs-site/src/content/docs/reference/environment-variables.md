@@ -578,7 +578,7 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES`
 
-**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads, and keeps counting until the frame carrying it is written to the subscriber's QUIC stream, so frames waiting in the writer lanes count too. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
 
 **Type**: Non-negative integer (bytes)
 

@@ -8,6 +8,11 @@
 //!
 //! The envelope is shared, so a batch queued for many subscribers is counted
 //! once per subscriber: that is what each one is keeping alive.
+//!
+//! A receiver that queues the batch again on its way out, as the broker
+//! service's writer lanes do, can take the bytes with it
+//! ([`SubscriptionReceiver::recv_held`](super::SubscriptionReceiver::recv_held)),
+//! so the same bounds cover that queue too.
 
 use std::sync::Arc;
 
@@ -139,9 +144,10 @@ impl ByteBound {
     }
 }
 
-/// The bytes one queued batch holds, given back on drop.
+/// Bytes one or more queued batches hold against a subscriber's byte
+/// bounds, given back on drop.
 #[derive(Debug, Default)]
-pub(crate) struct HeldBytes {
+pub struct HeldBytes {
     bytes: usize,
     _own: Option<OwnedSemaphorePermit>,
     _broker: Option<OwnedSemaphorePermit>,
@@ -161,6 +167,24 @@ impl HeldBytes {
             _own: own,
             _broker: broker,
         }
+    }
+
+    /// Hold `other`'s bytes as well, until this is dropped.
+    ///
+    /// Both must come from the same subscriber, as they do when one frame is
+    /// built from several of its batches. Panics if they do not.
+    pub fn absorb(&mut self, mut other: HeldBytes) {
+        self.bytes += std::mem::take(&mut other.bytes);
+        merge(&mut self._own, other._own.take());
+        merge(&mut self._broker, other._broker.take());
+    }
+}
+
+fn merge(into: &mut Option<OwnedSemaphorePermit>, from: Option<OwnedSemaphorePermit>) {
+    match (into.as_mut(), from) {
+        (Some(held), Some(more)) => held.merge(more),
+        (None, Some(more)) => *into = Some(more),
+        (_, None) => {}
     }
 }
 
