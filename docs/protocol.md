@@ -299,6 +299,21 @@ Sent only to a client that offered `FEATURE_SHARD_MOVED`: any other client sees
 the stream end after its last event, byte for byte as before. See
 [Shard moves](#shard-moves).
 
+### StreamDeleted (server -> client)
+```
+{ "type": "stream_deleted", "subscription_id": <u64> }
+```
+
+The last frame on the event stream of a subscription whose stream was deleted.
+Everything already queued for the subscriber is delivered first; the broker
+finishes the stream after this. There is nowhere to resume, which is why this
+is not a `shard_moved`: a client following that would go looking for a stream
+that no longer exists. Sent only to a client that offered
+`FEATURE_STREAM_DELETED` in its extended word: any other client sees the stream
+end after its last event, as before. A subscribe that resolved the stream just
+before the delete, and registers just after it, gets an event stream that ends
+at once the same way.
+
 ### Error on an event stream (server -> client)
 
 An `error` frame, as on a control stream, can be the last frame on the event
@@ -1812,6 +1827,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | Bit (`_hi` word) | Name | Meaning |
 |---|---|---|
 | `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info` and `subscriptions_list` with `subscriptions_list_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) and [SubscriptionsList](#subscriptionslist) |
+| `0x2` | `FEATURE_STREAM_DELETED` | The client reads `stream_deleted` at the end of an event stream. See [StreamDeleted](#streamdeleted-server---client) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1898,7 +1914,8 @@ would fail the whole `auth`, which a client cannot avoid because it does not
 know the broker's age until the answer comes back. An unknown field it simply
 ignores.
 
-`FEATURE_INSPECT` is the first feature in the second word. The Rust constants are
+`FEATURE_INSPECT` is the first feature in the second word and
+`FEATURE_STREAM_DELETED` the second. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.
@@ -2048,7 +2065,9 @@ routes have not yet caught up, is answered `shard_unavailable` with reason
 `moving` rather than registered, since nothing would end it.
 
 The same holds for a lease lapse and a deposal, which end a shard's readers
-the same way with no owner named. The broker checks whether it still serves
+the same way with no owner named, and for a broker that closes a shard it no
+longer has any role in while a reader is still attached, which names the
+shard's current leader. The broker checks whether it still serves
 the shard again after registering the new reader, so a reader admitted just
 before one of these endings, and registered just after it, is refused
 (`shard_unavailable`, reason `fenced` for a lapse or `moving` for the rest)
@@ -2083,6 +2102,12 @@ shard. A cache watch resumes at `max(offset after the last change it
 delivered, resume_from)`. `Client` surfaces the frame as
 `Subscription::shard_moved` and `CacheWatchItem::ShardMoved` and leaves the
 resume to the caller.
+
+Deleting a stream ends its subscriptions with `stream_deleted` instead (see
+[StreamDeleted](#streamdeleted-server---client)). `Client` reports it as
+`Subscription::stream_deleted`, `ClusterSubscription::stream_deleted` returns
+the same, and a sharded subscription reports `ShardEvent::StreamDeleted` for
+each shard and does not try to resubscribe it.
 
 ## Topology
 

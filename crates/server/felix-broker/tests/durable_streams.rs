@@ -1786,6 +1786,35 @@ async fn only_a_durable_stream_names_an_offset_to_resume_from() {
     assert_eq!(moved.to, handoff());
 }
 
+/// Closing a shard that still has a reader tells it the shard moved, with
+/// where to resume, when the close knows where the shard went.
+#[tokio::test]
+async fn closing_a_shard_with_a_handoff_tells_its_readers_it_moved() {
+    let dir = tempdir().expect("dir");
+    let (broker, _storage) = broker_with_storage(&dir, FsyncMode::OnCommit).await;
+    register(&broker, "orders", true).await;
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+    broker
+        .publish("t1", "default", "orders", payload("r0"))
+        .await
+        .expect("publish");
+
+    broker
+        .close_stream_shard("t1", "default", "orders", 0, Some(handoff()))
+        .await
+        .expect("close");
+
+    assert!(receiver.recv().await.is_some());
+    assert!(receiver.recv().await.is_none());
+    let moved = receiver.moved().expect("ended by a move");
+    assert_eq!(moved.resume_from, Some(1));
+    assert_eq!(moved.to, handoff());
+}
+
 #[tokio::test]
 async fn an_offset_reader_is_woken_by_a_durable_publish() {
     let dir = tempdir().expect("dir");

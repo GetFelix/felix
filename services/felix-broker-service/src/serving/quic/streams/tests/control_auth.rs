@@ -453,5 +453,9 @@ async fn only_an_extended_offer_hears_the_extended_word() -> Result<()> {
         hi,
         felix_wire::FEATURE_INSPECT
     ));
+    assert!(felix_wire::supports_feature(
+        hi,
+        felix_wire::FEATURE_STREAM_DELETED
+    ));
     Ok(())
 }

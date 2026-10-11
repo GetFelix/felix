@@ -56,6 +56,10 @@ pub(crate) struct EventWriterConfig {
     /// `shard_moved` frame when its shard moves away.
     pub(super) shard_moved_enabled: bool,
 
+    /// Whether this subscriber offered `FEATURE_STREAM_DELETED`, and so gets
+    /// a `stream_deleted` frame when its stream is deleted.
+    pub(super) stream_deleted_enabled: bool,
+
     /// Max number of lane commands to gather per flush.
     pub(super) flush_max_items: usize,
 

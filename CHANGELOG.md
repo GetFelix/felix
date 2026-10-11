@@ -111,6 +111,68 @@ for what the current release guarantees.
   `drop_new` the next batch is dropped at the subscriber queue as before;
   publishers still never wait. `SubscriptionReceiver` gains `recv_held` and
   `try_recv_held`, and `HeldBytes` is public (#1163).
+- Subscriber queues on the broker are bounded by bytes as well as entries.
+  An entry is a whole published batch, so the count alone let one slow
+  subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  none), and the queue policy handles a full byte bound as it handles a full
+  count: `drop_new` drops the batch for that subscriber, with the same offset
+  gap and drop counters, and `block` waits. A batch larger than the bound
+  still goes into an empty queue. `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` (off by
+  default) caps the bytes held across all subscriber queues, at the cost of
+  isolation between subscribers. New metrics: `felix_sub_queue_bytes` and
+  `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
+  `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
+  (#1157).
+- A delegating gateway no longer needs a broker grant it never uses. A
+  principal holding `token.delegate:tenant:{tenant_id}` can exchange for a
+  connection-only broker token, its own subject with no permissions, by
+  sending `"requested": [], "permissions": []` to `/token/exchange` (or the
+  dev-token bootstrap endpoint). Its shared connections authenticate with it,
+  and every request still runs under the user's delegated token. Refresh
+  checks `token.delegate` again and ends the chain once it is removed. Anyone
+  else asking for no permissions still gets `403` `no permissions` (#1130).
+- `ClusterClient::with_identity(tenant_id, token_provider)` and
+  `ClusterClient::with_identity_token` act as another user over the cluster
+  client's connections (#1129), as `Client::with_identity` does for one
+  broker. The result is a `ClusterClient` with its own routing state that
+  follows moved shards, redirects and failovers, reaching each broker over the
+  parent's connection to it, so a gateway sharing connections keeps a user's
+  subscription across a shard move and still holds one connection per broker.
+  The Python `Client.with_identity` and `AsyncClient.with_identity` and the
+  TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
+- Revoking a principal ends what its tokens already opened, on every broker,
+  within about one control-plane sync interval (#1132). Until now a revoked
+  principal kept its open subscriptions, cache watches, publish streams and
+  Kafka connections until its token expired. `POST
+  /v1/tenants/{t}/refresh-tokens/revoke` now also records a revocation, and so
+  does removing an RBAC policy or role assignment, for everyone the rule
+  reached (the whole tenant when it reached an IdP group). Brokers poll the new
+  `GET /v1/principal-revocations/changes` feed, refuse broker tokens issued at
+  or before a revocation, and end the streams they opened with the new
+  `revoked` error code (16, `fatal`): an `error` on a control stream, or as the
+  last frame on a subscription's or cache watch's event stream. A Kafka
+  connection is closed at its next request. Under the Raft store this is
+  metadata version 7, and until every member has it the revoke endpoint
+  answers `409` after revoking the refresh tokens. See
+  [docs/auth.md](docs/auth.md#revoking-a-principal).
+- `CacheWatch::refusal` in the Rust client says why the broker ended a watch
+  with an error, such as `revoked`. A subscription ended that way returns the
+  `BrokerError` from `next_event` instead of an "unexpected message" error.
+- A subscription ended because its stream was deleted now says so. The broker
+  sends `stream_deleted` as its last frame to a client that offered the new
+  extended feature bit `FEATURE_STREAM_DELETED`; any other client sees the
+  stream end as before. Removing a stream used to leave its subscribers
+  waiting on a feed nothing would end. The Rust client reports it as
+  `Subscription::stream_deleted` and `ClusterSubscription::stream_deleted`,
+  and a sharded subscription yields `ShardEvent::StreamDeleted` for each shard
+  instead of trying to resubscribe it (`StreamDeleted` in Python,
+  `streamDeleted` in TypeScript).
+
+### Changed
+- A broker closing a shard it no longer has any role in tells a reader still
+  attached that the shard moved, naming its current leader, rather than just
+  ending the stream. `Broker::close_stream_shard` takes the handoff.
 
 ### Fixed
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on

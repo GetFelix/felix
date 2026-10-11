@@ -16,7 +16,7 @@ use quinn::RecvStream;
 use tokio::sync::mpsc;
 
 use super::queue::{Enqueued, enqueue_with_policy};
-use super::{QueuedEvent, ShardMoved, Subscription};
+use super::{Ended, QueuedEvent, ShardMoved, Subscription};
 use crate::config::ClientSubQueuePolicy;
 use crate::connection::StreamLease;
 use crate::frame_io::read_frame_into_with_limit;
@@ -55,7 +55,7 @@ impl Subscription {
         let capacity = config.queue_capacity.max(1);
         let (frame_tx, frame_rx) = mpsc::channel(capacity);
         let (event_tx, event_rx) = mpsc::channel(capacity);
-        let shard_moved = Arc::new(OnceLock::new());
+        let ended = Arc::new(OnceLock::new());
         let end = Arc::new(End::default());
 
         // The io task is woken per slice of arriving stream data, so it runs
@@ -76,7 +76,7 @@ impl Subscription {
             config.queue_policy,
             capacity,
             config.subscription_id,
-            Arc::clone(&shard_moved),
+            Arc::clone(&ended),
             config.live_offset,
             end,
         ));
@@ -96,7 +96,7 @@ impl Subscription {
             start_offset: None,
             live_offset: None,
             queue_capacity: None,
-            shard_moved,
+            ended,
         }
     }
 }
@@ -230,7 +230,7 @@ async fn run_subscription_dispatch_task(
     queue_policy: ClientSubQueuePolicy,
     queue_capacity: usize,
     subscription_id: u64,
-    shard_moved: Arc<OnceLock<ShardMoved>>,
+    ended: Arc<OnceLock<Ended>>,
     live_offset: Option<u64>,
     end: Arc<End>,
 ) {
@@ -421,12 +421,16 @@ async fn run_subscription_dispatch_task(
                         // Returning drops the event sender, so the reader sees
                         // the events queued before this and then `None`, by
                         // which time the slot is set.
-                        let _ = shard_moved.set(ShardMoved {
+                        let _ = ended.set(Ended::Moved(ShardMoved {
                             resume_from,
                             node_id,
                             addr,
                             generation,
-                        });
+                        }));
+                        return;
+                    }
+                    Message::StreamDeleted { .. } => {
+                        let _ = ended.set(Ended::Deleted);
                         return;
                     }
                     Message::SubscriptionLagged { resume_from, .. } => {

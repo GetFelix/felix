@@ -104,7 +104,8 @@ impl From<felix_client::ShardMoved> for ShardMoved {
 /// Exactly one of these is set. A lost shard does not affect the others: they
 /// keep delivering while that one is re-established, and it resumes from its
 /// own last offset so nothing is skipped. A moved shard is followed: its
-/// records carry on from the new owner, or a loss comes next.
+/// records carry on from the new owner, or a loss comes next. A deleted
+/// stream ends the shard for good.
 #[napi(object)]
 pub struct ShardEvent {
     pub shard: u32,
@@ -112,6 +113,7 @@ pub struct ShardEvent {
     pub lost_error: Either<String, Null>,
     pub recovered: Either<bool, Null>,
     pub shard_moved: Either<ShardMoved, Null>,
+    pub stream_deleted: Either<bool, Null>,
 }
 
 /// `value` as JavaScript's `null` when absent, which is what the typings say.

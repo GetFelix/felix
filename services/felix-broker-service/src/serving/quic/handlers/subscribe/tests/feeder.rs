@@ -84,6 +84,7 @@ async fn spawn_feeder_on(
         offsets_enabled: false,
         skip_enabled: false,
         shard_moved_enabled: false,
+        stream_deleted_enabled: false,
         subscription_id: 1,
         max_events: 64,
         max_bytes,
@@ -370,11 +371,23 @@ async fn feed_to_the_end(
     event_rx: felix_broker::SubscriptionReceiver,
     shard_moved_enabled: bool,
 ) -> Result<(usize, Message)> {
+    let (delivered, last) = feed_until_unregistered(event_rx, shard_moved_enabled, false).await?;
+    Ok((delivered, last.expect("a last frame")))
+}
+
+/// Like [`feed_to_the_end`], for a subscription that may end with no last
+/// frame at all.
+async fn feed_until_unregistered(
+    event_rx: felix_broker::SubscriptionReceiver,
+    shard_moved_enabled: bool,
+    stream_deleted_enabled: bool,
+) -> Result<(usize, Option<Message>)> {
     let (manager, mut lane_rx) = capture_lane();
     let config = EventWriterConfig {
         offsets_enabled: true,
         skip_enabled: false,
         shard_moved_enabled,
+        stream_deleted_enabled,
         subscription_id: 1,
         max_events: 64,
         max_bytes: 64 * 1024,
@@ -402,15 +415,47 @@ async fn feed_to_the_end(
             .await?
             .expect("lane open")
         {
-            LaneCommand::Unregister { last, .. } => break last.expect("a last frame"),
+            LaneCommand::Unregister { last, .. } => break last,
             other => delivered += item_count(other),
         }
     };
     tokio::time::timeout(Duration::from_secs(2), feeder).await??;
-    Ok((
-        delivered,
-        Message::decode(felix_wire::Frame::decode(last)?)?,
-    ))
+    let last = match last {
+        Some(frame) => Some(Message::decode(felix_wire::Frame::decode(frame)?)?),
+        None => None,
+    };
+    Ok((delivered, last))
+}
+
+/// A subscriber of a deleted stream gets what was queued, then
+/// `stream_deleted` when it offered the feature and a plain end otherwise.
+#[tokio::test]
+async fn lane_feeder_ends_a_deleted_stream_with_stream_deleted() -> Result<()> {
+    for offered in [true, false] {
+        let broker = Broker::new(EphemeralCache::new().into());
+        broker.register_tenant("t1").await?;
+        broker.register_namespace("t1", "default").await?;
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                "orders",
+                felix_broker::StreamMetadata::default(),
+            )
+            .await?;
+        let (event_rx, _guard) = broker
+            .subscribe("t1", "default", "orders", 0)
+            .await?
+            .into_parts();
+        publish(&broker).await?;
+        assert!(broker.remove_stream("t1", "default", "orders").await?);
+
+        let (delivered, last) = feed_until_unregistered(event_rx, true, offered).await?;
+        assert_eq!(delivered, 1);
+        let expected = offered.then_some(Message::StreamDeleted { subscription_id: 1 });
+        assert_eq!(last, expected, "offered: {offered}");
+    }
+    Ok(())
 }
 
 /// A subscription that asked to end at its first drop sends what was queued

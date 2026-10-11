@@ -523,6 +523,9 @@ with client.subscribe_sharded("t1", "default", "orders") as stream:
         elif isinstance(item, felix.ShardMoved):
             # Followed to its new owner; its records carry on from there.
             log.info("shard %d moved to %s", item.shard, item.node_id)
+        elif isinstance(item, felix.StreamDeleted):
+            # The stream is gone; this shard is not reopened.
+            log.info("shard %d: stream deleted", item.shard)
 ```
 
 Resuming is a **map**, not a number, because offsets are per shard:

@@ -115,6 +115,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: Either::B(Null),
             recovered: Either::B(Null),
             shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardLost { shard, error } => ShardEvent {
             shard,
@@ -122,6 +123,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: Either::A(error),
             recovered: Either::B(Null),
             shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardRecovered { shard } => ShardEvent {
             shard,
@@ -129,6 +131,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: Either::B(Null),
             recovered: Either::A(true),
             shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardMoved { shard, moved } => ShardEvent {
             shard,
@@ -136,6 +139,15 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: Either::B(Null),
             recovered: Either::B(Null),
             shard_moved: Either::A(moved.into()),
+            stream_deleted: Either::B(Null),
+        },
+        felix_client::ShardEvent::StreamDeleted { shard } => ShardEvent {
+            shard,
+            event: Either::B(Null),
+            lost_error: Either::B(Null),
+            recovered: Either::B(Null),
+            shard_moved: Either::B(Null),
+            stream_deleted: Either::A(true),
         },
         _ => return None,
     })

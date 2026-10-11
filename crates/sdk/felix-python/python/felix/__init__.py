@@ -75,6 +75,7 @@ from ._felix import (
     ShardRecovered,
     ShardUnavailableError,
     StateValue,
+    StreamDeleted,
     SubscriptionHandle,
     __version__,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "ShardLost",
     "ShardRecovered",
     "ShardMoved",
+    "StreamDeleted",
     # Queues
     "GroupRecord",
     # Cache watches

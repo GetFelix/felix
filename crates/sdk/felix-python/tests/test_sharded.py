@@ -161,6 +161,7 @@ def test_shard_lifecycle_events_are_a_distinct_type(client, fixture, key):
     assert hasattr(felix.ShardRecovered, "shard")
     for field in ("shard", "resume_from", "node_id", "addr", "generation"):
         assert hasattr(felix.ShardMoved, field)
+    assert hasattr(felix.StreamDeleted, "shard")
 
     stream = fixture["durable_stream"]
     with client.subscribe_sharded(
@@ -177,5 +178,11 @@ def test_shard_lifecycle_events_are_a_distinct_type(client, fixture, key):
 
     assert isinstance(
         item,
-        (felix.ShardRecord, felix.ShardLost, felix.ShardRecovered, felix.ShardMoved),
+        (
+            felix.ShardRecord,
+            felix.ShardLost,
+            felix.ShardRecovered,
+            felix.ShardMoved,
+            felix.StreamDeleted,
+        ),
     ), f"a sharded subscription yielded {type(item).__name__}"

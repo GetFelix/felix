@@ -127,6 +127,51 @@ async fn remove_stream_succeeds() {
     assert!(!broker.stream_exists("t1", "default", "orders").await);
 }
 
+/// Removing a stream ends its subscriptions after what was already queued,
+/// each told the stream was deleted.
+#[tokio::test]
+async fn remove_stream_ends_subscriptions_as_deleted() {
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await
+        .expect("stream");
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+    broker
+        .publish("t1", "default", "orders", Bytes::from_static(b"queued"))
+        .await
+        .expect("publish");
+
+    assert!(
+        broker
+            .remove_stream("t1", "default", "orders")
+            .await
+            .expect("remove")
+    );
+
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        assert!(
+            receiver.recv().await.is_some(),
+            "queued delivery was dropped"
+        );
+        receiver.recv().await
+    })
+    .await
+    .expect("the subscription did not end");
+    assert!(ended.is_none());
+    assert!(receiver.deleted());
+    assert_eq!(receiver.moved(), None);
+}
+
 /// A durable broker whose segments hold about two records each.
 fn small_segment_broker(dir: &std::path::Path) -> Broker {
     let config = felix_storage::log::LogConfig {

@@ -379,7 +379,9 @@ async fn serve_stream(
                     for message in scripted.unwrap_or_default() {
                         ended = matches!(
                             message,
-                            Message::SubscriptionLagged { .. } | Message::ShardMoved { .. }
+                            Message::SubscriptionLagged { .. }
+                                | Message::StreamDeleted { .. }
+                                | Message::ShardMoved { .. }
                         );
                         write_message(&mut events, message).await?;
                     }

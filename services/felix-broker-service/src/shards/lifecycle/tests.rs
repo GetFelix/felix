@@ -385,7 +385,11 @@ mod driver {
             Ok(())
         }
 
-        async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+        async fn close(
+            &self,
+            key: &ShardKey,
+            _handoff: Option<felix_broker::ShardHandoff>,
+        ) -> anyhow::Result<()> {
             self.teardown
                 .lock()
                 .expect("lock")
@@ -1143,4 +1147,45 @@ fn a_moving_shard_names_where_it_is_headed() {
 
     own.observe(&key(0), None);
     assert_eq!(own.headed(&key(0)), None);
+}
+
+/// A close says where the shard went when it still has an assignment, so a
+/// reader still attached is told it moved; one whose assignment is gone has
+/// nowhere to point.
+#[test]
+fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
+    let mut own = lifecycle();
+    let mine = HashMap::from([
+        (key(0), assigned_to("broker-a", 1)),
+        (key(1), {
+            let mut assignment = assigned_to("broker-a", 1);
+            assignment.key = key(1);
+            assignment
+        }),
+    ]);
+    assert!(own.relinquished(&mine).is_empty());
+
+    let elsewhere = HashMap::from([(key(0), assigned_to("broker-b", 4))]);
+    let mut closes = own.relinquished(&elsewhere);
+    closes.sort_by_key(|action| match action {
+        Action::Close { key, .. } => key.shard,
+        _ => u32::MAX,
+    });
+    assert_eq!(
+        closes,
+        [
+            Action::Close {
+                key: key(0),
+                handoff: Some(felix_broker::ShardHandoff {
+                    node_id: Some("broker-b".to_string()),
+                    addr: None,
+                    generation: 4,
+                }),
+            },
+            Action::Close {
+                key: key(1),
+                handoff: None,
+            },
+        ]
+    );
 }

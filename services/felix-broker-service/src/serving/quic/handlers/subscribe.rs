@@ -101,6 +101,7 @@ pub(crate) async fn handle_subscribe_message(
     queue_capacity: Option<u32>,
     peer_flags: u16,
     peer_features: u32,
+    peer_features_hi: u32,
     owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
     let principal = owner.map(|auth| auth.subject.clone());
@@ -435,6 +436,10 @@ pub(crate) async fn handle_subscribe_message(
             shard_moved_enabled: felix_wire::supports_feature(
                 peer_features,
                 felix_wire::FEATURE_SHARD_MOVED,
+            ),
+            stream_deleted_enabled: felix_wire::supports_feature(
+                peer_features_hi,
+                felix_wire::FEATURE_STREAM_DELETED,
             ),
             flush_max_items: config.subscriber_flush_max_items.max(1),
             flush_max_delay: Duration::from_micros(config.subscriber_flush_max_delay_us.max(1)),

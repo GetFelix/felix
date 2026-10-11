@@ -128,7 +128,12 @@ pub enum Action {
     Prepare { key: ShardKey },
     /// This broker is no longer the shard's leader, a replica, or a move's
     /// destination. Close what it holds open for it.
-    Close { key: ShardKey },
+    Close {
+        key: ShardKey,
+        /// Where the shard is now, when it still has an assignment, for any
+        /// reader still attached.
+        handoff: Option<felix_broker::ShardHandoff>,
+    },
     /// Nothing to do.
     None,
 }
@@ -445,13 +450,23 @@ impl ShardLifecycle {
             if has_role {
                 self.held.insert(key.clone());
             } else if self.held.remove(key) {
-                closes.push(Action::Close { key: key.clone() });
+                closes.push(Action::Close {
+                    key: key.clone(),
+                    handoff: Some(felix_broker::ShardHandoff {
+                        node_id: Some(assignment.leader.clone()),
+                        addr: None,
+                        generation: assignment.generation,
+                    }),
+                });
             }
         }
         self.held.retain(|key| {
             let assigned = assignments.contains_key(key);
             if !assigned {
-                closes.push(Action::Close { key: key.clone() });
+                closes.push(Action::Close {
+                    key: key.clone(),
+                    handoff: None,
+                });
             }
             assigned
         });
@@ -671,7 +686,13 @@ pub trait ShardStore: Send + Sync {
     fn prepare(&self, _key: &ShardKey) {}
     /// Close the logs and drop the in-memory state held for a shard this
     /// broker has no role in any more. A later open recovers it from disk.
-    async fn close(&self, _key: &ShardKey) -> anyhow::Result<()> {
+    /// A reader still attached is told the shard moved when there is a
+    /// `handoff`.
+    async fn close(
+        &self,
+        _key: &ShardKey,
+        _handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -870,11 +891,21 @@ impl ShardReaders {
     }
 
     /// Close everything the broker holds open for the shard.
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         let closed = match key.kind {
             ShardKind::Stream => {
                 self.broker
-                    .close_stream_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .close_stream_shard(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        handoff.map(|to| self.with_addr(to)),
+                    )
                     .await
             }
             ShardKind::Cache => {
@@ -908,15 +939,19 @@ impl ShardReaders {
         }
     }
 
+    /// `to` with the next owner's client address filled in, when the cluster
+    /// publishes one.
+    fn with_addr(&self, mut to: felix_broker::ShardHandoff) -> felix_broker::ShardHandoff {
+        if to.addr.is_none()
+            && let (Some(node_id), Some(endpoints)) = (&to.node_id, &self.endpoints)
+        {
+            to.addr = endpoints.redirect_addr(node_id);
+        }
+        to
+    }
+
     async fn end(&self, key: &ShardKey, handoff: Option<felix_broker::ShardHandoff>, quiet: bool) {
-        let handoff = handoff.map(|mut to| {
-            if to.addr.is_none()
-                && let (Some(node_id), Some(endpoints)) = (&to.node_id, &self.endpoints)
-            {
-                to.addr = endpoints.redirect_addr(node_id);
-            }
-            to
-        });
+        let handoff = handoff.map(|to| self.with_addr(to));
         let ended = match key.kind {
             ShardKind::Stream => {
                 self.broker
@@ -1170,9 +1205,13 @@ impl ShardStore for DurableShardStore {
         }
     }
 
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         match &self.readers {
-            Some(readers) => readers.close(key).await,
+            Some(readers) => readers.close(key, handoff).await,
             // Without the broker there is only the stream log to close; a
             // cache's lives in the cache store, which only the broker reaches.
             None if key.kind == ShardKind::Stream => self
@@ -1231,9 +1270,13 @@ impl ShardStore for EphemeralShardStore {
     }
 
     /// No logs, but the stream's in-memory state still goes.
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         match &self.readers {
-            Some(readers) => readers.close(key).await,
+            Some(readers) => readers.close(key, handoff).await,
             None => Ok(()),
         }
     }
@@ -1248,7 +1291,7 @@ pub async fn apply(
     match action {
         Action::None => {}
         Action::Prepare { key } => store.prepare(&key),
-        Action::Close { key } => match store.close(&key).await {
+        Action::Close { key, handoff } => match store.close(&key, handoff).await {
             Ok(()) => tracing::info!(
                 kind = ?key.kind,
                 name = %key.stream,
