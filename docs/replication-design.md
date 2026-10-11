@@ -1805,6 +1805,16 @@ gets its counters at the end of the pass
 `a_follower_dialled_after_each_backoff_holds_no_counter_mark`,
 `with_no_follower_answering_no_counter_add_is_acknowledged`).
 
+A stream shard's group cursors and dead letters ride the exchanges too, beside
+the shard's log rather than ahead of it, since nothing waits on their marks.
+Shipped at the end of the pass instead, they went to every follower that was
+not busy, and a dead follower whose exchange had nothing of the shard's to send
+held the end of the pass, and with it the next pass and the publishes waiting
+on it, for a request timeout or a dial (#1143). A non-`Quorum` cache's counters
+ride the same way. Only a move's destination still gets its counters at the
+end of the pass (`a_dead_follower_holds_no_pass_on_a_group_cursor`,
+`a_dead_follower_holds_no_pass_on_a_dead_letter`).
+
 The replica report goes to the control plane **before** the mark is published,
 and is awaited. Releasing the publish first leaves a window in which a leader
 has told a client its record is on a majority and has told the control plane
@@ -2062,9 +2072,8 @@ still writing.
 The report covers the logs that ride the shard as well as the shard's own. A
 stream shard carries its consumer groups' cursors and dead letters, a cache
 shard its counters; they are written through the same fence and shipped to
-the same replicas. Normally they go after the report and never hold it up,
-since no publish waits on group state. A `Quorum` cache's counters, which a
-counter add does wait on, ride each follower's exchange instead (see
+the same replicas. Normally they ride each follower's exchange, so a follower
+that does not answer holds up neither the report nor the next pass (see
 [What is implemented so far](#what-is-implemented-so-far)). The drained pass
 is the exception: it ships them first, and reports `drained` only once the
 move's successor holds the shard's log and each of them. A dead letter or
