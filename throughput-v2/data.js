@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791727975814,
+  "lastUpdate": 1791731588729,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28548,6 +28548,58 @@ window.BENCHMARK_DATA = {
             "range": "7824.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807046.09\nmean: 806439.27\nstdev: 7824.65\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0c59434ab929425ce3d792dafb0fd6dcdb95fc4",
+          "message": "feat(broker): tell subscribers why their stream ended (#1119) (#1167)\n\nremove_stream now ends a stream's subscriptions with a reason. A client that\noffers the new extended feature bit FEATURE_STREAM_DELETED gets a last\nstream_deleted frame; any other client sees the stream end as before.\nBefore this, removing a stream only deactivated it, so its subscribers were\nleft on a feed nothing would end. A subscribe that resolved the stream just\nbefore the delete and registers just after gets a feed that is already over.\n\nclose_stream_shard takes a handoff. The lifecycle's Close action carries\nthe shard's current leader and generation while the shard is still\nassigned, so a reader still attached is told shard_moved instead of a plain\nend. A Close for a shard whose assignment is gone keeps the plain end.\n\nThe Rust client reports Subscription::stream_deleted and\nClusterSubscription::stream_deleted, and a sharded subscription yields\nShardEvent::StreamDeleted and stops that shard instead of resubscribing.\nThe Python and TypeScript bindings surface it on sharded events. The\nconformance suite checks both the offered and the plain case.\n\nSpec-Unaffected: reader end reasons only; no lease, mark, report, promotion or handoff ordering change.",
+          "timestamp": "2026-10-11T08:05:07-07:00",
+          "tree_id": "f30212b4b85b2745f0d0606c637842e29dacff97",
+          "url": "https://github.com/GetFelix/felix/commit/e0c59434ab929425ce3d792dafb0fd6dcdb95fc4"
+        },
+        "date": 1791731588062,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337523.47,
+            "range": "7054.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337523.47\nmean: 338225.16\nstdev: 7054.25\ncv: 2.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337523.47,
+            "range": "7054.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337523.47\nmean: 338225.16\nstdev: 7054.25\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79458.36,
+            "range": "4340.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79458.36\nmean: 77468.82\nstdev: 4340.90\ncv: 5.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794583.6,
+            "range": "43408.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794583.60\nmean: 774688.18\nstdev: 43408.98\ncv: 5.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
