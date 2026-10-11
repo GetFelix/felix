@@ -189,9 +189,10 @@ at each level:
   publishes; when full, new publishes wait up to
   `publish_queue_wait_timeout_ms`, then fail. That failure means the broker
   is overloaded, and it is deliberately visible.
-- **The subscriber queue** (`subscriber_queue_capacity`) bounds what one
-  subscription can have pending. What happens when it fills is set by the
-  overflow policy:
+- **The subscriber queue** bounds what one subscription can have pending, by
+  entries (`subscriber_queue_capacity`) and by payload bytes
+  (`subscriber_queue_max_bytes`, 64 MiB by default). What happens when either
+  fills is set by the overflow policy:
 
 ![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/diagrams/slow-consumer.svg)
 
@@ -204,6 +205,22 @@ earlier offset reads history the broker pages off disk for it alone, with no
 publisher to protect, so history below the subscription's `live_offset` is
 never dropped: the client waits for room in its queue, and a slow reader slows
 the replay instead of losing part of it.
+
+The byte bound exists because an entry is a whole published batch, and a
+batch can be as large as a frame: 4096 queued 16 MiB batches would be 64 GiB
+held for one slow reader. Each queued batch counts its records' payload bytes.
+The batch is shared between subscribers, so the same bytes count once in every
+queue that holds them, which is what each of those queues is keeping alive. A
+batch larger than the bound still goes into an empty queue, so an oversize
+record waits for the queue to drain instead of never being delivered. A drop
+caused by the byte bound is the same drop as one caused by the count: the same
+offset gap, the same `subscription_lagged` on a durable stream, the same
+counters, plus `felix_sub_queue_byte_dropped_total`.
+
+`subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
+on the broker. It is off by default because it gives up isolation: once slow
+subscribers hold the shared budget, a fast subscriber's batch meets the
+overflow policy too.
 
 `DropOld` is accepted in configuration and counted separately, but it currently
 behaves as `DropNew`: the arriving record is the one discarded. The metric
@@ -220,8 +237,8 @@ records.
 The broker clamps the request to between 1 and
 `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (default 4096) and answers with the
 capacity it granted, so the client knows what it got. Each queued batch stays
-in broker memory until the subscriber reads it, and the maximum is what bounds
-that per subscriber. In the Rust client, set
+in broker memory until the subscriber reads it; the maximum and the byte bound
+are what limit that per subscriber. In the Rust client, set
 `ClientConfig::broker_sub_queue_capacity` and read the grant from
 `Subscription::queue_capacity`. A broker that predates the option does not
 advertise `FEATURE_SUBSCRIBE_QUEUE`; the client does not ask it, and the

@@ -431,6 +431,34 @@ subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 ```
 
+#### `subscriber_queue_max_bytes`
+
+**Description**: Payload bytes one subscriber's queue in broker core may hold. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. When either bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
+
+**Type**: `usize` (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES`
+
+```yaml
+subscriber_queue_max_bytes: 67108864
+```
+
+#### `subscriber_queue_max_bytes_total`
+
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber queue it sits in, which is what each queue keeps alive, so the real memory is at most this.
+
+**Type**: `usize` (bytes)
+
+**Default**: `0` (no bound)
+
+**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
+
+```yaml
+subscriber_queue_max_bytes_total: 0
+```
+
 #### `max_subscriptions_per_conn`
 
 **Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. `subscriber_queue_capacity` bounds the size of one subscription's buffer; this bounds how many subscriptions there are. A plain client authenticates every stream as one identity, so for it this is the connection's cap. A client acting for many users over one connection (`Client::with_identity`) gets this many per user, so one user at the cap cannot take every slot. The users still share `max_subscriptions_per_conn_total`: with the defaults, four users at their cap fill it and a fifth is refused.

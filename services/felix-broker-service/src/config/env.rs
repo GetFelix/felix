@@ -286,6 +286,14 @@ impl BrokerConfig {
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0);
+        let subscriber_queue_max_bytes = std::env::var("FELIX_SUB_QUEUE_MAX_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES);
+        let subscriber_queue_max_bytes_total = std::env::var("FELIX_SUB_QUEUE_MAX_BYTES_TOTAL")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
         let subscriber_queue_policy = std::env::var("FELIX_SUB_QUEUE_POLICY")
             .ok()
             .and_then(|value| parse_sub_queue_policy(&value))
@@ -423,6 +431,8 @@ impl BrokerConfig {
             subscriber_queue_capacity_max,
             max_subscriptions_per_conn,
             max_subscriptions_per_conn_total,
+            subscriber_queue_max_bytes,
+            subscriber_queue_max_bytes_total,
             subscriber_queue_policy,
             subscriber_writer_lanes,
             subscriber_lane_queue_depth,
