@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791714820734,
+  "lastUpdate": 1791722437090,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36036,6 +36036,72 @@ window.BENCHMARK_DATA = {
             "range": "874.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 604.00\nmean: 996.80\nstdev: 874.80\ncv: 87.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f006685253e8edea076dcdf5ce3133eb45c979be",
+          "message": "fix(auth): revoking a principal ends its open streams (#1132) (#1168)\n\nA revocation is now a cutoff time the control plane records per principal\nand brokers poll from GET /v1/principal-revocations/changes on the catalog\nsync interval. The revoke endpoint records one, and so does removing an RBAC\npolicy or role assignment, for every principal the rule reached (the whole\ntenant when it reached an IdP group).\n\nA broker refuses broker tokens issued at or before a revocation and ends\nwhat they opened: control streams get an error with the new `revoked` code,\nsubscriptions and cache watches get it as the last frame on their event\nstream, uni publish streams are closed, and Kafka connections close at their\nnext request. A mint in the same second as a revocation waits that second\nout, and /token/delegate refuses a revoked subject token.\n\nRaft store: revoke_principals is metadata level 7 and the snapshot carries\nthe revocations. Postgres: migration 0025.",
+          "timestamp": "2026-10-11T05:02:32-07:00",
+          "tree_id": "c4ae674bce5a52d3d141d0e830b2fbb9d3419d8c",
+          "url": "https://github.com/GetFelix/felix/commit/f006685253e8edea076dcdf5ce3133eb45c979be"
+        },
+        "date": 1791722433747,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 69.20\nstdev: 2.05\ncv: 2.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 91.40\nstdev: 2.30\ncv: 2.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 117,
+            "range": "47.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 138.80\nstdev: 47.64\ncv: 34.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 88.20\nstdev: 2.59\ncv: 2.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "15.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 193.40\nstdev: 15.53\ncv: 8.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 288,
+            "range": "164.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 288.00\nmean: 382.60\nstdev: 164.90\ncv: 43.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
