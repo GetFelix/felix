@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791703089829,
+  "lastUpdate": 1791704321160,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28184,6 +28184,58 @@ window.BENCHMARK_DATA = {
             "range": "12701.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1157963.98\nmean: 1160420.72\nstdev: 12701.46\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1118d903e4b1d67a18449d937aca80bf215a3141",
+          "message": "fix(cluster): wait_for_replication waits for a follower at the leader's tail (#1136) (#1161)\n\nIt returned once the leader had shipped anything, which the harness's\nstart-up probe already makes true. It now reads the leader's tail with\nshard_inspect and waits for a report at that generation, at or past that\ntail, naming a caught-up follower whose position reaches it. The fencing\ntest's own wait is replaced by it.",
+          "timestamp": "2026-10-10T23:51:06-07:00",
+          "tree_id": "3fbd2b8db1abab497b9c2d48e26b49437b3777b9",
+          "url": "https://github.com/GetFelix/felix/commit/1118d903e4b1d67a18449d937aca80bf215a3141"
+        },
+        "date": 1791704320330,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417197.69,
+            "range": "21742.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417197.69\nmean: 416447.98\nstdev: 21742.20\ncv: 5.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417197.69,
+            "range": "21742.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417197.69\nmean: 416447.98\nstdev: 21742.20\ncv: 5.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92147.03,
+            "range": "531.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92147.03\nmean: 92231.73\nstdev: 531.00\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 921470.33,
+            "range": "5310.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 921470.33\nmean: 922317.30\nstdev: 5310.00\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
