@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791697784689,
+  "lastUpdate": 1791700620215,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28080,6 +28080,58 @@ window.BENCHMARK_DATA = {
             "range": "6477.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 987256.38\nmean: 985246.96\nstdev: 6477.76\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd1ac3f73847b5bf5b11e8ebc435d7c907b119b7",
+          "message": "fix(typescript): return null, not undefined, for absent fields on delivered items (#1140) (#1158)\n\n* test(typescript): check delivered items carry null, not undefined (#1140)\n\n* fix(typescript): return null, not undefined, for absent fields on delivered items (#1140)\n\nnapi leaves an absent Option field on a #[napi(object)] undefined, while\nindex.d.ts types these fields T | null. Use Either<T, Null>, as StateValue\nalready did, for every optional field on Event, CacheChange, CacheWatchItem,\nShardMoved and ShardEvent.",
+          "timestamp": "2026-10-10T23:09:40-07:00",
+          "tree_id": "4321952bc2f13813366db7562626f54be67e33c8",
+          "url": "https://github.com/GetFelix/felix/commit/cd1ac3f73847b5bf5b11e8ebc435d7c907b119b7"
+        },
+        "date": 1791700619372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 335164.91,
+            "range": "8104.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335164.91\nmean: 332326.99\nstdev: 8104.11\ncv: 2.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 335164.91,
+            "range": "8104.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335164.91\nmean: 332326.99\nstdev: 8104.11\ncv: 2.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80563.55,
+            "range": "722.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80563.55\nmean: 80409.26\nstdev: 722.51\ncv: 0.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805635.48,
+            "range": "7225.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805635.48\nmean: 804092.64\nstdev: 7225.07\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
