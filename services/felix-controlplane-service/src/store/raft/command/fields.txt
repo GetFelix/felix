@@ -261,6 +261,11 @@
 0 import_state.state.nodes[][].status.registered_at_millis
 0 import_state.state.placement_holder
 0 import_state.state.placement_token
+7 import_state.state.principal_revocations
+7 import_state.state.principal_revocations[].principal_id
+7 import_state.state.principal_revocations[].revoked_at
+7 import_state.state.principal_revocations[].seq
+7 import_state.state.principal_revocations[].tenant_id
 0 import_state.state.rbac_groupings
 0 import_state.state.rbac_groupings[][][].role
 0 import_state.state.rbac_groupings[][][].user
@@ -582,6 +587,10 @@
 1 retire_signing_key
 1 retire_signing_key.kid
 1 retire_signing_key.tenant_id
+7 revoke_principals
+7 revoke_principals.principal_ids
+7 revoke_principals.revoked_at
+7 revoke_principals.tenant_id
 0 revoke_refresh_family
 0 revoke_refresh_family.family_id
 0 revoke_refresh_family.tenant_id
@@ -721,6 +730,11 @@
 0 snapshot.state.nodes[][].status.registered_at_millis
 0 snapshot.state.placement_holder
 0 snapshot.state.placement_token
+7 snapshot.state.principal_revocations
+7 snapshot.state.principal_revocations[].principal_id
+7 snapshot.state.principal_revocations[].revoked_at
+7 snapshot.state.principal_revocations[].seq
+7 snapshot.state.principal_revocations[].tenant_id
 0 snapshot.state.rbac_groupings
 0 snapshot.state.rbac_groupings[][][].role
 0 snapshot.state.rbac_groupings[][][].user

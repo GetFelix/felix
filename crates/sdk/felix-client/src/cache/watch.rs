@@ -20,6 +20,7 @@ pub struct CacheWatch {
     resume_offset: u64,
     resnapshot: bool,
     retained_count: Option<u64>,
+    refusal: std::sync::Arc<std::sync::OnceLock<crate::BrokerError>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -35,15 +36,18 @@ impl CacheWatch {
         max_frame_bytes: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
+        let refusal = std::sync::Arc::new(std::sync::OnceLock::new());
+        let pump_refusal = std::sync::Arc::clone(&refusal);
         let task = tokio::spawn(async move {
             let _lease = lease;
-            run_watch_pump(recv, tx, max_frame_bytes).await
+            run_watch_pump(recv, tx, max_frame_bytes, pump_refusal).await
         });
         Self {
             items: rx,
             resume_offset,
             resnapshot,
             retained_count,
+            refusal,
             task,
         }
     }
@@ -54,6 +58,14 @@ impl CacheWatch {
     /// falling behind or because its shard moved).
     pub async fn recv(&mut self) -> Option<CacheWatchItem> {
         self.items.recv().await
+    }
+
+    /// Why the broker ended the watch, when it ended it with an error: the
+    /// credential the watch was opened with was revoked, for one. Set before
+    /// [`Self::recv`] returns `None`, so check it then. Only a broker that
+    /// sends error codes fills it.
+    pub fn refusal(&self) -> Option<&crate::BrokerError> {
+        self.refusal.get()
     }
 
     /// The offset live delivery began at. Everything the broker delivered
@@ -140,6 +152,7 @@ async fn run_watch_pump(
     mut recv: RecvStream,
     tx: mpsc::Sender<CacheWatchItem>,
     max_frame_bytes: usize,
+    refusal: std::sync::Arc<std::sync::OnceLock<crate::BrokerError>>,
 ) {
     let mut frame_scratch = BytesMut::with_capacity(16 * 1024);
     loop {
@@ -179,6 +192,19 @@ async fn run_watch_pump(
                 addr,
                 generation,
             }),
+            Message::Error {
+                message,
+                code,
+                retry,
+                detail,
+            } => {
+                let err = crate::error::refused("cache watch ended", message, code, retry, detail);
+                if let Some(refused) = err.downcast_ref::<crate::BrokerError>() {
+                    let _ = refusal.set(refused.clone());
+                }
+                tracing::debug!(error = %err, "the broker ended a cache watch");
+                break;
+            }
             other => {
                 tracing::debug!(?other, "unexpected message on a cache watch stream");
                 break;

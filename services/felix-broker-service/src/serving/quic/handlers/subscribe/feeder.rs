@@ -39,6 +39,7 @@ fn encode_batch(
     felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_lane_feeder(
     mut event_rx: SubscriptionReceiver,
     manager: Weak<WriterLaneManager>,
@@ -47,7 +48,18 @@ pub(super) async fn run_lane_feeder(
     config: EventWriterConfig,
     subscriptions: Arc<IdentityLimits>,
     delivery: TenantDelivery,
+    revocation: Option<SubscriberRevocation>,
 ) {
+    let mut revoked_frame = None;
+    let mut revoked = {
+        let revocable = revocation.as_ref().map(|r| r.revocable.clone());
+        Box::pin(async move {
+            match revocable {
+                Some(revocable) => revocable.revoked().await,
+                None => std::future::pending().await,
+            }
+        })
+    };
     let max_events = config.max_events.max(1);
     let max_bytes = config.max_bytes.max(1);
     let _lane_flush_hints = (
@@ -64,9 +76,19 @@ pub(super) async fn run_lane_feeder(
     loop {
         let (envelope, mut held) = match pending.take() {
             Some(next) => next,
-            None => match event_rx.recv_held().await {
-                Some(next) => next,
-                None => break,
+            None => tokio::select! {
+                next = event_rx.recv_held() => match next {
+                    Some(next) => next,
+                    None => break,
+                },
+                () = &mut revoked => {
+                    tracing::info!(
+                        subscriber_id = config.subscription_id,
+                        "ending a subscription: its credential was revoked"
+                    );
+                    revoked_frame = revocation.map(|r| r.last_frame);
+                    break;
+                }
             },
         };
         let first_enqueued_at = envelope.enqueued_at();
@@ -294,6 +316,7 @@ pub(super) async fn run_lane_feeder(
         // A lag outranks a move: resuming where the move says would skip
         // the records dropped before it.
         let last = match (event_rx.lag_ended(), event_rx.moved()) {
+            _ if revoked_frame.is_some() => revoked_frame,
             (Some(resume_from), _) => lagged_frame(config.subscription_id, resume_from),
             (None, Some(moved)) if config.shard_moved_enabled => {
                 match shard_moved_frame(config.subscription_id, moved) {
@@ -351,6 +374,13 @@ pub(super) async fn enqueue_lane_frame(
     // Fails only once the connection's lanes are gone, and its subscriptions
     // with them.
     let _ = manager.enqueue(lane_idx, cmd).await;
+}
+
+/// What ends a subscription when the credential it was opened with is
+/// revoked, and the frame that tells the subscriber so.
+pub(crate) struct SubscriberRevocation {
+    pub(crate) revocable: crate::serving::revocation::Revocable,
+    pub(crate) last_frame: Bytes,
 }
 
 /// The last frame of a subscription whose shard moved away.

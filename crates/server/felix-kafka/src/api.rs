@@ -148,6 +148,16 @@ pub(crate) async fn handle(
         Parsed::Request(request) => request,
         Parsed::Answer(answer) => return Ok(answer),
     };
+    // A revoked credential ends the connection at its next request, as a
+    // QUIC stream ends at its next frame.
+    if session
+        .principal
+        .as_ref()
+        .is_some_and(Principal::is_revoked)
+    {
+        tracing::info!("closing a kafka connection: its credential was revoked");
+        return Ok(Answer::Close("credential revoked"));
+    }
     let Request {
         api,
         version,

@@ -405,8 +405,17 @@ pub async fn remove_policy(
         }
         return Err(api_validation_error(&err));
     }
+    let groupings = state
+        .store
+        .list_rbac_groupings(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to load groupings", &err))?;
+    let reached = crate::auth::revocation::reached_by(&groupings, &rule.subject);
     match state.store.remove_rbac_policy(&tenant_id, rule).await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) => {
+            end_sessions_after_removal(&state, &tenant_id, reached).await;
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(StoreError::NotFound(_)) => Err(api_not_found("policy not found")),
         Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove policy", &err)),
@@ -463,8 +472,17 @@ pub async fn remove_grouping(
         validate_assignment_allowed(&scope.scopes, &tenant_id, &grouping, &role_policies)
             .map_err(|err| api_forbidden(&err))?;
     }
+    let groupings = state
+        .store
+        .list_rbac_groupings(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to load groupings", &err))?;
+    let reached = crate::auth::revocation::reached_by(&groupings, &grouping.user);
     match state.store.remove_rbac_grouping(&tenant_id, grouping).await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) => {
+            end_sessions_after_removal(&state, &tenant_id, reached).await;
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(StoreError::NotFound(_)) => Err(api_not_found("grouping not found")),
         Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove grouping", &err)),
@@ -484,10 +502,13 @@ pub struct RevokeRefreshTokensResponse {
     pub revoked: u64,
 }
 
-/// Revoke every refresh token a principal holds in this tenant.
+/// Revoke every refresh token a principal holds in this tenant, and every
+/// broker token it holds now.
 ///
-/// Access tokens already minted stay valid until they expire (900 s by
-/// default); this stops the principal getting new ones without the IdP.
+/// Brokers refuse the principal's existing broker tokens and end the streams
+/// they opened within one sync interval. Its control-plane tokens stay valid
+/// until they expire (900 s by default); this stops the principal getting new
+/// ones without the IdP.
 /// Requires `tenant.manage` over the tenant: cutting off a principal is a
 /// tenant-wide act, whatever scope granted them their roles.
 #[utoipa::path(
@@ -496,7 +517,7 @@ pub struct RevokeRefreshTokensResponse {
     tag = "auth",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = RevokeRefreshTokensRequest,
-    responses((status = 200, body = RevokeRefreshTokensResponse), (status = 403), (status = 404))
+    responses((status = 200, body = RevokeRefreshTokensResponse), (status = 403), (status = 404), (status = 409, description = "Some control-plane member predates revocations"))
 )]
 pub async fn revoke_principal_refresh_tokens(
     Path(tenant_id): Path<String>,
@@ -522,6 +543,12 @@ pub async fn revoke_principal_refresh_tokens(
         .await
         .map_err(|err| api_internal("failed to revoke refresh tokens", &err))?;
     metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
+    crate::auth::revocation::revoke(&state, &tenant_id, vec![body.principal_id.clone()])
+        .await
+        .map_err(|err| match err {
+            StoreError::Conflict(what) => api_conflict("conflict", &what),
+            err => api_internal("failed to revoke the principal's sessions", &err),
+        })?;
     tracing::info!(
         tenant_id = %tenant_id,
         principal_id = %body.principal_id,
@@ -529,6 +556,21 @@ pub async fn revoke_principal_refresh_tokens(
         "revoked a principal's refresh tokens",
     );
     Ok(Json(RevokeRefreshTokensResponse { revoked }))
+}
+
+/// End the broker sessions of everyone a removed rule reached, so they come
+/// back with tokens minted under the rules as they are now. The removal has
+/// already happened, so a failure here is logged rather than answered: the
+/// rights are gone from every token minted from now on either way.
+async fn end_sessions_after_removal(state: &AppState, tenant_id: &str, reached: Vec<String>) {
+    if let Err(err) = crate::auth::revocation::revoke(state, tenant_id, reached).await {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            error = %err,
+            "removed an RBAC rule but could not end the sessions it reached; \
+             they keep their rights until their tokens expire",
+        );
+    }
 }
 
 struct ActionScope {

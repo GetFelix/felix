@@ -660,6 +660,7 @@ pub(super) async fn cache_watch(
             subscription_id,
         },
         session.peer_features,
+        session.auth_ctx.as_ref(),
     )
     .await?;
     Ok(Step::Next)

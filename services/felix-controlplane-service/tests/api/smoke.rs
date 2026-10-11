@@ -1405,6 +1405,34 @@ impl AuthStore for FailingStore {
     async fn purge_expired_refresh_tokens(&self, _before_secs: i64) -> StoreResult<u64> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
+
+    async fn revoke_principals(
+        &self,
+        _tenant_id: &str,
+        _principal_ids: Vec<String>,
+        _revoked_at: i64,
+    ) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn principal_revocations(
+        &self,
+        _since: u64,
+    ) -> StoreResult<
+        felix_controlplane_service::store::ChangeSet<
+            felix_controlplane_service::auth::revocation::PrincipalRevocation,
+        >,
+    > {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn principal_revoked_at(
+        &self,
+        _tenant_id: &str,
+        _principal_id: &str,
+    ) -> StoreResult<Option<i64>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
 }
 
 /// Health answers 503 when the store does not, and it must probe the *real*

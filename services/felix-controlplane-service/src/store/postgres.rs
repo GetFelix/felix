@@ -29,6 +29,7 @@ mod namespaces;
 mod nodes;
 mod refresh_tokens;
 mod resources;
+mod revocations;
 mod shards;
 mod streams;
 mod tenants;
@@ -678,6 +679,30 @@ impl AuthStore for PostgresStore {
 
     async fn purge_expired_refresh_tokens(&self, before_secs: i64) -> StoreResult<u64> {
         refresh_tokens::purge_expired_refresh_tokens(self, before_secs).await
+    }
+
+    async fn revoke_principals(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()> {
+        revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at).await
+    }
+
+    async fn principal_revocations(
+        &self,
+        since: u64,
+    ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>> {
+        revocations::principal_revocations(self, since).await
+    }
+
+    async fn principal_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<Option<i64>> {
+        revocations::principal_revoked_at(self, tenant_id, principal_id).await
     }
 }
 

@@ -99,6 +99,7 @@ async fn watch_after_admission(fixture: &Leader) -> Result<Message> {
             subscription_id: Some(13),
         },
         0,
+        None,
     )
     .await?;
 
@@ -164,4 +165,105 @@ async fn a_watch_registered_after_its_shard_stopped_serving_is_let_go() {
     let deposed = Leader::start().await;
     deposed.ingress.fence().depose(&key, leader::GENERATION);
     assert!(stopped_serving(Some(&deposed.ingress), &key).is_some());
+}
+
+/// **A watch ends when the credential it was opened with is revoked**, and
+/// says so: an `error` with the `revoked` code is its last frame.
+#[tokio::test]
+async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
+    let fixture = Leader::start().await;
+    let _lease = fixture.hold_lease();
+    let (_client, client_conn, connection) = connection().await?;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&fixture.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&fixture.ingress)),
+            ..ClusterContext::default()
+        },
+    );
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+    let revocations = Arc::new(crate::serving::revocation::Revocations::default());
+    let owner = crate::serving::auth::AuthContext {
+        tenant_id: TENANT.to_string(),
+        matcher: felix_authz::PermissionMatcher::from_strings(&[]).expect("matcher"),
+        token: "token".to_string(),
+        subject: "alice".to_string(),
+        actor: None,
+        publisher: None,
+        revocable: crate::serving::revocation::Revocable::new(
+            Arc::clone(&revocations),
+            TENANT.to_string(),
+            "alice".to_string(),
+            None,
+            100,
+        ),
+    };
+
+    // Held for the test: quinn closes a connection once its last handle goes,
+    // and in a broker the accept loop holds one for the connection's life.
+    handle_cache_watch_message(
+        Arc::clone(&fixture.broker),
+        connection.clone(),
+        &publish_ctx,
+        WatchResponder {
+            out_ack_tx: &out_ack_tx,
+            out_ack_depth: &out_ack_depth,
+            ack_throttle_tx: &ack_throttle_tx,
+            ack_timeout_state: &ack_timeout_state,
+            cancel_tx: &cancel_tx,
+        },
+        WatchRequest {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            cache: CACHE.to_string(),
+            key: Some("session-1".to_string()),
+            prefix: None,
+            shard: None,
+            from_offset: None,
+            retained: false,
+            subscription_id: Some(13),
+        },
+        felix_wire::FEATURE_ERROR_CODES,
+        Some(&owner),
+    )
+    .await?;
+    let ack = tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
+        .await
+        .context("ack timeout")?
+        .context("ack missing")?;
+    assert!(
+        !matches!(ack, Outgoing::Message(Message::Error { .. })),
+        "the watch was refused: {ack:?}"
+    );
+    let mut events = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+
+    revocations.revoke(TENANT, "alice", 100);
+
+    let mut scratch = crate::serving::quic::FrameScratch::new();
+    let last = loop {
+        let message = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::serving::quic::codec::read_message_limited(&mut events, 64 * 1024, &mut scratch),
+        )
+        .await
+        .context("watch did not end")??
+        .context("the watch closed without saying why")?;
+        if let Message::Error { .. } = message {
+            break message;
+        }
+    };
+    let Message::Error { code, .. } = last else {
+        unreachable!()
+    };
+    assert_eq!(code, Some(felix_wire::ErrorCode::Revoked));
+    Ok(())
 }

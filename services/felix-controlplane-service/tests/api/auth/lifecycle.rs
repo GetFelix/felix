@@ -173,6 +173,7 @@ async fn revoking_a_principal_ends_its_refresh_tokens() {
 
     let admin = token(&keys, vec!["tenant.manage:tenant:t1"]);
     let response = app
+        .clone()
         .oneshot(add_auth(
             json_request("POST", "/v1/tenants/t1/refresh-tokens/revoke", body),
             &admin,
@@ -197,6 +198,152 @@ async fn revoking_a_principal_ends_its_refresh_tokens() {
             .unwrap(),
         RefreshTokenTake::Taken(_)
     ));
+
+    // Its broker tokens go too, and brokers read that from the feed.
+    let revoked_at = store
+        .principal_revoked_at("t1", "p:bob")
+        .await
+        .unwrap()
+        .expect("bob is revoked");
+    assert!(revoked_at >= now);
+    assert_eq!(
+        store.principal_revoked_at("t1", "p:carol").await.unwrap(),
+        None
+    );
+    let broker = token(&keys, vec!["node.view:cluster:*"]);
+    let response = app
+        .oneshot(get("/v1/principal-revocations/changes?since=0", &broker))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let feed: serde_json::Value = read_json(response).await;
+    assert_eq!(feed["items"][0]["tenant_id"], "t1");
+    assert_eq!(feed["items"][0]["principal_id"], "p:bob");
+    assert_eq!(feed["items"][0]["revoked_at"], revoked_at);
+    assert_eq!(
+        feed["next_seq"],
+        feed["items"][0]["seq"].as_u64().unwrap() + 1
+    );
+}
+
+#[tokio::test]
+async fn removing_a_rule_revokes_everyone_it_reached() {
+    let (app, store, keys) = setup().await;
+    let policy = reader_policy("stream:t1/payments/*");
+    store.add_rbac_policy("t1", policy.clone()).await.unwrap();
+    for (user, role) in [("p:bob", "role:reader"), ("p:carol", "role:other")] {
+        store
+            .add_rbac_grouping(
+                "t1",
+                GroupingRule {
+                    user: user.to_string(),
+                    role: role.to_string(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let admin = token(
+        &keys,
+        vec![
+            "rbac.policy.manage:tenant:t1",
+            "rbac.assignment.manage:tenant:t1",
+        ],
+    );
+    let response = app
+        .clone()
+        .oneshot(add_auth(
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                policy_body(&policy),
+            ),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        store
+            .principal_revoked_at("t1", "p:bob")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        store.principal_revoked_at("t1", "p:carol").await.unwrap(),
+        None
+    );
+
+    // Removing one assignment reaches only its user.
+    let response = app
+        .clone()
+        .oneshot(add_auth(
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/groupings",
+                serde_json::json!({"user": "p:carol", "role": "role:other"}),
+            ),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        store
+            .principal_revoked_at("t1", "p:carol")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .principal_revoked_at("t1", "p:dave")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A rule an IdP group holds reaches members only the IdP knows, so the
+    // whole tenant goes.
+    let group_policy = PolicyRule {
+        subject: "role:other".to_string(),
+        object: "stream:t1/orders/*".to_string(),
+        action: "stream.subscribe".to_string(),
+    };
+    store
+        .add_rbac_policy("t1", group_policy.clone())
+        .await
+        .unwrap();
+    store
+        .add_rbac_grouping(
+            "t1",
+            GroupingRule {
+                user: "group:https://idp#ops".to_string(),
+                role: "role:other".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let response = app
+        .oneshot(add_auth(
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                policy_body(&group_policy),
+            ),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        store
+            .principal_revoked_at("t1", "p:dave")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 fn get(uri: &str, token: &str) -> Request<Body> {

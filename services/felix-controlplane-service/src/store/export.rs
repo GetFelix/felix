@@ -75,6 +75,12 @@ pub struct ExportedState {
     /// while empty, as for `moves_paused`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) replica_reports: Vec<crate::model::ReplicaReport>,
+    /// Principal revocations, ordered by tenant and principal. Kept across a
+    /// restore or migration, or a revoked token that has not expired would
+    /// work again. Absent from older snapshots and left out while empty, as
+    /// for `moves_paused`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) principal_revocations: Vec<crate::auth::revocation::PrincipalRevocation>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -291,5 +297,25 @@ pub async fn export_state_from(
         refresh_tokens: Vec::new(),
         fleet_enabled: store.enabled_fleet_features().await?,
         replica_reports: store.list_replica_reports().await?,
+        principal_revocations: all_principal_revocations(store).await?,
     })
+}
+
+/// Every revocation, paged through the feed and ordered as the in-memory
+/// store exports them.
+async fn all_principal_revocations(
+    store: &(dyn crate::store::ControlPlaneAuthStore + Send + Sync),
+) -> StoreResult<Vec<crate::auth::revocation::PrincipalRevocation>> {
+    let mut rows = Vec::new();
+    let mut since = 0;
+    loop {
+        let page = store.principal_revocations(since).await?;
+        if page.items.is_empty() {
+            break;
+        }
+        since = page.next_seq;
+        rows.extend(page.items);
+    }
+    rows.sort_by(|a, b| (&a.tenant_id, &a.principal_id).cmp(&(&b.tenant_id, &b.principal_id)));
+    Ok(rows)
 }

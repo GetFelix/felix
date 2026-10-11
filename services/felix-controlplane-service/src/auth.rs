@@ -14,4 +14,5 @@ pub mod principal;
 pub mod rbac;
 pub mod refresh;
 pub mod refresh_token;
+pub mod revocation;
 pub mod signing_keys;

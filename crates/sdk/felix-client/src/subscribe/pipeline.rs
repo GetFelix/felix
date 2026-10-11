@@ -433,6 +433,29 @@ async fn run_subscription_dispatch_task(
                         end.dropped(resume_from);
                         break 'frames;
                     }
+                    // The broker ended the subscription and said why, as when
+                    // the credential it was opened with is revoked.
+                    Message::Error {
+                        message,
+                        code,
+                        retry,
+                        detail,
+                    } => {
+                        let _ = enqueue_event(
+                            &event_tx,
+                            QueuedEvent::Error(crate::error::refused(
+                                "subscription ended",
+                                message,
+                                code,
+                                retry,
+                                detail,
+                            )),
+                            ClientSubQueuePolicy::Block,
+                            queue_capacity,
+                        )
+                        .await;
+                        return;
+                    }
                     _ => {
                         let _ = enqueue_event(
                             &event_tx,
