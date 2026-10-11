@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791708128390,
+  "lastUpdate": 1791714820734,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -35970,6 +35970,72 @@ window.BENCHMARK_DATA = {
             "range": "646.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2106.00\nmean: 1845.80\nstdev: 646.98\ncv: 35.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e45c7fce8e8df596803df81d6e61591056337ddc",
+          "message": "fix(placement): seat a new copy only once the leader names it caught up (#1139) (#1162)\n\n* fix(placement): seat a new copy only once the leader names it caught up (#1139)\n\nSeating checked the shard log's offsets, which for a Quorum cache leave\nout the counter log. A copy level on the cache log but missing an\nacknowledged counter update could be seated and counted toward the\nmajority while promotion refused it. On fenced shards the seat now also\nrequires the leader's report to name the copy caught up, which on a\nQuorum cache is limited by the counter level.\n\n* chore(formal): note that #1139 leaves FelixShard unchanged\n\nThe seat guard only gets stricter, so it removes behaviours and every\nsafety property TLC proves under SeatHoldsCopy still holds. For a\nQuorum stream the leader's caught-up set (confirmed >= acknowledged)\nalready implies the spec's HoldsPrefix(j, leader, joinedAt). The cache\nconfigurations never seat a copy (MaxMoves = 0, no spares), and the\ncounter case is availability: promotion already refuses a copy without\nthe counter log, which CounterCatchUp covers.\n\nSpec-Unaffected: the seat guard only narrows; for streams caught_up implies HoldsPrefix, and cache seating is unmodeled and an availability gap only",
+          "timestamp": "2026-10-11T01:06:58-07:00",
+          "tree_id": "65542ecf51fd8d221112f4e287a482014bf80b30",
+          "url": "https://github.com/GetFelix/felix/commit/e45c7fce8e8df596803df81d6e61591056337ddc"
+        },
+        "date": 1791714816375,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.40\nstdev: 1.34\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 252,
+            "range": "5.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 252.00\nmean: 249.20\nstdev: 5.93\ncv: 2.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "3.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 304.40\nstdev: 3.91\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "8.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 220.80\nstdev: 8.76\ncv: 3.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 434,
+            "range": "349.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 434.00\nmean: 590.00\nstdev: 349.95\ncv: 59.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 604,
+            "range": "874.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 604.00\nmean: 996.80\nstdev: 874.80\ncv: 87.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
