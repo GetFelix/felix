@@ -435,6 +435,10 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             drained: false,
             leader_offset: Some(44),
             halted: Vec::new(),
+            replica_counter_offsets: vec![ReplicaOffset {
+                node_id: "broker-b".to_string(),
+                durable_offset: 7,
+            }],
         }],
     };
 
@@ -453,6 +457,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
     assert_eq!(shard["replica_offsets"][0]["node_id"], "broker-b");
     assert_eq!(shard["replica_offsets"][0]["durable_offset"], 41);
     assert_eq!(shard["leader_offset"], 44);
+    assert_eq!(shard["replica_counter_offsets"][0]["durable_offset"], 7);
 
     assert_eq!(
         serde_json::from_value::<ReplicaStatusRequest>(json).expect("parse"),

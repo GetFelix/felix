@@ -183,6 +183,10 @@ impl CaughtUp for ReplicaPositions {
         self.fresh(key)?.offsets.get(node_id).copied()
     }
 
+    fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.fresh(key)?.counter_offsets.get(node_id).copied()
+    }
+
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
         let report = self.fresh(key)?;
         let tail = report.leader_offset?;
