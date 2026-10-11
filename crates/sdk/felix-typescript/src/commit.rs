@@ -6,6 +6,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::errors::invalid;
+use crate::types::or_null;
 
 /// One part of a commit, as a plain object:
 /// `{ op: "publish", stream, payload }`, `{ op: "enqueue", queue, payload }`,
@@ -29,9 +30,6 @@ pub struct CommitReceipt {
 }
 
 /// A key in a stream shard's state.
-///
-/// Fields are `Either<_, Null>` rather than `Option` because napi leaves an
-/// `Option` field `undefined`, and the typings promise `null`.
 #[napi(object)]
 pub struct StateValue {
     /// Null when the key was never written or was deleted.
@@ -40,10 +38,6 @@ pub struct StateValue {
     pub version: Either<BigInt, Null>,
     /// Offset of the last commit the answer reflects.
     pub as_of: Either<BigInt, Null>,
-}
-
-fn or_null<T>(value: Option<T>) -> Either<T, Null> {
-    value.map_or(Either::B(Null), Either::A)
 }
 
 impl From<felix_client::StateValue> for StateValue {

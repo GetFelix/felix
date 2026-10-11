@@ -383,9 +383,79 @@ fn a_quorum_restore_waits_for_what_the_old_set_holds() {
     let level = Reports {
         offsets: [("broker-b".to_string(), 90), ("broker-d".to_string(), 100)].into(),
         tail: Some(100),
-        ..Reports::default()
+        ..Reports::level(&["broker-d"])
     };
     let (decision, _) = decide(quorum("orders"), &nodes, existing, &level);
+    assert!(
+        matches!(decision, Decision::Move(MoveStep::Seat { .. }, _)),
+        "{decision:?}"
+    );
+}
+
+/// **A `Quorum` cache's counters.** The report's offsets are the cache log's
+/// alone. A copy level on it but missing an acknowledged counter update is
+/// left out of the caught-up set, and it is not seated until it is named
+/// there: seated, it would count toward a majority it could not lead.
+#[test]
+fn a_quorum_cache_restore_waits_for_the_counter_log() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        gone("broker-c", 10 * MINUTE),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut existing = restoring(
+        "broker-a",
+        &["broker-b", "broker-c", "broker-d"],
+        "broker-d",
+    );
+    existing.key.stream = "sessions".to_string();
+    existing.key.kind = ShardKind::Cache;
+    existing.generation = 3;
+    let cache = Cache {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+        display_name: "sessions".to_string(),
+        shards: 1,
+        replication_factor: 3,
+        consistency: ConsistencyLevel::Quorum,
+    };
+    let decide = |reports: &Reports| {
+        let plan = plan(
+            &[],
+            std::slice::from_ref(&cache),
+            &nodes,
+            std::slice::from_ref(&existing),
+            reports,
+        );
+        assert_eq!(plan.shards.len(), 1);
+        plan.shards[0].decision.clone()
+    };
+    // Level on the cache log, which is empty when the cache holds only
+    // counters, but not on the counter log.
+    let offsets: BTreeMap<String, u64> =
+        [("broker-b".to_string(), 0), ("broker-d".to_string(), 0)].into();
+    let without_counters = Reports {
+        offsets: offsets.clone(),
+        tail: Some(0),
+        ..Reports::level(&["broker-b"])
+    };
+    let decision = decide(&without_counters);
+    assert!(
+        matches!(
+            decision,
+            Decision::Waiting(Blocked::DestinationCatchingUp { .. })
+        ),
+        "seated without the counter log: {decision:?}"
+    );
+
+    let with_counters = Reports {
+        offsets,
+        tail: Some(0),
+        ..Reports::level(&["broker-b", "broker-d"])
+    };
+    let decision = decide(&with_counters);
     assert!(
         matches!(decision, Decision::Move(MoveStep::Seat { .. }, _)),
         "{decision:?}"

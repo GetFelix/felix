@@ -1516,7 +1516,14 @@ newcomer holds at least what a majority of the set it joined holds, counting a
 member the report leaves out as level with the leader
 (`holds_what_the_set_held` in `placement/moves.rs`). A record acknowledged
 before the join is then on the newcomer too, and one acknowledged since is on
-three of the four, so either survives dropping one.
+three of the four, so either survives dropping one. The same holds for a
+`Quorum` cache. A seated member counts toward the majority, so the newcomer
+must also be one the report names caught up, which is the leader's offer of a
+successor. Offsets cover only the shard's own log. On a `Quorum` cache the
+offer also requires every acknowledged counter update, and that is the only
+way a counter position reaches placement. Without the check, a copy that holds
+the cache log but not the counters could be seated and counted toward the
+majority, and promotion would then refuse it.
 `seating_a_replacement_keeps_what_the_old_set_acknowledged` loses the record
 without this. `FelixShardFencedAckSeatEarly.cfg` finds the same loss and
 `FelixShardFencedAckSeat.cfg`, with the wait, passes. `Leader` streams and
@@ -1546,8 +1553,11 @@ live broker outside the set (widening the zone spread where it can, never a
 down or draining broker) and adds it as `joining` with the move reason
 `restore`. From there the restore is the replacement above: the copy counts
 toward the quorum, and it is seated once it is within the lag bound. On a
-durable `Quorum` stream it must also hold what a majority of the old set holds.
-Both checks read the newcomer's position from the leader's report, and a
+durable `Quorum` stream or a `Quorum` cache it must also hold what a majority
+of the old set holds and be named caught up, so a cache's copy waits for the
+counter log too. The consumer-group and dead-letter logs a stream ships beside
+it are not waited for: nothing is acknowledged on them, and promotion does not
+check them either. Both checks read the newcomer's position from the leader's report, and a
 report names only followers whose position is known. A leader whose log is
 empty has nothing to ship and never hears from the newcomer, so it reports a
 follower of an empty log at offset zero without asking: nothing below that
@@ -1804,6 +1814,16 @@ gets its counters at the end of the pass
 (`a_silent_follower_holds_no_counter_mark`,
 `a_follower_dialled_after_each_backoff_holds_no_counter_mark`,
 `with_no_follower_answering_no_counter_add_is_acknowledged`).
+
+A stream shard's group cursors and dead letters ride the exchanges too, beside
+the shard's log rather than ahead of it, since nothing waits on their marks.
+Shipped at the end of the pass instead, they went to every follower that was
+not busy, and a dead follower whose exchange had nothing of the shard's to send
+held the end of the pass, and with it the next pass and the publishes waiting
+on it, for a request timeout or a dial (#1143). A non-`Quorum` cache's counters
+ride the same way. Only a move's destination still gets its counters at the
+end of the pass (`a_dead_follower_holds_no_pass_on_a_group_cursor`,
+`a_dead_follower_holds_no_pass_on_a_dead_letter`).
 
 The replica report goes to the control plane **before** the mark is published,
 and is awaited. Releasing the publish first leaves a window in which a leader
@@ -2062,9 +2082,8 @@ still writing.
 The report covers the logs that ride the shard as well as the shard's own. A
 stream shard carries its consumer groups' cursors and dead letters, a cache
 shard its counters; they are written through the same fence and shipped to
-the same replicas. Normally they go after the report and never hold it up,
-since no publish waits on group state. A `Quorum` cache's counters, which a
-counter add does wait on, ride each follower's exchange instead (see
+the same replicas. Normally they ride each follower's exchange, so a follower
+that does not answer holds up neither the report nor the next pass (see
 [What is implemented so far](#what-is-implemented-so-far)). The drained pass
 is the exception: it ships them first, and reports `drained` only once the
 move's successor holds the shard's log and each of them. A dead letter or

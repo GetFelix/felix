@@ -25,6 +25,36 @@ for what the current release guarantees.
   `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
   `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
   (#1157).
+- A delegating gateway no longer needs a broker grant it never uses. A
+  principal holding `token.delegate:tenant:{tenant_id}` can exchange for a
+  connection-only broker token, its own subject with no permissions, by
+  sending `"requested": [], "permissions": []` to `/token/exchange` (or the
+  dev-token bootstrap endpoint). Its shared connections authenticate with it,
+  and every request still runs under the user's delegated token. Refresh
+  checks `token.delegate` again and ends the chain once it is removed. Anyone
+  else asking for no permissions still gets `403` `no permissions` (#1130).
+- `ClusterClient::with_identity(tenant_id, token_provider)` and
+  `ClusterClient::with_identity_token` act as another user over the cluster
+  client's connections (#1129), as `Client::with_identity` does for one
+  broker. The result is a `ClusterClient` with its own routing state that
+  follows moved shards, redirects and failovers, reaching each broker over the
+  parent's connection to it, so a gateway sharing connections keeps a user's
+  subscription across a shard move and still holds one connection per broker.
+  The Python `Client.with_identity` and `AsyncClient.with_identity` and the
+  TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
+- Subscriber queues on the broker are bounded by bytes as well as entries.
+  An entry is a whole published batch, so the count alone let one slow
+  subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  none), and the queue policy handles a full byte bound as it handles a full
+  count: `drop_new` drops the batch for that subscriber, with the same offset
+  gap and drop counters, and `block` waits. A batch larger than the bound
+  still goes into an empty queue. `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` (off by
+  default) caps the bytes held across all subscriber queues, at the cost of
+  isolation between subscribers. New metrics: `felix_sub_queue_bytes` and
+  `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
+  `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
+  (#1157).
 - The subscriber byte bounds also cover the broker's writer lanes. A batch's
   bytes stay held until the frame carrying it is written to the subscriber's
   QUIC stream, so frames queued behind a flow-controlled subscription count
@@ -33,6 +63,30 @@ for what the current release guarantees.
   `drop_new` the next batch is dropped at the subscriber queue as before;
   publishers still never wait. `SubscriptionReceiver` gains `recv_held` and
   `try_recv_held`, and `HeldBytes` is public (#1163).
+
+### Fixed
+- The Node client returns `null`, as `index.d.ts` says, for an absent field on
+  a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
+  watch item, `value` on a cache change, `offset` on an event, `event`,
+  `lostError` and `recovered` on a sharded item, and `resumeFrom`, `nodeId` and
+  `addr` on a shard move. They came back `undefined`, so a caller testing
+  `!== null` read every cache watch item as a lag notice.
+- The cluster test harness's `wait_for_replication` now waits until the
+  control plane holds a report naming a follower at the leader's current tail.
+  It used to return once the leader had shipped anything, which the harness's
+  start-up publish already guaranteed, so a test that killed the leader next
+  could fail over without the records it had just published (#1136).
+- Right after a broker died, a stream with consumer groups could hold each
+  replication pass on it for a request timeout or a dial: the group cursor and
+  dead-letter logs shipped to every follower at the end of the pass, and the
+  next publish waited behind that pass. They now ride each follower's
+  exchange, as a `Quorum` cache's counters do since #1137, and so do a
+  non-`Quorum` cache's counters (#1143).
+- A new copy of a `Quorum` cache is no longer seated before it holds the
+  cache's counter log. Seating checked only the cache log's offsets, so the
+  set could count toward its majority a copy that promotion would refuse.
+  A seat on a `Quorum` stream or cache now also waits until the leader's
+  report names the copy caught up (#1139).
 
 ## [0.6.0-preview.6] - 2026-10-10
 

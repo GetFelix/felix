@@ -789,12 +789,20 @@ fn replacement_step(
 ///
 /// A member the report leaves out is taken to be level with the leader: its
 /// position is unknown, and assuming less could pass a record it holds.
+///
+/// The joiner must also be one the leader offers as a successor. Offsets
+/// cover only the shard's own log, and a `Quorum` cache's acknowledged
+/// counter updates reach placement only through that offer: a copy seated
+/// without them counts toward the majority but could not take over.
 pub(super) fn holds_what_the_set_held(
     existing: &ShardAssignment,
     joining: &str,
     caught_up: &dyn CaughtUp,
 ) -> bool {
     let key = &existing.key;
+    if !caught_up.is_caught_up(key, joining) {
+        return false;
+    }
     let (Some(tail), Some(held)) = (
         caught_up.leader_offset(key),
         caught_up.reported_offset(key, joining),
