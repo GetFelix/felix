@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791727088807,
+  "lastUpdate": 1791727975814,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28496,6 +28496,58 @@ window.BENCHMARK_DATA = {
             "range": "5395.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803336.58\nmean: 802820.37\nstdev: 5395.79\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1a858c90e7dc1269a1aeee828d0650669fce1cfe",
+          "message": "fix(broker): bound writer-lane frames by the subscriber byte bound (#1163) (#1169)\n\nThe feeder now takes each batch's held bytes with it (recv_held) and the\nframe carries them through the writer lane and the connection writer\nuntil it is written or dropped, so frames waiting behind a slow\nsubscription count toward FELIX_SUB_QUEUE_MAX_BYTES instead of piling up\nby entry count. Publishers still never wait under drop_new.",
+          "timestamp": "2026-10-11T07:02:46-07:00",
+          "tree_id": "a1cc1d285f4b80de64c3918602baa90fe5a10e18",
+          "url": "https://github.com/GetFelix/felix/commit/1a858c90e7dc1269a1aeee828d0650669fce1cfe"
+        },
+        "date": 1791727975302,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345394.13,
+            "range": "15097.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345394.13\nmean: 342327.58\nstdev: 15097.64\ncv: 4.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345394.13,
+            "range": "15097.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345394.13\nmean: 342327.58\nstdev: 15097.64\ncv: 4.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80704.61,
+            "range": "782.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80704.61\nmean: 80643.93\nstdev: 782.47\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807046.09,
+            "range": "7824.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807046.09\nmean: 806439.27\nstdev: 7824.65\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
