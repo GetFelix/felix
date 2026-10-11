@@ -26,7 +26,8 @@ use crate::broker::shards::StreamHandle;
 use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
 use crate::stream::{
-    DeliveryEnvelope, HeldBatch, Pass, QueuedDelivery, SubQueuePolicy, SubscriberEntry,
+    DeliveryEnvelope, HeldBatch, HeldBytes, Pass, QueuedDelivery, StreamState, SubQueuePolicy,
+    SubscriberEntry,
 };
 use crate::telemetry::{t_histogram, t_now_if};
 use crate::timings;
@@ -293,18 +294,15 @@ impl Completion {
         let stream_state = &self.handle.state;
         let delivery = self.delivery.as_mut().expect("appended before fanout");
         let item_count = delivery.envelope.len();
+        let bytes = delivery.envelope.payload_bytes();
         while let Some(subscriber) = delivery.senders.get(delivery.next) {
             match stream_state.subscriber_queue_policy {
                 SubQueuePolicy::Block => {
-                    // The one await in the fanout. `next` only moves once the
+                    // The only awaits in the fanout. `next` only moves once the
                     // subscriber is served, so a resumed finisher retries it.
                     if let Ok(permit) = subscriber.sender.reserve().await {
-                        metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                        stream_state.increment_queue_depth(item_count);
-                        permit.send(QueuedDelivery::new(
-                            delivery.envelope.clone(),
-                            Arc::clone(&stream_state.queued_items),
-                        ));
+                        let held = subscriber.bytes.hold(bytes).await;
+                        enqueue(stream_state, permit, &delivery.envelope, held);
                         delivery.sent += item_count;
                     } else {
                         delivery.closed.push(subscriber.id);
@@ -312,31 +310,23 @@ impl Completion {
                 }
                 SubQueuePolicy::DropNew | SubQueuePolicy::DropOld => {
                     match subscriber.sender.try_reserve() {
-                        Ok(permit) => {
-                            metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                            stream_state.increment_queue_depth(item_count);
-                            permit.send(QueuedDelivery::new(
-                                delivery.envelope.clone(),
-                                Arc::clone(&stream_state.queued_items),
-                            ));
-                            delivery.sent += item_count;
-                        }
+                        Ok(permit) => match subscriber.bytes.try_hold(bytes) {
+                            Ok(held) => {
+                                enqueue(stream_state, permit, &delivery.envelope, held);
+                                delivery.sent += item_count;
+                            }
+                            // Dropping the permit gives the entry back.
+                            Err(bound) => {
+                                metrics::counter!(
+                                    "felix_sub_queue_byte_dropped_total",
+                                    "bound" => bound.label()
+                                )
+                                .increment(item_count as u64);
+                                record_drop(stream_state, subscriber, &delivery.envelope);
+                            }
+                        },
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            if let Some(base) = delivery.envelope.base_offset() {
-                                subscriber.lag.dropped(base);
-                            }
-                            subscriber.stats.dropped(item_count as u64);
-                            metrics::counter!("felix_subscribe_dropped_total")
-                                .increment(item_count as u64);
-                            metrics::counter!("felix_sub_queue_dropped_total")
-                                .increment(item_count as u64);
-                            if matches!(
-                                stream_state.subscriber_queue_policy,
-                                SubQueuePolicy::DropOld
-                            ) {
-                                metrics::counter!("felix_sub_queue_drop_old_emulated_total")
-                                    .increment(item_count as u64);
-                            }
+                            record_drop(stream_state, subscriber, &delivery.envelope);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                             delivery.closed.push(subscriber.id);
@@ -352,6 +342,44 @@ impl Completion {
             timings::record_fanout_ns(fanout_ns);
             t_histogram!("broker_publish_fanout_total_ns").record(fanout_ns as f64);
         }
+    }
+}
+
+fn enqueue(
+    stream_state: &StreamState,
+    permit: tokio::sync::mpsc::Permit<'_, QueuedDelivery>,
+    envelope: &DeliveryEnvelope,
+    held: HeldBytes,
+) {
+    metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
+    stream_state.increment_queue_depth(envelope.len());
+    permit.send(QueuedDelivery::new(
+        envelope.clone(),
+        Arc::clone(&stream_state.queued_items),
+        held,
+    ));
+}
+
+/// Count a batch the subscriber's queue had no room for, by entries or by
+/// bytes. The lag note is what turns it into an offset gap the subscriber
+/// can see.
+fn record_drop(
+    stream_state: &StreamState,
+    subscriber: &SubscriberEntry,
+    envelope: &DeliveryEnvelope,
+) {
+    let item_count = envelope.len() as u64;
+    if let Some(base) = envelope.base_offset() {
+        subscriber.lag.dropped(base);
+    }
+    subscriber.stats.dropped(item_count);
+    metrics::counter!("felix_subscribe_dropped_total").increment(item_count);
+    metrics::counter!("felix_sub_queue_dropped_total").increment(item_count);
+    if matches!(
+        stream_state.subscriber_queue_policy,
+        SubQueuePolicy::DropOld
+    ) {
+        metrics::counter!("felix_sub_queue_drop_old_emulated_total").increment(item_count);
     }
 }
 

@@ -83,6 +83,28 @@ impl Client {
         })
     }
 
+    /// A client that acts as another user over this client's connections.
+    ///
+    /// Every stream it opens authenticates with `tenant_id` and `token`, and
+    /// the broker checks its requests against that token's grants alone. It
+    /// follows shards and failovers as this client does, reaching each broker
+    /// over this client's connection to it, so a gateway serving many users
+    /// holds one connection per broker. The token is fixed: build a new one
+    /// when it expires. A refused token fails here.
+    fn with_identity(&self, py: Python<'_>, tenant_id: &str, token: &str) -> PyResult<Self> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        let identity = block_on(py, async move {
+            inner
+                .with_identity_token(tenant_id, token)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(Self {
+            inner: Arc::new(identity),
+        })
+    }
+
     /// Publish one record.
     ///
     /// `ack` selects what the broker must have done before this returns:

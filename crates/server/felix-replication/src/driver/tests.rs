@@ -7,6 +7,7 @@
 mod counters;
 mod cursors;
 mod drain;
+mod groups;
 mod halts;
 mod learner;
 mod quorum;
