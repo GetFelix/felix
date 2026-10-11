@@ -11,6 +11,13 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- The cluster test harness's `wait_for_replication` now waits until the
+  control plane holds a report naming a follower at the leader's current tail.
+  It used to return once the leader had shipped anything, which the harness's
+  start-up publish already guaranteed, so a test that killed the leader next
+  could fail over without the records it had just published (#1136).
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
