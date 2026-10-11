@@ -88,6 +88,24 @@ it.
 const client = await Client.connect(addrs, "t1", token, "localhost", caFile, true);
 ```
 
+### Acting for many users
+
+A gateway serving many users can hold one client and give each user a client
+that shares its connections:
+
+```ts
+const alice = await client.withIdentity("t1", aliceToken);
+await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
+```
+
+Every stream `alice` opens authenticates with her token, so the broker checks
+her requests against her grants, not the gateway's. She follows moved shards
+and failed brokers like any client, over the gateway's connection to each
+broker. The token is fixed, so build a new client when it expires. Closing
+`alice` leaves the gateway's connections open. The limits and the
+certificate-bound token rules are the Rust client's; see
+[Acting for many users](/clients/rust/#acting-for-many-users).
+
 ## Disposal
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,

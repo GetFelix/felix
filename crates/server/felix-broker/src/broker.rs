@@ -43,13 +43,14 @@ use crate::cache::CacheWatchHub;
 use crate::durable::DurableStorage;
 use crate::error::{BrokerError, Result};
 use crate::queue::{ConsumerGroups, DeadLetters, GroupReader};
-use crate::stream::{StreamState, SubQueuePolicy};
+use crate::stream::{ByteBudget, QueueBytes, StreamState, SubQueuePolicy};
 use keys::{CacheKey, NamespaceKey, StreamKey, TopicKey};
 
 // Capacity defaults for streams this broker creates.
 const DEFAULT_TOPIC_CAPACITY: usize = 1024;
 const DEFAULT_LOG_CAPACITY: usize = 1024;
 const DEFAULT_SUB_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
+const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// In-process broker for pub/sub messaging.
 ///
@@ -107,6 +108,8 @@ pub struct Broker {
     log_capacity: usize,
     // Subscriber queue backpressure policy.
     subscriber_queue_policy: SubQueuePolicy,
+    // Byte bounds on subscriber queues.
+    subscriber_queue_bytes: QueueBytes,
     next_stream_handle: AtomicU64,
     // Disk-backed storage for streams registered with `durable: true`. `None`
     // means the broker is in-memory only and durable streams are rejected at
@@ -190,6 +193,10 @@ impl Broker {
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
             log_capacity: DEFAULT_LOG_CAPACITY,
             subscriber_queue_policy: DEFAULT_SUB_QUEUE_POLICY,
+            subscriber_queue_bytes: QueueBytes {
+                per_subscriber: DEFAULT_SUB_QUEUE_MAX_BYTES,
+                broker: None,
+            },
             next_stream_handle: AtomicU64::new(1),
             durable_storage: None,
             consumer_groups: None,
@@ -241,6 +248,24 @@ impl Broker {
     /// What a publish does when a subscriber's queue is full.
     pub fn with_subscriber_queue_policy(mut self, policy: SubQueuePolicy) -> Self {
         self.subscriber_queue_policy = policy;
+        self
+    }
+
+    /// How many payload bytes one subscriber's queue may hold; zero for no
+    /// bound. When it is full the queue policy applies, as for a full count.
+    /// A batch larger than the bound is still queued into an empty queue.
+    /// Defaults to 64 MiB.
+    pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
+        self.subscriber_queue_bytes.per_subscriber = bytes;
+        self
+    }
+
+    /// How many payload bytes all subscriber queues together may hold; zero,
+    /// the default, for no bound. A hard ceiling on queued memory, at the
+    /// cost of isolation: once it is reached, a fast subscriber's batch is
+    /// handled by the queue policy because slow ones hold the budget.
+    pub fn with_subscriber_queue_max_bytes_total(mut self, bytes: usize) -> Self {
+        self.subscriber_queue_bytes.broker = ByteBudget::new(bytes);
         self
     }
 

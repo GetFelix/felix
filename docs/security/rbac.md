@@ -54,6 +54,13 @@ tokens with no `may_act`, which lets every holder of `token.delegate` delegate
 any such token of the tenant it gets hold of. See
 [Delegated tokens](../auth.md#delegated-tokens).
 
+It also lets the holder exchange for a connection-only broker token: its own
+`sub` and no permissions, which is what a gateway's shared connections
+authenticate with. That token opens a connection and can do nothing on it, so
+a gateway's principal needs `token.delegate` and no broker grant. Nobody else
+can get a token with no permissions. See
+[The gateway's own connections](../auth.md#the-gateways-own-connections).
+
 Consumer groups have two actions, granted over the stream's object
 (`stream:{tenant_id}/{namespace}/{stream}`) or one group's object
 (`group:{tenant_id}/{namespace}/{stream}/{group}`):

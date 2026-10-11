@@ -255,7 +255,8 @@ deployment needs.
 - Each browser session opens its own Felix client, and a broker accepts a
   bounded number of connections, so one gateway does not serve very large
   audiences yet. Felix itself can carry many users over one client
-  (`Client::with_identity`), with each user's subscriptions and publish bytes
+  (`Client::with_identity`, or `ClusterClient::with_identity` across a
+  cluster), with each user's subscriptions and publish bytes
   limited separately on the shared connection, under a ceiling the users share
   (four users' worth by default). On a broker that binds tokens
   to client certificates (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`), a gateway

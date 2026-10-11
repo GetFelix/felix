@@ -181,7 +181,8 @@ impl Running {
             .mint(&TenantId::new(TENANT), user, user_perms(user))?)
     }
 
-    /// The gateway's own client. Its token can publish nowhere a user can.
+    /// The gateway's own client, on a connection-only token: no permissions,
+    /// as the control plane mints for a gateway that delegates.
     async fn gateway(&self) -> Result<Client> {
         self.gateway_with(|_| {}).await
     }
@@ -197,7 +198,7 @@ impl Running {
         config.auth_token = Some(self.issuer.mint(
             &TenantId::new(TENANT),
             "gateway",
-            vec![format!("cache.read:cache:{TENANT}/{NS}/{CACHE}/gateway:*")],
+            Vec::new(),
         )?);
         // A poll right after an acked publish must see it.
         config.ack_on_commit = true;

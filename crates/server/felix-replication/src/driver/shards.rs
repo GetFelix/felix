@@ -19,7 +19,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 
 use super::shard::{
-    AuxCursors, Exchange, ShardCursors, ShardPass, Shipped, Stragglers, replicate_shard,
+    AuxCursors, Exchange, RideAlong, ShardCursors, ShardPass, Shipped, Stragglers, replicate_shard,
 };
 use super::{
     DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, alone_report, fence_backoff,
@@ -109,7 +109,8 @@ pub(super) struct Answered {
     key: ShardKey,
     generation: u64,
     cursor: FollowerCursor,
-    counters: Option<FollowerCursor>,
+    /// Boxed: three more cursors make every event as large as this one.
+    rode: Box<RideAlong>,
     cut: bool,
 }
 
@@ -668,12 +669,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             key,
             generation,
             cursor,
-            counters,
+            rode,
             cut,
         } = answered;
         let mut moved = put_back(self.streams.get_mut(&key), generation, cursor);
-        if let Some(counters) = counters {
-            moved |= put_back(self.counters.get_mut(&key), generation, counters);
+        for (entries, cursor) in [
+            (&mut self.group, rode.group),
+            (&mut self.dead_letters, rode.dead_letters),
+            (&mut self.counters, rode.counters),
+        ] {
+            if let Some(cursor) = cursor {
+                moved |= put_back(entries.get_mut(&key), generation, cursor);
+            }
         }
         moved || cut
     }
@@ -719,16 +726,12 @@ fn put_back(entry: Option<&mut ShardCursors>, generation: u64, cursor: FollowerC
 }
 
 async fn answered(key: ShardKey, generation: u64, exchange: Exchange<'_>) -> Answered {
-    let Shipped {
-        cursor,
-        counters,
-        cut,
-    } = exchange.await;
+    let Shipped { cursor, rode, cut } = exchange.await;
     Answered {
         key,
         generation,
         cursor,
-        counters,
+        rode: Box::new(rode),
         cut,
     }
 }

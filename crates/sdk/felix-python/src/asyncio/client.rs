@@ -65,6 +65,27 @@ impl AsyncClient {
         })
     }
 
+    /// Resolve to a client that acts as another user over this client's
+    /// connections. See the synchronous `Client.with_identity`.
+    fn with_identity<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        token: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let identity = inner
+                .with_identity_token(tenant_id, token)
+                .await
+                .map_err(to_py_err)?;
+            Ok(AsyncClient {
+                inner: Arc::new(identity),
+            })
+        })
+    }
+
     /// Publish one record, resolving to its log offset or `None`. See the
     /// synchronous `Client.publish` for what `ack` and `at_least_once` mean,
     /// and when there is no offset.

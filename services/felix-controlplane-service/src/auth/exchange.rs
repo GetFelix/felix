@@ -19,7 +19,7 @@ use crate::api::error::{
     ApiError, api_conflict, api_internal, api_internal_message, api_validation_error,
 };
 use crate::auth::bearer::{Refusal, extract_bearer, refused};
-use crate::auth::delegate::{JWT_TOKEN_TYPE, verified_actor};
+use crate::auth::delegate::{JWT_TOKEN_TYPE, holds_token_delegate, verified_actor};
 use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_may_act};
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
@@ -45,7 +45,9 @@ pub struct TokenExchangeRequest {
     /// token can read one resource and write another. Requires `requested`
     /// to be sent as `[]` and `resources` to be absent or empty: an older
     /// control plane ignores `permissions`, and an empty `requested` makes it
-    /// refuse instead of minting full rights.
+    /// refuse instead of minting full rights. Sent empty by a holder of
+    /// `token.delegate` for a connection-only broker token, with no
+    /// permissions, for a gateway's own connections.
     #[serde(default)]
     pub permissions: Option<Vec<String>>,
     /// Who the token is for: `felix-broker` (the default) to connect to
@@ -242,18 +244,15 @@ pub(crate) async fn mint_for_principal(
             api_internal_message("failed to build enforcer")
         })?;
 
+    let granted = effective_permissions(&enforcer, principal_id, &tenant_id);
     let perms = for_audience(
-        narrow_permissions(
-            effective_permissions(&enforcer, principal_id, &tenant_id),
-            &narrowing,
-            &tenant_id,
-        ),
+        narrow_permissions(granted.clone(), &narrowing, &tenant_id),
         audience,
     );
 
-    // A token with no permissions is useless and usually masks a
-    // misconfiguration; reject instead.
-    if perms.is_empty() {
+    // A token with no permissions usually masks a misconfiguration, so it is
+    // refused unless it is a gateway's connection-only token.
+    if perms.is_empty() && !may_connect_only(&granted, &narrowing, &tenant_id) {
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }
 
@@ -395,6 +394,24 @@ pub(crate) fn for_audience(mut perms: Vec<String>, audience: &str) -> Vec<String
         });
     }
     perms
+}
+
+/// Whether `narrowing` asks for a connection-only broker token, one with no
+/// permissions at all, and the principal may have one.
+///
+/// A delegating gateway authenticates its shared connections as itself and
+/// carries every user on delegated tokens, so its own token needs no data
+/// permission. Only a holder of `token.delegate` on the whole tenant gets one;
+/// for anyone else an empty token stays a refusal. It is asked for with
+/// `requested: []` and `permissions: []`, which a control plane that predates
+/// it already narrows to nothing and refuses.
+pub(crate) fn may_connect_only(granted: &[String], narrowing: &Narrowing, tenant_id: &str) -> bool {
+    narrowing.audience == BROKER_AUDIENCE
+        && narrowing
+            .permissions
+            .as_ref()
+            .is_some_and(|pairs| pairs.is_empty())
+        && holds_token_delegate(granted, tenant_id)
 }
 
 /// `perms` narrowed as `narrowing` says. `permissions`, when present, is the

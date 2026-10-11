@@ -577,6 +577,30 @@ export FELIX_SUB_QUEUE_CAPACITY="512"
 export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 ```
 
+### `FELIX_SUB_QUEUE_MAX_BYTES`
+
+**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+```bash
+export FELIX_SUB_QUEUE_MAX_BYTES="67108864"
+```
+
+### `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
+
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `0` (no bound)
+
+```bash
+export FELIX_SUB_QUEUE_MAX_BYTES_TOTAL="1073741824"
+```
+
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
 
 **Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). A plain client authenticates as one identity, so for it this is the connection's cap. A client acting for many users over one connection gets this many per user, so one user at the cap cannot take every slot. The users still share `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`: with the defaults, four users at their cap fill it and a fifth is refused.
@@ -603,7 +627,7 @@ export FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL="16384"
 
 ### `FELIX_SUB_QUEUE_POLICY`
 
-**Description**: Backpressure policy when broker subscriber queues are full.
+**Description**: Backpressure policy when a broker subscriber queue is full, by entry count (`FELIX_SUBSCRIBER_QUEUE_CAPACITY`) or by bytes (`FELIX_SUB_QUEUE_MAX_BYTES`, `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`).
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 

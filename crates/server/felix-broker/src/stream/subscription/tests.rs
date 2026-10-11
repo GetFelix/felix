@@ -41,6 +41,7 @@ fn deliver(tx: &mpsc::Sender<QueuedDelivery>, base_offset: u64, values: &[&str])
     tx.try_send(QueuedDelivery::new(
         envelope,
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Default::default(),
     ))
     .expect("queue the delivery");
 }

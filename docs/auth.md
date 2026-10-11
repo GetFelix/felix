@@ -251,7 +251,9 @@ Example:
 7) A Felix access token is minted for the requested `audience`, along with a
    refresh token, and both are returned.
 
-If no permissions remain, the exchange returns `403`.
+If no permissions remain, the exchange returns `403`. The one exception is a
+delegating gateway's connection-only token; see
+[The gateway's own connections](#the-gateways-own-connections).
 
 A token whose `kid` is not in the cached JWKS triggers a re-fetch, since that
 usually means the IdP rotated keys. That lookup happens before the signature
@@ -514,7 +516,14 @@ How an identity behaves:
   presented with every user's token, and a user's own token is refused there.
   The gateway exchanges each user's token for a delegated one first; see
   [Delegated tokens](#delegated-tokens).
-- `ClusterClient` does not offer it yet.
+- `ClusterClient::with_identity` and `with_identity_token` do the same across
+  a cluster. The result is a `ClusterClient` with its own routing state that
+  reaches each broker over the parent's connection to it, so it follows moved
+  shards, redirects and failovers without a connection per user. When the
+  parent's connection to a broker is rebuilt, the identity's streams there are
+  reopened on the new one at its next request. The limits above apply on each
+  broker. The Python and TypeScript clients expose it as `with_identity` and
+  `withIdentity`, with a fixed token.
 
 ### Delegated tokens
 
@@ -602,6 +611,41 @@ Content-Type: application/json
   without `token.delegate`, a subject token that does not verify, belongs to
   another tenant, is already delegated, or names another actor or none in
   `may_act`, or nothing left after narrowing.
+
+### The gateway's own connections
+
+The gateway's shared connections authenticate with a broker token of the
+gateway's own principal before any user's delegated token rides on them. That
+token is only there to open the connection: every request is checked against
+the user's token on its stream. It should therefore carry no permissions.
+
+A principal that holds `token.delegate:tenant:{tenant_id}` can exchange for a
+connection-only broker token by asking for no permissions at all:
+
+```json
+{ "requested": [], "permissions": [] }
+```
+
+The token has the gateway's `sub` and an empty `perms`. The broker accepts it
+on `Auth`, which is all the connection needs, and refuses every request made
+with it. Under subject binding its `sub` matches the gateway's certificate.
+
+- Only a `felix-broker` token, and only for a holder of `token.delegate` on the
+  whole tenant. Anyone else asking for no permissions gets `403`
+  `no permissions`, as before, so the refusal still catches a misconfigured
+  grant.
+- The gateway has to ask for it. An ordinary exchange by the same principal
+  still refuses an empty result, since `token.delegate` never reaches a broker
+  token.
+- Refresh keeps it connection-only and checks `token.delegate` again. Once the
+  grant is removed, the next refresh is refused and the refresh chain ends.
+- The request is the pair narrowing with no pairs. A control plane that
+  predates connection-only tokens narrows it to nothing and refuses it with
+  `403`, never minting a wider token. Under the Raft store it needs the
+  metadata version pair narrowing needs, and answers `409` until then.
+
+A delegating gateway's principal therefore needs `token.delegate` and no
+broker grant.
 
 ## Bootstrap Mode (Day-0)
 
@@ -899,7 +943,9 @@ A gateway exchanging a user's sign-in for a token it will delegate also sends
 `"actor_token": "<its own felix-controlplane token>"` (and optionally
 `"actor_token_type": "urn:ietf:params:oauth:token-type:jwt"`). The broker token
 then carries `may_act` naming the gateway; see
-[Delegated tokens](#delegated-tokens).
+[Delegated tokens](#delegated-tokens). A delegating gateway asks for its own
+connection-only broker token with `"requested": [], "permissions": []`; see
+[The gateway's own connections](#the-gateways-own-connections).
 
 Response:
 
@@ -1052,6 +1098,7 @@ g, p:bob, role:payments-admin, tenant-a
 
 - `401 Unauthorized`: invalid or missing upstream token
 - `403 Forbidden`: tenant not allowed, issuer not allowed, or no permissions
+  (except a delegating gateway's connection-only token)
 - `500 Internal Server Error`: unexpected backend failures
 
 ## Future Work

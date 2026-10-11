@@ -9,7 +9,7 @@
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
 //! held open for the life of the connection unless
-//! [`StubBroker::set_events`] ends it.
+//! [`StubBroker::set_events`] ends it with a lag or a move.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -145,6 +145,17 @@ impl StubBroker {
         self.seen.sequences.lock().unwrap().clone()
     }
 
+    /// How many streams authenticated with `token`.
+    pub(super) fn streams_for(&self, token: &str) -> usize {
+        self.seen
+            .tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|presented| *presented == token)
+            .count()
+    }
+
     /// Cache requests it was sent.
     pub(super) fn cache_requests(&self) -> usize {
         self.seen.cache_requests.load(Ordering::SeqCst)
@@ -210,6 +221,8 @@ struct Seen {
     sequences: Arc<Mutex<Vec<Sequenced>>>,
     cache_requests: Arc<AtomicUsize>,
     cache_owners: Arc<Mutex<Vec<felix_wire::ShardOwner>>>,
+    /// The token each stream authenticated with.
+    tokens: Arc<Mutex<Vec<String>>>,
     /// True while publish answers are held back.
     acks_held: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -226,6 +239,7 @@ impl Default for Seen {
             sequences: Arc::default(),
             cache_requests: Arc::default(),
             cache_owners: Arc::default(),
+            tokens: Arc::default(),
             acks_held: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -260,7 +274,8 @@ async fn serve_stream(
             continue;
         }
         match Message::decode(frame)? {
-            Message::Auth { .. } => {
+            Message::Auth { token, .. } => {
+                seen.tokens.lock().unwrap().push(token);
                 let answer = Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
                     server_features: Some(
@@ -362,7 +377,10 @@ async fn serve_stream(
                         .await?;
                     let mut ended = false;
                     for message in scripted.unwrap_or_default() {
-                        ended = matches!(message, Message::SubscriptionLagged { .. });
+                        ended = matches!(
+                            message,
+                            Message::SubscriptionLagged { .. } | Message::ShardMoved { .. }
+                        );
                         write_message(&mut events, message).await?;
                     }
                     if ended {

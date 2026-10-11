@@ -52,6 +52,14 @@ permit is attached to the request/job and released only when it's actually
 processed, not when it's merely handed to a channel, so the byte budget
 reflects real resident memory, not just admission-time throughput.
 
+The subscriber queue at checkpoint 5 has the same problem, since one entry is
+a whole published batch, and the same answer: each subscriber has a byte
+semaphore (`stream/budget.rs`), plus an optional broker-wide one. The fanout
+takes the batch's payload bytes with `try_acquire_many_owned` alongside the
+channel slot, and the permit rides in the `QueuedDelivery`, so the bytes come
+back exactly when the entry does. A refusal is handled by the queue policy
+like a full channel, and under `Block` the fanout waits for the bytes.
+
 ### Why two queue-policy checkpoints on egress (5 and 6)
 
 `subscriber_queue_policy` (5) gates the broker-core fanout in

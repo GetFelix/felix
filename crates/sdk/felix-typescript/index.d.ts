@@ -334,6 +334,18 @@ export declare class Client {
   ): Promise<Client>;
 
   /**
+   * A client that acts as another user over this client's connections.
+   *
+   * Every stream it opens authenticates with `tenantId` and `token`, and the
+   * broker checks its requests against that token's grants alone. It follows
+   * shards and failovers as this client does, reaching each broker over this
+   * client's connection to it, so a gateway serving many users holds one
+   * connection per broker. The token is fixed: build a new one when it
+   * expires. A refused token rejects here.
+   */
+  withIdentity(tenantId: string, token: string): Promise<Client>;
+
+  /**
    * Publish one record.
    *
    * `key` is the routing key, and it decides the shard. Without one every

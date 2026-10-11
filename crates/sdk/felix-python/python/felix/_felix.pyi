@@ -229,6 +229,7 @@ class Client:
         ca_file: str | None = None,
         offer_alpn: bool = False,
     ) -> None: ...
+    def with_identity(self, tenant_id: str, token: str) -> "Client": ...
     def publish(
         self,
         tenant_id: str,
@@ -363,6 +364,7 @@ class AsyncClient:
         ca_file: str | None = None,
         offer_alpn: bool = False,
     ) -> "AsyncClient": ...
+    async def with_identity(self, tenant_id: str, token: str) -> "AsyncClient": ...
     async def publish(
         self,
         tenant_id: str,
