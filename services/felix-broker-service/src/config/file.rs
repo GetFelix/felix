@@ -209,6 +209,12 @@ impl BrokerConfig {
         {
             config.max_subscriptions_per_conn_total = Some(value);
         }
+        if let Some(value) = override_cfg.subscriber_queue_max_bytes {
+            config.subscriber_queue_max_bytes = value;
+        }
+        if let Some(value) = override_cfg.subscriber_queue_max_bytes_total {
+            config.subscriber_queue_max_bytes_total = value;
+        }
         if let Some(value) = override_cfg.subscriber_queue_policy
             && let Some(parsed) = parse_sub_queue_policy(&value)
         {
@@ -311,6 +317,8 @@ pub(super) struct BrokerConfigOverride {
     subscriber_queue_capacity_max: Option<usize>,
     max_subscriptions_per_conn: Option<usize>,
     max_subscriptions_per_conn_total: Option<usize>,
+    subscriber_queue_max_bytes: Option<usize>,
+    subscriber_queue_max_bytes_total: Option<usize>,
     subscriber_queue_policy: Option<String>,
     subscriber_writer_lanes: Option<usize>,
     subscriber_lane_queue_depth: Option<usize>,

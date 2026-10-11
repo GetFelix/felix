@@ -71,6 +71,8 @@ fn every_key_in_the_file_reaches_the_config() {
             core_shards: 1024
             subscriber_queue_capacity: 1025
             max_subscriptions_per_conn: 1026
+            subscriber_queue_max_bytes: 1100
+            subscriber_queue_max_bytes_total: 1101
             subscriber_queue_policy: "drop_old"
             subscriber_writer_lanes: 1028
             subscriber_lane_queue_depth: 1029
@@ -116,6 +118,8 @@ fn every_key_in_the_file_reaches_the_config() {
     assert_eq!(config.core_shards, 1024);
     assert_eq!(config.subscriber_queue_capacity, 1025);
     assert_eq!(config.max_subscriptions_per_conn, 1026);
+    assert_eq!(config.subscriber_queue_max_bytes, 1100);
+    assert_eq!(config.subscriber_queue_max_bytes_total, 1101);
     assert_eq!(config.subscriber_queue_policy, SubQueuePolicy::DropOld);
     assert_eq!(config.subscriber_writer_lanes, 1028);
     assert_eq!(config.subscriber_lane_queue_depth, 1029);
