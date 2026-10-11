@@ -129,6 +129,7 @@ jobs:
         continue-on-error: true
         env:
           CARGO_TARGET_DIR: ${{ env.CARGO_TARGET_DIR_CANDIDATE }}
+          FELIX_SUB_QUEUE_MAX_BYTES: "0"
         run: |
           set -euo pipefail
           mkdir -p /tmp/felix-perf-results
