@@ -82,6 +82,25 @@ impl Client {
         })
     }
 
+    /// A client that acts as another user over this client's connections.
+    ///
+    /// Every stream it opens authenticates with `tenantId` and `token`, and
+    /// the broker checks its requests against that token's grants alone. It
+    /// follows shards and failovers as this client does, reaching each broker
+    /// over this client's connection to it. The token is fixed: build a new
+    /// one when it expires. A refused token fails here.
+    #[napi]
+    pub async fn with_identity(&self, tenant_id: String, token: String) -> Result<Client> {
+        let identity = self
+            .cluster()?
+            .with_identity_token(tenant_id, token)
+            .await
+            .map_err(classify)?;
+        Ok(Client {
+            inner: std::sync::Mutex::new(Some(Arc::new(identity))),
+        })
+    }
+
     /// Release the client. Idempotent.
     ///
     /// Later calls fail rather than quietly using a connection that was meant

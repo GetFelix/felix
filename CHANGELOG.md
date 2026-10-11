@@ -33,6 +33,15 @@ for what the current release guarantees.
   and every request still runs under the user's delegated token. Refresh
   checks `token.delegate` again and ends the chain once it is removed. Anyone
   else asking for no permissions still gets `403` `no permissions` (#1130).
+- `ClusterClient::with_identity(tenant_id, token_provider)` and
+  `ClusterClient::with_identity_token` act as another user over the cluster
+  client's connections (#1129), as `Client::with_identity` does for one
+  broker. The result is a `ClusterClient` with its own routing state that
+  follows moved shards, redirects and failovers, reaching each broker over the
+  parent's connection to it, so a gateway sharing connections keeps a user's
+  subscription across a shard move and still holds one connection per broker.
+  The Python `Client.with_identity` and `AsyncClient.with_identity` and the
+  TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
 
 ### Fixed
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
