@@ -119,6 +119,13 @@ async fn satisfies_the_refresh_token_contract() {
     crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_revocation_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::revocations::run_revocation_contract(store).await;
+}
+
 /// A snapshot carries the token and holder, so a replica restored from one
 /// decides a fenced write exactly as the replicas that applied the log did.
 #[tokio::test]

@@ -326,6 +326,12 @@ fn exported() -> ExportedState {
         refresh_tokens: vec![refresh_token()],
         fleet_enabled: BTreeSet::from([s("f")]),
         replica_reports: vec![report()],
+        principal_revocations: vec![crate::auth::revocation::PrincipalRevocation {
+            seq: 1,
+            tenant_id: s("t"),
+            principal_id: s("p"),
+            revoked_at: 1,
+        }],
     }
 }
 
@@ -504,6 +510,11 @@ fn commands() -> Vec<MetaCommand> {
             streams: vec![stream()],
             caches: vec![cache()],
         },
+        MetaCommand::RevokePrincipals {
+            tenant_id: s("t"),
+            principal_ids: vec![s("p")],
+            revoked_at: 1,
+        },
     ]
 }
 
@@ -559,6 +570,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RegisterNodeInFleet { .. } => "register_node_in_fleet",
         MetaCommand::FinalizeFleetFeature { .. } => "finalize_fleet_feature",
         MetaCommand::CreateResources { .. } => "create_resources",
+        MetaCommand::RevokePrincipals { .. } => "revoke_principals",
     }
 }
 

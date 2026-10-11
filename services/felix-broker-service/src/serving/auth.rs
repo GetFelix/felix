@@ -33,6 +33,8 @@ use jsonwebtoken::Algorithm;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::serving::revocation::{Revocable, Revocations, Revoked};
+
 /// Verifies Felix tokens against control-plane JWKS. Cloning shares the
 /// verifier and key store.
 #[derive(Clone)]
@@ -112,19 +114,32 @@ impl BrokerAuth {
     ///
     /// # Errors
     /// JWKS fetch failures (control plane unreachable) and token verification
-    /// failures.
+    /// failures, and [`Revoked`] for a token issued before its principal was
+    /// revoked.
     pub async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<AuthContext> {
         ensure_jwks_cached(&self.key_store, tenant_id).await?;
         let tenant = TenantId::new(tenant_id);
         let claims = self.verifier.verify(&tenant, token)?;
         let matcher = PermissionMatcher::from_strings(&claims.perms)?;
+        let actor = claims.act.map(|actor| actor.sub);
+        let revocable = Revocable::new(
+            Arc::clone(&self.key_store.revocations),
+            tenant_id.to_string(),
+            claims.sub.clone(),
+            actor.clone(),
+            claims.iat,
+        );
+        if revocable.is_revoked() {
+            return Err(anyhow::Error::new(Revoked));
+        }
         Ok(AuthContext {
             tenant_id: tenant_id.to_string(),
             matcher,
             token: token.to_string(),
             publisher: publisher_of(&claims.sub),
             subject: claims.sub,
-            actor: claims.act.map(|actor| actor.sub),
+            actor,
+            revocable,
         })
     }
 }
@@ -145,6 +160,8 @@ pub struct AuthContext {
     /// `subject` as it is recorded on what this connection publishes. `None`
     /// when it is too long to record.
     pub publisher: Option<bytes::Bytes>,
+    /// What ends this session when its principal is revoked.
+    pub revocable: Revocable,
 }
 
 impl AuthContext {
@@ -225,6 +242,7 @@ pub struct ControlPlaneKeyStore {
     ttl: Duration,
     key_cache: Arc<TenantKeyCache>,
     catalog: Option<TenantCatalog>,
+    revocations: Arc<Revocations>,
 }
 
 #[derive(Clone)]
@@ -250,7 +268,14 @@ impl ControlPlaneKeyStore {
             ttl: Duration::from_secs(3600),
             key_cache,
             catalog: None,
+            revocations: Arc::new(Revocations::default()),
         }
+    }
+
+    /// The revocations every token verified against this store is checked
+    /// against. The control-plane sync fills it.
+    pub fn revocations(&self) -> &Arc<Revocations> {
+        &self.revocations
     }
 
     /// Refuse to fetch for tenants `catalog` does not know, once it is seeded.

@@ -42,17 +42,26 @@ for what the current release guarantees.
   subscription across a shard move and still holds one connection per broker.
   The Python `Client.with_identity` and `AsyncClient.with_identity` and the
   TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
+- Revoking a principal ends what its tokens already opened, on every broker,
+  within about one control-plane sync interval (#1132). Until now a revoked
+  principal kept its open subscriptions, cache watches, publish streams and
+  Kafka connections until its token expired. `POST
+  /v1/tenants/{t}/refresh-tokens/revoke` now also records a revocation, and so
+  does removing an RBAC policy or role assignment, for everyone the rule
+  reached (the whole tenant when it reached an IdP group). Brokers poll the new
+  `GET /v1/principal-revocations/changes` feed, refuse broker tokens issued at
+  or before a revocation, and end the streams they opened with the new
+  `revoked` error code (16, `fatal`): an `error` on a control stream, or as the
+  last frame on a subscription's or cache watch's event stream. A Kafka
+  connection is closed at its next request. Under the Raft store this is
+  metadata version 7, and until every member has it the revoke endpoint
+  answers `409` after revoking the refresh tokens. See
+  [docs/auth.md](docs/auth.md#revoking-a-principal).
+- `CacheWatch::refusal` in the Rust client says why the broker ended a watch
+  with an error, such as `revoked`. A subscription ended that way returns the
+  `BrokerError` from `next_event` instead of an "unexpected message" error.
 
 ### Fixed
-- A restore of a cache used only for counters is no longer dropped as stalled
-  while it copies a large counter log. The stall window
-  (`FELIX_SHARD_RESTORE_STALL_MS`) watched only the cache log's offset, which
-  stays at 0 for such a cache. Replica reports now carry each replica's
-  counter-log position (`replica_counter_offsets`, omitted for streams and by
-  older brokers), and placement counts a move there as progress. The control
-  plane stores it in the report (Postgres migration
-  `0025_replica_report_counter_offsets`, Raft metadata level 7; below level 7
-  reports are recorded without it) (#1164).
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
   a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
   watch item, `value` on a cache change, `offset` on an event, `event`,
@@ -75,6 +84,15 @@ for what the current release guarantees.
   set could count toward its majority a copy that promotion would refuse.
   A seat on a `Quorum` stream or cache now also waits until the leader's
   report names the copy caught up (#1139).
+- A restore of a cache used only for counters is no longer dropped as stalled
+  while it copies a large counter log. The stall window
+  (`FELIX_SHARD_RESTORE_STALL_MS`) watched only the cache log's offset, which
+  stays at 0 for such a cache. Replica reports now carry each replica's
+  counter-log position (`replica_counter_offsets`, omitted for streams and by
+  older brokers), and placement counts a move there as progress. The control
+  plane stores it in the report (Postgres migration
+  `0026_replica_report_counter_offsets`, Raft metadata level 8; below level 8
+  reports are recorded without it) (#1164).
 
 ## [0.6.0-preview.6] - 2026-10-10
 

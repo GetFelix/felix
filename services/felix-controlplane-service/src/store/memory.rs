@@ -39,6 +39,7 @@ mod nodes;
 mod pages;
 mod refresh_tokens;
 mod resources;
+mod revocations;
 mod shards;
 mod streams;
 mod tenants;
@@ -150,6 +151,8 @@ pub struct InMemoryStore {
     /// Whether placement starts moves of its own; see
     /// `ControlPlaneStore::moves_paused`.
     moves_paused: Arc<RwLock<bool>>,
+    /// Principal revocations; see `AuthStore::revoke_principals`.
+    revocations: Arc<RwLock<revocations::Revocations>>,
 }
 
 impl InMemoryStore {
@@ -207,6 +210,7 @@ impl InMemoryStore {
             bootstrap_serial: Arc::new(tokio::sync::Mutex::new(())),
             refresh_tokens: Arc::new(RwLock::new(HashMap::new())),
             moves_paused: Arc::new(RwLock::new(false)),
+            revocations: Arc::new(RwLock::new(Default::default())),
         }
     }
 
@@ -740,6 +744,30 @@ impl AuthStore for InMemoryStore {
 
     async fn purge_expired_refresh_tokens(&self, before_secs: i64) -> StoreResult<u64> {
         refresh_tokens::purge_expired_refresh_tokens(self, before_secs).await
+    }
+
+    async fn revoke_principals(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()> {
+        revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at).await
+    }
+
+    async fn principal_revocations(
+        &self,
+        since: u64,
+    ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>> {
+        revocations::principal_revocations(self, since).await
+    }
+
+    async fn principal_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<Option<i64>> {
+        revocations::principal_revoked_at(self, tenant_id, principal_id).await
     }
 }
 

@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use bytes::Bytes;
 use felix_broker::Broker;
 use felix_wire::{Message, StartPosition};
 use tokio::sync::mpsc;
@@ -51,7 +52,7 @@ use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
-use feeder::run_lane_feeder;
+use feeder::{SubscriberRevocation, run_lane_feeder};
 use replay::{CountingSink, EventFormat, write_replay};
 
 /// Application code on an event stream reset because this broker stopped
@@ -100,8 +101,16 @@ pub(crate) async fn handle_subscribe_message(
     queue_capacity: Option<u32>,
     peer_flags: u16,
     peer_features: u32,
-    principal: Option<String>,
+    owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
+    let principal = owner.map(|auth| auth.subject.clone());
+    let revocation = match owner {
+        Some(auth) => Some(SubscriberRevocation {
+            revocable: auth.revocable.clone(),
+            last_frame: revoked_frame(peer_features)?,
+        }),
+        None => None,
+    };
     // Which shard of the stream this subscription reads.
     //
     // A subscription reads one shard. A stream's shards can have different
@@ -494,6 +503,7 @@ pub(crate) async fn handle_subscribe_message(
                 writer_config,
                 feeder_subscriptions,
                 delivery,
+                revocation,
             )
             .await;
         };
@@ -530,6 +540,20 @@ pub(crate) async fn handle_subscribe_message(
     }
     .instrument(span)
     .await
+}
+
+/// The `error` a subscription ends with when its credential is revoked, code
+/// included only for a client that reads codes. A client that predates this
+/// reads it as an unexpected frame, which still ends the subscription with an
+/// error rather than as a clean close.
+fn revoked_frame(peer_features: u32) -> Result<Bytes> {
+    let message = ClientError::revoked().into_message();
+    let message = if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
+        message
+    } else {
+        message.without_error_code()
+    };
+    Ok(message.encode()?.encode())
 }
 
 /// The queue capacity a subscriber gets for `requested`: at least one, and

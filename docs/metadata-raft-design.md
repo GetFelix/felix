@@ -504,9 +504,16 @@ older member would drop it, and the chain's refreshed tokens could no longer be
 delegated by that gateway, so until every member is at level 6 an exchange with
 `actor_token` is refused with `409`.
 
-Level 7 is a replica report's `counter_offsets`, where each copy of a cache
+Level 7 is `revoke_principals`, a principal revocation (see
+[Revoking a principal](auth.md#revoking-a-principal)), and the snapshot's
+`principal_revocations`, omitted while empty. Until every member is at level 7,
+`POST /v1/tenants/{t}/refresh-tokens/revoke` revokes the refresh tokens and
+answers `409`, and an RBAC removal succeeds without ending the sessions it
+reached.
+
+Level 8 is a replica report's `counter_offsets`, where each copy of a cache
 shard has got with its counter log. Placement only reads it as progress for a
-restore, so until every member is at level 7 reports are recorded without it,
+restore, so until every member is at level 8 reports are recorded without it,
 and a restore copying only counters can be dropped by the stall window as
 before.
 

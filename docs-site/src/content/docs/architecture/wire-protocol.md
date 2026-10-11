@@ -592,8 +592,10 @@ client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
 `code` is one of `unauthenticated`, `forbidden`, `not_found`,
 `invalid_request`, `shard_unavailable`, `not_leader`, `quorum_timeout`,
 `leadership_lost`, `unacknowledged`, `overloaded`, `limit_exceeded`,
-`draining`, `internal`, `storage` or `stale_claim`. A client must accept a code
-it does not know. `retry` says what the client may do next: send again, wait
+`draining`, `internal`, `storage`, `stale_claim` or `revoked`. A client must
+accept a code it does not know. An `error` can also be the last frame on a
+subscription's or cache watch's event stream, as when the credential it was
+opened with is revoked. `retry` says what the client may do next: send again, wait
 first, go to another broker, send again only if the request is idempotent, or
 give up. What each code means is in
 [Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).

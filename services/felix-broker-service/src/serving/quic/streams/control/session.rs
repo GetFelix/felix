@@ -255,13 +255,18 @@ pub(super) async fn authenticate(
         }
         Err(err) => {
             tracing::warn!(error = %err, "auth failed");
+            let refusal = if err.is::<crate::serving::revocation::Revoked>() {
+                ClientError::revoked()
+            } else {
+                ClientError::unauthenticated("auth failed")
+            };
             send_control_error(
                 out_ack_tx,
                 out_ack_depth,
                 ack_throttle_tx,
                 ack_timeout_state,
                 cancel_tx,
-                ClientError::unauthenticated("auth failed"),
+                refusal,
             )
             .await?;
             return Ok(Step::Close(false));
