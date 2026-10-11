@@ -105,7 +105,9 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     let broker = Broker::new(cache)
         .with_topic_capacity(config.subscriber_queue_capacity.max(1))
         .context("configure subscriber queue depth")?
-        .with_subscriber_queue_policy(config.subscriber_queue_policy);
+        .with_subscriber_queue_policy(config.subscriber_queue_policy)
+        .with_subscriber_queue_max_bytes(config.subscriber_queue_max_bytes)
+        .with_subscriber_queue_max_bytes_total(config.subscriber_queue_max_bytes_total);
     let broker = match consumer_groups {
         Some((groups, dead_letters)) => broker.with_consumer_groups(
             groups,

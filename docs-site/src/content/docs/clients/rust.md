@@ -154,7 +154,10 @@ let bob = gateway.with_identity_token("t1", bob_token).await?;
 A handle opens one publish stream and one cache stream and no connections, so
 the gateway's connection count stays the same however many users it serves.
 One user's token expiring or being revoked stops only that user's new streams.
-Dropping a handle closes its streams.
+Dropping a handle closes its streams. The gateway's own token only opens the
+connections, so it needs no permissions: a gateway holding `token.delegate`
+can use a connection-only token from the control plane
+([docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#the-gateways-own-connections)).
 
 A refused publish or cache request ends the stream it was sent on, as on any
 client, so a handle that has had one refused cannot publish or reach the cache
