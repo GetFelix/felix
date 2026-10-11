@@ -34,6 +34,11 @@ fn from_env_uses_defaults() {
         DEFAULT_SUBSCRIBER_QUEUE_POLICY
     );
     assert_eq!(
+        config.subscriber_queue_max_bytes,
+        DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES
+    );
+    assert_eq!(config.subscriber_queue_max_bytes_total, 0);
+    assert_eq!(
         config.subscriber_writer_lanes,
         DEFAULT_SUBSCRIBER_WRITER_LANES
     );
@@ -279,6 +284,23 @@ fn from_env_respects_pub_inflight_bytes() {
 
     let config = BrokerConfig::from_env().expect("from_env");
     assert_eq!(config.pub_inflight_bytes, 8388608);
+
+    clear_felix_env();
+}
+
+/// Zero is a setting here, not a value to filter out: it turns the bound off.
+#[serial]
+#[test]
+fn from_env_reads_the_subscriber_byte_bounds() {
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_SUB_QUEUE_MAX_BYTES", "0");
+        env::set_var("FELIX_SUB_QUEUE_MAX_BYTES_TOTAL", "1073741824");
+    }
+
+    let config = BrokerConfig::from_env().expect("from_env");
+    assert_eq!(config.subscriber_queue_max_bytes, 0);
+    assert_eq!(config.subscriber_queue_max_bytes_total, 1073741824);
 
     clear_felix_env();
 }

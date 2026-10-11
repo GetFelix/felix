@@ -54,6 +54,8 @@ subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
 max_subscriptions_per_conn_total: 16384
+subscriber_queue_max_bytes: 67108864
+subscriber_queue_max_bytes_total: 0
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
@@ -322,6 +324,13 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
   chooses only the size, never the policy: under `block` one slow reader would stall every
   publisher on the shard.
+- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 64 MiB) bounds the
+  payload bytes one subscriber's broker-core queue holds, since one entry can be a whole frame.
+  The queue policy applies when either bound is full. A batch larger than the bound still goes
+  into an empty queue. `0` turns it off.
+- `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
+  bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
+  once slow subscribers fill it, fast ones drop too.
 - `subscriber_writer_lanes` and `subscriber_lane_shard` control outbound event write parallelism.
 - `subscriber_lane_shard: auto` is the default and is usually the best starting point.
 - Lanes often help high fanout + large payload workloads, but gains can plateau; do not assume

@@ -13,6 +13,8 @@ use std::time::Instant;
 use bytes::Bytes;
 use parking_lot::Mutex;
 
+use super::budget::HeldBytes;
+
 /// One published batch, shared by every subscriber it is delivered to.
 #[derive(Debug, Clone)]
 pub struct DeliveryEnvelope {
@@ -37,6 +39,7 @@ impl DeliveryEnvelope {
     ) -> Self {
         Self {
             inner: Arc::new(DeliveryBatch {
+                payload_bytes: payloads.iter().map(Bytes::len).sum(),
                 payloads: Arc::from(payloads),
                 base_offset,
                 skipped_before,
@@ -68,6 +71,12 @@ impl DeliveryEnvelope {
     /// How many records the batch holds.
     pub fn len(&self) -> usize {
         self.inner.payloads.len()
+    }
+
+    /// The records' payload bytes, summed. What a queued batch counts
+    /// against a subscriber's byte bound.
+    pub fn payload_bytes(&self) -> usize {
+        self.inner.payload_bytes
     }
 
     /// Whether the batch holds no records.
@@ -195,6 +204,7 @@ pub struct FrameShape {
 #[derive(Debug)]
 struct DeliveryBatch {
     payloads: Arc<[Bytes]>,
+    payload_bytes: usize,
     /// Offset of `payloads[0]` for a durable stream; `None` for an in-memory
     /// one, which has no durable position to report.
     ///
@@ -226,15 +236,23 @@ pub(crate) struct QueuedDelivery {
     envelope: Option<DeliveryEnvelope>,
     item_count: usize,
     queued_items: Arc<AtomicUsize>,
+    /// Given back to the subscriber's byte budgets when the batch leaves the
+    /// queue, like its entry.
+    _bytes: HeldBytes,
 }
 
 impl QueuedDelivery {
-    pub(crate) fn new(envelope: DeliveryEnvelope, queued_items: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(
+        envelope: DeliveryEnvelope,
+        queued_items: Arc<AtomicUsize>,
+        bytes: HeldBytes,
+    ) -> Self {
         let item_count = envelope.len();
         Self {
             envelope: Some(envelope),
             item_count,
             queued_items,
+            _bytes: bytes,
         }
     }
 
@@ -249,7 +267,8 @@ impl Drop for QueuedDelivery {
     }
 }
 
-/// What a publish does when a subscriber's queue is full.
+/// What a publish does when a subscriber's queue is full, by entry count or
+/// by bytes.
 ///
 /// `DropNew` is the default, so a slow subscriber costs itself records rather
 /// than slowing the publisher.
