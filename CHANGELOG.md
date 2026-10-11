@@ -11,6 +11,14 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- The Node client returns `null`, as `index.d.ts` says, for an absent field on
+  a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
+  watch item, `value` on a cache change, `offset` on an event, `event`,
+  `lostError` and `recovered` on a sharded item, and `resumeFrom`, `nodeId` and
+  `addr` on a shard move. They came back `undefined`, so a caller testing
+  `!== null` read every cache watch item as a lag notice.
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
