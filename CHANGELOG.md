@@ -15,7 +15,7 @@ for what the current release guarantees.
 - Subscriber queues on the broker are bounded by bytes as well as entries.
   An entry is a whole published batch, so the count alone let one slow
   subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
-  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (256 MiB by default, `0` for
   none), and the queue policy handles a full byte bound as it handles a full
   count: `drop_new` drops the batch for that subscriber, with the same offset
   gap and drop counters, and `block` waits. A batch larger than the bound
@@ -63,7 +63,7 @@ for what the current release guarantees.
 - Subscriber queues on the broker are bounded by bytes as well as entries.
   An entry is a whole published batch, so the count alone let one slow
   subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
-  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (256 MiB by default, `0` for
   none), and the queue policy handles a full byte bound as it handles a full
   count: `drop_new` drops the batch for that subscriber, with the same offset
   gap and drop counters, and `block` waits. A batch larger than the bound
@@ -93,7 +93,7 @@ for what the current release guarantees.
 - Subscriber queues on the broker are bounded by bytes as well as entries.
   An entry is a whole published batch, so the count alone let one slow
   subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
-  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (256 MiB by default, `0` for
   none), and the queue policy handles a full byte bound as it handles a full
   count: `drop_new` drops the batch for that subscriber, with the same offset
   gap and drop counters, and `block` waits. A batch larger than the bound
@@ -114,7 +114,7 @@ for what the current release guarantees.
 - Subscriber queues on the broker are bounded by bytes as well as entries.
   An entry is a whole published batch, so the count alone let one slow
   subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
-  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (64 MiB by default, `0` for
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (256 MiB by default, `0` for
   none), and the queue policy handles a full byte bound as it handles a full
   count: `drop_new` drops the batch for that subscriber, with the same offset
   gap and drop counters, and `block` waits. A batch larger than the bound
@@ -170,6 +170,12 @@ for what the current release guarantees.
   `streamDeleted` in TypeScript).
 
 ### Changed
+- `FELIX_SUB_QUEUE_MAX_BYTES` defaults to 256 MiB instead of 64 MiB. The bound
+  also covers the writer lanes, so 64 MiB throttled a subscriber that was
+  keeping up with 4 MiB batches (64 x 64 KiB) at fanout 10. Against
+  v0.6.0-preview.6 at that load, 128 MiB still had a 4x p99 tail; 256 MiB
+  matched it within noise (p50 +9.7%, p=0.48; p99 +7.3%, p=0.67; throughput
+  +1.5%).
 - A broker closing a shard it no longer has any role in tells a reader still
   attached that the shard moved, naming its current leader, rather than just
   ending the stream. `Broker::close_stream_shard` takes the handoff.

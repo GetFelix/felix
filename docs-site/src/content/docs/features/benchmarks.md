@@ -321,14 +321,15 @@ to re-run the harness by hand:
 
 - `.github/workflows/perf-pr.yml` runs on every PR. It builds and benchmarks
   both the PR's merge-base and the PR head back-to-back on the same runner
-  instance (a small fast subset, not the full matrix below), then posts a
+  instance (a small fast subset, not the full matrix below, plus one
+  64 KiB-payload cell that reaches the subscriber byte bound), then posts a
   PR comment comparing them via a Welch's t-test
   (`scripts/perf/compare_benchmarks.py`). Running both sides on the same
   runner controls for GitHub Actions' shared/virtualized runner noise far
   better than comparing against a historical stored value. It is advisory
   only and does not block merging.
 - `.github/workflows/perf-publish.yml` runs on every merge to `main`. It runs
-  the same fast subset once and publishes it as a historical time series
+  the fast subset, without the large-payload cell, once and publishes it as a historical time series
   (via `benchmark-action/github-action-benchmark`, stored on the
   `benchmark-data` branch) so trends over time are browsable.
 - `.github/workflows/perf-comprehensive.yml` runs the full matrix below on a

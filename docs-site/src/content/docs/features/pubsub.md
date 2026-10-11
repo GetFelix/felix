@@ -191,7 +191,7 @@ at each level:
   is overloaded, and it is deliberately visible.
 - **The subscriber queue** bounds what one subscription can have pending, by
   entries (`subscriber_queue_capacity`) and by payload bytes
-  (`subscriber_queue_max_bytes`, 64 MiB by default). The byte bound also
+  (`subscriber_queue_max_bytes`, 256 MiB by default). The byte bound also
   covers frames already taken from the queue and waiting to be written, so it
   bounds the subscription's memory all the way to the network. What happens
   when either fills is set by the overflow policy:
@@ -222,6 +222,11 @@ record waits for the queue to drain instead of never being delivered. A drop
 caused by the byte bound is the same drop as one caused by the count: the same
 offset gap, the same `subscription_lagged` on a durable stream, the same
 counters, plus `felix_sub_queue_byte_dropped_total`.
+
+Because the bound reaches the writer lanes, it also has to fit what a
+subscriber that is keeping up has in flight. At 64 MiB, a subscriber reading
+4 MiB batches (64 records of 64 KiB) at fanout 10 was throttled and its p99
+latency grew; 256 MiB, the default, was enough.
 
 `subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
 on the broker. It is off by default because it gives up isolation: once slow

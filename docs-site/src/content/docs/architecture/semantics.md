@@ -314,7 +314,7 @@ Each subscription has its own bounded queue and its own QUIC stream.
 
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
   and holds at most `subscriber_queue_max_bytes` of payload in them (default:
-  64 MiB), since one slot can hold a whole batch. Frames taken from the queue
+  256 MiB), since one slot can hold a whole batch. Frames taken from the queue
   but not yet written to the subscription's QUIC stream count toward the
   bytes too
 - When either fills, new events are **dropped for that subscriber only**
@@ -327,7 +327,7 @@ Each subscription has its own bounded queue and its own QUIC stream.
 ```yaml
 # Broker config
 subscriber_queue_capacity: 512  # Per-subscriber buffer size
-subscriber_queue_max_bytes: 67108864  # Per-subscriber payload bytes
+subscriber_queue_max_bytes: 268435456  # Per-subscriber payload bytes
 subscriber_writer_lanes: 4
 subscriber_lane_shard: auto
 ```

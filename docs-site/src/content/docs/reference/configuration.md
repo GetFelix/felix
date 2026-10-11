@@ -437,12 +437,12 @@ subscriber_queue_capacity_max: 4096
 
 **Type**: `usize` (bytes)
 
-**Default**: `67108864` (64 MiB)
+**Default**: `268435456` (256 MiB)
 
 **Environment**: `FELIX_SUB_QUEUE_MAX_BYTES`
 
 ```yaml
-subscriber_queue_max_bytes: 67108864
+subscriber_queue_max_bytes: 268435456
 ```
 
 #### `subscriber_queue_max_bytes_total`
