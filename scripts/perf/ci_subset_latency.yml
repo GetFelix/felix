@@ -3,12 +3,20 @@
     "trials": 5
   },
   "workload": {
-    "fanout": [1, 10],
-    "batch": [1],
-    "payload_bytes": [256],
-    "warmup": 500,
-    "total": 5000,
-    "binary": false
+    "fanout": [
+      10
+    ],
+    "batch": [
+      64
+    ],
+    "payload_bytes": [
+      65536
+    ],
+    "warmup": 2000,
+    "total": 20000,
+    "binary": true,
+    "min_run_bytes": 268435456,
+    "max_total": 500000
   },
   "profiles": {
     "balanced": {
@@ -20,17 +28,28 @@
         "FELIX_EVENT_BATCH_MAX_DELAY_US": "250",
         "FELIX_PUBLISH_CHUNK_BYTES": "16384",
         "FELIX_CACHE_CONN_POOL": "8",
-        "FELIX_CACHE_STREAMS_PER_CONN": "4"
+        "FELIX_CACHE_STREAMS_PER_CONN": "4",
+        "FELIX_SUB_QUEUE_MAX_BYTES": "134217728"
       }
     }
   },
   "presets": {
-    "P1_hash": {
+    "P8_hash": {
       "args": [
-        "--pub-conns", "1", "--pub-streams-per-conn", "1", "--pub-sharding", "hash_stream",
-        "--idle-ms", "10000"
+        "--pub-conns",
+        "4",
+        "--pub-streams-per-conn",
+        "2",
+        "--pub-stream-count",
+        "8",
+        "--pub-sharding",
+        "hash_stream",
+        "--idle-ms",
+        "10000"
       ]
     }
   },
-  "preset_order": ["P1_hash"]
+  "preset_order": [
+    "P8_hash"
+  ]
 }
