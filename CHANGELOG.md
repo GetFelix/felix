@@ -175,6 +175,13 @@ for what the current release guarantees.
   ending the stream. `Broker::close_stream_shard` takes the handoff.
 
 ### Fixed
+- Under the `block` queue policy, one subscriber at its byte or entry bound no
+  longer holds up the rest of a batch's fanout. The broker queues the batch
+  for every subscriber with room first and waits only on the full ones, so a
+  fast subscriber gets each batch as soon as it is durable. Each subscriber
+  still receives batches in publish order. The latency demo now passes
+  `FELIX_SUB_QUEUE_MAX_BYTES` and `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` to the
+  broker it builds (#1179).
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
   a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
   watch item, `value` on a cache change, `offset` on an event, `event`,

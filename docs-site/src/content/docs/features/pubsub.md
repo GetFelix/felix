@@ -202,6 +202,10 @@ Under the default a publisher never waits on a subscriber. That is why one
 stalled consumer cannot degrade the rest, and also why a subscriber can
 silently miss records.
 
+Under `block`, a batch reaches every subscriber with room before the publish
+waits on the full ones. The next batch on the shard waits behind it, though,
+so over time the fast subscribers still move at the slow one's pace.
+
 The overflow policy covers live records only. A subscription resumed from an
 earlier offset reads history the broker pages off disk for it alone, with no
 publisher to protect, so history below the subscription's `live_offset` is

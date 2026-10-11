@@ -58,7 +58,9 @@ semaphore (`stream/budget.rs`), plus an optional broker-wide one. The fanout
 takes the batch's payload bytes with `try_acquire_many_owned` alongside the
 channel slot, and the permit rides in the `QueuedDelivery`. A refusal is
 handled by the queue policy like a full channel, and under `Block` the fanout
-waits for the bytes.
+waits for the bytes. It waits only after queueing the batch for every
+subscriber with room, and then on all the full ones at once, so one full queue
+does not delay delivery to the others.
 
 The bytes do not come back when the feeder takes the batch. The feeder reads
 with `SubscriptionReceiver::recv_held`, and the permit travels with the frame

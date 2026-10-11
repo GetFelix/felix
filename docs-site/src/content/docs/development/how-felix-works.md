@@ -917,7 +917,10 @@ Under `Block`, one stalled subscriber makes every publisher of its shard wait,
 each on its own enqueue. The commit turn held across fanout does not widen
 this: a second publisher would wait on the same full queue with no turn at
 all, which `block_policy_stalls_every_publisher_of_the_shard_without_a_commit_turn`
-shows on an ephemeral stream. The blast radius of `Block` is the shard. Under
+shows on an ephemeral stream. The blast radius of `Block` is the shard. Within
+one batch, though, the fanout first queues it for every subscriber with room
+and only then waits on the full ones, so the batch reaches fast subscribers
+without waiting on a slow one. Under
 `DropNew`, the default, the work per subscriber is one non-blocking
 `try_reserve`, and publish latency stays flat across fanout.
 

@@ -1,5 +1,6 @@
 //! Subscriber queues bounded by payload bytes as well as entries.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -129,6 +130,146 @@ async fn block_waits_for_bytes_to_drain() {
     assert_eq!(sub.recv().await.expect("recv").len(), 80);
     assert_eq!(blocked.await, 1);
     assert_eq!(sub.recv().await.expect("recv").len(), 80);
+}
+
+/// Under `Block`, a subscriber at its bound holds up only its own copy of
+/// a batch: one with room has it while the publish still waits.
+#[tokio::test]
+async fn block_queues_for_subscribers_with_room_before_waiting_on_a_full_one() {
+    let broker = Arc::new(bounded(100, SubQueuePolicy::Block).await);
+    let mut slow = subscribe(&broker).await;
+    let mut fast = subscribe(&broker).await;
+    assert_eq!(publish(&broker, 80).await, 2);
+    assert_eq!(fast.recv().await.expect("recv").len(), 80);
+
+    let blocked = tokio::spawn({
+        let broker = Arc::clone(&broker);
+        async move { publish(&broker, 81).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(500), fast.recv()).await;
+    assert_eq!(
+        early
+            .expect("not held behind the full subscriber")
+            .expect("recv")
+            .len(),
+        81
+    );
+    assert!(
+        !blocked.is_finished(),
+        "the publish still waits on the full one"
+    );
+
+    assert_eq!(slow.recv().await.expect("recv").len(), 80);
+    assert_eq!(blocked.await.expect("join"), 2);
+    assert_eq!(slow.recv().await.expect("recv").len(), 81);
+}
+
+/// The same holds for a queue full by entries rather than bytes.
+#[tokio::test]
+async fn block_does_not_hold_a_subscriber_with_room_behind_a_full_entry_count() {
+    let broker = Arc::new(bounded(0, SubQueuePolicy::Block).await);
+    let mut slow = broker
+        .subscribe_sized("t1", "default", "big", 0, Some(1))
+        .await
+        .expect("subscribe");
+    let mut fast = subscribe(&broker).await;
+    assert_eq!(publish(&broker, 1).await, 2);
+    assert_eq!(fast.recv().await.expect("recv").len(), 1);
+
+    let blocked = tokio::spawn({
+        let broker = Arc::clone(&broker);
+        async move { publish(&broker, 2).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(500), fast.recv()).await;
+    assert_eq!(
+        early
+            .expect("not held behind the full subscriber")
+            .expect("recv")
+            .len(),
+        2
+    );
+    assert_eq!(slow.recv().await.expect("recv").len(), 1);
+    assert_eq!(blocked.await.expect("join"), 2);
+    assert_eq!(slow.recv().await.expect("recv").len(), 2);
+}
+
+/// Waiting on a full subscriber does not let a later publish reach anyone
+/// ahead of an earlier one: offsets arrive in order for every subscriber,
+/// with concurrent publishers and a reader that is often full.
+#[tokio::test]
+async fn block_keeps_each_subscriber_in_offset_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(
+        broker_with(
+            Broker::new(EphemeralCache::new().into())
+                .with_durable_storage(storage)
+                .with_subscriber_queue_policy(SubQueuePolicy::Block)
+                .with_subscriber_queue_max_bytes(100),
+            StreamMetadata {
+                durable: true,
+                ..StreamMetadata::default()
+            },
+        )
+        .await,
+    );
+    let mut receivers = Vec::new();
+    for _ in 0..3 {
+        let resumed = broker
+            .subscribe_from("t1", "default", "big", 0, StartPosition::Latest)
+            .await
+            .expect("subscribe");
+        receivers.push(resumed.subscription.into_parts());
+    }
+
+    const PUBLISHERS: u64 = 4;
+    const EACH: u64 = 25;
+    let publishers: Vec<_> = (0..PUBLISHERS)
+        .map(|_| {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move {
+                for _ in 0..EACH {
+                    assert_eq!(publish(&broker, 40).await, 3);
+                }
+            })
+        })
+        .collect();
+    let mut readers = Vec::new();
+    for (i, (mut rx, guard)) in receivers.into_iter().enumerate() {
+        readers.push(tokio::spawn(async move {
+            let _guard = guard;
+            let mut offsets = Vec::new();
+            for _ in 0..PUBLISHERS * EACH {
+                // The first reader is slow, so its queue is often full.
+                if i == 0 {
+                    tokio::time::sleep(Duration::from_micros(500)).await;
+                }
+                offsets.push(
+                    rx.recv()
+                        .await
+                        .expect("recv")
+                        .base_offset()
+                        .expect("offset"),
+                );
+            }
+            offsets
+        }));
+    }
+    for publisher in publishers {
+        publisher.await.expect("join");
+    }
+    let expected: Vec<u64> = (0..PUBLISHERS * EACH).collect();
+    for reader in readers {
+        assert_eq!(reader.await.expect("join"), expected);
+    }
 }
 
 /// A byte-bound drop is a drop like any other: on a durable stream it is

@@ -328,7 +328,8 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   payload bytes one subscriber's broker-core queue holds, since one entry can be a whole frame.
   A batch keeps counting until the frame carrying it has been written to the subscriber's QUIC
   stream, so frames waiting in the writer lanes are inside the bound too. The queue policy
-  applies when either bound is full. A batch larger than the bound still goes
+  applies when either bound is full; under `block` the batch goes to every subscriber with
+  room before the fanout waits on the full ones. A batch larger than the bound still goes
   into an empty queue. `0` turns it off.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
   bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
