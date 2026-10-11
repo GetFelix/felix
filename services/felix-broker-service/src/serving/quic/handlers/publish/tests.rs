@@ -114,6 +114,13 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
         tenant_id: tenant_id.to_string(),
         matcher,
         token: "test-token".to_string(),
+        revocable: crate::serving::revocation::Revocable::new(
+            Default::default(),
+            tenant_id.to_string(),
+            "test-principal".to_string(),
+            None,
+            0,
+        ),
     }
 }
 

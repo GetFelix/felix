@@ -113,7 +113,7 @@ pub(super) async fn subscribe(
         queue_capacity,
         session.peer_flags,
         session.peer_features,
-        session.auth_ctx.as_ref().map(|auth| auth.subject.clone()),
+        session.auth_ctx.as_ref(),
     )
     .await?;
     if done {

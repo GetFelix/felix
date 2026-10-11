@@ -57,13 +57,18 @@ pub enum ErrorCode {
     /// shard failed over) after the record was handed out. Nothing was
     /// applied, and the record will be delivered again.
     StaleClaim,
+    /// The credential the stream authenticated with was revoked, or the
+    /// token presented was issued before its principal was revoked. Ends
+    /// streams that were already open. A token minted after the revocation
+    /// may still be accepted.
+    Revoked,
     /// A code this version does not know. Its retry class still applies.
     Unknown(String),
 }
 
 impl ErrorCode {
     /// Every code this version defines, for tables and checks.
-    pub const ALL: [ErrorCode; 15] = [
+    pub const ALL: [ErrorCode; 16] = [
         ErrorCode::Unauthenticated,
         ErrorCode::Forbidden,
         ErrorCode::NotFound,
@@ -79,6 +84,7 @@ impl ErrorCode {
         ErrorCode::Internal,
         ErrorCode::Storage,
         ErrorCode::StaleClaim,
+        ErrorCode::Revoked,
     ];
 
     /// The wire name.
@@ -99,6 +105,7 @@ impl ErrorCode {
             ErrorCode::Internal => "internal",
             ErrorCode::Storage => "storage",
             ErrorCode::StaleClaim => "stale_claim",
+            ErrorCode::Revoked => "revoked",
             ErrorCode::Unknown(name) => name,
         }
     }
@@ -131,6 +138,7 @@ impl ErrorCode {
             ErrorCode::Internal => 13,
             ErrorCode::Storage => 14,
             ErrorCode::StaleClaim => 15,
+            ErrorCode::Revoked => 16,
             ErrorCode::Unknown(_) => 0,
         }
     }
@@ -151,7 +159,8 @@ impl ErrorCode {
             ErrorCode::Unauthenticated
             | ErrorCode::Forbidden
             | ErrorCode::InvalidRequest
-            | ErrorCode::LimitExceeded => RetryClass::Fatal,
+            | ErrorCode::LimitExceeded
+            | ErrorCode::Revoked => RetryClass::Fatal,
             // A broker learns streams from the control plane, so a promoted
             // broker says "not found" for a stream it is about to serve.
             ErrorCode::NotFound | ErrorCode::Overloaded => RetryClass::RetryAfter,

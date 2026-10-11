@@ -193,7 +193,7 @@ pub(crate) fn kind_for_code(code: &str, retry: RetryClass) -> Kind {
         return Kind::OutcomeUnknown;
     }
     match code {
-        "unauthenticated" | "forbidden" => Kind::Auth,
+        "unauthenticated" | "forbidden" | "revoked" => Kind::Auth,
         "not_found" => Kind::NotFound,
         "shard_unavailable" | "not_leader" => Kind::ShardUnavailable,
         "overloaded" => Kind::Overloaded,

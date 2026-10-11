@@ -43,6 +43,13 @@ async fn satisfies_the_refresh_token_contract() {
     crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
 }
 
+/// The same suite Postgres and Raft run.
+#[tokio::test]
+async fn satisfies_the_revocation_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::revocations::run_revocation_contract(store).await;
+}
+
 /// The same suite Postgres runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_signing_key_contract() {

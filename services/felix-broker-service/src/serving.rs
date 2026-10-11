@@ -1,7 +1,8 @@
 //! Serving clients.
 //!
 //! [`quic`] accepts connections, decodes frames and runs the per-message work.
-//! [`auth`] checks the token on each action. `cache_routing` decides which
+//! [`auth`] checks the token on each action, and [`revocation`] ends what a
+//! revoked token opened. `cache_routing` decides which
 //! broker answers for a cache key, `group_ops` is the consumer-group work
 //! behind the queue handlers, and `core_shards` pins stream work to cores.
 //! [`kafka`] is the read-only Kafka listener around the `felix-kafka` crate.
@@ -21,4 +22,5 @@ pub(crate) mod inspect;
 pub mod kafka;
 pub mod limits;
 pub mod quic;
+pub mod revocation;
 pub(crate) mod tls;

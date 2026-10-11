@@ -37,6 +37,13 @@ pub(super) fn spawn_catalog_sync(
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
         let interval_ms = config.controlplane_sync_interval_ms;
+        tokio::spawn(crate::cluster::revocation_sync::follow_revocations(
+            Arc::clone(key_store.revocations()),
+            base_url.clone(),
+            Duration::from_millis(interval_ms),
+            credential.clone(),
+            sync_shutdown.clone(),
+        ));
         let broker = Arc::clone(broker);
         let sync_shutdown = sync_shutdown.clone();
         let seeded_tx = gate_readiness_on_sync.then_some(seeded_tx);

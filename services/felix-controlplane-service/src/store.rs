@@ -547,6 +547,36 @@ pub trait AuthStore: Send + Sync {
     /// stops the table growing without bound, and the record of a replay is
     /// worth keeping until it can no longer be presented.
     async fn purge_expired_refresh_tokens(&self, before_secs: i64) -> StoreResult<u64>;
+
+    /// Revoke every broker token these principals of `tenant_id` were issued
+    /// at or before `revoked_at` (seconds since the epoch). Brokers end the
+    /// sessions those tokens opened. A principal already revoked later keeps
+    /// the later time. `revoked_at` is the caller's, so every Raft member
+    /// records the same one.
+    async fn revoke_principals(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()>;
+
+    /// Revocations written at or after `since`, oldest first, at most the
+    /// store's change limit. Each principal appears once, at its latest
+    /// revocation, so a `since` of 0 is the whole set. A `since` past the end,
+    /// as from a store that was replaced, is answered from 0: applying a
+    /// revocation twice changes nothing.
+    async fn principal_revocations(
+        &self,
+        since: u64,
+    ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>>;
+
+    /// The latest revocation of `principal_id` in `tenant_id`, counting one
+    /// of the whole tenant.
+    async fn principal_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<Option<i64>>;
 }
 
 /// Everything [`AuthStore::bootstrap_tenant_auth`] writes besides the keys it

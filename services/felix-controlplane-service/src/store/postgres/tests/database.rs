@@ -413,6 +413,7 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     crate::store::contract::shards::run_shard_concurrency_contract(store.clone()).await;
     crate::store::contract::shards::run_node_delete_race_contract(store.clone(), 300).await;
     crate::store::contract::refresh_tokens::run_refresh_contract(store.clone()).await;
+    crate::store::contract::revocations::run_revocation_contract(store.clone()).await;
     crate::store::contract::rbac::run_rbac_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_race_contract(store.clone(), 50).await;
