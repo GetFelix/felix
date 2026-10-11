@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791722439216,
+  "lastUpdate": 1791727088807,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28444,6 +28444,58 @@ window.BENCHMARK_DATA = {
             "range": "30596.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1650356.33\nmean: 1659549.00\nstdev: 30596.24\ncv: 1.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9260db0602f2634a183b476e697105430668ddf3",
+          "message": "fix(placement): count counter-log progress toward the restore stall window (#1164) (#1170)\n\nThe stall window (FELIX_SHARD_RESTORE_STALL_MS) watched only the cache\nlog's offset for a restore's new copy. A cache used only for counters keeps\nthat at 0, so a copy busy with a large counter log looked stuck and could be\ndropped after two minutes.\n\nThe leader's replica report now carries each follower's counter-log\nposition (replica_counter_offsets, optional, omitted for streams and by\nolder brokers). The control plane stores it with the report (Postgres\nmigration 0025, Raft metadata level 7, recorded without it below that\nlevel), and placement counts a rise in either log as progress.\n\nSpec-Unaffected: the stall drop is TimeOut in FelixPlacementPacing.tla, which may fire at any time before the fence; this only makes it fire less often",
+          "timestamp": "2026-10-11T06:48:29-07:00",
+          "tree_id": "5eea141d99f6b40648f721c70ee31ddc72d40a97",
+          "url": "https://github.com/GetFelix/felix/commit/9260db0602f2634a183b476e697105430668ddf3"
+        },
+        "date": 1791727087925,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342103.96,
+            "range": "12741.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342103.96\nmean: 346263.70\nstdev: 12741.88\ncv: 3.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342103.96,
+            "range": "12741.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342103.96\nmean: 346263.70\nstdev: 12741.88\ncv: 3.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80333.66,
+            "range": "539.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80333.66\nmean: 80282.04\nstdev: 539.58\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803336.58,
+            "range": "5395.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803336.58\nmean: 802820.37\nstdev: 5395.79\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
