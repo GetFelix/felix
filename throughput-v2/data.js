@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791700620215,
+  "lastUpdate": 1791703089829,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28132,6 +28132,58 @@ window.BENCHMARK_DATA = {
             "range": "7225.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805635.48\nmean: 804092.64\nstdev: 7225.07\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a035de2775436386681a5c4ec1bf8c86d455416",
+          "message": "feat(controlplane): connection-only broker token for a delegating gateway (#1130) (#1166)\n\nA holder of token.delegate on the tenant can exchange for a broker token\nwith its own subject and no permissions by asking for requested: [] and\npermissions: []. A gateway's shared connections authenticate with it, so\nits principal needs no broker grant it never uses. Refresh checks\ntoken.delegate again. Anyone else asking for nothing is still refused.",
+          "timestamp": "2026-10-10T23:29:59-07:00",
+          "tree_id": "286863b8c420e73e0e439c411f18677f378f9a13",
+          "url": "https://github.com/GetFelix/felix/commit/4a035de2775436386681a5c4ec1bf8c86d455416"
+        },
+        "date": 1791703089380,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 500468.72,
+            "range": "22771.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500468.72\nmean: 492366.44\nstdev: 22771.69\ncv: 4.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 500468.72,
+            "range": "22771.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500468.72\nmean: 492366.44\nstdev: 22771.69\ncv: 4.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 115796.4,
+            "range": "1270.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 115796.40\nmean: 116042.07\nstdev: 1270.14\ncv: 1.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1157963.98,
+            "range": "12701.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1157963.98\nmean: 1160420.72\nstdev: 12701.46\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
