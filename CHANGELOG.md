@@ -11,6 +11,16 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+- A delegating gateway no longer needs a broker grant it never uses. A
+  principal holding `token.delegate:tenant:{tenant_id}` can exchange for a
+  connection-only broker token, its own subject with no permissions, by
+  sending `"requested": [], "permissions": []` to `/token/exchange` (or the
+  dev-token bootstrap endpoint). Its shared connections authenticate with it,
+  and every request still runs under the user's delegated token. Refresh
+  checks `token.delegate` again and ends the chain once it is removed. Anyone
+  else asking for no permissions still gets `403` `no permissions` (#1130).
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the

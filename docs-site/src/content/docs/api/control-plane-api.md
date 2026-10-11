@@ -86,6 +86,14 @@ permissions is still a `403` with code `forbidden`, so a gateway can tell the
 two apart by `code` without reading `message`. With the Raft store it is a `409` until every
 member supports it.
 
+A delegating gateway gets the broker token its own shared connections
+authenticate with by sending `{"requested": [], "permissions": []}`. For a
+principal that holds `token.delegate:tenant:{tenant_id}`, that mints a
+connection-only token: the gateway's `sub` and no permissions, so it opens a
+connection and can do nothing on it. Refreshing it checks `token.delegate`
+again. For anyone else, asking for nothing is still a `403` with code
+`forbidden`, as is a gateway's ordinary exchange that ends up empty.
+
 ### POST /v1/tenants/{tenant_id}/token/refresh
 
 Trade a refresh token for a new Felix token without going back to the IdP.

@@ -235,17 +235,20 @@ pub(crate) fn verified_actor(
 /// Whether `claims` hold `token.delegate` over `tenant_id` in their own
 /// right. A delegated token never does.
 fn may_delegate(claims: &FelixClaims, tenant_id: &str) -> bool {
+    claims.act.is_none() && holds_token_delegate(&claims.perms, tenant_id)
+}
+
+/// Whether `perms` include `token.delegate` over all of `tenant_id`.
+pub(crate) fn holds_token_delegate(perms: &[String], tenant_id: &str) -> bool {
     let tenant = ParsedObject::Tenant {
         tenant_id: tenant_id.to_string(),
     };
-    claims.act.is_none()
-        && claims
-            .perms
-            .iter()
-            .filter_map(|perm| parse_permission(perm, tenant_id).ok())
-            .any(|perm| {
-                perm.action == ACTION_TOKEN_DELEGATE && object_within_scope(&perm.object, &tenant)
-            })
+    perms
+        .iter()
+        .filter_map(|perm| parse_permission(perm, tenant_id).ok())
+        .any(|perm| {
+            perm.action == ACTION_TOKEN_DELEGATE && object_within_scope(&perm.object, &tenant)
+        })
 }
 
 /// Refuse a subject token whose `may_act` names someone other than
