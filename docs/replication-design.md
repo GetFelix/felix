@@ -1602,8 +1602,11 @@ With one slot by default, a restore that can never finish would hold every
 other short shard back for the whole move timeout. So a restore whose new copy
 has not moved for `FELIX_SHARD_RESTORE_STALL_MS` (two minutes by default) is
 dropped too (`stalled`). Moved means the leader reported the copy at a higher
-offset than before. A copy the leader is shipping to moves every pass; one
-left out of the report, or reported where it was, does not. However large the
+offset than before, in the shard's log or, for a cache, in its counter log. A
+cache used only for counters never moves its own log, so the report carries
+each copy's counter position (`replica_counter_offsets`) as well. A copy the
+leader is shipping to moves every pass; one left out of the report, or
+reported where it was in both, does not. However large the
 log, a follower catching up hands its position back after five seconds of
 shipping (`CATCH_UP_SLICE` in `driver/shard.rs`) and the driver passes again
 at once, and one batch is bounded by the peer request timeout (five seconds
@@ -2097,7 +2100,8 @@ follower level on the shard's log must hold them too.
 A successor that cannot take them holds the move at `Draining`: the control
 plane shows it waiting on the leader,
 `felix_broker_replication_drain_withheld_total{log}` counts each pass held,
-and the leader logs the shard and the follower. The report carries no
+and the leader logs the shard and the follower. Apart from the counter
+positions placement reads as a restore's progress, the report carries no
 positions for these logs; the leader gates on them, so the control plane has
 nothing more to check. The broker learns the successor from the assignment's
 `successor` field.

@@ -166,3 +166,22 @@ async fn a_byte_bound_drop_on_a_durable_stream_is_a_lag() {
     assert_eq!(receiver.lagged(), Some(1));
     assert_eq!(receiver.recv().await.expect("recv").base_offset(), Some(0));
 }
+
+/// A receiver that keeps a batch's bytes keeps the queue's room taken, even
+/// with several batches folded into one hold.
+#[tokio::test]
+async fn bytes_taken_with_a_batch_stay_held_until_dropped() {
+    let broker = bounded(100, SubQueuePolicy::DropNew).await;
+    let (mut rx, _guard) = subscribe(&broker).await.into_parts();
+
+    assert_eq!(publish(&broker, 40).await, 1);
+    assert_eq!(publish(&broker, 40).await, 1);
+    let (_, mut held) = rx.recv_held().await.expect("recv");
+    let (_, more) = rx.try_recv_held().expect("queued");
+    held.absorb(more);
+    assert_eq!(publish(&broker, 40).await, 0, "both still held");
+
+    drop(held);
+    assert_eq!(publish(&broker, 40).await, 1, "room once given back");
+    assert_eq!(publish(&broker, 40).await, 1);
+}

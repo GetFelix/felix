@@ -237,8 +237,8 @@ pub(crate) struct QueuedDelivery {
     item_count: usize,
     queued_items: Arc<AtomicUsize>,
     /// Given back to the subscriber's byte budgets when the batch leaves the
-    /// queue, like its entry.
-    _bytes: HeldBytes,
+    /// queue, unless the receiver takes them on with the batch.
+    bytes: HeldBytes,
 }
 
 impl QueuedDelivery {
@@ -252,12 +252,21 @@ impl QueuedDelivery {
             envelope: Some(envelope),
             item_count,
             queued_items,
-            _bytes: bytes,
+            bytes,
         }
     }
 
-    pub(crate) fn into_envelope(mut self) -> DeliveryEnvelope {
-        self.envelope.take().expect("queued delivery has envelope")
+    pub(crate) fn envelope(&self) -> &DeliveryEnvelope {
+        self.envelope
+            .as_ref()
+            .expect("queued delivery has envelope")
+    }
+
+    /// The batch and the bytes it still holds. Its queue entry is released
+    /// here either way.
+    pub(crate) fn into_parts(mut self) -> (DeliveryEnvelope, HeldBytes) {
+        let envelope = self.envelope.take().expect("queued delivery has envelope");
+        (envelope, std::mem::take(&mut self.bytes))
     }
 }
 

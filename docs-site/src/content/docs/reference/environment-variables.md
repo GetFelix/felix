@@ -579,7 +579,7 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES`
 
-**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads, and keeps counting until the frame carrying it is written to the subscriber's QUIC stream, so frames waiting in the writer lanes count too. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
 
 **Type**: Non-negative integer (bytes)
 
@@ -2145,7 +2145,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader's tail a move's destination may be when the leader is fenced. The rest is copied before the cut-over, so this bounds the switch-over, not what is lost. A replacement follower takes the place of the one it replaces within the same bound; on a `Quorum` stream it must also hold what a majority of the replica set holds. |
 | `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | A move that has not reached its fence, or a follower replacement that has not caught up, this long after it started is abandoned and its slot goes to the next move. A fenced move is always finished. `0` never gives up. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone, or its copy reported halted by its leader, before placement replaces the copy on another live broker, bringing the shard back to its replication factor. Keep it above the longest broker restart. `0` never replaces a lost or halted follower; a replica set left short of its factor by a failover is still topped up. |
-| `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long the copy a restore is adding may go without its reported position moving before the restore is dropped and its move slot goes to the next shard. The shard retries after the shards that have not had a slot. `0` waits for `FELIX_SHARD_MOVE_TIMEOUT_MS`. |
+| `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long the copy a restore is adding may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its move slot goes to the next shard. The shard retries after the shards that have not had a slot. `0` waits for `FELIX_SHARD_MOVE_TIMEOUT_MS`. |
 | `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | unset | Short aliases used by the demos and cluster harness. |
 
 ### Peer protocol, between brokers

@@ -511,6 +511,12 @@ Level 7 is `revoke_principals`, a principal revocation (see
 answers `409`, and an RBAC removal succeeds without ending the sessions it
 reached.
 
+Level 8 is a replica report's `counter_offsets`, where each copy of a cache
+shard has got with its counter log. Placement only reads it as progress for a
+restore, so until every member is at level 8 reports are recorded without it,
+and a restore copying only counters can be dropped by the stall window as
+before.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the

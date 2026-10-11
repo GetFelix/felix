@@ -191,8 +191,10 @@ at each level:
   is overloaded, and it is deliberately visible.
 - **The subscriber queue** bounds what one subscription can have pending, by
   entries (`subscriber_queue_capacity`) and by payload bytes
-  (`subscriber_queue_max_bytes`, 64 MiB by default). What happens when either
-  fills is set by the overflow policy:
+  (`subscriber_queue_max_bytes`, 64 MiB by default). The byte bound also
+  covers frames already taken from the queue and waiting to be written, so it
+  bounds the subscription's memory all the way to the network. What happens
+  when either fills is set by the overflow policy:
 
 ![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/diagrams/slow-consumer.svg)
 

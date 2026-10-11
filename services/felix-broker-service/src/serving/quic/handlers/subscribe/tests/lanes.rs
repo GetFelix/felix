@@ -412,6 +412,7 @@ fn lane_delivery(subscriber_id: u64) -> LaneCommand {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     }
 }
 
@@ -423,6 +424,7 @@ fn connection_delivery(subscriber_id: u64) -> ConnectionCommand {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     }
 }
 

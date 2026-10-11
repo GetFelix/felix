@@ -235,6 +235,7 @@ fn a_change_round_trips_with_and_without_a_body() {
 
 fn report_at(generation: u64, at: u64) -> ReplicaReport {
     ReplicaReport {
+        counter_offsets: Default::default(),
         key: assignment().key,
         generation,
         caught_up: BTreeSet::new(),

@@ -123,6 +123,9 @@ pub struct ShardReport {
     /// lists them under. Placement keeps a new copy off them and replaces
     /// one that stays halted.
     pub halted: Vec<(String, &'static str)>,
+    /// How far each follower had got with a cache's counter log, so a
+    /// restore copying only counters still shows progress. Empty for streams.
+    pub counter_offsets: Vec<(String, u64)>,
 }
 
 /// Who could take this shard over, as of `tail`.
@@ -141,14 +144,7 @@ pub(super) fn shard_report(
         key: key.clone(),
         generation,
         caught_up: caught_up(acknowledged, followers),
-        // Only followers whose position is moving: placement fences a move
-        // on how far behind its destination is, and one it cannot reach is
-        // not going to close any gap.
-        offsets: followers
-            .iter()
-            .filter(|follower| follower.halted.is_none() && !follower.stalled)
-            .map(|follower| (follower.node_id.clone(), follower.next_offset))
-            .collect(),
+        offsets: moving(followers),
         tail,
         drained,
         // A fenced halt says this broker is no longer the leader, not that
@@ -161,7 +157,19 @@ pub(super) fn shard_report(
                 Some((follower.node_id.clone(), crate::halted::describe(halt).0))
             })
             .collect(),
+        counter_offsets: Vec::new(),
     }
+}
+
+/// Where each follower whose position is moving has got: placement fences a
+/// move on how far behind its destination is, and one it cannot reach is not
+/// going to close any gap.
+pub(super) fn moving(followers: &[FollowerCursor]) -> Vec<(String, u64)> {
+    followers
+        .iter()
+        .filter(|follower| follower.halted.is_none() && !follower.stalled)
+        .map(|follower| (follower.node_id.clone(), follower.next_offset))
+        .collect()
 }
 
 async fn flush_loop(to: ReportTo, mut rx: mpsc::Receiver<Pending>, shutdown: CancellationToken) {
@@ -253,6 +261,14 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .map(|(node_id, reason)| HaltedReplicaStatus {
                         node_id: node_id.clone(),
                         reason: (*reason).to_string(),
+                    })
+                    .collect(),
+                replica_counter_offsets: report
+                    .counter_offsets
+                    .iter()
+                    .map(|(node_id, durable_offset)| ReplicaOffset {
+                        node_id: node_id.clone(),
+                        durable_offset: *durable_offset,
                     })
                     .collect(),
             })

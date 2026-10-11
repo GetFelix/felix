@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+use super::budget::HeldBytes;
 use super::delivery::{DeliveryEnvelope, QueuedDelivery};
 use super::state::StreamState;
 use super::stats::{SubscriberOwner, SubscriberStats};
@@ -213,27 +214,44 @@ impl SubscriptionReceiver {
     /// Like [`Subscription::recv`], a batch wholly below the resume point is
     /// skipped rather than reported as the end.
     pub async fn recv(&mut self) -> Option<DeliveryEnvelope> {
+        self.recv_held().await.map(|(envelope, _)| envelope)
+    }
+
+    /// Like [`Self::recv`], but the batch keeps holding its bytes against the
+    /// subscriber's byte bounds until the returned [`HeldBytes`] is dropped.
+    /// A caller that queues the batch again before writing it uses this, so
+    /// those bounds cover its queue too.
+    pub async fn recv_held(&mut self) -> Option<(DeliveryEnvelope, HeldBytes)> {
         loop {
-            let envelope = if self.end_on_lag {
+            let queued = if self.end_on_lag {
                 self.recv_before_lag().await?
             } else {
-                self.receiver.recv().await?.into_envelope()
+                self.receiver.recv().await?
             };
+            let (envelope, held) = queued.into_parts();
             if let Some(envelope) = self.admit(envelope) {
-                return Some(envelope);
+                return Some((envelope, held));
             }
         }
     }
 
     /// The next batch if one is already queued.
     pub fn try_recv(&mut self) -> std::result::Result<DeliveryEnvelope, mpsc::error::TryRecvError> {
+        self.try_recv_held().map(|(envelope, _)| envelope)
+    }
+
+    /// [`Self::try_recv`], keeping the batch's bytes held like
+    /// [`Self::recv_held`].
+    pub fn try_recv_held(
+        &mut self,
+    ) -> std::result::Result<(DeliveryEnvelope, HeldBytes), mpsc::error::TryRecvError> {
         loop {
-            let envelope = self.receiver.try_recv()?.into_envelope();
+            let (envelope, held) = self.receiver.try_recv()?.into_parts();
             if self.past_lag(&envelope) {
                 return Err(mpsc::error::TryRecvError::Disconnected);
             }
             if let Some(envelope) = self.admit(envelope) {
-                return Ok(envelope);
+                return Ok((envelope, held));
             }
         }
     }
@@ -241,7 +259,7 @@ impl SubscriptionReceiver {
     /// Like `recv`, but `None` once the queue has dropped a batch and what
     /// was queued before the drop is gone. Waking on the drop is what lets a
     /// subscription end when nothing is published after it.
-    async fn recv_before_lag(&mut self) -> Option<DeliveryEnvelope> {
+    async fn recv_before_lag(&mut self) -> Option<QueuedDelivery> {
         loop {
             let lag = Arc::clone(&self.lag);
             let dropped = lag.notify.notified();
@@ -249,15 +267,15 @@ impl SubscriptionReceiver {
             // Registered before the check, so a drop in between still wakes.
             dropped.as_mut().enable();
             let envelope = if lag.first_dropped().is_some() {
-                self.receiver.try_recv().ok()?.into_envelope()
+                self.receiver.try_recv().ok()?
             } else {
                 tokio::select! {
                     biased;
-                    queued = self.receiver.recv() => queued?.into_envelope(),
+                    queued = self.receiver.recv() => queued?,
                     () = &mut dropped => continue,
                 }
             };
-            return (!self.past_lag(&envelope)).then_some(envelope);
+            return (!self.past_lag(envelope.envelope())).then_some(envelope);
         }
     }
 

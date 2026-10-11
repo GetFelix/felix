@@ -20,7 +20,8 @@ pub use delivery::{DeliveryEnvelope, FrameShape, SubQueuePolicy};
 pub use stats::{SubscriberOwner, SubscriberStats};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
-pub(crate) use budget::{ByteBudget, HeldBytes, QueueBytes};
+pub use budget::HeldBytes;
+pub(crate) use budget::{ByteBudget, QueueBytes};
 pub(crate) use committed::{HeldBatch, Pass, ReadSource};
 pub(crate) use delivery::QueuedDelivery;
 pub(crate) use producers::Sequenced;

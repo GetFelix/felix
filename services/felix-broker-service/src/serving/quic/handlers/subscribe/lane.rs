@@ -42,6 +42,9 @@ pub(super) enum ConnectionCommand {
         item_count: usize,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
+        /// The subscriber-queue bytes behind this frame, held until it is
+        /// written or dropped so the subscriber's byte bounds cover the lanes.
+        held: felix_broker::HeldBytes,
     },
     Unregister {
         subscriber_id: u64,
@@ -66,6 +69,9 @@ pub(crate) enum LaneCommand {
         item_count: usize,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
+        /// The subscriber-queue bytes behind this frame, held until it is
+        /// written or dropped so the subscriber's byte bounds cover the lanes.
+        held: felix_broker::HeldBytes,
     },
     Unregister {
         subscriber_id: u64,
@@ -114,6 +120,7 @@ pub(super) struct LaneDelivery {
     pub(super) item_count: usize,
     pub(super) first_enqueued_at: Instant,
     pub(super) enqueue_at: Instant,
+    pub(super) held: felix_broker::HeldBytes,
 }
 
 impl WriterLaneManager {

@@ -24,6 +24,13 @@ pub trait CaughtUp {
         None
     }
 
+    /// How far `node_id` had got with a cache's counter log, as last
+    /// reported. Only read as progress for a copy being restored. `None` for
+    /// streams and from leaders that do not say.
+    fn reported_counter_offset(&self, _key: &ShardKey, _node_id: &str) -> Option<u64> {
+        None
+    }
+
     /// How many records `node_id` was behind the leader's tail, as last
     /// reported. `None` when the leader did not say what its tail was.
     fn lag_records(&self, _key: &ShardKey, _node_id: &str) -> Option<u64> {

@@ -40,11 +40,13 @@ fn a_report_that_is_not_drained_omits_the_field() {
         drained: false,
         leader_offset: None,
         halted: Vec::new(),
+        replica_counter_offsets: Vec::new(),
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
-    // Nor does one with nothing halted.
+    // Nor does one with nothing halted, or a stream's.
     assert!(!json.contains("halted"), "{json}");
+    assert!(!json.contains("counter"), "{json}");
     let parsed: ShardReplicaStatus = serde_json::from_str(&json).expect("read");
     assert!(!parsed.drained);
 }
@@ -78,6 +80,10 @@ fn a_report_round_trips() {
             halted: vec![HaltedReplicaStatus {
                 node_id: "b".into(),
                 reason: "diverged".into(),
+            }],
+            replica_counter_offsets: vec![ReplicaOffset {
+                node_id: "broker-b".into(),
+                durable_offset: 9,
             }],
         }],
     };

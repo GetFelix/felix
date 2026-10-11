@@ -13,7 +13,9 @@ fn writer_config() -> ConnectionWriterConfig {
 
 #[tokio::test]
 async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    // Byte-bounded, so the test can see the writer give the bytes back.
+    let broker =
+        Arc::new(Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
@@ -25,7 +27,15 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
         )
         .await?;
     let subscription = broker.subscribe("t1", "default", "orders", 0).await?;
-    let (_rx, guard) = subscription.into_parts();
+    let (mut rx, guard) = subscription.into_parts();
+    broker
+        .publish("t1", "default", "orders", Bytes::from_static(b"a"))
+        .await?;
+    broker
+        .publish("t1", "default", "orders", Bytes::from_static(b"bb"))
+        .await?;
+    let (_, held_a) = rx.recv_held().await.expect("a");
+    let (_, held_b) = rx.recv_held().await.expect("bb");
 
     let (server_config, cert) = make_server_config()?;
     let transport = TransportConfig::default();
@@ -63,6 +73,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: held_a,
     })
     .await
     .context("delivery a")?;
@@ -72,6 +83,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: held_b,
     })
     .await
     .context("delivery b")?;
@@ -99,6 +111,13 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
     .expect("frame2");
     let batch2 = felix_wire::binary::decode_event_batch(&frame2).context("decode batch2")?;
     assert_eq!(batch2.payloads[0].as_ref(), b"bb");
+
+    // A batch as large as the whole bound fits only once both written frames
+    // have given their bytes back.
+    let delivered = broker
+        .publish("t1", "default", "orders", Bytes::from(vec![0u8; 100]))
+        .await?;
+    assert_eq!(delivered, 1, "written frames still hold their bytes");
 
     drop(tx);
     writer_task.await.context("writer join")?;
@@ -157,6 +176,7 @@ async fn run_connection_writer_handles_write_error() -> Result<()> {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -218,6 +238,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -250,6 +271,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     })
     .await
     .context("late delivery")?;
@@ -326,6 +348,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -443,6 +466,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
             item_count: 1,
             first_enqueued_at: now,
             enqueue_at: now,
+            held: felix_broker::HeldBytes::default(),
         })
         .await
         .context("delivery for the stalled subscription")?;
@@ -458,6 +482,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
+        held: felix_broker::HeldBytes::default(),
     })
     .await
     .context("delivery for the healthy subscription")?;
@@ -547,6 +572,7 @@ async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
             item_count: 1,
             first_enqueued_at: now,
             enqueue_at: now,
+            held: felix_broker::HeldBytes::default(),
         })
         .await
         .context("delivery")?;

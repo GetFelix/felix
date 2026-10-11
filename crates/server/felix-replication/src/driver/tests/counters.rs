@@ -376,3 +376,62 @@ async fn with_no_follower_answering_no_counter_add_is_acknowledged() {
     );
     driver.stop().await;
 }
+
+/// **The report carries where each follower is in the counter log.** A cache
+/// used only for counters never moves its own log, so this is all placement
+/// has to tell a restore copying counters from one that is stuck (#1164).
+#[tokio::test]
+async fn a_report_says_where_each_follower_is_in_the_counter_log() {
+    let (broker, router, _dir) = quorum_cache().await;
+    for _ in 0..3 {
+        broker
+            .counters()
+            .expect("counters")
+            .add(TENANT, NAMESPACE, STREAM, 0, "hits", 1)
+            .await
+            .expect("add");
+    }
+    let counters_tail = broker
+        .shard_log(
+            felix_broker::LogKind::Counters,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+        )
+        .await
+        .expect("log")
+        .tail_offset()
+        .await
+        .expect("tail");
+    assert!(counters_tail > 0);
+
+    let pass = replicate_once(
+        &OneGone::new("nobody", Gone::Silent),
+        &broker,
+        &router,
+        &QuorumMarks::new(),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass
+        .reports
+        .iter()
+        .find(|report| report.key == cache_key())
+        .expect("the cache was reported");
+    assert_eq!(report.tail, 0, "the cache log holds nothing");
+    let mut counters = report.counter_offsets.clone();
+    counters.sort();
+    assert_eq!(
+        counters,
+        [
+            ("broker-b".to_string(), counters_tail),
+            ("broker-c".to_string(), counters_tail),
+        ]
+    );
+}
