@@ -7,7 +7,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
-use crate::types::{Event, ShardEvent};
+use crate::types::{Event, ShardEvent, or_null};
 
 /// A subscription across every shard of a stream.
 #[napi]
@@ -104,50 +104,50 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
     Some(match item {
         felix_client::ShardEvent::Record { shard, event } => ShardEvent {
             shard,
-            event: Some(Event {
+            event: Either::A(Event {
                 tenant_id: event.tenant_id.to_string(),
                 namespace: event.namespace.to_string(),
                 stream: event.stream.to_string(),
                 payload: event.payload.to_vec().into(),
-                offset: event.offset.map(BigInt::from),
+                offset: or_null(event.offset.map(BigInt::from)),
                 skipped_before: BigInt::from(event.skipped_before),
             }),
-            lost_error: None,
-            recovered: None,
-            shard_moved: None,
-            stream_deleted: None,
+            lost_error: Either::B(Null),
+            recovered: Either::B(Null),
+            shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardLost { shard, error } => ShardEvent {
             shard,
-            event: None,
-            lost_error: Some(error),
-            recovered: None,
-            shard_moved: None,
-            stream_deleted: None,
+            event: Either::B(Null),
+            lost_error: Either::A(error),
+            recovered: Either::B(Null),
+            shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardRecovered { shard } => ShardEvent {
             shard,
-            event: None,
-            lost_error: None,
-            recovered: Some(true),
-            shard_moved: None,
-            stream_deleted: None,
+            event: Either::B(Null),
+            lost_error: Either::B(Null),
+            recovered: Either::A(true),
+            shard_moved: Either::B(Null),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::ShardMoved { shard, moved } => ShardEvent {
             shard,
-            event: None,
-            lost_error: None,
-            recovered: None,
-            shard_moved: Some(moved.into()),
-            stream_deleted: None,
+            event: Either::B(Null),
+            lost_error: Either::B(Null),
+            recovered: Either::B(Null),
+            shard_moved: Either::A(moved.into()),
+            stream_deleted: Either::B(Null),
         },
         felix_client::ShardEvent::StreamDeleted { shard } => ShardEvent {
             shard,
-            event: None,
-            lost_error: None,
-            recovered: None,
-            shard_moved: None,
-            stream_deleted: Some(true),
+            event: Either::B(Null),
+            lost_error: Either::B(Null),
+            recovered: Either::B(Null),
+            shard_moved: Either::B(Null),
+            stream_deleted: Either::A(true),
         },
         _ => return None,
     })

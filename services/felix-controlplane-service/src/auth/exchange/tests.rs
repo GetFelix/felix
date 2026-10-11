@@ -649,3 +649,111 @@ fn an_older_reader_of_a_pair_record_narrows_to_nothing() {
         vec!["stream.publish:stream:t1/rooms/a"]
     );
 }
+
+fn connection_only() -> TokenExchangeRequest {
+    TokenExchangeRequest {
+        requested: Some(vec![]),
+        permissions: Some(vec![]),
+        ..TokenExchangeRequest::default()
+    }
+}
+
+fn delegate_grant() -> crate::auth::rbac::policy_store::PolicyRule {
+    crate::auth::rbac::policy_store::PolicyRule {
+        subject: "p:gateway".to_string(),
+        object: "tenant:t1".to_string(),
+        action: "token.delegate".to_string(),
+    }
+}
+
+/// A gateway that may delegate gets a broker token with no permissions for
+/// its own connections, keeps it across refreshes, and loses it with
+/// `token.delegate`.
+#[tokio::test]
+async fn a_delegating_gateway_gets_a_connection_only_token() {
+    let (store, keys) = crate::test_support::one_shard_cluster().await;
+    store
+        .add_rbac_policy("t1", delegate_grant())
+        .await
+        .expect("policy");
+    let state = crate::test_support::app_state_ready(store.clone());
+
+    let minted = mint_for_principal(
+        &state,
+        "t1",
+        "p:gateway",
+        &[],
+        &connection_only(),
+        BROKER_AUDIENCE,
+    )
+    .await
+    .expect("connection-only token");
+    let claims = crate::auth::felix_token::verify_token(&keys, "t1", &minted.felix_token, 0)
+        .expect("verify");
+    assert_eq!(claims.sub, "p:gateway");
+    assert!(claims.perms.is_empty(), "{:?}", claims.perms);
+
+    let refresh = |token: String| {
+        crate::auth::refresh::refresh_token_handler(
+            Path("t1".to_string()),
+            State(state.clone()),
+            Json(crate::auth::refresh::TokenRefreshRequest {
+                refresh_token: token,
+                audience: None,
+            }),
+        )
+    };
+    let Json(refreshed) = refresh(minted.refresh_token).await.expect("refreshed");
+    let claims = crate::auth::felix_token::verify_token(&keys, "t1", &refreshed.felix_token, 0)
+        .expect("verify");
+    assert!(claims.perms.is_empty(), "{:?}", claims.perms);
+
+    store
+        .remove_rbac_policy("t1", delegate_grant())
+        .await
+        .expect("remove");
+    let err = refresh(refreshed.refresh_token)
+        .await
+        .expect_err("refused without token.delegate");
+    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+}
+
+/// Without `token.delegate` on the whole tenant, or for the control-plane
+/// audience, an empty token is still "no permissions". So is a delegating
+/// gateway's ordinary exchange: it has to ask for a connection-only token.
+#[tokio::test]
+async fn only_a_delegating_gateway_gets_an_empty_token_and_only_when_it_asks() {
+    let (store, _keys) = crate::test_support::one_shard_cluster().await;
+    store
+        .add_rbac_policy(
+            "t1",
+            crate::auth::rbac::policy_store::PolicyRule {
+                subject: "p:user".to_string(),
+                object: "stream:t1/ns/feed".to_string(),
+                action: "stream.publish".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    store
+        .add_rbac_policy("t1", delegate_grant())
+        .await
+        .expect("policy");
+    let state = crate::test_support::app_state_ready(store);
+
+    for (principal, request, audience) in [
+        ("p:user", connection_only(), BROKER_AUDIENCE),
+        (
+            "p:gateway",
+            TokenExchangeRequest::default(),
+            BROKER_AUDIENCE,
+        ),
+        ("p:gateway", connection_only(), CONTROLPLANE_AUDIENCE),
+    ] {
+        let err = mint_for_principal(&state, "t1", principal, &[], &request, audience)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{principal} {audience} minted an empty token"));
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN, "{principal}");
+    }
+}

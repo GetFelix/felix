@@ -277,15 +277,20 @@ pub async fn refresh_token_handler(
             tracing::error!(error = ?err, "failed to build rbac enforcer");
             api_internal_message("failed to build enforcer")
         })?;
-    let mut perms = effective_permissions(&enforcer, &record.principal_id, &tenant_id);
+    let granted = effective_permissions(&enforcer, &record.principal_id, &tenant_id);
     // Current RBAC, narrowed the way the exchange narrowed it, so a refresh
     // never hands back more than the exchange did.
+    let mut perms = granted.clone();
     if let Some(narrowing) = &record.narrowing {
         perms = crate::auth::exchange::narrow_permissions(perms, narrowing, &tenant_id);
     }
     let perms = crate::auth::exchange::for_audience(perms, audience);
-    if perms.is_empty() {
-        // Every grant is gone since the token was issued. Refusing here is the
+    let connect_only = record.narrowing.as_ref().is_some_and(|narrowing| {
+        crate::auth::exchange::may_connect_only(&granted, narrowing, &tenant_id)
+    });
+    if perms.is_empty() && !connect_only {
+        // Every grant is gone since the token was issued, or for a
+        // connection-only chain, `token.delegate` is. Refusing here is the
         // point of re-evaluating: the chain also ends, so a principal whose
         // access was removed cannot keep rotating.
         state

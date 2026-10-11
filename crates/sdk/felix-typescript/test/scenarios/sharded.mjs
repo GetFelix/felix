@@ -216,11 +216,11 @@ export default function register(ctx) {
       assert.ok(item !== null, "a sharded subscription yielded nothing");
       assert.equal(typeof item.shard, "number", "every item must name its shard");
       const kinds = [
-        item.event ? "record" : null,
-        item.lostError ? "lost" : null,
-        item.recovered ? "recovered" : null,
-        item.shardMoved ? "moved" : null,
-        item.streamDeleted ? "deleted" : null,
+        item.event !== null ? "record" : null,
+        item.lostError !== null ? "lost" : null,
+        item.recovered !== null ? "recovered" : null,
+        item.shardMoved !== null ? "moved" : null,
+        item.streamDeleted !== null ? "deleted" : null,
       ].filter(Boolean);
       assert.equal(
         kinds.length,

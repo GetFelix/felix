@@ -14,6 +14,7 @@ fn stream() -> StreamState {
         1,
         16,
         SubQueuePolicy::DropNew,
+        Default::default(),
         None,
         crate::broker::ConsistencyLevel::Leader,
     )
@@ -133,7 +134,14 @@ fn the_fanout_snapshot_keeps_a_stable_order() {
 
 #[test]
 fn append_batch_keeps_monotonic_sequences_and_trims_once() {
-    let stream = StreamState::new(1, 8, SubQueuePolicy::DropNew, None, Default::default());
+    let stream = StreamState::new(
+        1,
+        8,
+        SubQueuePolicy::DropNew,
+        Default::default(),
+        None,
+        Default::default(),
+    );
     let first = vec![
         Bytes::from_static(b"a"),
         Bytes::from_static(b"b"),
@@ -193,6 +201,7 @@ async fn ending_subscribers_drains_then_closes_each_one() {
             .try_send(crate::stream::delivery::QueuedDelivery::new(
                 envelope,
                 std::sync::Arc::clone(&state.queued_items),
+                Default::default(),
             ))
             .expect("room in the queue");
     }
