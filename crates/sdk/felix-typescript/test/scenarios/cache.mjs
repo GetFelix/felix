@@ -16,7 +16,7 @@ async function waitForChange(watch, predicate, attempts = 20, timeoutMs = 3_000)
   for (let i = 0; i < attempts; i++) {
     const item = await read.next(timeoutMs);
     if (item === null) return null;
-    if (item.laggedResumeFrom !== null && item.laggedResumeFrom !== undefined) return item;
+    if (item.laggedResumeFrom !== null) return item;
     if (item.change && predicate(item.change)) return item;
   }
   return null;
@@ -163,7 +163,7 @@ export default function register(ctx) {
         await client.cacheDelete(tenant, namespace, cache, watched);
         item = await waitForChange(
           watch,
-          (change) => change.key === watched && change.value == null,
+          (change) => change.key === watched && change.value === null,
         );
       } finally {
         await watch.close();
@@ -172,7 +172,7 @@ export default function register(ctx) {
       assert.ok(item !== null, "the delete never arrived");
       // Absent rather than an empty buffer: a watcher mirroring the cache has
       // to tell 'removed' from 'set to empty'.
-      assert.equal(item.change.value ?? null, null);
+      assert.equal(item.change.value, null);
       assert.ok(
         !Buffer.isBuffer(item.change.value),
         "a delete arrived carrying a value, so it cannot be told from a write",
@@ -273,9 +273,8 @@ export default function register(ctx) {
       // back through the same call, which is what lets an application branch
       // rather than guess.
       assert.ok(item !== null, "the watch yielded nothing at all");
-      const isChange = item.change !== null && item.change !== undefined;
-      const isLag =
-        item.laggedResumeFrom !== null && item.laggedResumeFrom !== undefined;
+      const isChange = item.change !== null;
+      const isLag = item.laggedResumeFrom !== null;
       assert.ok(
         isChange !== isLag,
         "a watch item must be exactly one of a change or a lag notice, so an " +
@@ -311,7 +310,7 @@ export default function register(ctx) {
         // silence to wait through.
         const expected = watch.retainedCount;
         assert.ok(
-          expected !== null && expected !== undefined,
+          typeof expected === "bigint",
           "a retained watch must report how many values to expect",
         );
 

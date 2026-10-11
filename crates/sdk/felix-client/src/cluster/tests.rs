@@ -3,6 +3,7 @@ mod cancelled_producer;
 mod connections;
 mod decisions;
 mod error_codes;
+mod identity;
 mod keyed_producer;
 mod offsets;
 mod sharded_lag;

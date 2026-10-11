@@ -12,6 +12,7 @@ use felix_storage::{CommitSequencer, CommitTurn};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use super::budget::{QueueBytes, SubscriberBytes};
 use super::committed::{CommitHold, ReadBound};
 use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
@@ -37,6 +38,8 @@ pub(crate) struct StreamState {
     pub(crate) subscriber_queue_capacity: usize,
     // Queue admission policy when subscriber queue is full.
     pub(crate) subscriber_queue_policy: SubQueuePolicy,
+    // Byte bounds each subscriber queue is held to.
+    subscriber_queue_bytes: QueueBytes,
     // Approximate number of queued items across subscribers in this stream.
     pub(crate) queued_items: Arc<AtomicUsize>,
     // Disk-backed log, present only for streams registered as durable. The
@@ -75,6 +78,7 @@ impl StreamState {
         handle_id: u64,
         subscriber_queue_capacity: usize,
         subscriber_queue_policy: SubQueuePolicy,
+        subscriber_queue_bytes: QueueBytes,
         durable: Option<StreamLog>,
         consistency: ConsistencyLevel,
     ) -> Self {
@@ -92,6 +96,7 @@ impl StreamState {
             }),
             subscriber_queue_capacity,
             subscriber_queue_policy,
+            subscriber_queue_bytes,
             queued_items: Arc::new(AtomicUsize::new(0)),
             durable,
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
@@ -472,6 +477,7 @@ impl StreamState {
             id,
             RegisteredSubscriber {
                 sender: tx,
+                bytes: self.subscriber_queue_bytes.for_subscriber(),
                 lag: Arc::clone(&lag),
                 stats: Arc::clone(&stats),
             },
@@ -648,6 +654,7 @@ impl StreamState {
             snapshot.push(SubscriberEntry {
                 id: *id,
                 sender: registered.sender.clone(),
+                bytes: registered.bytes.clone(),
                 lag: Arc::clone(&registered.lag),
                 stats: Arc::clone(&registered.stats),
             });
@@ -665,6 +672,7 @@ impl StreamState {
 pub(crate) struct SubscriberEntry {
     pub(crate) id: u64,
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    pub(crate) bytes: SubscriberBytes,
     /// Told where this subscriber's queue first dropped a batch.
     pub(crate) lag: Arc<super::subscription::Lag>,
     pub(crate) stats: Arc<super::stats::SubscriberStats>,
@@ -674,6 +682,7 @@ pub(crate) struct SubscriberEntry {
 #[derive(Debug)]
 pub(crate) struct RegisteredSubscriber {
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    pub(crate) bytes: SubscriberBytes,
     pub(crate) lag: Arc<super::subscription::Lag>,
     pub(crate) stats: Arc<super::stats::SubscriberStats>,
 }

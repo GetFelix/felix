@@ -501,7 +501,10 @@ another caller or nobody. An actor token that is refused makes the exchange a
 credential's problem from a user's missing permission (`forbidden`). A broker token stolen from a browser or another
 gateway therefore cannot be moved onto a gateway's certificate. Holding
 `token.delegate` still means acting as any user whose token was minted for
-you, so grant it to gateways only. See
+you, so grant it to gateways only. The gateway's own connections need no
+broker grant: a holder of `token.delegate` can exchange for a connection-only
+broker token, with its own subject and no permissions, by asking for
+`"requested": [], "permissions": []`. See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
 See [Acting for many users](/clients/rust/#acting-for-many-users).
 

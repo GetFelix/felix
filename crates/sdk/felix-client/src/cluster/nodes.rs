@@ -5,6 +5,9 @@
 //! idempotent producer's leader are often the same broker. Sharing one client
 //! among them means a broker costs one connection until the streams on it
 //! need more.
+//!
+//! A cluster client acting as another identity has its own `Nodes` whose
+//! clients are derived from the parent's, so it shares their connections.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -12,24 +15,66 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
+use crate::auth::TokenProvider;
 use crate::client::Client;
 use crate::config::ClientConfig;
 
 /// The client for each broker a cluster client has reached.
 pub(super) struct Nodes {
-    server_name: String,
-    config: ClientConfig,
+    source: Source,
     slots: Mutex<HashMap<SocketAddr, Arc<Slot>>>,
     /// The name each broker that advertised one was resolved from, which is
     /// what its certificate is checked against.
     names: Mutex<HashMap<SocketAddr, String>>,
 }
 
+/// Where a broker's client comes from.
+enum Source {
+    /// Connections of its own.
+    Dial {
+        server_name: String,
+        config: Box<ClientConfig>,
+    },
+    /// [`Client::with_identity`] over the client `base` holds for the same
+    /// broker.
+    Identity {
+        base: Arc<Nodes>,
+        tenant_id: String,
+        tokens: Arc<dyn TokenProvider>,
+    },
+}
+
 impl Nodes {
     pub(super) fn new(server_name: &str, config: ClientConfig) -> Self {
-        Self {
+        Self::with_source(Source::Dial {
             server_name: server_name.to_string(),
-            config,
+            config: Box::new(config),
+        })
+    }
+
+    /// Clients that act as `tenant_id` with `tokens` over the connections of
+    /// `parent`'s clients.
+    pub(super) fn for_identity(
+        parent: &Arc<Nodes>,
+        tenant_id: String,
+        tokens: Arc<dyn TokenProvider>,
+    ) -> Self {
+        // Always derived from the dialling set, so an identity of an identity
+        // does not stack.
+        let base = match &parent.source {
+            Source::Dial { .. } => Arc::clone(parent),
+            Source::Identity { base, .. } => Arc::clone(base),
+        };
+        Self::with_source(Source::Identity {
+            base,
+            tenant_id,
+            tokens,
+        })
+    }
+
+    fn with_source(source: Source) -> Self {
+        Self {
+            source,
             slots: Mutex::new(HashMap::new()),
             names: Mutex::new(HashMap::new()),
         }
@@ -42,6 +87,10 @@ impl Nodes {
     /// Looked up every time it is asked, since a broker's name outlives its
     /// address: a rescheduled pod keeps its name and gets a new IP.
     pub(super) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
+        // The dialling set connects, so it is the one that needs the name.
+        if let Source::Identity { base, .. } = &self.source {
+            return Box::pin(base.resolve(advertised)).await;
+        }
         if let Ok(addr) = advertised.parse::<SocketAddr>() {
             return Some(addr);
         }
@@ -108,7 +157,9 @@ impl Nodes {
     ///
     /// A client that has lost the connection under its workers is replaced
     /// here, which is what rebuilds a broker after a failure. Anyone still
-    /// holding the old one keeps it until their own work on it fails.
+    /// holding the old one keeps it until their own work on it fails. An
+    /// identity's client is replaced the same way, from the parent's client
+    /// for that broker, which is itself rebuilt first if it has failed.
     pub(super) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Client>> {
         let slot = self.slot(addr);
         // Held across the connect, so concurrent callers for one broker share
@@ -119,17 +170,34 @@ impl Nodes {
         {
             return Ok(Arc::clone(client));
         }
-        // A broker that advertised a name is checked against that name, as a
-        // client dialling the name directly would check it.
-        let server_name = self
-            .names
-            .lock()
-            .expect("node names")
-            .get(&addr)
-            .cloned()
-            .unwrap_or_else(|| self.server_name.clone());
-        let client =
-            Arc::new(Client::connect_shared(addr, &server_name, self.config.clone()).await?);
+        let client = match &self.source {
+            Source::Dial {
+                server_name,
+                config,
+            } => {
+                // A broker that advertised a name is checked against that
+                // name, as a client dialling the name directly would check it.
+                let server_name = self
+                    .names
+                    .lock()
+                    .expect("node names")
+                    .get(&addr)
+                    .cloned()
+                    .unwrap_or_else(|| server_name.clone());
+                Client::connect_shared(addr, &server_name, ClientConfig::clone(config)).await?
+            }
+            Source::Identity {
+                base,
+                tenant_id,
+                tokens,
+            } => {
+                let shared = Box::pin(base.connect_to(addr)).await?;
+                shared
+                    .with_identity(tenant_id.clone(), Arc::clone(tokens))
+                    .await?
+            }
+        };
+        let client = Arc::new(client);
         *held = Some(Arc::clone(&client));
         Ok(client)
     }
