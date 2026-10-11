@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -64,6 +65,10 @@ struct Delivery {
     first_offset: Option<u64>,
     /// The next subscriber to hand it to.
     next: usize,
+    /// Under `Block`, subscribers passed over because their queue was full,
+    /// by index into `senders`. They are waited on once everyone with room
+    /// has the batch.
+    full: Vec<usize>,
     sent: usize,
     closed: Vec<u64>,
 }
@@ -281,6 +286,7 @@ impl Completion {
             ),
             first_offset,
             next: 0,
+            full: Vec::new(),
             sent: 0,
             closed: Vec::new(),
         });
@@ -289,6 +295,9 @@ impl Completion {
 
     /// Hand the batch to every subscriber the ring append saw, starting from
     /// the first one not yet served. One envelope is shared by all of them.
+    ///
+    /// Under `Block` a full queue is skipped on the first pass and waited on
+    /// after it, so a subscriber with room never waits behind a full one.
     async fn fan_out(&mut self) {
         let fanout_start = t_now_if(self.sample);
         let stream_state = &self.handle.state;
@@ -297,17 +306,21 @@ impl Completion {
         let bytes = delivery.envelope.payload_bytes();
         while let Some(subscriber) = delivery.senders.get(delivery.next) {
             match stream_state.subscriber_queue_policy {
-                SubQueuePolicy::Block => {
-                    // The only awaits in the fanout. `next` only moves once the
-                    // subscriber is served, so a resumed finisher retries it.
-                    if let Ok(permit) = subscriber.sender.reserve().await {
-                        let held = subscriber.bytes.hold(bytes).await;
-                        enqueue(stream_state, permit, &delivery.envelope, held);
-                        delivery.sent += item_count;
-                    } else {
+                SubQueuePolicy::Block => match subscriber.sender.try_reserve() {
+                    Ok(permit) => match subscriber.bytes.try_hold(bytes) {
+                        Ok(held) => {
+                            enqueue(stream_state, permit, &delivery.envelope, held);
+                            delivery.sent += item_count;
+                        }
+                        Err(_) => delivery.full.push(delivery.next),
+                    },
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        delivery.full.push(delivery.next);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                         delivery.closed.push(subscriber.id);
                     }
-                }
+                },
                 SubQueuePolicy::DropNew | SubQueuePolicy::DropOld => {
                     match subscriber.sender.try_reserve() {
                         Ok(permit) => match subscriber.bytes.try_hold(bytes) {
@@ -336,6 +349,9 @@ impl Completion {
             }
             delivery.next += 1;
         }
+        if !delivery.full.is_empty() {
+            wait_for_full(stream_state, delivery).await;
+        }
         if let Some(start) = fanout_start {
             let fanout_ns = start.elapsed().as_nanos() as u64;
             timings::record_enqueue_ns(fanout_ns);
@@ -343,6 +359,53 @@ impl Completion {
             t_histogram!("broker_publish_fanout_total_ns").record(fanout_ns as f64);
         }
     }
+}
+
+/// Wait on every subscriber `fan_out` found full at once, and queue the
+/// batch for each as it gets room.
+///
+/// The only awaits in the fanout. A subscriber leaves `full` only once it is
+/// served, so a resumed finisher waits on just the ones still left.
+async fn wait_for_full(stream_state: &StreamState, delivery: &mut Delivery) {
+    let senders = Arc::clone(&delivery.senders);
+    let item_count = delivery.envelope.len();
+    let bytes = delivery.envelope.payload_bytes();
+    let mut waits: Vec<_> = delivery
+        .full
+        .iter()
+        .map(|&index| {
+            let subscriber = &senders[index];
+            Box::pin(async move {
+                let room = match subscriber.sender.reserve().await {
+                    Ok(permit) => Some((permit, subscriber.bytes.hold(bytes).await)),
+                    Err(_) => None,
+                };
+                (index, room)
+            })
+        })
+        .collect();
+    std::future::poll_fn(|cx| {
+        waits.retain_mut(|wait| {
+            let Poll::Ready((index, room)) = wait.as_mut().poll(cx) else {
+                return true;
+            };
+            match room {
+                Some((permit, held)) => {
+                    enqueue(stream_state, permit, &delivery.envelope, held);
+                    delivery.sent += item_count;
+                }
+                None => delivery.closed.push(senders[index].id),
+            }
+            delivery.full.retain(|&full| full != index);
+            false
+        });
+        if waits.is_empty() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 fn enqueue(

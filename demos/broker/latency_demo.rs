@@ -733,11 +733,14 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
     let log_capacity = config
         .log_capacity
         .unwrap_or_else(|| total_events.saturating_add(1));
+    let mut broker_config = felix_broker_service::config::BrokerConfig::from_env()?;
     let broker = Arc::new(
         Broker::new(EphemeralCache::new().into())
             .with_topic_capacity(total_events.saturating_add(1))?
             .with_log_capacity(log_capacity)?
-            .with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block),
+            .with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block)
+            .with_subscriber_queue_max_bytes(broker_config.subscriber_queue_max_bytes)
+            .with_subscriber_queue_max_bytes_total(broker_config.subscriber_queue_max_bytes_total),
     );
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -763,7 +766,6 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
         TransportConfig::default(),
     )?);
     let addr = server.local_addr()?;
-    let mut broker_config = felix_broker_service::config::BrokerConfig::from_env()?;
     broker_config.fanout_batch_size = config.batch_size.max(1);
     // Tune the pipeline by delivery semantics. Only the single-message JSON path
     // waits for per-message acknowledgements; binary publishes are fire-and-forget
