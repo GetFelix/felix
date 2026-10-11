@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791705716259,
+  "lastUpdate": 1791708131164,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28288,6 +28288,58 @@ window.BENCHMARK_DATA = {
             "range": "23779.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1743696.91\nmean: 1732037.07\nstdev: 23779.36\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9ad7071995abdf20186a65e879b8b177d6957628",
+          "message": "fix(replication): ship group and dead-letter logs inside each follower's exchange (#1143) (#1160)\n\n* fix(replication): ship group and dead-letter logs inside each follower's exchange (#1143)\n\nA stream's group cursor and dead-letter logs shipped at the end of each pass\nto every follower that was not busy. A dead follower whose exchange had\nnothing of the shard's to send then held the end of the pass, and so the next\npass and the publishes waiting on it, for a request timeout or a dial.\n\nThey now ride each follower's exchange, beside the shard's log, the way\n#1142 did for a Quorum cache's counters. A non-Quorum cache's counters ride\ntoo. The end of the pass only ships to followers whose logs did not ride.\n\n* docs(formal): record that the spec is unaffected by #1143\n\nSpec-Unaffected: FelixShard.tla folds group cursors, dead letters and counters into the one log and constrains them only through the drained report and candidate exclusion, both unchanged; this only moves when they are shipped within a pass.",
+          "timestamp": "2026-10-11T01:04:24-07:00",
+          "tree_id": "fb6798a451322c25734743d8367bfe1b0bcda537",
+          "url": "https://github.com/GetFelix/felix/commit/9ad7071995abdf20186a65e879b8b177d6957628"
+        },
+        "date": 1791708130606,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 334708.86,
+            "range": "15998.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 334708.86\nmean: 329368.33\nstdev: 15998.43\ncv: 4.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 334708.86,
+            "range": "15998.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 334708.86\nmean: 329368.33\nstdev: 15998.43\ncv: 4.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80241.35,
+            "range": "449.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80241.35\nmean: 80125.64\nstdev: 449.47\ncv: 0.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802413.46,
+            "range": "4494.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802413.46\nmean: 801256.44\nstdev: 4494.71\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
