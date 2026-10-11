@@ -26,6 +26,7 @@ fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> Re
         drained: false,
         leader_offset: Some(leader_offset),
         halted: BTreeMap::new(),
+        counter_offsets: BTreeMap::new(),
     }
 }
 

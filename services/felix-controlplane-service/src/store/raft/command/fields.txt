@@ -287,6 +287,8 @@
 1 import_state.state.refresh_tokens[].used
 3 import_state.state.replica_reports
 3 import_state.state.replica_reports[].caught_up
+7 import_state.state.replica_reports[].counter_offsets
+7 import_state.state.replica_reports[].counter_offsets.*
 3 import_state.state.replica_reports[].drained
 3 import_state.state.replica_reports[].generation
 4 import_state.state.replica_reports[].halted
@@ -511,6 +513,8 @@
 1 record_replica_report.leader
 0 record_replica_report.report
 0 record_replica_report.report.caught_up
+7 record_replica_report.report.counter_offsets
+7 record_replica_report.report.counter_offsets.*
 0 record_replica_report.report.drained
 0 record_replica_report.report.generation
 4 record_replica_report.report.halted
@@ -747,6 +751,8 @@
 1 snapshot.state.refresh_tokens[].used
 3 snapshot.state.replica_reports
 3 snapshot.state.replica_reports[].caught_up
+7 snapshot.state.replica_reports[].counter_offsets
+7 snapshot.state.replica_reports[].counter_offsets.*
 3 snapshot.state.replica_reports[].drained
 3 snapshot.state.replica_reports[].generation
 4 snapshot.state.replica_reports[].halted

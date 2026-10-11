@@ -264,6 +264,11 @@ async fn record_one(
                 )
             })
             .collect(),
+        counter_offsets: shard
+            .replica_counter_offsets
+            .iter()
+            .map(|replica| (replica.node_id.clone(), replica.durable_offset))
+            .collect(),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

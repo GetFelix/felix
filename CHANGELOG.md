@@ -44,6 +44,15 @@ for what the current release guarantees.
   TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
 
 ### Fixed
+- A restore of a cache used only for counters is no longer dropped as stalled
+  while it copies a large counter log. The stall window
+  (`FELIX_SHARD_RESTORE_STALL_MS`) watched only the cache log's offset, which
+  stays at 0 for such a cache. Replica reports now carry each replica's
+  counter-log position (`replica_counter_offsets`, omitted for streams and by
+  older brokers), and placement counts a move there as progress. The control
+  plane stores it in the report (Postgres migration
+  `0025_replica_report_counter_offsets`, Raft metadata level 7; below level 7
+  reports are recorded without it) (#1164).
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
   a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
   watch item, `value` on a cache change, `offset` on an event, `event`,

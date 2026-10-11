@@ -656,13 +656,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         let offset = held_offset(tail, &positions);
         if offset > 0 {
             majority = Some((
-                shard_report(
-                    key,
-                    route.generation,
-                    tail,
-                    acknowledged(tail, &positions),
-                    &positions,
-                    false,
+                with_counter_offsets(
+                    shard_report(
+                        key,
+                        route.generation,
+                        tail,
+                        acknowledged(tail, &positions),
+                        &positions,
+                        false,
+                    ),
+                    &aux.counters.followers,
                 ),
                 offset,
                 counters_of(aux.counters.followers.clone()).await,
@@ -729,13 +732,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         };
         if enough {
             majority = Some((
-                shard_report(
-                    key,
-                    route.generation,
-                    tail,
-                    acknowledged(tail, &positions),
-                    &positions,
-                    false,
+                with_counter_offsets(
+                    shard_report(
+                        key,
+                        route.generation,
+                        tail,
+                        acknowledged(tail, &positions),
+                        &positions,
+                        false,
+                    ),
+                    &aux.counters.followers,
                 ),
                 offset,
                 counters,
@@ -898,13 +904,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let tail = log.tail_offset().await.unwrap_or(tail);
     let drained =
         quiesced && drain_ready(key, route, &caught_up(tail, &entry.followers), &aux_behind);
-    let mut settled = shard_report(
-        key,
-        route.generation,
-        tail,
-        acknowledged(tail, &entry.followers),
-        &entry.followers,
-        drained,
+    let mut settled = with_counter_offsets(
+        shard_report(
+            key,
+            route.generation,
+            tail,
+            acknowledged(tail, &entry.followers),
+            &entry.followers,
+            drained,
+        ),
+        &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is
     // not offered as a candidate.
@@ -1047,6 +1056,12 @@ impl CounterLevel {
             table.publish(&watch_key(key), generation, self.acknowledged);
         }
     }
+}
+
+/// `report`, with where each follower has got with the counter log.
+fn with_counter_offsets(mut report: ShardReport, counters: &[FollowerCursor]) -> ShardReport {
+    report.counter_offsets = crate::reporter::moving(counters);
+    report
 }
 
 /// One of the logs that ride a shard, and its followers' cursors, reset at a

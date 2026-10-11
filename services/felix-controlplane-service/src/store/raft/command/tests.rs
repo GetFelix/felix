@@ -80,6 +80,7 @@ fn restamping_twice_is_the_same_as_once() {
 #[test]
 fn a_replica_report_is_restamped() {
     let report = crate::model::ReplicaReport {
+        counter_offsets: Default::default(),
         key: crate::model::ShardKey {
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
@@ -127,6 +128,7 @@ fn a_replica_report_is_restamped() {
 #[test]
 fn a_report_without_a_leader_is_the_old_wire_form() {
     let report = crate::model::ReplicaReport {
+        counter_offsets: Default::default(),
         key: crate::model::ShardKey {
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),

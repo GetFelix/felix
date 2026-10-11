@@ -251,6 +251,7 @@ pub(super) async fn report(
     store
         .record_replica_report(
             crate::model::ReplicaReport {
+                counter_offsets: Default::default(),
                 key: shard_zero(),
                 generation,
                 caught_up: caught_up.iter().map(|id| id.to_string()).collect(),

@@ -34,6 +34,7 @@ fn status(
     y_behind: Option<u64>,
 ) -> felix_common::membership::ShardReplicaStatus {
     felix_common::membership::ShardReplicaStatus {
+        replica_counter_offsets: Vec::new(),
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "orders".to_string(),
