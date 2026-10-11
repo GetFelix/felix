@@ -11,6 +11,13 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A new copy of a `Quorum` cache is no longer seated before it holds the
+  cache's counter log. Seating checked only the cache log's offsets, so the
+  set could count toward its majority a copy that promotion would refuse.
+  A seat on a `Quorum` stream or cache now also waits until the leader's
+  report names the copy caught up (#1139).
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
