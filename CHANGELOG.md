@@ -41,6 +41,11 @@ for what the current release guarantees.
   `lostError` and `recovered` on a sharded item, and `resumeFrom`, `nodeId` and
   `addr` on a shard move. They came back `undefined`, so a caller testing
   `!== null` read every cache watch item as a lag notice.
+- The cluster test harness's `wait_for_replication` now waits until the
+  control plane holds a report naming a follower at the leader's current tail.
+  It used to return once the leader had shipped anything, which the harness's
+  start-up publish already guaranteed, so a test that killed the leader next
+  could fail over without the records it had just published (#1136).
 
 ## [0.6.0-preview.6] - 2026-10-10
 

@@ -65,55 +65,103 @@ impl Cluster {
         Ok(total)
     }
 
-    /// Wait until the broker owning `stream` reports a replication pass, and
-    /// return it.
+    /// Wait until a follower of `stream`'s shard 0 holds everything its leader
+    /// has, as the control plane has heard it, and return the leader.
     ///
-    /// Tests kill a leader to watch a failover, and a leader that has shipped
-    /// nothing tests startup instead. This is the wait that makes the shard
-    /// healthy first.
+    /// Tests kill or pause a leader to watch a failover, and failover keeps
+    /// only what the leader last reported a follower holds. So this waits for
+    /// a report at the leader's current generation, made at or past the tail
+    /// the leader has now, that names a caught-up follower whose position is
+    /// that tail. Records acknowledged before the call are then on a follower
+    /// placement would promote.
     ///
-    /// The owner is re-resolved on every poll rather than captured once. A
-    /// caller publishing through an ordinary client does not choose which
-    /// broker the bytes land on, and placement may move between the publish and
-    /// this wait; a counter read from the wrong broker stays zero forever, and
-    /// no timeout rescues that. Returning the node that actually reported is
-    /// the point — kill *that* one.
-    ///
-    /// On timeout it reports every broker's counter, because "replication never
-    /// ran" and "the wrong broker was being read" are the two explanations and
-    /// the message should say which.
+    /// The owner and its tail are read again on every poll: placement may
+    /// move between a publish and this wait, and a report about the wrong
+    /// broker would never satisfy it. The timeout says which broker led, its
+    /// tail, and what the last report claimed about each replica.
     pub async fn wait_for_replication(&self, stream: &str, timeout: Duration) -> Result<String> {
         let budget = wait::budget(timeout);
         let deadline = Instant::now() + budget;
         loop {
-            if let Ok(owner) = self.owner(stream).await
-                && let Ok(Some(shipped)) = self
-                    .metric(&owner, "felix_broker_replication_shipped_total")
-                    .await
-                && shipped > 0.0
-            {
-                return Ok(owner);
-            }
+            let why = match self.replication_level(stream).await {
+                Ok((owner, Ok(_))) => return Ok(owner),
+                Ok((owner, Err(short))) => format!("leader {owner}: {short}"),
+                Err(err) => format!("{err:#}"),
+            };
             if Instant::now() >= deadline {
-                let mut seen = Vec::new();
-                for node_id in self.node_ids() {
-                    let shipped = self
-                        .metric(&node_id, "felix_broker_replication_shipped_total")
-                        .await
-                        .ok()
-                        .flatten();
-                    seen.push(format!("{node_id}={shipped:?}"));
-                }
                 bail!(
-                    "no owner of {stream} reported replication within {budget:?}; \
-                     owner now {:?}, shipped per node: {}",
-                    self.owner(stream).await.ok(),
-                    seen.join(" "),
+                    "{stream} shard 0 had no follower holding its leader's tail within {budget:?}; {why}"
                 );
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+
+    /// The owner of `stream`'s shard 0, and whether its last report names a
+    /// follower that holds the owner's tail as it stands now.
+    async fn replication_level(&self, stream: &str) -> Result<(String, Result<String, String>)> {
+        let owner = self.owner(stream).await.context("resolve the owner")?;
+        let node = self
+            .node(&owner)
+            .ok_or_else(|| anyhow!("unknown node {owner}"))?;
+        let client =
+            crate::client::connect(node.client_addr, &self.tenant_id, &self.inspector_token())
+                .await?;
+        let view = client
+            .inspect_shard(
+                felix_client::ShardKind::Stream,
+                &self.tenant_id,
+                &self.namespace,
+                stream,
+                0,
+            )
+            .await
+            .with_context(|| format!("inspect {stream} shard 0 on {owner}"))?;
+        drop(client);
+        if view.role != "leader" {
+            return Ok((owner, Err(format!("its own role is {}", view.role))));
+        }
+        let Some(tail) = view.tail else {
+            return Ok((owner, Err("its log is not open".to_string())));
+        };
+        let report = self.replica_report(stream, 0).await?;
+        Ok((owner, holds_tail(report.as_ref(), view.generation, tail)))
+    }
+}
+
+/// The follower `report` names as caught up and holding `tail`, or why there
+/// is none.
+///
+/// `caught_up` alone is measured against what the leader had acknowledged when
+/// it reported, which may be short of `tail`, so the follower's own position
+/// has to reach it too.
+fn holds_tail(
+    report: Option<&felix_controlplane_service::model::ReplicaReport>,
+    generation: Option<u64>,
+    tail: u64,
+) -> Result<String, String> {
+    let Some(report) = report else {
+        return Err(format!("tail {tail}, and no replica report yet"));
+    };
+    let summary = || {
+        format!(
+            "tail {tail} at generation {generation:?}; last report: generation {}, \
+             leader at {:?}, caught up {:?}, replica offsets {:?}",
+            report.generation, report.leader_offset, report.caught_up, report.offsets
+        )
+    };
+    if generation.is_some_and(|generation| generation != report.generation) {
+        return Err(format!("report is from another generation: {}", summary()));
+    }
+    if report.leader_offset.is_none_or(|reported| reported < tail) {
+        return Err(format!("report predates the tail: {}", summary()));
+    }
+    report
+        .caught_up
+        .iter()
+        .find(|follower| report.offsets.get(*follower).is_some_and(|at| *at >= tail))
+        .cloned()
+        .ok_or_else(|| format!("no caught-up replica at the tail: {}", summary()))
 }
 
 /// One entry of a broker's `/replication/halted`.
@@ -127,3 +175,6 @@ pub(crate) struct HaltedReplica {
     pub(crate) node_id: String,
     pub(crate) reason: String,
 }
+
+#[cfg(test)]
+mod tests;
