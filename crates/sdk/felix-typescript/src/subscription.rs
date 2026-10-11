@@ -8,7 +8,7 @@ use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
 use crate::errors::classify;
-use crate::types::Event;
+use crate::types::{Event, or_null};
 
 /// A live subscription. Read it with `nextEvent`, and `close` it when done.
 ///
@@ -70,7 +70,7 @@ impl SubscriptionHandle {
                 namespace: event.namespace.to_string(),
                 stream: event.stream.to_string(),
                 payload: event.payload.to_vec().into(),
-                offset: event.offset.map(BigInt::from),
+                offset: or_null(event.offset.map(BigInt::from)),
                 skipped_before: BigInt::from(event.skipped_before),
             })),
             Some(Ok(None)) => Ok(None),
