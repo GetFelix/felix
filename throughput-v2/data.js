@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791678615401,
+  "lastUpdate": 1791697784689,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28028,6 +28028,58 @@ window.BENCHMARK_DATA = {
             "range": "49988.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1706762.66\nmean: 1694346.63\nstdev: 49988.53\ncv: 2.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77d731a2326fc0d595efcc26fbb89bb77e994be6",
+          "message": "feat(broker): bound subscriber queues by bytes as well as entries (#1157) (#1159)\n\nAn entry in a subscriber's queue is a whole published batch, so the count\nbound alone let one slow subscriber hold up to 4096 batches of up to 16 MiB.\nEach queued batch now holds its payload bytes against a per-subscriber\nbudget (FELIX_SUB_QUEUE_MAX_BYTES, default 64 MiB) and an optional\nbroker-wide one (FELIX_SUB_QUEUE_MAX_BYTES_TOTAL, off by default). The\nqueue policy handles a full byte bound as it does a full count.",
+          "timestamp": "2026-10-10T22:06:37-07:00",
+          "tree_id": "36da209ebf0f1b501d81bbd2150d08bb3ab0eda7",
+          "url": "https://github.com/GetFelix/felix/commit/77d731a2326fc0d595efcc26fbb89bb77e994be6"
+        },
+        "date": 1791697783910,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 430970.65,
+            "range": "17108.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 430970.65\nmean: 429945.54\nstdev: 17108.00\ncv: 3.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 430970.65,
+            "range": "17108.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 430970.65\nmean: 429945.54\nstdev: 17108.00\ncv: 3.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 98725.64,
+            "range": "647.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 98725.64\nmean: 98524.70\nstdev: 647.78\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 987256.38,
+            "range": "6477.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 987256.38\nmean: 985246.96\nstdev: 6477.76\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
