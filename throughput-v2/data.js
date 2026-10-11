@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791731588729,
+  "lastUpdate": 1791750077873,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28600,6 +28600,58 @@ window.BENCHMARK_DATA = {
             "range": "43408.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 794583.60\nmean: 774688.18\nstdev: 43408.98\ncv: 5.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "abdab1c2bd7c68e5862c56be330819ff9b04af91",
+          "message": "fix(broker): don't hold a Block fanout behind one full subscriber (#1179) (#1180)\n\nUnder the block policy the fanout awaited each subscriber's slot and bytes\nin turn, so one full queue delayed the batch for every subscriber after it.\nQueue the batch for everyone with room first, then wait on the full ones\ntogether. The latency demo now passes the subscriber byte bounds to the\nbroker it builds.",
+          "timestamp": "2026-10-11T13:04:28-07:00",
+          "tree_id": "34af6bbefa15442d5c083c74bdc708ffed84e61b",
+          "url": "https://github.com/GetFelix/felix/commit/abdab1c2bd7c68e5862c56be330819ff9b04af91"
+        },
+        "date": 1791750077253,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 712237.92,
+            "range": "65563.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712237.92\nmean: 699932.12\nstdev: 65563.97\ncv: 9.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 712237.92,
+            "range": "65563.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712237.92\nmean: 699932.12\nstdev: 65563.97\ncv: 9.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 176841.89,
+            "range": "2022.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 176841.89\nmean: 177732.44\nstdev: 2022.97\ncv: 1.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1768418.88,
+            "range": "20229.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1768418.88\nmean: 1777324.41\nstdev: 20229.65\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
