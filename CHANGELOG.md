@@ -11,6 +11,22 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.6] - 2026-10-10
+
+The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
+control plane. A cluster started all at once now places its shards on all its
+brokers: while its first broker registered less than
+`FELIX_PLACEMENT_SETTLE_MS` ago (10 s by default), a new shard waits for as
+many live brokers as its factor, and a restore that only tops up a nearly
+empty shard no longer takes the move slot. A shard placed while its leader was
+the only live broker now gets its other copies once more brokers join. A
+broker fetches every tenant's signing keys before it reports ready, so after a
+restart it no longer refuses forwarded writes, such as cache puts, while the
+control plane is down. A stopped control-plane Raft member no longer claims
+leadership, and a second SIGTERM sent just as the control plane starts
+draining is no longer missed. The docs now give failover timings per case with
+the default settings.
+
 ### Fixed
 - A cluster started all at once now places its new shards on all the brokers
   it starts with. Placement ran as soon as the first one or two brokers had
@@ -45,6 +61,14 @@ for what the current release guarantees.
   term's view. It now reports no leadership and refuses them with the same
   `unavailable` answer an instance without a leader gives, so callers move on
   to a live member (#1144).
+
+### Documentation
+- The failover docs said a lost leader is replaced in about a second, which is
+  the cluster harness's 1 s expiry window. They now give each case with the
+  defaults: a crashed Leader-stream or cache leader is marked down 18.75 s
+  after its last heartbeat and replaced on the next placement pass, a SIGTERM
+  hands leaderships off as planned moves, and a lease-free Quorum stream fails
+  over about 5 s after its leader goes quiet (#1152).
 
 ## [0.6.0-preview.5] - 2026-10-10
 
@@ -3986,7 +4010,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.5...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.6...HEAD
+[0.6.0-preview.6]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.5...v0.6.0-preview.6
 [0.6.0-preview.5]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...v0.6.0-preview.5
 [0.6.0-preview.4]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...v0.6.0-preview.4
 [0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
