@@ -457,7 +457,14 @@ How an identity behaves:
   presented with every user's token, and a user's own token is refused there.
   The gateway exchanges each user's token for a delegated one first; see
   [Delegated tokens](#delegated-tokens).
-- `ClusterClient` does not offer it yet.
+- `ClusterClient::with_identity` and `with_identity_token` do the same across
+  a cluster. The result is a `ClusterClient` with its own routing state that
+  reaches each broker over the parent's connection to it, so it follows moved
+  shards, redirects and failovers without a connection per user. When the
+  parent's connection to a broker is rebuilt, the identity's streams there are
+  reopened on the new one at its next request. The limits above apply on each
+  broker. The Python and TypeScript clients expose it as `with_identity` and
+  `withIdentity`, with a fixed token.
 
 ### Delegated tokens
 

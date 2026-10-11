@@ -168,8 +168,24 @@ at full load at once, raise the ceilings or spread the users over more than one
 `Client`. Users also share the connections' flow-control windows, so read every
 subscription promptly or drop it. A broker that binds tokens to client certificates accepts a user's token on
 the gateway's certificate only once the control plane has delegated it to the
-gateway (`/token/delegate`). `ClusterClient` does
-not offer handles yet. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
+gateway (`/token/delegate`).
+
+`ClusterClient::with_identity` and `with_identity_token` do the same for a
+cluster. The handle is a `ClusterClient` that follows moved shards, redirects
+and failed brokers as the gateway's does, and reaches each broker over the
+gateway's connection to it, opening one only where the gateway has none. A
+user whose subscription's shard moves to another broker keeps the
+subscription, and the gateway still holds one connection per broker:
+
+```rust
+let gateway = ClusterClient::connect(&seeds, "broker.internal", config).await?;
+let alice = Arc::new(gateway.with_identity("t1", alice_tokens).await?);
+let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+```
+
+Its routing state is its own, learned from its own requests, and when a
+broker's connection is rebuilt the handle moves to the new one on its next
+request there. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
 
 ### TLS and ALPN
 
