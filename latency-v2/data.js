@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791697781264,
+  "lastUpdate": 1791700616589,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -35640,6 +35640,72 @@ window.BENCHMARK_DATA = {
             "range": "2032.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 966.00\nmean: 2035.20\nstdev: 2032.78\ncv: 99.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd1ac3f73847b5bf5b11e8ebc435d7c907b119b7",
+          "message": "fix(typescript): return null, not undefined, for absent fields on delivered items (#1140) (#1158)\n\n* test(typescript): check delivered items carry null, not undefined (#1140)\n\n* fix(typescript): return null, not undefined, for absent fields on delivered items (#1140)\n\nnapi leaves an absent Option field on a #[napi(object)] undefined, while\nindex.d.ts types these fields T | null. Use Either<T, Null>, as StateValue\nalready did, for every optional field on Event, CacheChange, CacheWatchItem,\nShardMoved and ShardEvent.",
+          "timestamp": "2026-10-10T23:09:40-07:00",
+          "tree_id": "4321952bc2f13813366db7562626f54be67e33c8",
+          "url": "https://github.com/GetFelix/felix/commit/cd1ac3f73847b5bf5b11e8ebc435d7c907b119b7"
+        },
+        "date": 1791700612460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "3.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 182.60\nstdev: 3.85\ncv: 2.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 250,
+            "range": "4.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 250.40\nstdev: 4.72\ncv: 1.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 349,
+            "range": "31.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 336.00\nstdev: 31.64\ncv: 9.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "9.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 222.80\nstdev: 9.15\ncv: 4.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 453,
+            "range": "323.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 453.00\nmean: 588.60\nstdev: 323.48\ncv: 54.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 643,
+            "range": "755.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 643.00\nmean: 1011.20\nstdev: 755.53\ncv: 74.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
