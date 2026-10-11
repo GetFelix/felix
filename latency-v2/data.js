@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791727973610,
+  "lastUpdate": 1791731586251,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36234,6 +36234,72 @@ window.BENCHMARK_DATA = {
             "range": "39.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 597.00\nmean: 615.80\nstdev: 39.91\ncv: 6.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0c59434ab929425ce3d792dafb0fd6dcdb95fc4",
+          "message": "feat(broker): tell subscribers why their stream ended (#1119) (#1167)\n\nremove_stream now ends a stream's subscriptions with a reason. A client that\noffers the new extended feature bit FEATURE_STREAM_DELETED gets a last\nstream_deleted frame; any other client sees the stream end as before.\nBefore this, removing a stream only deactivated it, so its subscribers were\nleft on a feed nothing would end. A subscribe that resolved the stream just\nbefore the delete and registers just after gets a feed that is already over.\n\nclose_stream_shard takes a handoff. The lifecycle's Close action carries\nthe shard's current leader and generation while the shard is still\nassigned, so a reader still attached is told shard_moved instead of a plain\nend. A Close for a shard whose assignment is gone keeps the plain end.\n\nThe Rust client reports Subscription::stream_deleted and\nClusterSubscription::stream_deleted, and a sharded subscription yields\nShardEvent::StreamDeleted and stops that shard instead of resubscribing.\nThe Python and TypeScript bindings surface it on sharded events. The\nconformance suite checks both the offered and the plain case.\n\nSpec-Unaffected: reader end reasons only; no lease, mark, report, promotion or handoff ordering change.",
+          "timestamp": "2026-10-11T08:05:07-07:00",
+          "tree_id": "f30212b4b85b2745f0d0606c637842e29dacff97",
+          "url": "https://github.com/GetFelix/felix/commit/e0c59434ab929425ce3d792dafb0fd6dcdb95fc4"
+        },
+        "date": 1791731582237,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.60\nstdev: 1.14\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 243.20\nstdev: 3.19\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "10.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 299.40\nstdev: 10.78\ncv: 3.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 220.20\nstdev: 1.30\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 441,
+            "range": "6.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 441.00\nmean: 443.60\nstdev: 6.47\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 608,
+            "range": "134.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 608.00\nmean: 647.80\nstdev: 134.29\ncv: 20.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
