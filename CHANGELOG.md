@@ -25,6 +25,14 @@ for what the current release guarantees.
   `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
   `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
   (#1157).
+- A delegating gateway no longer needs a broker grant it never uses. A
+  principal holding `token.delegate:tenant:{tenant_id}` can exchange for a
+  connection-only broker token, its own subject with no permissions, by
+  sending `"requested": [], "permissions": []` to `/token/exchange` (or the
+  dev-token bootstrap endpoint). Its shared connections authenticate with it,
+  and every request still runs under the user's delegated token. Refresh
+  checks `token.delegate` again and ends the chain once it is removed. Anyone
+  else asking for no permissions still gets `403` `no permissions` (#1130).
 
 ### Fixed
 - The Node client returns `null`, as `index.d.ts` says, for an absent field on
