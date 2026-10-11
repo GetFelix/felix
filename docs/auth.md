@@ -359,8 +359,9 @@ always did.
 is stolen and *never used*; one that is used produces a replay, which ends the
 chain immediately.
 
-To cut off a principal without waiting out any token's expiry, revoke its
-refresh tokens for the tenant; every chain it holds ends at once:
+To cut off a principal without waiting out any token's expiry, revoke it.
+Every refresh chain it holds ends at once, and so does every broker stream its
+broker tokens opened (see [Revoking a principal](#revoking-a-principal)):
 
 ```
 POST /v1/tenants/{tenant_id}/refresh-tokens/revoke
@@ -370,10 +371,64 @@ Content-Type: application/json
 { "principal_id": "<the principal's sub>" }
 ```
 
-The answer is `{"revoked": <n>}`, the number of live tokens it ended. Access
-tokens already minted stay valid until they expire, which is what the short
-access TTL bounds. Removing the principal's groupings stops the next refresh
+The answer is `{"revoked": <n>}`, the number of live refresh tokens it ended.
+Its broker tokens are refused from then on, and brokers end the streams they
+opened within about one sync interval. Its `felix-controlplane` tokens stay
+valid until they expire, which is what the short access TTL bounds. A `409`
+means some control-plane member predates revocations: the refresh tokens are
+revoked, the broker sessions are not, and the call is safe to repeat once the
+upgrade finishes. Removing the principal's groupings stops the next refresh
 too, and ends its chain.
+
+### Revoking a principal
+
+A revocation is a cutoff time recorded for one principal of a tenant. Every
+broker token of that principal issued at or before it is refused, and every
+stream such a token opened is ended. A delegated token is also revoked when its
+actor is. Three things record one:
+
+- `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`, for the principal named.
+- Removing a policy (`DELETE /v1/tenants/{t}/rbac/policies`), for the policy's
+  subject and everyone who reaches it through role assignments.
+- Removing a role assignment (`DELETE /v1/tenants/{t}/rbac/groupings`), for
+  the assignment's user and everyone who reaches it.
+
+When the subjects a removal reaches include an IdP group (`group:...`), the
+control plane cannot tell who its members are, so the revocation covers every
+principal of the tenant (`principal_id` `*`). Every broker session in the
+tenant then has to authenticate again. An RBAC removal whose revocation cannot
+be recorded, as during an upgrade, still succeeds and is logged as a warning;
+the sessions it reached keep their rights until their tokens expire.
+
+Brokers poll `GET /v1/principal-revocations/changes?since=<n>` on the catalog
+sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), with the same
+`node.view:cluster:*` credential. The feed holds each principal once, at its
+latest revocation, so `since=0` is the whole set. When a broker learns of one:
+
+- An `Auth` with a revoked token is refused with the `revoked` error code.
+- An open control stream gets an `error` with `revoked` and is closed. A uni
+  publish stream is closed.
+- A subscription or cache watch gets an `error` with `revoked` as its last frame
+  on its event stream. A client that did not offer error codes gets the same
+  frame without the code. The Rust client yields it from `next_event` as a
+  `BrokerError`, and from `CacheWatch::refusal` after the watch ends.
+- A Kafka connection is closed at its next request, and a new SASL login with
+  the token is refused.
+- A forwarded publish or cache operation carrying the token is refused by the
+  owner.
+
+Revocation ends sessions; it does not narrow them. A client that still holds
+some rights gets a token minted under the current rules from its next refresh
+and opens its streams again with it. Token times are whole seconds, so the
+control plane holds a mint that falls in the same second as a revocation of
+its principal until that second has passed (at most two seconds, for clock
+skew between members). `/token/delegate` refuses a subject token issued at or
+before a revocation of its subject or of the caller.
+
+A broker that cannot reach the control plane learns of revocations when it can
+again. The feed is kept across a restore or a `migrate`, so a revoked token that
+has not expired stays revoked. Revoking needs every Raft member at metadata
+version 7.
 
 ### In the Rust client
 
@@ -397,10 +452,12 @@ config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
 )));
 ```
 
-The broker only checks the token when a stream opens, so a stream that is
-already open keeps working after the token expires. Forwarded publishes are the
-exception. When a broker forwards a publish to the shard owner, the owner checks
-the token the publish stream opened with and rejects it once it has expired.
+The broker checks the token when a stream opens, so a stream that is already
+open keeps working after the token expires. A revocation does end it; see
+[Revoking a principal](#revoking-a-principal). Forwarded publishes are also
+checked again. When a broker forwards a publish to the shard owner, the owner
+checks the token the publish stream opened with and rejects it once it has
+expired or been revoked.
 
 ### Many users over one client
 
@@ -429,8 +486,8 @@ How an identity behaves:
   returns, so a refused token fails there. Subscriptions, cache watches and
   group requests open their own streams under the same token, as on any client.
 - Its token provider is asked for a token on each stream open. One user's token
-  expiring or being revoked stops only that user's new streams. A refused
-  `Auth` closes one stream, never the connection.
+  expiring stops only that user's new streams, and revoking the user ends only
+  that user's streams. A refused `Auth` closes one stream, never the connection.
 - Dropping it closes its streams and leaves the connections to the gateway and
   the other users.
 - A refused publish or cache request ends the stream it came on, on every

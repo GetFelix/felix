@@ -53,13 +53,23 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
     let mut auth_ctx: Option<AuthContext> = None;
     // Held until this stream authenticates; see `preauth`.
     let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
+    // Set once the stream authenticates, as on the control stream.
+    let mut revoked: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        Box::pin(std::future::pending());
     loop {
         let frame_cap = publish_ctx
             .preauth
             .frame_cap(auth_ctx.is_some(), config.max_frame_bytes);
-        let frame = match source.next_frame(frame_cap, frame_scratch).await? {
-            Some(frame) => frame,
-            None => break,
+        // A uni stream has no way to answer, so a revoked one is just closed.
+        let frame = tokio::select! {
+            frame = source.next_frame(frame_cap, frame_scratch) => match frame? {
+                Some(frame) => frame,
+                None => break,
+            },
+            () = &mut revoked => {
+                tracing::debug!("closing uni stream: its credential was revoked");
+                break;
+            }
         };
         // Flags select the body's layout, and a uni stream has no way to
         // answer, so a bit this version does not know ends the stream.
@@ -122,6 +132,10 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                         auth_ctx = Some(ctx);
                         preauth_permit.take();
                         publish_ctx.preauth.mark_authenticated();
+                        if let Some(ctx) = &auth_ctx {
+                            let revocable = ctx.revocable.clone();
+                            revoked = Box::pin(async move { revocable.revoked().await });
+                        }
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "closing uni stream after auth failure");

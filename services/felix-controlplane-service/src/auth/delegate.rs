@@ -165,6 +165,18 @@ pub async fn delegate_token(
         ));
     }
     check_may_act(&subject, &actor.sub, delegate_unbound_tokens())?;
+    // A revoked token stays revoked: delegating it would mint one newer than
+    // the revocation.
+    for principal in [&subject.sub, &actor.sub] {
+        let revoked_at = state
+            .store
+            .principal_revoked_at(&tenant_id, principal)
+            .await
+            .map_err(|err| api_internal("failed to load revocations", &err))?;
+        if revoked_at.is_some_and(|revoked_at| subject.iat <= revoked_at) {
+            return Err(refused(Refusal::Forbidden, "the subject token was revoked"));
+        }
+    }
 
     let narrowing = Narrowing {
         requested: None,
@@ -181,6 +193,8 @@ pub async fn delegate_token(
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }
 
+    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &subject.sub).await?;
+    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &actor.sub).await?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

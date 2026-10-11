@@ -1020,6 +1020,38 @@ impl AuthStore for RaftStore {
             _ => Err(unexpected_shape("count")),
         }
     }
+
+    async fn revoke_principals(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()> {
+        self.propose(MetaCommand::RevokePrincipals {
+            tenant_id: tenant_id.to_string(),
+            principal_ids,
+            revoked_at,
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn principal_revocations(
+        &self,
+        since: u64,
+    ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>> {
+        self.local().principal_revocations(since).await
+    }
+
+    async fn principal_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<Option<i64>> {
+        self.local()
+            .principal_revoked_at(tenant_id, principal_id)
+            .await
+    }
 }
 
 /// The command answered with a payload its own definition rules out — a

@@ -132,6 +132,10 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     };
     // Held until this stream authenticates; see `preauth`.
     let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
+    // Set once the stream authenticates. Made once and polled between frames,
+    // so the frame path pays nothing for it.
+    let mut revoked: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        Box::pin(std::future::pending());
     loop {
         if *cancel_rx_read.borrow() {
             break;
@@ -149,6 +153,19 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     break;
                 }
                 continue;
+            }
+            () = &mut revoked => {
+                tracing::info!("ending a control stream: its credential was revoked");
+                send_control_error(
+                    &out_ack_tx,
+                    &out_ack_depth,
+                    &ack_throttle_tx,
+                    &ack_timeout_state,
+                    &cancel_tx,
+                    ClientError::revoked(),
+                )
+                .await?;
+                return Ok(false);
             }
             frame = source.next_frame(
                 publish_ctx
@@ -1138,6 +1155,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             preauth_permit = None;
             publish_ctx.preauth.mark_authenticated();
             publish_ctx.bind_identity(auth_ctx);
+            let revocable = auth_ctx.revocable.clone();
+            revoked = Box::pin(async move { revocable.revoked().await });
         }
     }
     // `graceful_close` only tracks EOF from the peer. Any other early-exit path returns false

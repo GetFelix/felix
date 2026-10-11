@@ -153,7 +153,8 @@ let bob = gateway.with_identity_token("t1", bob_token).await?;
 
 A handle opens one publish stream and one cache stream and no connections, so
 the gateway's connection count stays the same however many users it serves.
-One user's token expiring or being revoked stops only that user's new streams.
+One user's token expiring stops only that user's new streams, and revoking the
+user ends only that user's open ones.
 Dropping a handle closes its streams. The gateway's own token only opens the
 connections, so it needs no permissions: a gateway holding `token.delegate`
 can use a connection-only token from the control plane
@@ -1145,6 +1146,12 @@ while let Some(item) = watch.recv().await {
     }
 }
 ```
+
+When `recv` returns `None` without either, the broker either closed the
+stream or ended the watch with an error, and `watch.refusal()` holds that error
+as a `BrokerError`. A `revoked` code there means the credential the watch was
+opened with was revoked; watch again with a fresh token. A subscription ended
+for the same reason returns the `BrokerError` from `next_event`.
 
 A resume whose history compaction has collapsed begins with each matching
 key's current value instead, and `watch.resnapshot()` says so. Needs a broker

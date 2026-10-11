@@ -445,7 +445,7 @@ and a request against it answers `401` whatever the token says.
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}` | tenant `t` |
 | `POST /v1/tenants/{t}/namespaces/{ns}/resources` | both of the above, over every item in the batch | tenant `t` |
-| `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` | any tenant |
+| `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}`, `GET /v1/principal-revocations/changes` | `node.view:cluster:*` | any tenant |
 | `/v1/tenants/{t}/idp-issuers[/{issuer}]`, `/v1/tenants/{t}/signing-keys[/...]`, `POST /v1/tenants/{t}/refresh-tokens/revoke` | `tenant.manage` over `tenant:{t}` | tenant `t` |
 | `GET /v1/tenants/{t}/rbac/{policies,groupings}` | `rbac.view` | tenant `t` |
 | `POST`/`DELETE /v1/tenants/{t}/rbac/policies` | `rbac.policy.manage` over the rule's object | tenant `t` |
@@ -1432,6 +1432,7 @@ Control plane:
 | `felix_refresh_token_replays_total` | spent refresh tokens presented again. Each one revoked its whole rotation chain. Nobody legitimately does this, so any increase is a stolen token or a client that retried a refresh it already completed; alert on it |
 | `felix_refresh_token_bad_secret_total` | refresh tokens presented with a real token id and the wrong secret. The token is spent anyway, so guessing costs the guesser the token; any increase means someone holds half a credential |
 | `felix_refresh_tokens_revoked_total` | refresh tokens revoked by a replay |
+| `felix_principal_revocations_total` | principals revoked, by `refresh-tokens/revoke` or by removing an RBAC rule that reached them. A tenant-wide revocation counts once. See [auth.md](auth.md#revoking-a-principal) |
 | `felix_refresh_tokens_issued_total{via}` | refresh tokens issued: `exchange` or `refresh` |
 | `felix_delegated_tokens_issued_total` | tokens issued by `/token/delegate` |
 
@@ -1461,6 +1462,7 @@ Broker:
 | `felix_broker_membership_live` | 1 while the cluster considers this broker placeable |
 | `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
+| `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means
 the control plane answered and said no (a duplicate address, a superseded

@@ -508,6 +508,44 @@ broker token, with its own subject and no permissions, by asking for
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
 See [Acting for many users](/clients/rust/#acting-for-many-users).
 
+### Revocation
+
+Revoking a principal ends what its tokens already opened, on every broker.
+`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` revokes the principal
+named. Removing an RBAC policy or role assignment revokes everyone the rule
+reached through role assignments, or the whole tenant when it reached an IdP
+group, whose members the control plane cannot list.
+
+A revocation is a cutoff time. The control plane records it, and brokers read
+it from a feed they poll on the catalog sync interval
+(`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default). From then on, a
+broker token of that principal issued at or before the cutoff is refused, and
+everything such a token opened ends with the `revoked` error code: control
+streams, subscriptions, cache watches and Kafka connections. A delegated token
+is revoked with its actor too.
+
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant CP as Control Plane
+    participant B as Broker
+    participant C as Client
+
+    A->>CP: Revoke principal, or remove an RBAC rule
+    CP->>CP: Record cutoff for the principals it reached
+    B->>CP: Poll principal-revocations/changes
+    CP-->>B: tenant, principal, revoked_at
+    B-->>C: Error with code revoked on each open stream, then close
+    C->>CP: Refresh (refused if the principal was cut off)
+    C->>B: Auth with a token minted after the cutoff
+```
+
+Revocation ends sessions rather than narrowing them in place. A client whose
+rights were only reduced gets a token minted under the current rules from its
+next refresh and opens its streams again. Tokens for the control plane's own
+API are not revoked; they expire with the access TTL. See
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+
 ## Not built
 
 - **Encryption at rest.** Durable log segments are plaintext on disk. If the

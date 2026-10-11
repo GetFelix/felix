@@ -102,6 +102,7 @@ pub(crate) async fn handle_cache_watch_message(
     responder: WatchResponder<'_>,
     request: WatchRequest,
     peer_features: u32,
+    owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
     // Exactly one of key/prefix. Refused rather than guessed at: "both" has
     // two defensible readings and a client relying on either would silently
@@ -471,6 +472,16 @@ pub(crate) async fn handle_cache_watch_message(
     // watch laps its queue.
     let shard_moved = felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SHARD_MOVED)
         .then_some(subscription_id);
+    let revoked = owner.map(|auth| {
+        let message = ClientError::revoked().into_message();
+        let message =
+            if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
+                message
+            } else {
+                message.without_error_code()
+            };
+        (auth.revocable.clone(), message)
+    });
     tokio::spawn(run_watch_delivery(
         watch,
         event_send,
@@ -478,6 +489,7 @@ pub(crate) async fn handle_cache_watch_message(
         subscriptions,
         shard_moved,
         gate,
+        revoked,
     ));
     Ok(true)
 }
@@ -648,9 +660,29 @@ async fn run_watch_delivery(
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
     gate: CommitGate,
+    // The credential the watch was opened with, and the last frame to send
+    // when it is revoked.
+    revoked: Option<(crate::serving::revocation::Revocable, Message)>,
 ) {
+    let (revocable, mut revoked_message) = revoked.unzip();
+    let mut revocation = Box::pin(async move {
+        match revocable {
+            Some(revocable) => revocable.revoked().await,
+            None => std::future::pending().await,
+        }
+    });
     loop {
-        match watch.recv().await {
+        let next = tokio::select! {
+            next = watch.recv() => next,
+            () = &mut revocation => {
+                tracing::info!("ending a cache watch: its credential was revoked");
+                if let Some(message) = revoked_message.take() {
+                    let _ = write_message(&mut event_send, message).await;
+                }
+                break;
+            }
+        };
+        match next {
             Some(event) => {
                 if event.offset < resume_offset {
                     // Applied before the tail was read, so the catch-up already

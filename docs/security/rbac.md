@@ -273,6 +273,28 @@ Examples:
 - `rbac.policy.manage:stream:t1/payments/orders` cannot grant `stream:t1/payments/*`.
 - `rbac.policy.manage:tenant:t1` can manage tenant `t1` RBAC, but still cannot use `tenant:*`.
 
+## Taking rights back
+
+A token carries the permissions it was minted with, so removing a rule does not
+change tokens already issued. What removal does instead is revoke them. The
+control plane works out who the removed rule reached: for a policy, its subject
+and every subject assigned to it, directly or through other roles; for a role
+assignment, its user and everyone assigned to that user. It records a
+revocation for each of them, and brokers end every stream their existing
+broker tokens opened, with the `revoked` error code, within about one sync
+interval. Their next refresh mints a token under the rules as they are now, so
+someone who still holds some rights reconnects with exactly those.
+
+An IdP group (`group:<issuer>#<name>`) has members only the IdP knows. When a
+removed rule reached one, the revocation covers the whole tenant, and every
+broker session in it authenticates again. Granting through roles assigned to
+principals keeps a removal to the people it affects.
+
+Adding a rule revokes nothing. Its grants reach a principal with its next
+token. `POST /v1/tenants/{t}/refresh-tokens/revoke` cuts one principal off
+entirely. See [auth.md](../auth.md#revoking-a-principal) for the mechanism and
+its limits.
+
 ## Notes
 
 - Strict grammar is enforced for RBAC evaluation and writes.
@@ -290,5 +312,7 @@ Examples:
   [auth.md](../auth.md#narrowing-by-pairs).
 - Rules can be removed as well as added (`DELETE .../rbac/policies`,
   `DELETE .../rbac/groupings`), under the same scope rules as adding them.
+  A removal ends the broker sessions it reached; see
+  [Taking rights back](#taking-rights-back).
 - `felixctl rbac policy|grouping ls|add|rm` wraps these endpoints, and checks
   a policy object against the grammar above before sending it.

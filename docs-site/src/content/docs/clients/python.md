@@ -264,7 +264,7 @@ except felix.NotFoundError:
 | `ShardUnavailableError` | nobody can serve the shard right now, usually because it is moving (`shard_unavailable`), or another broker owns it (`not_leader`); nothing was written | yes |
 | `OverloadedError` | the broker is shedding load (`overloaded`); nothing was written | yes, after a pause |
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | only if idempotent |
-| `AuthError` | token rejected, or missing the permission (`unauthenticated`, `forbidden`) | no |
+| `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | no |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | see `retry` |
 | `CursorError` | the start offset is gone; retention discarded it | no; restart at `earliest` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
