@@ -166,9 +166,44 @@ export function reader(handle, method = "nextEvent") {
       const item = await within(pending, timeoutMs);
       if (item === TIMED_OUT) return null;
       pending = null;
+      if (item !== null) assertTypedNulls(item);
       return item;
     },
   };
+}
+
+// The fields index.d.ts types `T | null`, by the object that carries them.
+// napi leaves an absent `Option` field `undefined`, and a caller that follows
+// the typings with `!== null` then misreads every item, so each one is checked.
+const NULLABLE_FIELDS = {
+  Event: ["offset"],
+  ShardEvent: ["event", "lostError", "recovered", "shardMoved"],
+  ShardMoved: ["resumeFrom", "nodeId", "addr"],
+  CacheWatchItem: ["change", "laggedResumeFrom", "shardMoved"],
+  CacheChange: ["value"],
+};
+
+function assertFieldsNotUndefined(object, kind) {
+  for (const field of NULLABLE_FIELDS[kind]) {
+    if (object[field] === undefined) {
+      throw new Error(`${kind}.${field} is undefined; the typings say it is null when absent`);
+    }
+  }
+}
+
+/** Throws if a delivered item has `undefined` where the typings promise `null`. */
+export function assertTypedNulls(item) {
+  if ("shard" in item) {
+    assertFieldsNotUndefined(item, "ShardEvent");
+    if (item.event) assertFieldsNotUndefined(item.event, "Event");
+    if (item.shardMoved) assertFieldsNotUndefined(item.shardMoved, "ShardMoved");
+  } else if ("payload" in item) {
+    assertFieldsNotUndefined(item, "Event");
+  } else {
+    assertFieldsNotUndefined(item, "CacheWatchItem");
+    if (item.change) assertFieldsNotUndefined(item.change, "CacheChange");
+    if (item.shardMoved) assertFieldsNotUndefined(item.shardMoved, "ShardMoved");
+  }
 }
 
 /**
