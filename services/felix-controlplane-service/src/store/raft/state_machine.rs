@@ -315,6 +315,15 @@ impl MetadataStateMachine {
                 .await
                 .map(|count| MetaResponse::Count { count })
                 .map_err(Into::into),
+            MetaCommand::RevokePrincipals {
+                tenant_id,
+                principal_ids,
+                revoked_at,
+            } => store
+                .revoke_principals(&tenant_id, principal_ids, revoked_at)
+                .await
+                .map(|()| MetaResponse::Unit)
+                .map_err(Into::into),
             MetaCommand::PurgeExpiredRefreshTokens { before_secs } => store
                 .purge_expired_refresh_tokens(before_secs)
                 .await

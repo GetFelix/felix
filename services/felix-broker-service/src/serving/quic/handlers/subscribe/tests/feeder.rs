@@ -90,6 +90,7 @@ async fn spawn_feeder_capped(flush_delay: Duration, max_bytes: usize) -> Result<
         config,
         IdentityLimits::unlimited(),
         TenantDelivery::for_tenant("t1"),
+        None,
     ));
     Ok(Harness {
         broker,
@@ -344,6 +345,7 @@ async fn feed_to_the_end(
         config,
         IdentityLimits::unlimited(),
         TenantDelivery::for_tenant("t1"),
+        None,
     ));
     let mut delivered = 0;
     let last = loop {

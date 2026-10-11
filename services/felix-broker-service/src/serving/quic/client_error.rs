@@ -52,6 +52,11 @@ impl ClientError {
         Self::new(ErrorCode::Unauthenticated, message)
     }
 
+    /// The stream's credential, or the one presented, was revoked.
+    pub(crate) fn revoked() -> Self {
+        Self::new(ErrorCode::Revoked, "credential revoked")
+    }
+
     pub(crate) fn forbidden(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Forbidden, message)
     }

@@ -261,6 +261,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(auth::admin::revoke_principal_refresh_tokens),
         )
         .route(
+            "/v1/principal-revocations/changes",
+            axum::routing::get(auth::revocation::principal_revocation_changes),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/signing-keys",
             axum::routing::get(auth::signing_keys::list_signing_keys)
                 .post(auth::signing_keys::stage_signing_key),

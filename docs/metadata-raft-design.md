@@ -504,6 +504,13 @@ older member would drop it, and the chain's refreshed tokens could no longer be
 delegated by that gateway, so until every member is at level 6 an exchange with
 `actor_token` is refused with `409`.
 
+Level 7 is `revoke_principals`, a principal revocation (see
+[Revoking a principal](auth.md#revoking-a-principal)), and the snapshot's
+`principal_revocations`, omitted while empty. Until every member is at level 7,
+`POST /v1/tenants/{t}/refresh-tokens/revoke` revokes the refresh tokens and
+answers `409`, and an RBAC removal succeeds without ending the sessions it
+reached.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the

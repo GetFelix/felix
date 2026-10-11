@@ -121,7 +121,14 @@ impl Cluster for BrokerCluster {
             .collect();
         let peer = (!certs.is_empty()).then_some(certs.as_slice());
         match self.auth.authenticate_peer(tenant_id, token, peer).await {
-            Ok(context) => Ok(Principal::with_permissions(tenant_id, context.matcher)),
+            Ok(context) => {
+                let revocable = context.revocable;
+                Ok(Principal::with_permissions(tenant_id, context.matcher)
+                    .with_revocation(move || revocable.is_revoked()))
+            }
+            Err(err) if err.is::<crate::serving::revocation::Revoked>() => {
+                Err("token rejected: credential revoked".to_string())
+            }
             // The token's own fault is safe to say. Anything else is the
             // control plane being unreachable, whose error text can carry its
             // URL, so it is logged here and not handed to the client.

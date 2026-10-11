@@ -206,12 +206,25 @@ RBAC endpoints are split by capability:
 - `DELETE /v1/tenants/{tenant_id}/rbac/groupings` -> requires `rbac.assignment.manage`
   (body: the grouping, as for `POST`; `404` if absent)
 
+Removing a policy or a grouping also revokes the broker tokens of everyone the
+rule reached, so their open streams end and they authenticate again under the
+rules as they are now. A rule that reached an IdP group revokes the whole
+tenant. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+
+- `GET /v1/principal-revocations/changes?since=<n>` -> requires
+  `node.view:cluster:*`. The feed brokers poll: `{"items": [{"seq",
+  "tenant_id", "principal_id", "revoked_at"}], "next_seq"}`, each principal
+  once at its latest revocation, `principal_id` `*` for a whole tenant.
+
 ### Admin API: Refresh-token revocation and signing keys
 
 Both require `tenant.manage` on `tenant:{tenant_id}`.
 
 - `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` with
-  `{"principal_id": "..."}` ends every refresh chain the principal holds.
+  `{"principal_id": "..."}` ends every refresh chain the principal holds and
+  revokes its broker tokens: brokers end the streams they opened within about
+  one sync interval. `409` when some control-plane member predates
+  revocations; the call is safe to repeat.
 - `GET /v1/tenants/{tenant_id}/signing-keys` lists the current key and the
   keys that only verify.
 - `POST /v1/tenants/{tenant_id}/signing-keys` stages a new key: published, not

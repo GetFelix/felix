@@ -302,6 +302,7 @@ pub async fn refresh_token_handler(
         .await
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
 
+    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &record.principal_id).await?;
     let access_ttl = crate::auth::exchange::access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,

@@ -266,6 +266,7 @@ pub(crate) async fn mint_for_principal(
         narrowing.may_act = Some(verified_actor(&keys, &tenant_id, actor_token)?);
     }
 
+    crate::auth::revocation::wait_out_revocation(state, &tenant_id, principal_id).await?;
     let ttl = access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,

@@ -291,7 +291,7 @@ try {
 | `ShardUnavailableError` | nobody can serve the shard right now, usually because it is moving (`shard_unavailable`), or another broker owns it (`not_leader`); nothing was written | `true` |
 | `OverloadedError` | the broker is shedding load (`overloaded`); nothing was written | `true` |
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | `false` |
-| `AuthError` | token rejected, or missing the permission (`unauthenticated`, `forbidden`) | `false` |
+| `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | `false` |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | `false` |
 | `CursorError` | the start offset is gone; retention discarded it | `false` |
 | `InvalidArgumentError` | a bad argument to this client | `false` |

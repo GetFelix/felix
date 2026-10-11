@@ -11,6 +11,26 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+- Revoking a principal ends what its tokens already opened, on every broker,
+  within about one control-plane sync interval (#1132). Until now a revoked
+  principal kept its open subscriptions, cache watches, publish streams and
+  Kafka connections until its token expired. `POST
+  /v1/tenants/{t}/refresh-tokens/revoke` now also records a revocation, and so
+  does removing an RBAC policy or role assignment, for everyone the rule
+  reached (the whole tenant when it reached an IdP group). Brokers poll the new
+  `GET /v1/principal-revocations/changes` feed, refuse broker tokens issued at
+  or before a revocation, and end the streams they opened with the new
+  `revoked` error code (16, `fatal`): an `error` on a control stream, or as the
+  last frame on a subscription's or cache watch's event stream. A Kafka
+  connection is closed at its next request. Under the Raft store this is
+  metadata version 7, and until every member has it the revoke endpoint
+  answers `409` after revoking the refresh tokens. See
+  [docs/auth.md](docs/auth.md#revoking-a-principal).
+- `CacheWatch::refusal` in the Rust client says why the broker ended a watch
+  with an error, such as `revoked`. A subscription ended that way returns the
+  `BrokerError` from `next_event` instead of an "unexpected message" error.
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the

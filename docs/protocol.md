@@ -299,6 +299,17 @@ Sent only to a client that offered `FEATURE_SHARD_MOVED`: any other client sees
 the stream end after its last event, byte for byte as before. See
 [Shard moves](#shard-moves).
 
+### Error on an event stream (server -> client)
+
+An `error` frame, as on a control stream, can be the last frame on the event
+stream of a subscription or cache watch. The broker sends one when the
+credential the subscription or watch was opened with is revoked (code
+`revoked`, see [Error codes](#error-codes)) and finishes the stream after it.
+The code and retry class are left out for a client that did not offer
+`FEATURE_ERROR_CODES`. No feature bit gates the frame itself: a client that
+does not expect it on an event stream reads it as an unexpected frame, which
+still ends the subscription with an error rather than as a clean close.
+
 ### SubscriptionLagged (server -> client)
 ```
 { "type": "subscription_lagged", "subscription_id": <u64>, "resume_from": <u64> }
@@ -1944,6 +1955,7 @@ client MUST act on the class it received, not on this table.
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
 | `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. Also sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. A client that does not know the code sees an unknown code with `retry`. |
+| `revoked` | `fatal` | 16 | The credential was revoked: its principal, or the actor of a delegated token, was revoked after the token was issued. | In answer to `auth` with such a token. Also as the last frame of an open stream when the revocation reaches the broker: an `error` on a control stream, which is then closed, and on the event stream of a subscription or cache watch. A token minted after the revocation may still be accepted, so a client with a token provider can authenticate again. A client that does not know the code sees an unknown code with `fatal`; a client without `FEATURE_ERROR_CODES` gets the `error` with the text `credential revoked`. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 
