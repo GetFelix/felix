@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791750077873,
+  "lastUpdate": 1791756545365,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28652,6 +28652,58 @@ window.BENCHMARK_DATA = {
             "range": "20229.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1768418.88\nmean: 1777324.41\nstdev: 20229.65\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "844ab4b46d4ae3073128534253fece440e0e7b6e",
+          "message": "perf(broker): raise the default subscriber byte bound to 256 MiB (#1189)\n\nThe bound also covers the writer lanes and connection writer, so 64 MiB\nthrottled a subscriber keeping up with 4 MiB batches at fanout 10. The\nper-PR perf check gains a 64 KiB-payload cell that reaches the bound.",
+          "timestamp": "2026-10-11T15:05:42-07:00",
+          "tree_id": "0825d92035a13cd2ff1489830b790f891a847849",
+          "url": "https://github.com/GetFelix/felix/commit/844ab4b46d4ae3073128534253fece440e0e7b6e"
+        },
+        "date": 1791756544571,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 541535.95,
+            "range": "23961.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541535.95\nmean: 537048.05\nstdev: 23961.21\ncv: 4.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 541535.95,
+            "range": "23961.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541535.95\nmean: 537048.05\nstdev: 23961.21\ncv: 4.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124843.85,
+            "range": "6783.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124843.85\nmean: 122710.07\nstdev: 6783.09\ncv: 5.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1248438.51,
+            "range": "67830.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1248438.51\nmean: 1227100.71\nstdev: 67830.90\ncv: 5.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
