@@ -48,6 +48,7 @@ mod cache_watch;
 mod commit;
 mod follow;
 mod groups;
+mod identity;
 mod nodes;
 mod publish;
 mod retry;
@@ -174,7 +175,7 @@ pub struct ClusterClient {
     cache_routes: RwLock<HashMap<StreamKey, Arc<cache::CacheOwners>>>,
     /// The one client per broker that every field above draws from, so a
     /// broker costs one connection however many roles it plays.
-    nodes: nodes::Nodes,
+    nodes: Arc<nodes::Nodes>,
 }
 
 impl ClusterClient {
@@ -194,7 +195,7 @@ impl ClusterClient {
         config: ClientConfig,
         policy: ReconnectPolicy,
     ) -> Result<Self> {
-        let nodes = nodes::Nodes::new(server_name, config);
+        let nodes = Arc::new(nodes::Nodes::new(server_name, config));
         let client = nodes.connect_any(seeds).await?;
         let cluster = Self {
             seeds: seeds.to_vec(),
