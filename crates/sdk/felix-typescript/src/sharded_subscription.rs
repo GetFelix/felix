@@ -115,6 +115,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: None,
             recovered: None,
             shard_moved: None,
+            stream_deleted: None,
         },
         felix_client::ShardEvent::ShardLost { shard, error } => ShardEvent {
             shard,
@@ -122,6 +123,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: Some(error),
             recovered: None,
             shard_moved: None,
+            stream_deleted: None,
         },
         felix_client::ShardEvent::ShardRecovered { shard } => ShardEvent {
             shard,
@@ -129,6 +131,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: None,
             recovered: Some(true),
             shard_moved: None,
+            stream_deleted: None,
         },
         felix_client::ShardEvent::ShardMoved { shard, moved } => ShardEvent {
             shard,
@@ -136,6 +139,15 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
             lost_error: None,
             recovered: None,
             shard_moved: Some(moved.into()),
+            stream_deleted: None,
+        },
+        felix_client::ShardEvent::StreamDeleted { shard } => ShardEvent {
+            shard,
+            event: None,
+            lost_error: None,
+            recovered: None,
+            shard_moved: None,
+            stream_deleted: Some(true),
         },
         _ => return None,
     })

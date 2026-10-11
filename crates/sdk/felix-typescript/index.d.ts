@@ -97,11 +97,12 @@ export interface ShardMoved {
 /**
  * An item from a sharded subscription.
  *
- * Exactly one of `event`, `lostError`, `recovered` and `shardMoved` is set, and
- * `shard` says which shard it concerns. A lost shard does not affect the
- * others: they keep delivering while that one is re-established, and it
- * resumes from its own last offset so nothing is skipped. A moved shard is
- * followed: its records carry on from the new owner, or a loss comes next.
+ * Exactly one of `event`, `lostError`, `recovered`, `shardMoved` and
+ * `streamDeleted` is set, and `shard` says which shard it concerns. A lost
+ * shard does not affect the others: they keep delivering while that one is
+ * re-established, and it resumes from its own last offset so nothing is
+ * skipped. A moved shard is followed: its records carry on from the new owner,
+ * or a loss comes next. A deleted stream ends the shard for good.
  */
 export interface ShardEvent {
   shard: number;
@@ -109,6 +110,7 @@ export interface ShardEvent {
   lostError: string | null;
   recovered: boolean | null;
   shardMoved: ShardMoved | null;
+  streamDeleted: boolean | null;
 }
 
 /** How much the broker must have done before a publish resolves. */

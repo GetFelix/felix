@@ -866,8 +866,13 @@ while let Some(event) = subscription.next_event().await? {
 if let Some(moved) = subscription.shard_moved() {
     // Resubscribe at the larger of `moved.resume_from` and your last offset
     // + 1, on `moved.addr` if it is set, or via any broker, which redirects.
+} else if subscription.stream_deleted() {
+    // The stream was deleted: there is nothing to resubscribe to.
 }
 ```
+
+A `ClusterSubscription` does not follow a deleted stream: `next_event` returns
+`None` and `stream_deleted()` says why.
 
 See [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
 
@@ -1434,6 +1439,8 @@ while let Some(item) = subscription.next().await {
         ShardEvent::ShardRecovered { shard } => info!(shard, "shard back"),
         // Followed to its new owner; records carry on from there.
         ShardEvent::ShardMoved { shard, .. } => info!(shard, "shard moved"),
+        // The stream is gone; this shard is not reopened.
+        ShardEvent::StreamDeleted { shard } => info!(shard, "stream deleted"),
         _ => {}                            // `ShardEvent` is non-exhaustive
     }
 }

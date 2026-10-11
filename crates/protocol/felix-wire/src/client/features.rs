@@ -370,9 +370,20 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
 /// broker has no arm for the request.
 pub const FEATURE_INSPECT: u32 = 0x0000_0001;
 
+/// The client can read `stream_deleted` on an event stream.
+///
+/// An extended bit, in `client_features_hi` / `server_features_hi`. Offered
+/// by a *client*, like `FEATURE_SHARD_MOVED`: the message is the last frame
+/// of a subscription whose stream was deleted, so the client stops rather
+/// than looks for the stream elsewhere. A client that did not offer the bit
+/// sees the stream end after its last event, as it always has. A broker
+/// advertises it too, so a client knows a stream that ends without one was
+/// not ended by a delete.
+pub const FEATURE_STREAM_DELETED: u32 = 0x0000_0002;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
-pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT;
+pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT | FEATURE_STREAM_DELETED;
 
 /// The peer reads the other side's extended feature word.
 ///

@@ -236,7 +236,8 @@ impl Broker {
     }
 
     /// Remove a stream and every shard of it this broker holds. Handles to it
-    /// stop working.
+    /// stop working, and its subscriptions end, each told the stream was
+    /// deleted.
     pub async fn remove_stream(
         &self,
         tenant_id: &str,
@@ -261,6 +262,7 @@ impl Broker {
                     && topic.stream == key.stream;
                 if same_stream {
                     state.deactivate();
+                    state.end_subscribers(Some(crate::handoff::Ending::Deleted));
                 }
                 !same_stream
             });

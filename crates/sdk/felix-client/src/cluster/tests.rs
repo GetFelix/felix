@@ -5,6 +5,7 @@ mod decisions;
 mod error_codes;
 mod keyed_producer;
 mod offsets;
+mod sharded_deleted;
 mod sharded_lag;
 mod stub_broker;
 

@@ -58,7 +58,9 @@ impl Broker {
             .read()
             .await
             .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
-            .map_or(0, |state| state.end_subscribers(handoff))
+            .map_or(0, |state| {
+                state.end_subscribers(handoff.map(crate::handoff::Ending::Moved))
+            })
     }
 
     /// Drop the batches one stream shard holds back from readers, and its
@@ -182,14 +184,15 @@ impl Broker {
     ///
     /// Anything still holding a handle fails with a storage error from here
     /// on; the next request for the shard opens it afresh from disk. Readers
-    /// still attached are ended. Every part is attempted, and the first
-    /// failure is returned.
+    /// still attached are ended, told the shard moved when there is a
+    /// `handoff`. Every part is attempted, and the first failure is returned.
     pub async fn close_stream_shard(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         shard: u32,
+        handoff: Option<crate::ShardHandoff>,
     ) -> Result<()> {
         // Logs before `topics`: an open racing this either installs its state
         // before the removal below, or sees its log closed and backs off.
@@ -226,7 +229,7 @@ impl Broker {
             .remove(&TopicKeyRef::new(tenant_id, namespace, stream, shard));
         if let Some(state) = removed {
             state.deactivate();
-            state.end_subscribers(None);
+            state.end_subscribers(handoff.map(crate::handoff::Ending::Moved));
         }
         closed
     }

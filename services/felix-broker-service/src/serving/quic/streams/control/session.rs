@@ -11,9 +11,9 @@ use crate::serving::quic::handlers::publish::{
 };
 
 /// Extended feature bits this broker serves, sent in `server_features_hi`.
-/// Every one is a request the client sends, so the client's own
-/// `client_features_hi` is not kept.
-const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT;
+/// `stream_deleted` is sent only to a client that offered it, when a stream
+/// it reads is deleted.
+const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT | felix_wire::FEATURE_STREAM_DELETED;
 
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,
@@ -22,6 +22,7 @@ pub(super) async fn authenticate(
     token: String,
     client_flags: Option<u16>,
     client_features: Option<u32>,
+    client_features_hi: Option<u32>,
 ) -> Result<Step> {
     let Ctx {
         broker,
@@ -72,6 +73,8 @@ pub(super) async fn authenticate(
             // frame the client cannot parse, and an undecodable
             // frame costs the connection.
             session.peer_features = client_features.unwrap_or(0);
+            session.peer_features_hi =
+                felix_wire::peer_features_hi(session.peer_features, client_features_hi);
             // Per connection, on top of the broker-wide setting.
             session.commit_ack = config.ack_on_commit
                 || felix_wire::supports_feature(

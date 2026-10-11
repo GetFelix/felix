@@ -443,6 +443,18 @@ When the broker closes the event stream, iteration ends. A client that blocks
 forever instead turns a routine shutdown into a hung consumer.
 """
 
+[[scenario]]
+id = "client.stream_deleted_is_reported"
+required = false
+title = "A subscription ended by deleting its stream says so"
+detail = """
+Delete a stream with a live subscription. The subscription ends after the
+records already sent to it, and the client reports that the stream was
+deleted (the broker's `stream_deleted` frame, under `FEATURE_STREAM_DELETED`)
+rather than a plain end. A client that follows moved shards must not try to
+follow this one: there is nowhere to resubscribe.
+"""
+
 # ---------------------------------------------------------------------------
 # Connection faults
 #

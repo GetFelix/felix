@@ -362,7 +362,10 @@ async fn serve_stream(
                         .await?;
                     let mut ended = false;
                     for message in scripted.unwrap_or_default() {
-                        ended = matches!(message, Message::SubscriptionLagged { .. });
+                        ended = matches!(
+                            message,
+                            Message::SubscriptionLagged { .. } | Message::StreamDeleted { .. }
+                        );
                         write_message(&mut events, message).await?;
                     }
                     if ended {

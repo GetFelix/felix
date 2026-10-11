@@ -11,6 +11,22 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+- A subscription ended because its stream was deleted now says so. The broker
+  sends `stream_deleted` as its last frame to a client that offered the new
+  extended feature bit `FEATURE_STREAM_DELETED`; any other client sees the
+  stream end as before. Removing a stream used to leave its subscribers
+  waiting on a feed nothing would end. The Rust client reports it as
+  `Subscription::stream_deleted` and `ClusterSubscription::stream_deleted`,
+  and a sharded subscription yields `ShardEvent::StreamDeleted` for each shard
+  instead of trying to resubscribe it (`StreamDeleted` in Python,
+  `streamDeleted` in TypeScript).
+
+### Changed
+- A broker closing a shard it no longer has any role in tells a reader still
+  attached that the shard moved, naming its current leader, rather than just
+  ending the stream. `Broker::close_stream_shard` takes the handoff.
+
 ## [0.6.0-preview.6] - 2026-10-10
 
 The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the

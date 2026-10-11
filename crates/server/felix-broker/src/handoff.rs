@@ -1,9 +1,10 @@
-//! What a reader is told when its shard moves to another broker.
+//! What a reader is told when its shard moves to another broker, or its
+//! stream is deleted.
 //!
 //! A broker that stops serving a shard ends that shard's subscriptions and
 //! cache watches. Each reader's feed records why before it closes, so the
-//! delivery path can send a last frame saying where to resume instead of just
-//! finishing the stream.
+//! delivery path can send a last frame saying where to resume, or that there
+//! is nothing to resume, instead of just finishing the stream.
 
 /// Where a shard went when this broker stopped serving it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,4 +26,20 @@ pub struct ShardMoved {
     pub resume_from: Option<u64>,
     /// Where the shard went.
     pub to: ShardHandoff,
+}
+
+/// Why a stream's subscriptions are being ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ending {
+    /// The shard went elsewhere.
+    Moved(ShardHandoff),
+    /// The stream was deleted.
+    Deleted,
+}
+
+/// Why a subscription's feed ended, recorded before its queue closes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FeedEnd {
+    Moved(ShardMoved),
+    Deleted,
 }

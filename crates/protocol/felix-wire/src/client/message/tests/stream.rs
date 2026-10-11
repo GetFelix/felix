@@ -272,3 +272,16 @@ fn a_stream_read_leaves_unset_bounds_out() {
     .expect("decode");
     assert_eq!(decoded, request);
 }
+
+/// `stream_deleted` is a plain JSON frame naming only the subscription.
+#[test]
+fn stream_deleted_round_trips() {
+    let deleted = Message::StreamDeleted { subscription_id: 7 };
+    let frame = deleted.encode().expect("encode");
+    assert_eq!(frame.header.flags, 0, "a JSON frame carries no flag bits");
+    assert_eq!(
+        std::str::from_utf8(&frame.payload).expect("utf8"),
+        r#"{"type":"stream_deleted","subscription_id":7}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), deleted);
+}

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::delivery::{DeliveryEnvelope, QueuedDelivery};
 use super::state::StreamState;
 use super::stats::{SubscriberOwner, SubscriberStats};
-use crate::handoff::ShardMoved;
+use crate::handoff::{FeedEnd, ShardMoved};
 
 /// Receiver wrapper that keeps the unsubscribe guard alive for the receiver lifetime.
 #[derive(Debug)]
@@ -142,7 +142,7 @@ impl Subscription {
 #[derive(Debug)]
 pub struct SubscriptionReceiver {
     pub(crate) receiver: mpsc::Receiver<QueuedDelivery>,
-    moved: Arc<OnceLock<ShardMoved>>,
+    ended: Arc<OnceLock<FeedEnd>>,
     lag: Arc<Lag>,
     stats: Arc<SubscriberStats>,
     /// Set by [`Self::end_on_lag`].
@@ -156,13 +156,13 @@ pub struct SubscriptionReceiver {
 impl SubscriptionReceiver {
     pub(crate) fn new(
         receiver: mpsc::Receiver<QueuedDelivery>,
-        moved: Arc<OnceLock<ShardMoved>>,
+        ended: Arc<OnceLock<FeedEnd>>,
         lag: Arc<Lag>,
         stats: Arc<SubscriberStats>,
     ) -> Self {
         Self {
             receiver,
-            moved,
+            ended,
             lag,
             stats,
             end_on_lag: false,
@@ -196,7 +196,16 @@ impl SubscriptionReceiver {
     /// Set before the queue closes, so once [`Self::recv`] has returned
     /// `None` this is final.
     pub fn moved(&self) -> Option<&ShardMoved> {
-        self.moved.get()
+        match self.ended.get() {
+            Some(FeedEnd::Moved(moved)) => Some(moved),
+            _ => None,
+        }
+    }
+
+    /// Whether the subscription ended because its stream was deleted. Final
+    /// once [`Self::recv`] has returned `None`, like [`Self::moved`].
+    pub fn deleted(&self) -> bool {
+        matches!(self.ended.get(), Some(FeedEnd::Deleted))
     }
 
     /// The next batch, or `None` once the subscription has ended.

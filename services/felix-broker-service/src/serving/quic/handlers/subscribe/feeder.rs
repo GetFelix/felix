@@ -305,6 +305,9 @@ pub(super) async fn run_lane_feeder(
                     }
                 }
             }
+            (None, None) if config.stream_deleted_enabled && event_rx.deleted() => {
+                stream_deleted_frame(config.subscription_id)
+            }
             _ => None,
         };
         // The lane forgets the subscriber when it handles this, after the
@@ -361,6 +364,18 @@ pub(super) fn shard_moved_frame(
         generation: moved.to.generation,
     };
     Ok(message.encode()?.encode())
+}
+
+/// The last frame of a subscription whose stream was deleted.
+fn stream_deleted_frame(subscription_id: u64) -> Option<Bytes> {
+    let message = felix_wire::Message::StreamDeleted { subscription_id };
+    match message.encode() {
+        Ok(frame) => Some(frame.encode()),
+        Err(err) => {
+            tracing::warn!(error = %err, subscription_id, "encode stream_deleted failed");
+            None
+        }
+    }
 }
 
 /// The last frame of a subscription whose queue dropped records.

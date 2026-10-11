@@ -215,6 +215,12 @@ impl ClusterSubscription {
         }
     }
 
+    /// Whether the subscription ended because its stream was deleted. Check
+    /// it once [`Self::next_event`] returns `None`.
+    pub fn stream_deleted(&self) -> bool {
+        self.subscription.stream_deleted()
+    }
+
     /// How many times this subscription has resubscribed after losing its
     /// connection.
     pub fn reconnects(&self) -> u64 {

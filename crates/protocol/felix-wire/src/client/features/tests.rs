@@ -411,12 +411,15 @@ fn the_extended_marker_is_the_last_bit_and_not_a_known_feature() {
 #[test]
 fn inspect_is_the_first_extended_bit() {
     assert_eq!(crate::FEATURE_INSPECT, 0x0000_0001);
-    assert_eq!(crate::KNOWN_FEATURES_HI, crate::FEATURE_INSPECT);
+    assert!(crate::supports_feature(
+        crate::KNOWN_FEATURES_HI,
+        crate::FEATURE_INSPECT
+    ));
     assert_eq!(
         crate::offer_features(crate::KNOWN_FEATURES, crate::KNOWN_FEATURES_HI),
         (
             crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
-            Some(crate::FEATURE_INSPECT)
+            Some(crate::KNOWN_FEATURES_HI)
         )
     );
     // Not the low word's topology bit, which shares the value.
@@ -453,4 +456,26 @@ fn an_extended_word_without_the_marker_is_ignored() {
             Some(crate::FEATURE_INSPECT)
         )
     );
+}
+
+/// `stream_deleted` is the second extended bit: it rides the second word, so
+/// a client that sends no extended word never sees the message.
+#[test]
+fn stream_deleted_is_the_second_extended_bit() {
+    assert_eq!(crate::FEATURE_STREAM_DELETED, 0x0000_0002);
+    assert_eq!(
+        crate::KNOWN_FEATURES_HI,
+        crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED
+    );
+    assert!(!crate::supports_feature(
+        crate::peer_features_hi(crate::KNOWN_FEATURES, Some(crate::FEATURE_STREAM_DELETED)),
+        crate::FEATURE_STREAM_DELETED
+    ));
+    assert!(crate::supports_feature(
+        crate::peer_features_hi(
+            crate::KNOWN_FEATURES | crate::FEATURE_EXTENDED,
+            Some(crate::FEATURE_STREAM_DELETED)
+        ),
+        crate::FEATURE_STREAM_DELETED
+    ));
 }

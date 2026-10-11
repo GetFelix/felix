@@ -47,7 +47,7 @@ pub struct Subscription {
     live_offset: Option<u64>,
     queue_capacity: Option<u32>,
     /// Filled by the dispatch task before it closes the event queue.
-    shard_moved: Arc<OnceLock<ShardMoved>>,
+    ended: Arc<OnceLock<Ended>>,
 }
 
 impl Subscription {
@@ -96,7 +96,21 @@ impl Subscription {
     /// `Some` means resubscribe where it says, `None` means the stream simply
     /// closed. [`crate::ClusterClient::subscribe`] does this on its own.
     pub fn shard_moved(&self) -> Option<&ShardMoved> {
-        self.shard_moved.get()
+        match self.ended.get() {
+            Some(Ended::Moved(moved)) => Some(moved),
+            _ => None,
+        }
+    }
+
+    /// Whether the subscription ended because its stream was deleted.
+    ///
+    /// Set before [`Self::next_event`] returns `None`, like
+    /// [`Self::shard_moved`]. There is nothing to resubscribe to. Always
+    /// `false` against a broker that does not advertise
+    /// [`felix_wire::FEATURE_STREAM_DELETED`], where a delete ends the stream
+    /// like any other close.
+    pub fn stream_deleted(&self) -> bool {
+        matches!(self.ended.get(), Some(Ended::Deleted))
     }
 
     /// The next event, or `None` once the broker has closed the event stream.
@@ -241,6 +255,13 @@ pub struct ShardMoved {
     pub addr: Option<String>,
     /// The assignment generation that moved the shard.
     pub generation: u64,
+}
+
+/// Why the broker ended a subscription, when it said.
+#[derive(Debug)]
+enum Ended {
+    Moved(ShardMoved),
+    Deleted,
 }
 
 enum QueuedEvent {

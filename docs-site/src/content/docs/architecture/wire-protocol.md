@@ -537,6 +537,24 @@ moved to another broker; the broker ends the stream after it.
   move completes
 - See [Shard moves](#shard-moves)
 
+#### StreamDeleted
+
+The last frame on the event stream of a subscription whose stream was deleted;
+the broker ends the stream after it.
+
+```json
+{ "type": "stream_deleted", "subscription_id": "number" }
+```
+
+**Semantics**:
+- Sent only to a client that offered `FEATURE_STREAM_DELETED` in its extended
+  feature word. Any other client sees the stream end after its last event, as
+  before
+- Everything already queued for the subscriber is delivered first
+- There is nowhere to resume. It is a separate message from `shard_moved` so a
+  client that follows moved shards does not go looking for a stream that no
+  longer exists
+
 #### CounterValue
 
 ```json
@@ -851,7 +869,9 @@ fail the whole `auth` on anything larger. The first feature in the second word
 is `FEATURE_INSPECT` (`0x1`): the broker answers `shard_inspect`, its own view
 of one shard, and `subscriptions_list`, the subscriptions it serves with their
 queues and drops, for a token holding `node.view:cluster:*`. See
-[Diagnosing a cluster](/deployment/diagnosing/).
+[Diagnosing a cluster](/deployment/diagnosing/). The second is
+`FEATURE_STREAM_DELETED` (`0x2`), offered by a client that reads
+`stream_deleted`.
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
@@ -1208,6 +1228,9 @@ cargo run -p felix-conformance
 **What it tests**:
 - A subscription whose shard moves ends with `shard_moved` only when the client
   offered `FEATURE_SHARD_MOVED`, and byte for byte as before otherwise
+- A subscription whose stream is deleted ends with `stream_deleted` only when
+  the client offered `FEATURE_STREAM_DELETED`, and byte for byte as before
+  otherwise
 - Frame header encoding/decoding
 - Binary batch encoding/decoding
 - Error handling for malformed inputs

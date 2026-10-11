@@ -152,7 +152,12 @@ class ShardMoved:
     addr: str | None
     generation: int
 
-ShardEvent = ShardRecord | ShardLost | ShardRecovered | ShardMoved
+class StreamDeleted:
+    """The stream was deleted; this shard's feed ended and is not re-established."""
+
+    shard: int
+
+ShardEvent = ShardRecord | ShardLost | ShardRecovered | ShardMoved | StreamDeleted
 
 class CacheWatchHandle:
     resume_offset: int

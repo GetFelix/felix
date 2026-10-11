@@ -115,6 +115,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         auth_ctx: None,
         peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
         peer_features: 0,
+        peer_features_hi: 0,
         commit_ack: false,
         error_codes,
         ack_order,
@@ -316,8 +317,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 token,
                 client_flags,
                 client_features,
-                // Nothing reads the extended word until a feature lives there.
-                client_features_hi: _,
+                client_features_hi,
             } => {
                 session::authenticate(
                     &cx,
@@ -326,6 +326,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     token,
                     client_flags,
                     client_features,
+                    client_features_hi,
                 )
                 .await?
             }
@@ -1091,6 +1092,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::Subscribed { .. }
             | Message::EventStreamHello { .. }
             | Message::ShardMoved { .. }
+            | Message::StreamDeleted { .. }
             | Message::SubscriptionLagged { .. }
             | Message::PublishOk { .. }
             | Message::PublishError { .. }
@@ -1160,6 +1162,9 @@ struct Session {
     /// Optional messages this client understands. Nothing until an `Auth` says
     /// otherwise.
     peer_features: u32,
+    /// The extended word of the same, read only when `peer_features` carries
+    /// `FEATURE_EXTENDED`.
+    peer_features_hi: u32,
     /// Acknowledged publishes are answered after the write: the broker-wide
     /// `ack_on_commit`, or `FEATURE_ACK_ON_COMMIT` from this client.
     commit_ack: bool,

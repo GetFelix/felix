@@ -1,10 +1,11 @@
 //! What a subscriber sees when its shard moves: its last events, then
 //! `shard_moved` if it offered `FEATURE_SHARD_MOVED`, then the end of the
 //! stream. A client that did not offer the feature must see the stream end
-//! exactly as it did before the frame existed.
+//! exactly as it did before the frame existed. Deleting the stream works the
+//! same way, with `stream_deleted` under `FEATURE_STREAM_DELETED`.
 //!
 //! Ending a shard's subscriptions ends every subscriber of that stream, so
-//! this runs on a stream of its own.
+//! each check runs on a stream of its own.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use super::frames::read_frame;
 use super::raw::publish;
 
 pub(crate) const MOVED_STREAM: &str = "conformance-moved";
+pub(crate) const DELETED_STREAM: &str = "conformance-deleted";
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -31,9 +33,15 @@ pub(crate) async fn run_shard_move(
     broker: &Arc<Broker>,
 ) -> Result<()> {
     println!("Running shard move checks...");
-    let (offered_id, mut offered) =
-        subscribe(connection, auth, Some(felix_wire::FEATURE_SHARD_MOVED)).await?;
-    let (plain_id, mut plain) = subscribe(connection, auth, None).await?;
+    let (offered_id, mut offered) = subscribe(
+        connection,
+        auth,
+        MOVED_STREAM,
+        Some(felix_wire::FEATURE_SHARD_MOVED),
+        None,
+    )
+    .await?;
+    let (plain_id, mut plain) = subscribe(connection, auth, MOVED_STREAM, None, None).await?;
 
     publish(connection, auth, MOVED_STREAM, b"before-move").await?;
     let handoff = ShardHandoff {
@@ -66,6 +74,44 @@ pub(crate) async fn run_shard_move(
     Ok(())
 }
 
+pub(crate) async fn run_stream_deleted(
+    connection: &felix_transport::QuicConnection,
+    auth: &AuthFixture,
+    broker: &Arc<Broker>,
+) -> Result<()> {
+    println!("Running stream delete checks...");
+    // An extended bit: offered only alongside the marker.
+    let (offered_id, mut offered) = subscribe(
+        connection,
+        auth,
+        DELETED_STREAM,
+        Some(felix_wire::FEATURE_EXTENDED),
+        Some(felix_wire::FEATURE_STREAM_DELETED),
+    )
+    .await?;
+    let (plain_id, mut plain) = subscribe(connection, auth, DELETED_STREAM, None, None).await?;
+
+    publish(connection, auth, DELETED_STREAM, b"before-move").await?;
+    if !broker
+        .remove_stream("t1", "default", DELETED_STREAM)
+        .await?
+    {
+        return Err(anyhow!("{DELETED_STREAM} was not registered"));
+    }
+
+    let expected = Message::StreamDeleted {
+        subscription_id: offered_id,
+    };
+    ensure_moved_tail(
+        &read_to_end(&mut offered, offered_id).await?,
+        Some(&expected),
+    )
+    .context("subscriber that offered FEATURE_STREAM_DELETED")?;
+    ensure_moved_tail(&read_to_end(&mut plain, plain_id).await?, None)
+        .context("subscriber that did not offer FEATURE_STREAM_DELETED")?;
+    Ok(())
+}
+
 /// One thing read off an event stream after its hello.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Received {
@@ -73,8 +119,9 @@ pub(crate) enum Received {
     Message(Message),
 }
 
-/// The event, then `shard_moved` when one is expected, then nothing: the
-/// stream has already ended by the time this sees it.
+/// The event, then the closing frame (`shard_moved` or `stream_deleted`)
+/// when one is expected, then nothing: the stream has already ended by the
+/// time this sees it.
 pub(crate) fn ensure_moved_tail(received: &[Received], moved: Option<&Message>) -> Result<()> {
     let mut expected = vec![Received::Event(b"before-move".to_vec())];
     if let Some(moved) = moved {
@@ -91,7 +138,9 @@ pub(crate) fn ensure_moved_tail(received: &[Received], moved: Option<&Message>) 
 async fn subscribe(
     connection: &felix_transport::QuicConnection,
     auth: &AuthFixture,
+    stream: &str,
     client_features: Option<u32>,
+    client_features_hi: Option<u32>,
 ) -> Result<(u64, RecvStream)> {
     let (mut send, mut recv) = connection.open_bi().await?;
     let mut scratch = quic::FrameScratch::new();
@@ -104,7 +153,7 @@ async fn subscribe(
             // answers the plain `Ok` a flagless client expects.
             client_flags: None,
             client_features,
-            client_features_hi: None,
+            client_features_hi,
         },
     )
     .await?;
@@ -117,7 +166,7 @@ async fn subscribe(
             start: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
-            stream: MOVED_STREAM.to_string(),
+            stream: stream.to_string(),
             subscription_id: None,
             shard: None,
             queue_capacity: None,

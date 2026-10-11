@@ -555,6 +555,9 @@ for (;;) {
   } else if (item.shardMoved) {
     // Followed to its new owner; its records carry on from there.
     console.log(`shard ${item.shard} moved to ${item.shardMoved.nodeId}`);
+  } else if (item.streamDeleted) {
+    // The stream is gone; this shard is not reopened.
+    console.log(`shard ${item.shard}: stream deleted`);
   }
 }
 ```

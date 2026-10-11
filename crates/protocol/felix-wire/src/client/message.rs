@@ -529,6 +529,13 @@ pub enum Message {
         /// The assignment generation that moved the shard.
         generation: u64,
     },
+    /// Last message on the event stream of a subscription whose stream was
+    /// deleted. The broker finishes the stream after it. Unlike `shard_moved`
+    /// there is nowhere to resume: the stream is gone.
+    ///
+    /// Sent only to a client that offered `FEATURE_STREAM_DELETED`; any other
+    /// client sees the stream end after its last event, as it always has.
+    StreamDeleted { subscription_id: u64 },
     /// Last message on the event stream of a durable-stream subscription
     /// whose queue on the broker dropped records: the subscriber fell behind.
     /// The broker finishes the stream after it.

@@ -113,6 +113,9 @@ pub enum ShardEvent {
     /// records that follow resume where the old owner left off; if the new
     /// owner cannot be reached, a [`ShardEvent::ShardLost`] comes next.
     ShardMoved { shard: u32, moved: ShardMoved },
+    /// The stream was deleted. This shard's feed has ended and is not
+    /// re-established; every other shard ends the same way.
+    StreamDeleted { shard: u32 },
 }
 
 impl std::fmt::Debug for ShardEvent {
@@ -139,6 +142,10 @@ impl std::fmt::Debug for ShardEvent {
                 .debug_struct("ShardMoved")
                 .field("shard", shard)
                 .field("moved", moved)
+                .finish(),
+            Self::StreamDeleted { shard } => f
+                .debug_struct("StreamDeleted")
+                .field("shard", shard)
                 .finish(),
         }
     }
@@ -324,6 +331,11 @@ async fn forward_shard(
                             format!("{err:#}")
                         }
                     }
+                }
+                // Reconnecting would only be refused for a stream that is gone.
+                None if feed.1.stream_deleted() => {
+                    let _ = tx.send(ShardEvent::StreamDeleted { shard }).await;
+                    return;
                 }
                 // A clean end of stream is still the loss of this shard's feed:
                 // the broker closed it, and the other shards are still going.
