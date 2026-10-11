@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791714823816,
+  "lastUpdate": 1791722439216,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28392,6 +28392,58 @@ window.BENCHMARK_DATA = {
             "range": "3768.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805980.15\nmean: 804647.38\nstdev: 3768.80\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f006685253e8edea076dcdf5ce3133eb45c979be",
+          "message": "fix(auth): revoking a principal ends its open streams (#1132) (#1168)\n\nA revocation is now a cutoff time the control plane records per principal\nand brokers poll from GET /v1/principal-revocations/changes on the catalog\nsync interval. The revoke endpoint records one, and so does removing an RBAC\npolicy or role assignment, for every principal the rule reached (the whole\ntenant when it reached an IdP group).\n\nA broker refuses broker tokens issued at or before a revocation and ends\nwhat they opened: control streams get an error with the new `revoked` code,\nsubscriptions and cache watches get it as the last frame on their event\nstream, uni publish streams are closed, and Kafka connections close at their\nnext request. A mint in the same second as a revocation waits that second\nout, and /token/delegate refuses a revoked subject token.\n\nRaft store: revoke_principals is metadata level 7 and the snapshot carries\nthe revocations. Postgres: migration 0025.",
+          "timestamp": "2026-10-11T05:02:32-07:00",
+          "tree_id": "c4ae674bce5a52d3d141d0e830b2fbb9d3419d8c",
+          "url": "https://github.com/GetFelix/felix/commit/f006685253e8edea076dcdf5ce3133eb45c979be"
+        },
+        "date": 1791722438643,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 686367.69,
+            "range": "55540.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 686367.69\nmean: 681692.97\nstdev: 55540.37\ncv: 8.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 686367.69,
+            "range": "55540.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 686367.69\nmean: 681692.97\nstdev: 55540.37\ncv: 8.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165035.63,
+            "range": "3059.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165035.63\nmean: 165954.90\nstdev: 3059.62\ncv: 1.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1650356.33,
+            "range": "30596.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1650356.33\nmean: 1659549.00\nstdev: 30596.24\ncv: 1.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
