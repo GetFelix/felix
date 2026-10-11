@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791704321160,
+  "lastUpdate": 1791705716259,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28236,6 +28236,58 @@ window.BENCHMARK_DATA = {
             "range": "5310.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 921470.33\nmean: 922317.30\nstdev: 5310.00\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c43aaba1e81a06ef2a59cf7a5af3854ca888c66f",
+          "message": "feat(client): ClusterClient::with_identity over shared connections (#1129) (#1165)\n\nA ClusterClient can act as another user the way Client::with_identity\ndoes for one broker. The identity has its own routing state and derives\neach broker's client from the parent's client for that broker, so it\nfollows moved shards, redirects and failovers without a connection per\nuser. The Python and TypeScript clients expose it with a fixed token.",
+          "timestamp": "2026-10-11T00:38:56-07:00",
+          "tree_id": "f7ef80310e58097de78eb8991105e1e39fd2aec8",
+          "url": "https://github.com/GetFelix/felix/commit/c43aaba1e81a06ef2a59cf7a5af3854ca888c66f"
+        },
+        "date": 1791705715464,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 712083.74,
+            "range": "52200.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712083.74\nmean: 694037.47\nstdev: 52200.00\ncv: 7.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 712083.74,
+            "range": "52200.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712083.74\nmean: 694037.47\nstdev: 52200.00\ncv: 7.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 174369.69,
+            "range": "2377.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 174369.69\nmean: 173203.71\nstdev: 2377.94\ncv: 1.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1743696.91,
+            "range": "23779.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1743696.91\nmean: 1732037.07\nstdev: 23779.36\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
