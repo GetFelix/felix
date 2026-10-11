@@ -23,6 +23,8 @@ pub(super) struct CopyProgress {
 #[derive(Debug, Clone, Copy)]
 struct Seen {
     offset: Option<u64>,
+    /// A cache's counter log, which may be all a counters-only cache copies.
+    counters: Option<u64>,
     at_millis: u64,
 }
 
@@ -47,20 +49,32 @@ impl CopyProgress {
                 continue;
             }
             // Offsets are only comparable within one leader's generation.
-            let offset = (caught_up.reported_generation(&assignment.key)
-                == Some(assignment.generation))
-            .then(|| caught_up.reported_offset(&assignment.key, joining))
-            .flatten();
+            let current =
+                caught_up.reported_generation(&assignment.key) == Some(assignment.generation);
+            let offset = current
+                .then(|| caught_up.reported_offset(&assignment.key, joining))
+                .flatten();
+            let counters = current
+                .then(|| caught_up.reported_counter_offset(&assignment.key, joining))
+                .flatten();
             let id = (
                 assignment.key.clone(),
                 joining.to_string(),
                 assignment.generation,
             );
             let entry = match self.seen.remove(&id) {
-                // Left out of the report, or no further on: not moving.
-                Some(last) if offset.is_none() || offset <= last.offset => last,
-                _ => Seen {
-                    offset,
+                // Left out of the report, or no further on in either log: not
+                // moving.
+                Some(last)
+                    if !further(offset, last.offset) && !further(counters, last.counters) =>
+                {
+                    last
+                }
+                // Kept at the furthest seen, so a log left out of this report
+                // does not count as moving when it reappears where it was.
+                last => Seen {
+                    offset: offset.max(last.and_then(|last| last.offset)),
+                    counters: counters.max(last.and_then(|last| last.counters)),
                     at_millis: now,
                 },
             };
@@ -72,4 +86,10 @@ impl CopyProgress {
             .map(|((key, joining, _), seen)| ((key.clone(), joining.clone()), seen.at_millis))
             .collect()
     }
+}
+
+/// Whether a reported position is past the last one seen. A position left out
+/// of the report is not.
+fn further(now: Option<u64>, last: Option<u64>) -> bool {
+    now.is_some() && now > last
 }

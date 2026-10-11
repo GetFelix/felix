@@ -117,6 +117,12 @@ pub struct ShardReplicaStatus {
     /// empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub halted: Vec<HaltedReplicaStatus>,
+    /// How far each replica had got with a cache's counter log. Placement
+    /// counts a move here as progress for a copy being restored, since a
+    /// counters-only cache's own log does not move. Omitted for streams,
+    /// when empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replica_counter_offsets: Vec<ReplicaOffset>,
 }
 
 /// What a leader tells the control plane about the shards it leads.

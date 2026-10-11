@@ -193,6 +193,7 @@ fn report() -> ReplicaReport {
             generation: 1,
             since_millis: 1,
         }),
+        counter_offsets: any_map(1),
     }
 }
 

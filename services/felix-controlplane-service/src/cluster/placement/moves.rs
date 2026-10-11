@@ -1047,6 +1047,12 @@ impl CaughtUp for AtGeneration<'_> {
             .flatten()
     }
 
+    fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.current(key)
+            .then(|| self.inner.reported_counter_offset(key, node_id))
+            .flatten()
+    }
+
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
         self.inner.is_drained(key, generation)
     }

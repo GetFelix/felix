@@ -304,3 +304,65 @@ fn only_a_position_going_up_counts_as_progress() {
     existing[0].joining = None;
     assert_eq!(watch(&existing, 4, Some(5), 9_000), None);
 }
+
+/// **A counters-only cache.** Its own log stays empty while the restore copies
+/// a large counter log, so the leader's report only moves in the copy's
+/// counter position. That is progress: after three minutes of it, past the
+/// stall window, the restore still holds its slot.
+#[test]
+fn a_restore_copying_only_counters_is_moving() {
+    use crate::model::{Cache, ConsistencyLevel, ReplicaReport};
+
+    let liveness = crate::config::NodeLivenessConfig::default();
+    let mut existing = restoring("sessions", "broker-a", "broker-b");
+    existing.key.kind = ShardKind::Cache;
+    let cache = Cache {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+        display_name: "sessions".to_string(),
+        shards: 1,
+        replication_factor: 3,
+        consistency: ConsistencyLevel::Quorum,
+    };
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let report = |counters: u64, now: u64| ReplicaReport {
+        key: existing.key.clone(),
+        generation: existing.generation,
+        caught_up: ["broker-b".to_string()].into(),
+        offsets: [("broker-b".to_string(), 0), ("broker-c".to_string(), 0)].into(),
+        reported_at_millis: now,
+        drained: false,
+        leader_offset: Some(0),
+        halted: Default::default(),
+        counter_offsets: [
+            ("broker-b".to_string(), 1_000_000),
+            ("broker-c".to_string(), counters),
+        ]
+        .into(),
+    };
+
+    let mut progress = super::super::progress::CopyProgress::default();
+    let start = NOW - 5 * MINUTE;
+    let mut decision = None;
+    for pass in 0..=6 {
+        let now = start + pass * 30_000;
+        let mut positions = ReplicaPositions::new(vec![report(pass * 10_000, now)], &liveness, now);
+        let progressed = progress.observe(std::slice::from_ref(&existing), &positions);
+        positions.set_progress(progressed);
+        let plan = plan(
+            &[],
+            std::slice::from_ref(&cache),
+            &nodes,
+            std::slice::from_ref(&existing),
+            &positions,
+        );
+        decision = Some(plan.shards[0].decision.clone());
+    }
+    assert_eq!(
+        decision,
+        Some(Decision::Waiting(Blocked::DestinationCatchingUp {
+            successor: "broker-c".to_string()
+        }))
+    );
+}

@@ -135,6 +135,15 @@ for what the current release guarantees.
   set could count toward its majority a copy that promotion would refuse.
   A seat on a `Quorum` stream or cache now also waits until the leader's
   report names the copy caught up (#1139).
+- A restore of a cache used only for counters is no longer dropped as stalled
+  while it copies a large counter log. The stall window
+  (`FELIX_SHARD_RESTORE_STALL_MS`) watched only the cache log's offset, which
+  stays at 0 for such a cache. Replica reports now carry each replica's
+  counter-log position (`replica_counter_offsets`, omitted for streams and by
+  older brokers), and placement counts a move there as progress. The control
+  plane stores it in the report (Postgres migration
+  `0026_replica_report_counter_offsets`, Raft metadata level 8; below level 8
+  reports are recorded without it) (#1164).
 
 ## [0.6.0-preview.6] - 2026-10-10
 

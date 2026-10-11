@@ -520,10 +520,10 @@ async fn a_zone_is_kept_only_once_every_member_has_zones() {
     }
 }
 
-/// A member before halted copies would drop them from a report it applies.
-/// So while one is in the group the report is recorded without them, and it
-/// is not refused: placement needs the rest of it. Once every member has the
-/// level, halts are kept.
+/// A member before halted copies would drop them from a report it applies,
+/// and the same for counter positions. So while one is in the group the
+/// report is recorded without them, and it is not refused: placement needs
+/// the rest of it. Once every member has the level, both are kept.
 #[tokio::test]
 async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     use crate::model::{
@@ -563,6 +563,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         .await
         .expect("assign");
     let report = ReplicaReport {
+        counter_offsets: [("broker-y".to_string(), 7)].into(),
         key: key.clone(),
         generation: assigned.generation,
         caught_up: Default::default(),
@@ -598,6 +599,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         crate::store::ReportWrite::Stored
     );
     assert!(held().await.halted.is_empty());
+    assert!(held().await.counter_offsets.is_empty());
 
     version.store(
         crate::store::raft::command::METADATA_VERSION,
@@ -609,7 +611,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             .record_replica_report(report.clone(), "broker-x")
             .await
             .expect("record");
-        if held().await.halted.contains_key("broker-y") {
+        let held = held().await;
+        if held.halted.contains_key("broker-y") && held.counter_offsets.contains_key("broker-y") {
             break;
         }
         assert!(
