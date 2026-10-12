@@ -570,8 +570,11 @@ elected leader waits for the lease until the control plane is back (issue
    itself. A replica answers only a ballot it may still promise, as today,
    and only a set no older than the one it knows, and then persists that
    set. A replica that knows a newer set refuses and names it. The candidate
-   learns it and fences again, or stops standing if it is no longer a
-   member. Only a member of the set it knows stands at all.
+   learns it and stops standing. It may stand again at a later generation,
+   on that set from the start, if it is still a member, so each generation
+   is fenced on one set. A candidate that answers another's fence at a newer
+   generation has given its own up and does not open. Only a member of the
+   set it knows stands at all.
 4. *Opening.* As a promotion does: it takes the answer furthest ahead,
    writes its generation-start record and opens.
 5. *Set changes.* A replacement's join, a seat and a grow fence like any
@@ -588,9 +591,12 @@ elected leader waits for the lease until the control plane is back (issue
    later one above it. It never reissues a generation at or below one it was
    told was elected.
 
-**Why it is safe.** Ballots give one leader per generation: two majorities of
-one set share a replica, and that replica promised the generation to one
-leader only. A record acknowledged at generation `g` sits on a majority of
+**Why it is safe.** Ballots give one leader per generation: each generation
+is fenced on one set, two majorities of one set share a replica, and that
+replica promised the generation to one leader only. That is why a refused
+candidate does not fence on at the same generation with the set it learned:
+the model's first version did, and TLC found two leaders at one generation,
+each with a majority of a different set. A record acknowledged at generation `g` sits on a majority of
 the set the leader counted. A later leader fences a majority of its own set,
 and if that is the same set the two majorities share a replica, which either
 held the record when it answered or refused the old leader after, so the
@@ -636,15 +642,15 @@ for a lapsed lease.
 - *Storage.* A replica keeps its set in its own file beside `ballot`, the
   assignment's generation and the members, fsynced before it answers at that
   set. A build without it still opens the shard.
-- *Wire.* A broker that checks sets offers an `ELECTION` peer capability.
-  The fence and the batch carry the set's generation only to a peer that
+- *Wire.* A broker that checks sets offers the `ELECTION` internal capability
+  (bit `1 << 9`). The fence and the batch carry the set's generation only to a peer that
   offered it, and a missing one means what it means today: no check.
 - *Control plane.* Adoption is a new store write, so under Raft it needs
-  metadata level 9 on every member, and a Postgres control plane gets a
+  the next free metadata level on every member, and a Postgres control plane gets a
   migration. Below that the control plane ignores election reports and goes
   on promoting on suspicion.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
-  serving broker lacks `ELECTION` or the control plane is below level 9. Only
+  serving broker lacks `ELECTION` or the control plane is below that level. Only
   after it do followers stand.
 
 The work lands in that order: the set file in storage, the `ELECTION`

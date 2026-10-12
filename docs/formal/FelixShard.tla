@@ -194,8 +194,10 @@
 (* Each replica keeps the set it last learned and the generation of the    *)
 (* assignment that wrote it (`setGen`). A batch and a fence carry the      *)
 (* sender's pair; a replica holding a newer one refuses it, and otherwise  *)
-(* adopts it. A refused candidate learns the newer set and fences again    *)
-(* (RefuseStaleSet). Only a member of its own set stands. A set change    *)
+(* adopts it. A refused candidate learns the newer set and stops; it may  *)
+(* stand again at a later generation (RefuseStaleSet), so a generation is *)
+(* fenced on one set only, and a leader opens only while it still holds   *)
+(* its own promise. Only a member of its own set stands. A set change     *)
 (* fences too, on the new set, and with `JointFence` on a majority of the  *)
 (* old set as well (FelixShardElectSetNoJoint.cfg drops that half).        *)
 (*                                                                         *)
@@ -1115,8 +1117,11 @@ AnswerFence(b, f) ==
     /\ UNCHANGED placeVars
 
 \* A replica that knows a newer set than the one a fence carries refuses it
-\* and says which. The leader learns that set and fences again on it, or,
-\* outside it, stops standing.
+\* and says which. The leader learns that set and stops standing; it may
+\* stand again at a later generation (`Elect`), fenced on that set from the
+\* start. Fencing on at the same generation would count one generation on two
+\* sets, whose majorities need not meet: FelixShardElectAdopt.cfg found a
+\* candidate doing so opening beside another at one generation.
 RefuseStaleSet(b, f) ==
     /\ SetCheck
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
@@ -1126,12 +1131,10 @@ RefuseStaleSet(b, f) ==
     /\ mine' = [mine EXCEPT ![b] = mine[f]]
     /\ answered' = [answered EXCEPT ![b] = {}]
     /\ oldSet' = [oldSet EXCEPT ![b] = {}]
-    /\ IF b \in mine[f]
-       THEN UNCHANGED << bgen, fencing, queued, pending >>
-       ELSE /\ bgen' = [bgen EXCEPT ![b] = 0]
-            /\ fencing' = [fencing EXCEPT ![b] = FALSE]
-            /\ queued' = [queued EXCEPT ![b] = 0]
-            /\ pending' = [pending EXCEPT ![b] = 0]
+    /\ bgen' = [bgen EXCEPT ![b] = 0]
+    /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ queued' = [queued EXCEPT ![b] = 0]
+    /\ pending' = [pending EXCEPT ![b] = 0]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     promised, confirmed, ballot, opened >>
@@ -1142,8 +1145,12 @@ RefuseStaleSet(b, f) ==
 \* the answer furthest ahead by `Ahead`, taken before this.
 \*
 \* A set change under `JointFence` also needs a majority of the old set.
+\* Under `SetCheck` a leader opens only while it still holds its own
+\* promise: one that answered a newer leader's fence, and may have learned
+\* a newer set there, no longer counts itself at its generation.
 OpenForWrites(b) ==
     /\ fencing[b]
+    /\ SetCheck => promised[b] = bgen[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
     /\ oldSet[b] /= {} => MajorityOf(answered[b] \cup {b}, oldSet[b])
     /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
@@ -1587,7 +1594,9 @@ AckedSurvive ==
 
 \* The newest generation anyone holds: the control plane's, or one a replica
 \* elected itself to. Only `Elect` takes a broker past the control plane's.
-Newest == LET gs == {gen} \cup { bgen[m] : m \in Brokers }
+\* Promises count too: an elected leader that stepped down leaves its
+\* generation promised, and a leader below it is deposed, not the newest.
+Newest == LET gs == {gen} \cup { bgen[m] : m \in Brokers } \cup { promised[m] : m \in Brokers }
           IN CHOOSE g \in gs : \A h \in gs : h <= g
 
 \* The leader at the newest generation holds every acknowledged record once

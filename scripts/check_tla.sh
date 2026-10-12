@@ -182,6 +182,7 @@ expectations=(
   "FelixShardElectSetNoJoint violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectAdoptNoSetCheck violates AdoptedMatchesOpened"
+  "FelixShardElectStepDown pass"
   "FelixShardElectHandoffLeaders pass"
   "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
   "FelixShardSuspicion pass"
