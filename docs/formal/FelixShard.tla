@@ -275,7 +275,7 @@ CONSTANTS
     Suspicions,     \* up to which generation placement may promote on the followers' word, lapsed or not
     SetCheck,       \* whether a fence and a batch carry the set's generation, and a newer one refuses them
     JointFence,     \* whether a set change also fences a majority of the old set
-    Adopt           \* up to which generation the control plane adopts a leader that elected itself
+    Adopt           \* up to which generation replicas elect and the control plane adopts them
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -1184,6 +1184,9 @@ Elect(f) ==
     /\ f \notin halted
     /\ bgen[f] = 0 \/ fencing[f]
     /\ promised[f] < gen + Elections
+    \* With adoption the control plane's generation follows elections up, so
+    \* `Adopt` bounds them too, or neither ends.
+    /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ bgen' = [bgen EXCEPT ![f] = promised[f] + 1]
     /\ bexpiry' = [bexpiry EXCEPT ![f] = clock[f] + L]

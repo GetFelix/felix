@@ -138,7 +138,8 @@ One shard, three brokers, one control plane, discrete time.
   control plane takes a leader that opened above its generation as its own
   when the leader's set is the one it records (`CpAdopt`), and otherwise only
   moves its generation past it, so it never issues one below a generation it
-  heard was elected.
+  heard was elected. `Adopt` also bounds the generations replicas
+  stand for, since each adoption raises the generation elections count from.
 - **Every change fenced.** With `FenceEveryChange`, a cut-over, a cancel's
   hand-back and a failover that names a move's destination fence and catch
   up before they serve, as a promotion does, instead of opening at once.
