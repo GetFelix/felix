@@ -29,6 +29,30 @@ for what the current release guarantees.
   that reached an IdP group does. Adding an audience revokes nobody.
 
 ### Changed
+- **YAML parser: `serde_yaml_ng` replaced by `serde-saphyr` (#1211).** The broker,
+  control plane and `felix-client` read their config files with
+  `serde-saphyr` 1.3, a pure-Rust parser. `serde_yaml_ng` pulled in
+  `unsafe-libyaml`, which is unmaintained (RUSTSEC-2024-0449). `felix-client`
+  users get the new dependency in place of `serde_yaml_ng`. A config file that
+  loaded before loads to the same values, and the 1.1 spellings that were
+  refused still are: `yes`/`no`/`on`/`off` for a boolean, `0777`, a `<<` merge
+  key, a duplicate key, an unknown key. Some inputs behave differently:
+  - Now accepted: a quoted number or boolean (`max_frame_bytes: "1024"`,
+    `ack_on_commit: "true"`), `1_000`, a file that is only `~` or `null`, and
+    a tab before the first key.
+  - Now refused: an explicit tag that contradicts the setting's type
+    (`!!str 5` for a number, `!!int "5"` for a string); a tag the parser does
+    not know (`!custom x`, which used to read as `x`); and a bare or
+    null `tls.cert_path`/`key_path` in the control plane file (`cert_path:` or
+    `cert_path: ~`), which used to be read as the path `""` or `~`. A quoted
+    `cert_path: ''` is still accepted, as before. `!!binary` on a string
+    setting is still kept as written, not decoded.
+  - Parse errors name the key and give a line and column. A wrong-typed
+    value is no longer quoted, since it could be a token; an unknown enum
+    value still is.
+  - `--print-config` puts double quotes, not single quotes, around strings
+    that need them, and also quotes `yes` and `1_000`. The output still reads
+    back to the same values.
 - An auth change that takes rights back (an RBAC rule removed, an issuer
   deleted or narrowed) and its revocation are one store write: one Raft entry
   (metadata level 9) or one Postgres transaction. A failed request changed

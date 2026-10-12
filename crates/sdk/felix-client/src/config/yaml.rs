@@ -36,7 +36,30 @@ pub(super) struct ClientConfigOverride {
     bench_embed_ts: Option<bool>,
 }
 
+/// A copy of `felix_common::yaml`'s options, which this published crate cannot
+/// depend on. Change both together.
+pub(super) fn options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::options::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::options::DuplicateKeyPolicy::Error,
+        with_snippet: false,
+        reject_unsupported_tags: true,
+        // The old parser kept `!!binary` text as written; decoding it would
+        // silently change the value.
+        ignore_binary_tag_for_string: true,
+    }
+}
+
 impl ClientConfigOverride {
+    /// Read a config file with the same rules the services use: only
+    /// `true`/`false` are booleans, `<<` is not a merge, duplicate keys and
+    /// unknown tags are refused, and a wrong-typed value is not quoted in an
+    /// error, since the file may hold the auth token.
+    pub(super) fn parse(text: &str) -> Result<Self, serde_saphyr::Error> {
+        serde_saphyr::from_str_with_options(text, options())
+    }
+
     pub(super) fn apply(&self, config: &mut ClientConfig) {
         if let Some(value) = self.publish_conn_pool
             && value > 0
@@ -166,3 +189,6 @@ fn parse_sharding(value: &str) -> Option<PublishSharding> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

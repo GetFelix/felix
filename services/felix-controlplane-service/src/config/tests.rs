@@ -570,7 +570,7 @@ mod yaml_overrides {
     use super::*;
 
     fn parse(yaml: &str) -> ControlPlaneConfigOverride {
-        serde_yaml_ng::from_str(yaml).expect("parse the override")
+        felix_common::yaml::from_str(yaml).expect("parse the override")
     }
 
     /// A base taken from an empty environment, which is what a config file
@@ -870,5 +870,39 @@ fn dev_tokens_need_a_loopback_bootstrap_listener() {
             .expect("loopback")
             .bootstrap
             .dev_tokens
+    );
+}
+
+/// What the file meant before the YAML parser changed: a YAML 1.1 boolean
+/// spelling is refused, `<<` is an unknown key rather than a merge, and a
+/// null where a path is required is refused instead of becoming the path
+/// `~`.
+#[test]
+fn yaml_1_1_spellings_merge_keys_and_null_paths_are_refused() {
+    for text in [
+        "bootstrap:\n  enabled: on\n",
+        "bootstrap:\n  dev_tokens: yes\n",
+        "<<: {changes_limit: 5}\n",
+        "postgres:\n  max_connections: 010\n",
+        "tls:\n  cert_path: ~\n  key_path: k\n",
+        "tls:\n  cert_path:\n  key_path: k\n",
+        "storage:\n  backend: memory\n  backend: postgres\n",
+    ] {
+        assert!(
+            felix_common::yaml::from_str::<ControlPlaneConfigOverride>(text).is_err(),
+            "{text:?} was accepted"
+        );
+    }
+}
+
+/// A quoted empty path still parses, as it did; it is a bare or null one that
+/// is refused.
+#[test]
+fn a_quoted_empty_cert_path_still_parses() {
+    assert!(
+        felix_common::yaml::from_str::<ControlPlaneConfigOverride>(
+            "tls:\n  cert_path: ''\n  key_path: k\n"
+        )
+        .is_ok()
     );
 }

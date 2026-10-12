@@ -7,7 +7,7 @@
 use super::*;
 
 fn parse(yaml: &str) -> BrokerConfigOverride {
-    serde_yaml_ng::from_str(yaml).expect("parse the override")
+    felix_common::yaml::from_str(yaml).expect("parse the override")
 }
 
 /// **A key nobody reads is refused, not ignored.**
@@ -19,7 +19,7 @@ fn parse(yaml: &str) -> BrokerConfigOverride {
 /// they are looking at says otherwise.
 #[test]
 fn a_key_the_broker_does_not_know_is_refused() {
-    let err = serde_yaml_ng::from_str::<BrokerConfigOverride>("metrics_bnid: \"0.0.0.0:1\"")
+    let err = felix_common::yaml::from_str::<BrokerConfigOverride>("metrics_bnid: \"0.0.0.0:1\"")
         .expect_err("a misspelled key must not be accepted");
     assert!(
         err.to_string().contains("metrics_bnid"),
@@ -303,4 +303,42 @@ fn an_unknown_queue_policy_leaves_the_configured_one() {
         .expect("apply");
 
     assert_eq!(config.subscriber_queue_policy, SubQueuePolicy::DropOld);
+}
+
+/// A YAML 1.1 boolean spelling is refused rather than guessed at, and `<<`
+/// is an unknown key rather than a merge, as they were before the parser
+/// changed.
+#[test]
+fn yaml_1_1_spellings_and_merge_keys_are_refused() {
+    for text in [
+        "ack_on_commit: yes",
+        "ack_on_commit: off",
+        "max_frame_bytes: 0777",
+        "<<: {ack_on_commit: true}",
+        "ack_on_commit: true\nack_on_commit: false",
+    ] {
+        assert!(
+            felix_common::yaml::from_str::<BrokerConfigOverride>(text).is_err(),
+            "{text} was accepted"
+        );
+    }
+    let mut config = BrokerConfig {
+        ack_on_commit: false,
+        ..Default::default()
+    };
+    let max_frame_bytes = config.max_frame_bytes;
+    config
+        .apply(parse(
+            "ack_on_commit: True\nmax_frame_bytes: ~\nsubscriber_lane_shard: round_robin_pin\n",
+        ))
+        .expect("apply");
+    assert!(config.ack_on_commit);
+    assert_eq!(config.max_frame_bytes, max_frame_bytes);
+    assert_eq!(
+        config.subscriber_lane_shard,
+        SubscriberLaneShard::RoundRobinPin
+    );
+    // An empty file changes nothing.
+    config.apply(parse("# nothing\n")).expect("apply");
+    assert!(config.ack_on_commit);
 }

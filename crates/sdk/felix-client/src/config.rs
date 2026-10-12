@@ -189,8 +189,8 @@ impl ClientConfig {
             None => None,
         };
         if let Some(contents) = contents {
-            let override_cfg: ClientConfigOverride =
-                serde_yaml_ng::from_str(&contents).context("parse client config yaml")?;
+            let override_cfg =
+                ClientConfigOverride::parse(&contents).context("parse client config yaml")?;
             override_cfg.apply(&mut config);
         }
         Ok(config)

@@ -66,7 +66,7 @@ fn print_config() -> Result<()> {
     let config = config::BrokerConfig::from_env_or_yaml().context("load broker configuration")?;
     println!(
         "{}",
-        serde_yaml_ng::to_string(&config).context("render the configuration")?
+        serde_saphyr::to_string(&config).context("render the configuration")?
     );
     Ok(())
 }

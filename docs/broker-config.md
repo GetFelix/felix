@@ -6,7 +6,10 @@ The broker attempts to load a YAML file from:
 - `FELIX_BROKER_CONFIG` if set
 - otherwise `/usr/local/felix/config.yml`
 
-All fields are optional. Omitted values fall back to defaults. Every field also
+All fields are optional. Omitted values fall back to defaults. Booleans are
+`true`/`false` only, a leading-zero integer is refused, and `<<` is not a merge
+key; the full rules are in
+[Configuration](../docs-site/src/content/docs/reference/configuration.md#how-the-file-is-read). Every field also
 has an environment variable override; see
 [Environment Variables](../docs-site/src/content/docs/reference/environment-variables.md)
 for the full `FELIX_*` mapping, including legacy aliases.
