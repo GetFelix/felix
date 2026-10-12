@@ -2093,7 +2093,11 @@ move's successor holds the shard's log and each of them. A dead letter or
 counter add the new leader lacks is lost at the cut-over: a dead-lettered record past the group's
 cursor is skipped, and an acknowledged add is gone from the sum. Any other
 follower still behind on one of them is left out of the report's `caught_up`,
-so it is not promoted, but it does not hold the move. A move that has lost
+so it is not promoted, and its being behind does not gate `drained`. It is not
+skipped, though: a draining shard's pass waits for every follower's exchange,
+and the drained pass ships these logs to every follower not still answering an
+earlier pass and waits for that too. A slow follower delays each drained pass
+by its answers, and a dead one by a request timeout or a dial. A move that has lost
 its successor cuts over to whichever follower is level, so there every
 follower level on the shard's log must hold them too.
 
@@ -2271,8 +2275,8 @@ destination.
 > drained report while the successor has the shard's log but not its dead
 > letters or counters; the report follows once they are shipped.
 > `a_lagging_replica_other_than_the_successor_is_left_out_not_waited_for`:
-> another replica missing a dead letter does not hold the report, and is not
-> in its `caught_up`.
+> another replica that refuses a dead letter does not keep the report from
+> saying `drained`, and is not in its `caught_up`.
 >
 > `a_moved_shard_keeps_its_group_state_and_counters`: group acks and counter
 > adds keep arriving while a shard and a cache move off a live broker; on the
