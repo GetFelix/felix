@@ -372,7 +372,8 @@ pub async fn refresh_token_handler(
 /// Spend `token_id` for `next`. A token rotated within the reuse grace
 /// window, whose replacement is still unspent, is a retry of a refresh whose
 /// answer was lost (or a concurrent refresh), not a replay: its replacement
-/// is spent for `next` instead, so the caller ends up with a working token.
+/// is spent for `next` instead. Of two concurrent refreshes, each spends the
+/// other's result, so the older one is a replay once the window ends.
 async fn rotate(
     state: &AppState,
     tenant_id: &str,

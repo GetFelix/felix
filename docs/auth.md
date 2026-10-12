@@ -344,8 +344,12 @@ Three properties make that safe:
   `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default) of that spend, and while
   the token that replaced it is still unused, the retry spends that
   replacement and gets a new one instead of ending the chain. Two concurrent
-  refreshes of one token take the same path, so both get a working token.
-  Outside the window, or once the replacement was used, it is a replay. The
+  refreshes of one token take the same path: both succeed, but each spends the
+  other's result, so the older one is a replay once the window ends. Outside
+  the window, or once the replacement was used, it is a replay. Below Raft
+  metadata level 9 the window does nothing, because the fallback rotation
+  records no successor, so a lost answer still ends the chain until every
+  member is at level 9. The
   cost is that replay detection is blind for the window: a thief who presents
   a stolen token within it, before the genuine holder uses the replacement,
   gets a working chain, and the genuine holder's next refresh is the one
