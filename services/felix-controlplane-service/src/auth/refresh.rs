@@ -300,6 +300,23 @@ pub async fn refresh_token_handler(
             .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }
+    // A chain minted for a gateway to delegate ends with that gateway's right
+    // to delegate, or the refreshed token would outlive its revocation.
+    if let Some(actor) = record
+        .narrowing
+        .as_ref()
+        .and_then(|narrowing| narrowing.may_act.as_deref())
+        && let Some(reason) =
+            crate::auth::delegate::actor_cut_off(&state, &tenant_id, actor, record.issued_at_secs)
+                .await?
+    {
+        state
+            .store
+            .revoke_refresh_family(&tenant_id, &record.family_id)
+            .await
+            .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
+        return Err(refused(Refusal::Forbidden, reason));
+    }
 
     let keys = state
         .store

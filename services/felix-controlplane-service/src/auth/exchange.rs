@@ -262,7 +262,7 @@ pub(crate) async fn mint_for_principal(
         .await
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
     if let Some(actor_token) = &request.actor_token {
-        narrowing.may_act = Some(verified_actor(&keys, &tenant_id, actor_token)?);
+        narrowing.may_act = Some(verified_actor(state, &keys, &tenant_id, actor_token).await?);
     }
 
     crate::auth::revocation::wait_out_revocation(state, &tenant_id, principal_id).await?;

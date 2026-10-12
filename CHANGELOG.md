@@ -11,6 +11,23 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Security
+- A revoked gateway can no longer delegate with a `felix-controlplane` token
+  it got before the revocation (#1205). `/token/delegate` checked the
+  revocation cutoffs against the user's token only, and trusted
+  `token.delegate` from the caller's token, which stays valid for its TTL. Now
+  `/token/delegate`, `actor_token` on `/token/exchange`, and a refresh of a
+  chain bound to a gateway refuse a gateway revoked since its token (or the
+  chain's last link) was issued, or one that current RBAC no longer grants
+  `token.delegate`. A refused refresh ends the chain.
+
+### Added
+- Brokers export `felix_revocation_feed_last_success_seconds` and
+  `felix_revocation_feed_poll_errors_total`, and log a warning (repeated every
+  minute) while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded

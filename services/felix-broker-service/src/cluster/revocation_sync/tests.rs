@@ -55,3 +55,15 @@ async fn revocations_from_the_feed_are_applied() {
         .expect("stops on shutdown")
         .unwrap();
 }
+
+#[test]
+fn a_failing_feed_is_warned_about_once_a_minute() {
+    let mut outage = Outage::default();
+    let start = Instant::now();
+    assert!(outage.should_warn(start));
+    assert!(!outage.should_warn(start + Duration::from_secs(1)));
+    assert!(!outage.should_warn(start + WARN_EVERY - Duration::from_millis(1)));
+    assert!(outage.should_warn(start + WARN_EVERY));
+    outage.ended();
+    assert!(outage.should_warn(start + WARN_EVERY + Duration::from_secs(1)));
+}

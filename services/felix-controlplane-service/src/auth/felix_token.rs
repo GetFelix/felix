@@ -282,6 +282,16 @@ pub fn mint_delegated_token(
     sign(keys, tenant_id, &claims)
 }
 
+/// Sign `claims` as they are, for tests that need a token issued in the past.
+#[cfg(test)]
+pub(crate) fn sign_claims(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    claims: &FelixClaims,
+) -> Result<String, TokenError> {
+    sign(keys, tenant_id, claims)
+}
+
 fn sign(
     keys: &TenantSigningKeys,
     tenant_id: &str,

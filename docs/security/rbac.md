@@ -47,6 +47,10 @@ when the exchange that minted it carried that same caller's own
 `felix-controlplane` token as `actor_token`. (An actor token that does not
 verify or lacks `token.delegate` makes the exchange a `403` with code
 `actor_refused`, apart from the `forbidden` a user without permissions gets.)
+Both endpoints check the gateway against current RBAC and its revocations, not
+only its token. Once a gateway loses `token.delegate` or is revoked, its
+unexpired `felix-controlplane` token can no longer bind or delegate user
+tokens, and a user chain bound to it stops refreshing.
 So a gateway can delegate the
 tokens minted for it, and not a token taken from a browser, a log or another
 gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for
@@ -294,6 +298,14 @@ Adding a rule revokes nothing. Its grants reach a principal with its next
 token. `POST /v1/tenants/{t}/refresh-tokens/revoke` cuts one principal off
 entirely. See [auth.md](../auth.md#revoking-a-principal) for the mechanism and
 its limits.
+
+Two of those limits matter when planning around revocation. A broker that
+cannot reach the control plane does not learn of a revocation until it can:
+new sessions with a revoked token are accepted until the token expires (one
+access TTL, 900 s by default) and streams already open run until the feed is
+back. Watch `felix_revocation_feed_last_success_seconds`. And the cutoff is
+compared with token issue times taken on possibly different control-plane
+members, so keep their clocks in sync.
 
 ## Notes
 

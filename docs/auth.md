@@ -423,7 +423,55 @@ and opens its streams again with it. Token times are whole seconds, so the
 control plane holds a mint that falls in the same second as a revocation of
 its principal until that second has passed (at most two seconds, for clock
 skew between members). `/token/delegate` refuses a subject token issued at or
-before a revocation of its subject or of the caller.
+before a revocation of its subject or of the caller, and a caller whose own
+token was issued at or before a revocation of it. `actor_token` on
+`/token/exchange` is checked the same way, and so is the gateway a refresh
+chain names (see [Delegated tokens](#delegated-tokens)).
+
+#### While a broker cannot reach the feed
+
+Revocation fails open on a broker that cannot poll the feed. A revocation made
+meanwhile is not enforced there until a poll succeeds again:
+
+- A new `Auth` with a revoked token is accepted until the token expires. A
+  revoked token was minted before the revocation and expires at most
+  `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` (900 s by default) after it was minted,
+  so this lasts at most one access TTL past the revocation.
+- A stream already open keeps running until the feed is back, however long
+  that takes, because an open stream outlives its token's expiry. The first
+  successful poll ends it.
+
+The broker logs a warning when a poll fails, again every minute while polls
+keep failing, and an info line when the feed is back.
+`felix_revocation_feed_poll_errors_total` counts failed polls, and
+`felix_revocation_feed_last_success_seconds` is the Unix time of the last good
+one. Alert on `time() - felix_revocation_feed_last_success_seconds` growing
+past a few sync intervals.
+
+A broker does not refuse new streams while the feed is down. It verifies
+tokens with keys it already holds, so the data plane keeps working through a
+control-plane outage. Refusing would turn every such outage into a data-plane
+one to guard against a revocation that may not have happened, and it would not
+end the open streams, which are the larger exposure.
+
+#### Clocks
+
+A cutoff and a token's `iat` are both wall-clock seconds, taken by whichever
+control-plane member served the request: the cutoff by the member that took
+the revoke call or the RBAC removal, `iat` by the member that minted the token.
+Under the Raft store (and with several replicas over one Postgres) these can be
+different machines, and under Raft each reads cutoffs from its own applied
+state. A token minted just before the revocation by a member whose clock runs
+ahead, or that had not applied the revocation yet, can carry an `iat` after
+the cutoff and survive it. The window is how far past the cutoff that member's
+own clock read when it applied the revocation: clock skew plus apply lag,
+normally milliseconds. A member whose clock is behind fails the other way,
+minting tokens the cutoff refuses once the two-second wait runs out.
+
+Keep the members' clocks synchronized; token expiry checks already rely on
+that, with 5 s of leeway. A monotonic revocation number in place of a time
+would remove the skew, but it needs a new claim that every broker checks, so
+Felix does not do that.
 
 A broker that cannot reach the control plane learns of revocations when it can
 again. The feed is kept across a restore or a `migrate`, so a revoked token that
@@ -543,10 +591,17 @@ own `felix-controlplane` token as `actor_token`. The control plane checks that
 the actor token is valid for the tenant and holds `token.delegate` on it, and
 mints the user's broker token with `may_act: {"sub": "<gateway principal>"}`
 (RFC 8693, section 4.4). An actor token that does not verify for the tenant
-or lacks `token.delegate` is refused with `403` and code `actor_refused`,
+or lacks `token.delegate` is refused with `403` and code `actor_refused`. So
+is one issued at or before a revocation of its principal, or whose principal
+current RBAC no longer grants `token.delegate`: the token's claims alone are
+not enough, since a gateway's `felix-controlplane` token stays valid for its
+whole TTL after the gateway is revoked. The code is `actor_refused`,
 never `forbidden`, so the gateway can tell a problem with its own credential
 from a user without permissions. Every token refreshed from that exchange's refresh
-token carries the same claim. `/token/delegate` refuses a subject token whose
+token carries the same claim, and the refresh checks the gateway again. If the
+gateway has been revoked since the chain's last link was issued, or no longer
+holds `token.delegate`, the refresh is refused with `403` and the chain ends;
+the user exchanges again through a gateway that can still delegate. `/token/delegate` refuses a subject token whose
 `may_act.sub` is not the caller, so a broker token taken from a browser, a log
 or another gateway cannot be bound to a different gateway's certificate.
 
@@ -597,7 +652,12 @@ Content-Type: application/json
 ```
 
 - The caller is the actor. Its token must be a `felix-controlplane` token for
-  the same tenant carrying `token.delegate:tenant:{tenant_id}`.
+  the same tenant carrying `token.delegate:tenant:{tenant_id}`, issued after
+  any revocation of the caller, and current RBAC must still grant the caller
+  `token.delegate`. The caller's IdP groups are not known here, so a grant
+  through an IdP group counts for any caller whose token carries the
+  permission. Removing such a grant revokes the whole tenant, which the
+  revocation check catches.
 - `subject_token` must be a `felix-broker` token of that tenant that is not
   itself delegated (one hop only), and its `may_act` must name the caller.
 - The result is never wider than the subject token: the same tenant and
@@ -608,7 +668,8 @@ Content-Type: application/json
   new one.
 - `400` for a wrong `grant_type` or `subject_token_type` or a malformed
   permission, `401` for a missing or invalid caller token, `403` for a caller
-  without `token.delegate`, a subject token that does not verify, belongs to
+  without `token.delegate` (in its token or in current RBAC) or whose token
+  predates a revocation of it, a subject token that does not verify, belongs to
   another tenant, is already delegated, or names another actor or none in
   `may_act`, or nothing left after narrowing.
 

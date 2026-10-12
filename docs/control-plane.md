@@ -1467,6 +1467,8 @@ Broker:
 | `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
 | `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
+| `felix_revocation_feed_last_success_seconds` | Unix time of this broker's last successful poll of the revocation feed. While it is stale, revocations made meanwhile are not enforced here; see [auth.md](auth.md#while-a-broker-cannot-reach-the-feed) |
+| `felix_revocation_feed_poll_errors_total` | failed polls of the revocation feed. A run of failures is also a `warn` log line, repeated every minute while it lasts |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means
 the control plane answered and said no (a duplicate address, a superseded
