@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791789035613,
+  "lastUpdate": 1791792766278,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28808,6 +28808,58 @@ window.BENCHMARK_DATA = {
             "range": "8541.61",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 788506.04\nmean: 788600.62\nstdev: 8541.61\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a69d7e9160e43359698a01e53ec26951fe62ad4",
+          "message": "fix(broker): honour subscriber byte budgets above 4 GiB; document memory bounds (#1203)\n\n* fix(broker): honour subscriber byte budgets above 4 GiB; document memory bounds\n\nA semaphore acquire takes at most u32::MAX permits, so ByteBudget\nsaturated the configured size to 4 GiB. Budgets above that now count in\npower-of-two units, each batch rounded up to a whole unit.\n\nDocs: worst-case queued memory without the total cap, Block holding\npublishers with no timeout, entry-count-only bounds on the replay ring\nand cache watch queues, and the drain-time wording in the replication\ndesign.\n\nCloses #1200\n\n* docs(broker): state the full per-subscriber memory bound and the unit sizes\n\nAn oversize batch still enters an empty queue, so a subscriber holds up to\nthe larger of its byte bound and its largest batch; with the bound at 0\nonly queue capacity times batch size limits it. Note the 32-bit semaphore\nlimit and gate the multi-GiB budget tests to 64-bit.",
+          "timestamp": "2026-10-12T00:22:36-07:00",
+          "tree_id": "79355720142ba0a648c1dbcf16fd066658660207",
+          "url": "https://github.com/GetFelix/felix/commit/2a69d7e9160e43359698a01e53ec26951fe62ad4"
+        },
+        "date": 1791792765610,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 624786.7,
+            "range": "24226.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624786.70\nmean: 616154.56\nstdev: 24226.17\ncv: 3.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 624786.7,
+            "range": "24226.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624786.70\nmean: 616154.56\nstdev: 24226.17\ncv: 3.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 151745.43,
+            "range": "4454.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 151745.43\nmean: 151471.61\nstdev: 4454.39\ncv: 2.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1517454.34,
+            "range": "44543.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1517454.34\nmean: 1514716.14\nstdev: 44543.87\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
