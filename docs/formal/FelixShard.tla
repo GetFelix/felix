@@ -184,10 +184,26 @@
 (* or a batch at a generation it already promised only from that leader   *)
 (* (`DiskLog::accept_generation`). Without it, as replicas answered before *)
 (* ballots, TLC finds two leaders opening at one generation               *)
-(* (OneLeaderPerGeneration). A candidate fences the set it last knew,      *)
-(* which for a follower is the set it started in; nothing yet checks that  *)
-(* set against a newer one, and with replacements TLC finds a candidate    *)
-(* opening on the old set without a record the new one acknowledged.      *)
+(* (OneLeaderPerGeneration). A candidate fences the set it last knew. With *)
+(* `SetCheck = FALSE` that is the set a follower started in, and with      *)
+(* replacements TLC finds a candidate opening on the old set without a     *)
+(* record the new one acknowledged (FelixShardElectStaleSet.cfg).          *)
+(*                                                                         *)
+(* `SetCheck` is the design for electing without the control plane         *)
+(* (docs/replication-design.md, "Electing without the control plane").    *)
+(* Each replica keeps the set it last learned and the generation of the    *)
+(* assignment that wrote it (`setGen`). A batch and a fence carry the      *)
+(* sender's pair; a replica holding a newer one refuses it, and otherwise  *)
+(* adopts it. A refused candidate learns the newer set and fences again    *)
+(* (RefuseStaleSet). Only a member of its own set stands. A set change    *)
+(* fences too, on the new set, and with `JointFence` on a majority of the  *)
+(* old set as well (FelixShardElectSetNoJoint.cfg drops that half).        *)
+(*                                                                         *)
+(* `Adopt` lets the control plane take a leader it never named: a replica  *)
+(* that opened above the control plane's generation, on the set the       *)
+(* control plane records, becomes its leader (CpAdopt), up to generation   *)
+(* `Adopt`. One on another set only moves the control plane's generation   *)
+(* up, so it never issues a generation below one it heard was elected.    *)
 (*                                                                         *)
 (* Elections also break the cut-over and the hand-back. The control plane  *)
 (* names them at a generation it picked without knowing of an election,    *)
@@ -254,7 +270,10 @@ CONSTANTS
     Ballots,        \* whether a promise names its leader, and refuses another at its generation
     Elections,      \* how many generations past the control plane's a replica may elect itself to
     FenceEveryChange, \* whether a cut-over, a hand-back and a promoted destination fence too
-    Suspicions      \* up to which generation placement may promote on the followers' word, lapsed or not
+    Suspicions,     \* up to which generation placement may promote on the followers' word, lapsed or not
+    SetCheck,       \* whether a fence and a batch carry the set's generation, and a newer one refuses them
+    JointFence,     \* whether a set change also fences a majority of the old set
+    Adopt           \* up to which generation the control plane adopts a leader that elected itself
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -292,6 +311,9 @@ ASSUME Ballots \in BOOLEAN /\ Elections \in Nat
 ASSUME Elections > 0 => /\ AckByFollowers /\ FenceOnPromote /\ ~Counters /\ ~StageMove
 ASSUME FenceEveryChange \in BOOLEAN /\ (FenceEveryChange => FenceOnPromote)
 ASSUME Suspicions \in Nat
+\* The set check and adoption exist for self-election.
+ASSUME SetCheck \in BOOLEAN /\ JointFence \in BOOLEAN /\ (JointFence => SetCheck)
+ASSUME Adopt \in Nat /\ (Adopt > 0 => Elections > 0)
 
 VARIABLES
     now,        \* real time
@@ -336,23 +358,30 @@ VARIABLES
     canswered,  \* who has answered each broker's counter fence
     cacked,     \* counter updates acknowledged to a client
     ballot,     \* under `Ballots`, whom each broker's promise was made to: {} or {leader}
-    opened      \* history, under `Elections` or `Suspicions`: each <<generation, broker>> that opened for writes
+    opened,     \* history, under `Elections` or `Suspicions`: each <<generation, broker>> that opened for writes
+    setGen,     \* under `SetCheck`, the generation of the assignment that wrote each broker's `mine`
+    oldSet      \* under `JointFence`, the set a leader changing sets must also fence a majority of
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
+
+\* The set each broker knows, beside `mine`, and a set change's old set.
+setVars == << setGen, oldSet >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
-           counterVars, ballot, opened >>
+           counterVars, ballot, opened, setVars >>
 
-\* Placement's state, which only the control plane's decisions change.
-handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine,
-                  joining, leaving, joinedAt >>
+\* Placement's state, which only the control plane's decisions change, but
+\* `mine`, which a follower also learns under `SetCheck`.
+placeVars == << draining, successor, stopped, moves, ver, cpView, staged, out,
+                joining, leaving, joinedAt >>
+handoffVars == << placeVars, mine >>
 
 \* The promotion fence's state.
-fenceVars == << promised, fencing, answered, confirmed, ballot, opened >>
+fenceVars == << promised, fencing, answered, confirmed, ballot, opened, setVars >>
 
 \* Whether brokers keep and check `promised`: the fence needs it, and so do
 \* follower acks.
@@ -400,6 +429,22 @@ Majority(S) == MajorityOf(S, QuorumSet)
 \* With no spares every broker is in every set, as before.
 Members(b) == IF Spares = {} THEN Brokers ELSE mine[b]
 LeaderMajority(b, S) == IF Spares = {} THEN Majority(S) ELSE MajorityOf(S, mine[b])
+
+\* Who a leader fences: its set, and while it changes sets with `JointFence`,
+\* the old one too.
+FenceMembers(b) == Members(b) \cup oldSet[b]
+
+\* The set the control plane's assignment names.
+CpSet == ReplicaSet \cup joining
+
+\* Under `SetCheck`, `f` takes a fence or a batch from `b` only if it knows no
+\* newer set than the one `b` carries, and then learns `b`'s.
+SetCurrent(f, b) == SetCheck => setGen[f] <= setGen[b]
+LearnSet(f, b) ==
+    IF SetCheck
+    THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
+         /\ mine' = [mine EXCEPT ![f] = mine[b]]
+    ELSE UNCHANGED << setGen, mine >>
 
 \* Brokers are interchangeable, and so are planners, which lets TLC fold
 \* their permutations.
@@ -511,6 +556,9 @@ Init ==
     /\ CounterInit
     /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
     /\ opened = IF TracksOpens THEN {<<1, leader>>} ELSE {}
+    \* The first assignment wrote the set at generation 1; a spare knows none.
+    /\ setGen = [b \in Brokers |-> IF SetCheck /\ b \notin Spares THEN 1 ELSE 0]
+    /\ oldSet = [b \in Brokers |-> {}]
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -577,10 +625,11 @@ StepDown(b) ==
     /\ pending' = [pending EXCEPT ![b] = 0]
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ oldSet' = [oldSet EXCEPT ![b] = {}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged, promised, answered,
-                    confirmed, out, mine, joining, leaving, joinedAt, ballot, opened >>
+                    confirmed, out, mine, joining, leaving, joinedAt, ballot, opened, setGen >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -695,6 +744,9 @@ Confirm(b, f, k) ==
 \* follower did when it recorded a new generation as starting where the
 \* batch that brought it appended. A record the leader inherited then looks
 \* newer on the follower than it is, and its fence answer overclaims.
+\*
+\* Under `SetCheck` a batch carries the leader's set, which the follower
+\* refuses if it knows a newer one and otherwise learns.
 Ship(b, f) ==
     /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ f \in Members(b)
@@ -703,6 +755,8 @@ Ship(b, f) ==
     /\ ~fencing[b]
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
+    /\ SetCurrent(f, b)
+    /\ LearnSet(f, b)
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
@@ -721,7 +775,7 @@ Ship(b, f) ==
                   /\ UNCHANGED << log, confirmed >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered, opened >>
+    /\ UNCHANGED << placeVars, fencing, answered, opened, oldSet >>
 
 \* Under `Quorum`, a record is acknowledged once a majority including the
 \* leader holds it, and the leader's mark moves up to it.
@@ -989,6 +1043,9 @@ Promote(v, f, views) ==
               /\ mine' = [mine EXCEPT ![f] = (ReplicaSet \ {v.leader}) \cup {d}]
        ELSE /\ mine' = [mine EXCEPT ![f] = Counted \cup {f}]
             /\ out' = out \cup (joining \ (Counted \cup {f}))
+    \* The assignment writes the set at the new generation; its fence carries it.
+    /\ setGen' = IF SetCheck THEN [setGen EXCEPT ![f] = gen + 1] ELSE setGen
+    /\ oldSet' = [oldSet EXCEPT ![f] = {}]
     /\ joining' = {}
     /\ leaving' = {}
     /\ joinedAt' = 0
@@ -1040,32 +1097,64 @@ Ahead(f, b) ==
 \* leader that is only ever the same leader asking again, so the model
 \* leaves it out. Under `Elections` it can be a second candidate at that
 \* generation, which only `Ballots` refuses.
+\*
+\* Under `SetCheck` the fence carries the leader's set, as a batch does, and
+\* a member of the old set answers a set change's fence under `JointFence`.
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
-    /\ f \in Members(b)
+    /\ f \in FenceMembers(b)
     /\ IF Elections > 0 THEN MayPromise(f, b, bgen[b]) ELSE promised[f] < bgen[b]
     /\ Promise(f, b, bgen[b])
+    /\ SetCurrent(f, b)
+    /\ LearnSet(f, b)
     /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
     /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    fencing, confirmed, opened >>
-    /\ UNCHANGED handoffVars
+                    fencing, confirmed, opened, oldSet >>
+    /\ UNCHANGED placeVars
+
+\* A replica that knows a newer set than the one a fence carries refuses it
+\* and says which. The leader learns that set and fences again on it, or,
+\* outside it, stops standing.
+RefuseStaleSet(b, f) ==
+    /\ SetCheck
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ f \in FenceMembers(b)
+    /\ setGen[f] > setGen[b]
+    /\ setGen' = [setGen EXCEPT ![b] = setGen[f]]
+    /\ mine' = [mine EXCEPT ![b] = mine[f]]
+    /\ answered' = [answered EXCEPT ![b] = {}]
+    /\ oldSet' = [oldSet EXCEPT ![b] = {}]
+    /\ IF b \in mine[f]
+       THEN UNCHANGED << bgen, fencing, queued, pending >>
+       ELSE /\ bgen' = [bgen EXCEPT ![b] = 0]
+            /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+            /\ queued' = [queued EXCEPT ![b] = 0]
+            /\ pending' = [pending EXCEPT ![b] = 0]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
+                    promised, confirmed, ballot, opened >>
+    /\ UNCHANGED placeVars
 
 \* `open_promoted` in crates/server/felix-replication/src/driver.rs, on the
 \* first majority `fence_shard` in promotion.rs gets; the tail that wins is
 \* the answer furthest ahead by `Ahead`, taken before this.
+\*
+\* A set change under `JointFence` also needs a majority of the old set.
 OpenForWrites(b) ==
     /\ fencing[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
+    /\ oldSet[b] /= {} => MajorityOf(answered[b] \cup {b}, oldSet[b])
     /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ oldSet' = [oldSet EXCEPT ![b] = {}]
     /\ Opens(b, bgen[b])
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ clog' = IF Counters THEN [clog EXCEPT ![b] = COpened(b, bgen[b])] ELSE clog
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    promised, answered, confirmed, ballot >>
+                    promised, answered, confirmed, ballot, setGen >>
     /\ UNCHANGED << handoffVars, chwm, cconfirmed, canswered, cacked >>
 
 \* Under `Elections`, a replica stands with no control-plane step, at the
@@ -1073,11 +1162,14 @@ OpenForWrites(b) ==
 \* fences the set it last knew, and opens as a promoted leader does. A
 \* candidate still fencing may stand again higher. Any replica may stand at
 \* any time, as a failure detector that is sometimes wrong would let it.
+\* Under `SetCheck` only a member of the set it knows stands, and only once
+\* it has learned one.
 Elect(f) ==
     /\ Elections > 0
     /\ f \notin halted
     /\ bgen[f] = 0 \/ fencing[f]
     /\ promised[f] < gen + Elections
+    /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ bgen' = [bgen EXCEPT ![f] = promised[f] + 1]
     /\ bexpiry' = [bexpiry EXCEPT ![f] = clock[f] + L]
     /\ queued' = [queued EXCEPT ![f] = 0]
@@ -1086,8 +1178,9 @@ Elect(f) ==
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    \* A leader standing again mid set change keeps fencing the old set too.
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
-                    log, hwm, halted, acked, writes, staleCommit, opened >>
+                    log, hwm, halted, acked, writes, staleCommit, opened, setVars >>
     /\ UNCHANGED handoffVars
 
 -----------------------------------------------------------------------------
@@ -1129,7 +1222,7 @@ ShipCounter(b, f) ==
              /\ cconfirmed' = [cconfirmed EXCEPT ![b][f] = i - 1]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, chwm, canswered, cacked >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, chwm, canswered, cacked >>
 
 \* As `HeldAtGen`, on the counter log: the counter mark counts only past a
 \* record of the leader's own generation (`quorum::counted_offset`).
@@ -1169,7 +1262,7 @@ AnswerCounterFence(b, f) ==
     /\ clog' = IF CounterCatchUp /\ CAhead(f, b) THEN [clog EXCEPT ![b] = clog[f]] ELSE clog
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, chwm, cconfirmed, cacked >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, chwm, cconfirmed, cacked >>
 
 -----------------------------------------------------------------------------
 (* Planned handoff. The control plane fences the leader so the shard can    *)
@@ -1245,6 +1338,8 @@ Takes(f) ==
     /\ Elections > 0 => MayPromise(f, f, gen + 1)
     /\ IF Promises THEN Promise(f, f, gen + 1) ELSE UNCHANGED << promised, ballot >>
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    \* A move never changes the set: spares are checked without one.
+    /\ UNCHANGED setVars
     /\ IF FenceEveryChange
        THEN /\ fencing' = [fencing EXCEPT ![f] = TRUE]
             /\ answered' = [answered EXCEPT ![f] = {}]
@@ -1319,24 +1414,36 @@ OldSetLen(b) ==
                                mine[b]) }
     IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
-\* The leader, still serving, moves to the next generation with `set`.
+\* The leader, still serving, moves to the next generation with `set`. It
+\* opens there at once, as the broker does. Under `SetCheck` it fences first,
+\* on the new set, carrying the new set's generation, and with `JointFence`
+\* on a majority of the old set too. Under `Elections` it may already have
+\* promised that generation to a candidate, and then it does not take it.
 Regenerate(v, views, set) ==
     /\ v.leader = leader /\ ~v.lapsed
     /\ bgen[leader] = gen /\ ~fencing[leader]
+    /\ Elections > 0 => MayPromise(leader, leader, gen + 1)
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
     /\ gen' = gen + 1
     /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
     /\ Promise(leader, leader, gen + 1)
-    /\ Opens(leader, gen + 1)
     /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
-    /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
     /\ report' = NoReport
     /\ mine' = [mine EXCEPT ![leader] = set]
+    /\ IF SetCheck
+       THEN /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+            /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
+            /\ answered' = [answered EXCEPT ![leader] = {}]
+            /\ oldSet' = [oldSet EXCEPT ![leader] = IF JointFence THEN mine[leader] ELSE {}]
+            /\ UNCHANGED << log, opened >>
+       ELSE /\ Opens(leader, gen + 1)
+            /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
+            /\ UNCHANGED << setGen, oldSet, fencing, answered >>
     /\ UNCHANGED << now, clock, leader, cpExpiry, inflight, bexpiry, hbOut, hbAt, hwm, halted,
                     queued, pending, acked, writes, staleCommit, draining, successor, stopped,
-                    staged, fencing, answered >>
+                    staged >>
 
 \* A spare joins beside the follower `o`, and counts toward the quorum from
 \* here: a record is acknowledged on three of the four.
@@ -1385,6 +1492,30 @@ Seat(v, j, views) ==
     /\ joinedAt' = 0
     /\ UNCHANGED moves
 
+\* Under `Adopt`, the control plane hears from a leader that opened above its
+\* generation, one it never named. If the leader's set is the one the
+\* control plane records, it becomes the control plane's leader at that
+\* generation. Otherwise only the generation is taken, so every later one
+\* the control plane issues is above it. Bounded by `Adopt`, or elections
+\* and adoptions never end.
+CpAdopt(b) ==
+    /\ bgen[b] > gen /\ bgen[b] <= Adopt
+    /\ ~fencing[b]
+    /\ <<bgen[b], b>> \in opened
+    /\ ver' = ver + 1
+    /\ gen' = bgen[b]
+    /\ IF SetCheck => mine[b] = CpSet
+       THEN /\ leader' = b
+            /\ cpExpiry' = now + L
+            /\ report' = NoReport
+            /\ draining' = FALSE
+       ELSE UNCHANGED << leader, cpExpiry, report, draining >>
+    /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
+                    queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << successor, stopped, moves, cpView, staged, out, mine,
+                    joining, leaving, joinedAt >>
+    /\ UNCHANGED fenceVars
+
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
@@ -1419,10 +1550,12 @@ Next ==
         \/ Report(b) /\ UNCHANGED quietVars
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
+        \/ CpAdopt(b) /\ UNCHANGED quietVars
         \/ \E f \in Brokers :
             \/ Ship(b, f) /\ UNCHANGED quietVars
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
+            \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
             \/ ShipCounter(b, f) /\ UNCHANGED heard
             \/ AnswerCounterFence(b, f) /\ UNCHANGED heard
         \/ OpenForWrites(b) /\ UNCHANGED heard
@@ -1490,6 +1623,11 @@ AckedAgree ==
 \* generation.
 OneLeaderPerGeneration ==
     \A x, y \in opened : x[1] = y[1] => x[2] = y[2]
+
+\* The control plane's leader, once open at the control plane's generation,
+\* leads the set the control plane records: an adopted leader included.
+AdoptedMatchesOpened ==
+    <<gen, leader>> \in opened => mine[leader] = CpSet
 
 \* No log holds one write twice: a re-send of a write the shard already has
 \* is answered, not appended. Start records are no one's write.
@@ -1566,5 +1704,7 @@ TypeOK ==
     /\ cacked \subseteq 1..MaxWrites
     /\ ballot \in [Brokers -> SUBSET Brokers]
     /\ \A o \in opened : o[1] \in Nat /\ o[2] \in Brokers
+    /\ setGen \in [Brokers -> Nat]
+    /\ oldSet \in [Brokers -> SUBSET Brokers]
 
 =============================================================================

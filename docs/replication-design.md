@@ -316,8 +316,8 @@ pings from a majority is replaced, which is the trade a shorter window makes.
 
 **What it does not change.** The control plane still makes the decision, so
 with the control plane down a dead leader is not replaced. Replicas electing
-a leader among themselves is the rest of issue #1009, and needs the set
-check `FelixShardElectStaleSet.cfg` shows missing.
+a leader among themselves is the rest of issue #1009, designed in
+[Electing without the control plane](#electing-without-the-control-plane).
 
 Evidence: `a_leader_a_majority_cannot_reach_is_replaced_while_it_heartbeats`,
 `one_follower_alone_does_not_move_the_shard`,
@@ -486,8 +486,9 @@ The model has it as `Ballots` and `Elections` in `docs/formal/FelixShard.tla`
 `FelixShardElect.cfg` lets replicas elect themselves and passes with ballots;
 `FelixShardElectNoBallot.cfg` finds two leaders opening at one generation
 without them. `FelixShardElectStaleSet.cfg` shows what ballots do not cover: a
-replica that left the set can still stand on the old one, which self-election
-will have to refuse first.
+replica that left the set can still stand on the old one, which the set check
+in [Electing without the control plane](#electing-without-the-control-plane)
+refuses.
 
 Evidence: `a_second_leader_at_an_accepted_generation_is_refused`,
 `a_ballot_survives_a_crash_before_anything_is_acknowledged` and
@@ -538,6 +539,130 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 `after_a_new_generation_of_a_served_shard_the_leader_between_is_refused`
 (`services/felix-broker-service/src/shards/lifecycle/tests/every_change.rs`);
 `a_write_to_a_shard_still_fencing_waits_for_the_fence` (the write hold).
+
+### Electing without the control plane
+
+**Status: design, not built.** This is the last step of issue #1009. The
+model checks it (below); nothing in the broker elects yet, and everything
+here describes the change to come. Today a leader that dies while the
+control plane is down is not replaced until the control plane is back.
+
+**Which shards.** The ones failover on the followers' word already covers: a
+durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,
+and a `Quorum` cache with `fenced_caches` as well. `Leader` streams,
+in-memory shards and consumer-group state stay on the lease. A group on an
+elected leader waits for the lease until the control plane is back (issue
+#1197).
+
+**The protocol.**
+
+1. *Detecting.* A follower uses the detector it already runs: a leader that
+   has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
+   default) is gone as far as that follower is concerned.
+2. *Standing in log order.* Each follower that suspects the leader waits a
+   short delay for its place in the set's order by (last generation,
+   length), the order a fence answer is ranked by, then stands. The replica
+   furthest ahead usually stands alone, and one behind it stands only if
+   that one did not.
+3. *The ballot.* A candidate takes the generation after the one it promised,
+   persists the ballot `(generation, itself)`, and fences its set. The fence
+   carries the generation of the assignment that wrote the set and the set
+   itself. A replica answers only a ballot it may still promise, as today,
+   and only a set no older than the one it knows, and then persists that
+   set. A replica that knows a newer set refuses and names it. The candidate
+   learns it and fences again, or stops standing if it is no longer a
+   member. Only a member of the set it knows stands at all.
+4. *Opening.* As a promotion does: it takes the answer furthest ahead,
+   writes its generation-start record and opens.
+5. *Set changes.* A replacement's join, a seat and a grow fence like any
+   change of leader, carrying the new set to a majority of it before the
+   leader serves at the new generation. With the joint fence they also need
+   a majority of the old set (decision 2 below).
+6. *Redirects.* A follower answers `NotLeader` with the leader it promised,
+   so clients find an elected leader without asking the control plane.
+7. *Adoption.* The elected leader reports its generation and set's
+   generation. If the generation is above the control plane's and the set
+   is the one the control plane records, the control plane makes it the
+   shard's leader at that generation, with the same conditional write as any
+   assignment. Otherwise it records the generation only, and issues every
+   later one above it. It never reissues a generation at or below one it was
+   told was elected.
+
+**Why it is safe.** Ballots give one leader per generation: two majorities of
+one set share a replica, and that replica promised the generation to one
+leader only. A record acknowledged at generation `g` sits on a majority of
+the set the leader counted. A later leader fences a majority of its own set,
+and if that is the same set the two majorities share a replica, which either
+held the record when it answered or refused the old leader after, so the
+catch-up brings it. If the candidate's set is older, a majority of it took
+the fence of the set change that came after, learned the newer set and
+refuses the candidate. If the candidate's set is newer, the change that made
+it fenced a majority of the old set before the new one served (with the joint
+fence) or shares a replica with every majority of it (one replica at a time,
+without). The generation-start record covers Raft's Figure 8 as it does for
+promotions. Adoption cannot name a second leader: the control plane only
+names the leader that opened at that generation, and its own next generation
+is above it.
+
+**Decisions** (from the discussion on issue #1009):
+
+1. Once `replica_election` is finalized, replicas always elect, and the
+   control plane adopts. Its promotion on the followers' word stays as a
+   fallback, held back for 2×S so that it does not race an election, and
+   promotion on a lapsed lease stays as the backstop.
+2. A set change uses the joint fence, a majority of the old set and of the
+   new, if the model shows it is needed. `FelixShardElectSetNoJoint.cfg`
+   decides.
+3. "One leader serving" means `OneLeaderPerGeneration` and the
+   acknowledged-record invariants (`AckedHeldByLeader`, `AckedAgree`,
+   `AckedOnMajority`, `NoTruncationBelowHwm`). `AtMostOneServing` stays
+   unenforced under follower acks, as it is today: a deposed leader may go on
+   taking writes it cannot get acknowledged.
+4. Brokers persisting their last routes, so a restarted broker can rejoin
+   during a control-plane outage, is a follow-up (issue #1196).
+5. `replica_election` is one-way once finalized, like the other fleet
+   features.
+6. Consumer groups on an elected leader still wait for the lease (issue
+   #1197).
+
+**Failover time.** The target is S + 1 s from the leader's last answer to
+the shard serving again: S for the detector, and a second for the rank delay,
+the fence round trip and the fsync of the ballot and the set. That is about
+6 s with the defaults, with or without the control plane, against 13 to 26 s
+for a lapsed lease.
+
+**Across versions.** Each piece goes behind a negotiation, as ballots did:
+
+- *Storage.* A replica keeps its set in its own file beside `ballot`, the
+  assignment's generation and the members, fsynced before it answers at that
+  set. A build without it still opens the shard.
+- *Wire.* A broker that checks sets offers an `ELECTION` peer capability.
+  The fence and the batch carry the set's generation only to a peer that
+  offered it, and a missing one means what it means today: no check.
+- *Control plane.* Adoption is a new store write, so under Raft it needs
+  metadata level 9 on every member, and a Postgres control plane gets a
+  migration. Below that the control plane ignores election reports and goes
+  on promoting on suspicion.
+- *The fleet feature.* Finalizing `replica_election` is refused while a
+  serving broker lacks `ELECTION` or the control plane is below level 9. Only
+  after it do followers stand.
+
+The work lands in that order: the set file in storage, the `ELECTION`
+capability, the replica's checks, adoption in the control plane, the
+election driver, then cluster and history tests
+(`failures/replica_election.rs`, and a nemesis holding the control plane
+down across a leader kill) and the docs that describe it as shipped.
+
+**The model.** `SetCheck`, `JointFence` and `Adopt` in
+`docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set check:
+electing on the current set"). `FelixShardElectSet.cfg` passes with the set
+check and the joint fence; `FelixShardElectStaleSet.cfg` without the set
+check finds a replica that left opening on the old set without an
+acknowledged record. `FelixShardElectAdopt.cfg` adds adoption and passes;
+`FelixShardElectAdoptNoSetCheck.cfg` finds the control plane adopting a
+leader of a set it does not record. `FelixShardElectHandoff.cfg` runs moves
+and cancels with the set check on, nightly, and `FelixShardWalkElect.cfg`
+walks elections, replacements and suspicion failovers together.
 
 ### The generation-start record
 
@@ -1698,7 +1823,7 @@ multi-instance work and not before.
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. The leader still heartbeats, so the lease never replaces it; a durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized is failed over on its followers' word instead. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. A leader that dies meanwhile is not replaced until the control plane is back, whatever its followers say (issue #1009). |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. A leader that dies meanwhile is not replaced until the control plane is back, whatever its followers say; replicas electing one themselves is designed but not built (see [Electing without the control plane](#electing-without-the-control-plane)). |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 

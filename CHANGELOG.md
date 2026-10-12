@@ -11,6 +11,18 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Documentation
+
+- Design for replicas electing a leader while the control plane is down
+  (#1009), not built yet: "Electing without the control plane" in
+  `docs/replication-design.md`. The TLA+ model gains `SetCheck`, `JointFence`,
+  `Adopt`, the persisted `setGen`, `RefuseStaleSet`, `CpAdopt` and the
+  `AdoptedMatchesOpened` invariant, with `FelixShardElectSet.cfg`,
+  `FelixShardElectSetNoJoint.cfg`, `FelixShardElectAdopt.cfg`,
+  `FelixShardElectAdoptNoSetCheck.cfg` and the `FelixShardWalkElect.cfg` walk
+  and its stale-set twin. `FelixShardElectHandoff.cfg` now runs with the set
+  check on.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded
