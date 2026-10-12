@@ -107,6 +107,41 @@ impl IdempotentProducer {
         self.producer_id
     }
 
+    /// Give up on the stream's batches in doubt, and number the stream from
+    /// 0 under a fresh producer id.
+    ///
+    /// For a stream that cannot settle them: one deleted and created again
+    /// at another width while a batch was in doubt is refused every re-send
+    /// under the width it was numbered by. **A batch given up may land
+    /// twice**: it may have been appended before, and sent again it is a new
+    /// record under the fresh id. Every cursor on the stream starts again,
+    /// not only the ones in doubt, since the fresh id has no sequences.
+    pub async fn abandon_in_doubt(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<()> {
+        let (answer, answered) = oneshot::channel();
+        let request = Request {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            routing_key: None,
+            batches: Vec::new(),
+            abandon: true,
+            answer,
+        };
+        self.requests
+            .send(request)
+            .await
+            .map_err(|_| anyhow::anyhow!("this producer's task has stopped"))?;
+        answered
+            .await
+            .map_err(|_| anyhow::anyhow!("this producer's task stopped"))?
+            .map(|_| ())
+    }
+
     /// The id this producer's batches to `stream` go out under. The first
     /// id, unless the stream was created again at another width: it is then
     /// numbered afresh under an id of its own, so its new sequences never
@@ -285,6 +320,7 @@ impl IdempotentProducer {
             stream: stream.to_string(),
             routing_key,
             batches,
+            abandon: false,
             answer,
         };
         self.requests
@@ -307,6 +343,8 @@ struct Request {
     stream: String,
     routing_key: Option<Bytes>,
     batches: Vec<Vec<Vec<u8>>>,
+    /// Give up on the stream's batches in doubt instead of sending any.
+    abandon: bool,
     answer: oneshot::Sender<Result<Vec<Option<u64>>>>,
 }
 
@@ -336,7 +374,9 @@ struct Driver {
 /// Per stream, the width its keyed cursors number by and the producer id its
 /// batches go out under. Shared with the producer, which reports the id.
 type NumberedBy = Arc<
-    std::sync::Mutex<hashbrown::HashMap<RoutingStreamKey, (Arc<Width>, u64), ahash::RandomState>>,
+    std::sync::Mutex<
+        hashbrown::HashMap<RoutingStreamKey, (Option<Arc<Width>>, u64), ahash::RandomState>,
+    >,
 >;
 
 impl Driver {
@@ -354,8 +394,17 @@ impl Driver {
                 stream,
                 routing_key,
                 batches,
+                abandon,
                 answer,
             } = request;
+            if abandon {
+                let result = self
+                    .abandon(&mut cursors, &tenant_id, &namespace, &stream)
+                    .await
+                    .map(|()| Vec::new());
+                let _ = answer.send(result);
+                continue;
+            }
             let (shard, width) = match self
                 .shard_for(&tenant_id, &namespace, &stream, routing_key.as_deref())
                 .await
@@ -394,11 +443,12 @@ impl Driver {
             let result = result.map_err(|err| {
                 if super::routing::width_went_stale(&err) && in_doubt_on(&cursors, &key) {
                     err.context(
-                        "the stream's width changed while a batch on it was in doubt. Under \
-                         the new width it could not be told apart from a new record, so it \
-                         was not re-sent there: re-send it once the stream's width is the \
-                         one it was numbered by, or start a new producer and accept that it \
-                         may land twice",
+                        "the stream's width changed while a batch on it was in doubt, so it \
+                         was not re-sent: under the new width it could not be told apart from \
+                         a new record. To go on, call abandon_in_doubt for this stream or use \
+                         a new producer; either way the batch may land twice if it is sent \
+                         again. Or re-send it once the width is back to the one it was \
+                         numbered by",
                     )
                 } else {
                     err
@@ -814,9 +864,41 @@ impl Driver {
             .expect("numbered by")
             .get(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
         {
-            Some((width, producer_id)) => (Some(Arc::clone(width)), *producer_id),
+            Some((width, producer_id)) => (width.clone(), *producer_id),
             None => (None, self.producer_id),
         }
+    }
+
+    /// Drop every cursor on the stream and number it from 0 under a fresh
+    /// producer id. See [`IdempotentProducer::abandon_in_doubt`].
+    async fn abandon(
+        &self,
+        cursors: &mut HashMap<ShardKey, Cursor>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<()> {
+        let producer_id = self.fresh_producer_id().await?;
+        let same_stream =
+            |shard: &ShardKey| shard.0 == tenant_id && shard.1 == namespace && shard.2 == stream;
+        cursors.retain(|shard, _| !same_stream(shard));
+        self.leaders
+            .lock()
+            .await
+            .retain(|shard, _| !same_stream(shard));
+        let mut numbered_by = self.numbered_by.lock().expect("numbered by");
+        match numbered_by.get_mut(&RoutingStreamKeyRef::new(tenant_id, namespace, stream)) {
+            // The width it held may be the one that is gone; the next keyed
+            // batch takes whatever width is learned then.
+            Some(entry) => *entry = (None, producer_id),
+            None => {
+                numbered_by.insert(
+                    RoutingStreamKey::new(tenant_id, namespace, stream),
+                    (None, producer_id),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// A producer id from the broker the source uses.
@@ -857,12 +939,12 @@ impl Driver {
             .numbered_by
             .lock()
             .expect("numbered by")
-            .get(&stream_key)
-            .map(|(held, _)| Arc::clone(held));
+            .get_mut(&stream_key)
+            .map(|(held, _)| held.get_or_insert_with(|| Arc::clone(&width)).clone());
         let Some(held) = held else {
             self.numbered_by.lock().expect("numbered by").insert(
                 RoutingStreamKey::new(tenant_id, namespace, stream),
-                (Arc::clone(&width), self.producer_id),
+                (Some(Arc::clone(&width)), self.producer_id),
             );
             return Ok(width);
         };
@@ -884,7 +966,7 @@ impl Driver {
             .expect("numbered by")
             .get_mut(&stream_key)
         {
-            *entry = (Arc::clone(&width), producer_id);
+            *entry = (Some(Arc::clone(&width)), producer_id);
         }
         cursors.retain(|shard, _| !same_stream(shard));
         self.leaders

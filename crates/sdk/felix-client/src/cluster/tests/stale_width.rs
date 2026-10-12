@@ -480,3 +480,64 @@ async fn a_batch_in_doubt_keeps_its_width_and_id_through_a_flap() -> Result<()> 
     assert_eq!(producer.producer_id_for("t1", "default", "orders"), first);
     Ok(())
 }
+
+/// **A stream created again while a batch was in doubt can be given up.**
+/// Its re-send is refused for good under the gone width, so the caller
+/// abandons it: the stream starts again under a fresh id and the next batch
+/// goes out, at the risk the error names of the abandoned one landing twice.
+#[tokio::test]
+#[serial_test::serial]
+async fn abandoning_a_batch_in_doubt_lets_the_stream_go_on() -> Result<()> {
+    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let script = {
+        let answered = Arc::clone(&answered);
+        move |request_id| match answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Message::PublishError {
+                request_id,
+                message: "no majority".to_string(),
+                code: Some(felix_wire::ErrorCode::QuorumTimeout),
+                retry: Some(felix_wire::RetryClass::OutcomeUnknown),
+                detail: None,
+            },
+            _ => ok(request_id),
+        }
+    };
+    let (broker, cert) = StubBroker::start(script)?;
+    broker.check_widths();
+    let client = Arc::new(
+        Client::connect(
+            broker.addr,
+            "localhost",
+            build_client_config_with_overrides(cert, 1)?,
+        )
+        .await?,
+    );
+    let producer = client.idempotent_producer().await?;
+    let key = moving_key(2);
+    let publish = |payload: &'static [u8]| {
+        producer.publish_keyed("t1", "default", "orders", key.clone(), payload.to_vec())
+    };
+    publish(b"a").await.expect_err("the outcome is unknown");
+
+    // Created again two shards wide: the re-send can never settle.
+    broker.set_width(2);
+    client.publish_widths().forget("t1", "default", "orders");
+    let refused = publish(b"a")
+        .await
+        .expect_err("held to the width that is gone");
+    assert!(
+        format!("{refused:#}").contains("abandon_in_doubt"),
+        "{refused:#}"
+    );
+
+    producer.abandon_in_doubt("t1", "default", "orders").await?;
+    publish(b"b").await?;
+    let fresh = producer.producer_id_for("t1", "default", "orders");
+    assert_ne!(fresh, producer.producer_id());
+    assert_eq!(
+        broker.producer_sequences().last(),
+        Some(&(fresh, 0)),
+        "the stream did not start again under a fresh id"
+    );
+    Ok(())
+}

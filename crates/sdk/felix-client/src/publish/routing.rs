@@ -159,7 +159,11 @@ impl Publisher {
             {
                 // A stream whose broker did not negotiate the bit would carry
                 // the batch unchecked, so it is routed by the client's own
-                // width, as any publish to that broker is.
+                // width, as any publish to that broker is. Known only once
+                // the stream is open: the bit is negotiated in its own
+                // `auth`, so a stream opened for the caller's shard may go
+                // unused here. It stays open for whatever routes to that
+                // shard by the client's own width.
                 if by_given && !worker.takes_width {
                     given = None;
                     continue;

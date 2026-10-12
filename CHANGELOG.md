@@ -29,7 +29,9 @@ for what the current release guarantees.
   producer id for that stream, except while a batch on it is in doubt: that
   batch keeps the width and id it was numbered by until it settles, and a
   re-send under a width that has since gone is refused with an error saying
-  so. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  so. The new `IdempotentProducer::abandon_in_doubt(tenant, namespace, stream)`
+  gives such batches up and numbers the stream afresh under a new id; an
+  abandoned batch may land twice. `IdempotentProducer::producer_id` keeps returning the first id; the new
   `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
   id a stream's batches go out under. Older brokers and
   clients exchange the frames they always did.

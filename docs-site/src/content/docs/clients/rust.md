@@ -435,7 +435,10 @@ a fresh producer id for that stream, so they never meet sequences a leader
 still holds. While a batch on the stream is in doubt it does not: the batch
 may have landed, and only a re-send under the width and id it was numbered by
 is answered as a duplicate. Until it settles, a re-send under a width that
-has gone is refused with an error that says so. `IdempotentProducer::producer_id`
+has gone is refused with an error that says so. If the width will not come
+back, `abandon_in_doubt(tenant, namespace, stream)` gives those batches up
+and numbers the stream afresh under a new id; an abandoned batch may land
+twice. `IdempotentProducer::producer_id`
 keeps returning the first id; `producer_id_for(tenant, namespace, stream)`
 returns the one a stream's batches go out under.
 
