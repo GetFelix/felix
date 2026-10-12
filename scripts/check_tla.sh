@@ -233,8 +233,6 @@ fi
 # configuration going to the least loaded, so one long run does not land on
 # top of others and push a job past its hour.
 weights=(
-  "FelixGroupsSplitSources 46"
-  "FelixGroups 43"
   "FelixShardFencedAckMoveShort 31"
   "FelixShardFencedAckMoveCancelShort 30"
   "FelixShardFencedAckStagedMoveShort 26"
@@ -242,7 +240,9 @@ weights=(
   "FelixShardFencedCache 22"
   "FelixShardReadsRound 21"
   "FelixShardSessionsGroupRound 16"
+  "FelixGroupsSplitSources 17"
   "FelixShardFencedAck 12"
+  "FelixGroups 12"
   "FelixShardFigure8CutOver 9"
   "FelixShard 7"
   "FelixShardFencedPromotion 7"
