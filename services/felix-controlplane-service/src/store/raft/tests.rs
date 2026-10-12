@@ -762,3 +762,70 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
         Some(1_000)
     );
 }
+
+/// With a member that predates the combined entries, an auth change and its
+/// revocation, and a refresh rotation, still go through as the separate
+/// entries that member can apply.
+#[tokio::test]
+async fn combined_writes_fall_back_below_their_level() {
+    use crate::auth::rbac::policy_store::PolicyRule;
+    use crate::auth::refresh_token::RefreshTokenTake;
+    use crate::store::{AuthChange, Revocation};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, _version) = store_with_member_at(dir.path(), 8).await;
+    let policy = PolicyRule {
+        subject: "p:alice".to_string(),
+        object: "tenant:t1".to_string(),
+        action: "stream.publish".to_string(),
+    };
+    store
+        .add_rbac_policy("t1", policy.clone())
+        .await
+        .expect("policy");
+    store
+        .change_auth(
+            "t1",
+            AuthChange::RemovePolicy(policy),
+            Some(Revocation {
+                principal_ids: vec!["p:alice".to_string()],
+                revoked_at: 100,
+            }),
+        )
+        .await
+        .expect("change");
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "p:alice")
+            .await
+            .expect("read"),
+        Some(100)
+    );
+
+    let (token, _) =
+        crate::auth::refresh::issue("t1", "p:alice", vec![], None, 1, Duration::from_secs(60));
+    let (next, _) = crate::auth::refresh::issue(
+        "t1",
+        "p:alice",
+        vec![],
+        Some(token.family_id.clone()),
+        1,
+        Duration::from_secs(60),
+    );
+    let next_id = next.token_id.clone();
+    store
+        .insert_refresh_token(token.clone())
+        .await
+        .expect("insert");
+    let take = store
+        .rotate_refresh_token("t1", &token.token_id, 1, next)
+        .await
+        .expect("rotate");
+    assert!(matches!(take, RefreshTokenTake::Taken(_)), "{take:?}");
+    assert!(
+        store
+            .peek_refresh_token("t1", &next_id)
+            .await
+            .expect("peek")
+            .is_some()
+    );
+}

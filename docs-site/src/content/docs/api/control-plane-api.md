@@ -221,10 +221,12 @@ RBAC endpoints are split by capability:
 Removing a policy or a grouping also revokes the broker tokens of everyone the
 rule reached, so their open streams end and they authenticate again under the
 rules as they are now. A rule that reached an IdP group revokes the whole
-tenant, and so does deleting an IdP issuer or changing how its tokens are read.
-If the revocation cannot be recorded after a few tries, the request answers
-`500` although the change was made; revoke the principals with
-`refresh-tokens/revoke`. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+tenant, and so does deleting an IdP issuer or narrowing or replacing what it
+trusts (an audience dropped, the subject or groups claim changed, or `jwks_url`
+or `discovery_url` changed; adding an audience revokes nobody). The change and
+its revocation are one write, so a failed request changed nothing and is safe
+to retry. `refresh-tokens/revoke` with `"principal_id": "*"` revokes a whole
+tenant by hand. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
 
 - `GET /v1/principal-revocations/changes?since=<n>` -> requires
   `node.view:cluster:*`. The feed brokers poll: `{"items": [{"seq",

@@ -1390,6 +1390,33 @@ impl AuthStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn peek_refresh_token(
+        &self,
+        _tenant_id: &str,
+        _token_id: &str,
+    ) -> StoreResult<Option<felix_controlplane_service::auth::refresh_token::RefreshToken>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        _tenant_id: &str,
+        _token_id: &str,
+        _now_secs: i64,
+        _next: felix_controlplane_service::auth::refresh_token::RefreshToken,
+    ) -> StoreResult<felix_controlplane_service::auth::refresh_token::RefreshTokenTake> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn change_auth(
+        &self,
+        _tenant_id: &str,
+        _change: felix_controlplane_service::store::AuthChange,
+        _revocation: Option<felix_controlplane_service::store::Revocation>,
+    ) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn revoke_refresh_family(&self, _tenant_id: &str, _family_id: &str) -> StoreResult<u64> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

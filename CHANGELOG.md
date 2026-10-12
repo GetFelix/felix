@@ -23,16 +23,27 @@ for what the current release guarantees.
   grants the gateway `token.delegate`.
 - Revocation cutoffs are read on the Raft leader when minting or delegating,
   so a member that has not applied a revocation yet no longer mints past it.
-- Deleting an IdP issuer, or changing how its tokens are read, revokes the
-  tenant's sessions, as removing a rule that reached an IdP group does.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts (an
+  audience dropped, the subject or groups claim changed, or `jwks_url` or
+  `discovery_url` changed), revokes the tenant's sessions, as removing a rule
+  that reached an IdP group does. Adding an audience revokes nobody.
 
 ### Changed
-- An RBAC removal whose revocation cannot be recorded is retried, then
-  answered with `500`, instead of succeeding with only a log line. A Raft
-  control plane part-way through an upgrade still succeeds with a warning.
-- `/token/refresh` does its store reads before spending the refresh token, so
-  a failed read no longer turns the client's retry into a replay that ends
+- An auth change that takes rights back (an RBAC rule removed, an issuer
+  deleted or narrowed) and its revocation are one store write: one Raft entry
+  (metadata level 9) or one Postgres transaction. A failed request changed
+  nothing and is safe to retry. Below level 9 the Raft proposer writes them
+  separately, as before.
+- `/token/refresh` does its store reads before spending the refresh token, and
+  spends it in the same write that stores the replacement (Raft level 9), so a
+  failed refresh no longer turns the client's retry into a replay that ends
   the chain.
+- `/token/delegate` reads the subject's and the caller's revocation cutoffs in
+  one leader read.
+
+**Upgrade note.** A Raft control plane needs every member at metadata level 9
+before auth changes and their revocations, and refresh rotations, are single
+entries.
 
 ### Added
 - Brokers export `felix_revocation_feed_last_success_seconds` (set when they

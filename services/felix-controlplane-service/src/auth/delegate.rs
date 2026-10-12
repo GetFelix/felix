@@ -170,22 +170,25 @@ pub async fn delegate_token(
         ));
     }
     check_may_act(&subject, &actor.sub, delegate_unbound_tokens())?;
+    // Both cutoffs in one read; each already counts the whole tenant's.
+    let cutoffs = state
+        .store
+        .principals_revoked_at(&tenant_id, &[subject.sub.clone(), actor.sub.clone()])
+        .await
+        .map_err(|err| api_internal("failed to load revocations", &err))?;
+    let (subject_cutoff, actor_cutoff) = (cutoffs[0], cutoffs[1]);
     // The caller's own token proves nothing about now: one issued before its
     // principal was revoked stays valid here until it expires.
-    if let Some(reason) = actor_cut_off(&state, &tenant_id, &actor.sub, actor.iat).await? {
+    if let Some(reason) =
+        actor_refusal(&state, &tenant_id, &actor.sub, actor.iat, actor_cutoff).await?
+    {
         return Err(refused(Refusal::ActorRefused, reason));
     }
     // A revoked token stays revoked: delegating it would mint one newer than
     // the revocation.
-    for principal in [&subject.sub, &actor.sub] {
-        let revoked_at = state
-            .store
-            .principal_revoked_at(&tenant_id, principal)
-            .await
-            .map_err(|err| api_internal("failed to load revocations", &err))?;
-        if revoked_at.is_some_and(|revoked_at| subject.iat <= revoked_at) {
-            return Err(refused(Refusal::Forbidden, "the subject token was revoked"));
-        }
+    let latest_cutoff = subject_cutoff.max(actor_cutoff);
+    if latest_cutoff.is_some_and(|revoked_at| subject.iat <= revoked_at) {
+        return Err(refused(Refusal::Forbidden, "the subject token was revoked"));
     }
 
     let narrowing = Narrowing {
@@ -203,8 +206,7 @@ pub async fn delegate_token(
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }
 
-    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &subject.sub).await?;
-    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &actor.sub).await?;
+    crate::auth::revocation::wait_past(latest_cutoff).await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -276,6 +278,17 @@ pub(crate) async fn actor_cut_off(
         .principal_revoked_at(tenant_id, actor)
         .await
         .map_err(|err| api_internal("failed to load revocations", &err))?;
+    actor_refusal(state, tenant_id, actor, issued_at, revoked_at).await
+}
+
+/// [`actor_cut_off`] with the actor's cutoff already read.
+async fn actor_refusal(
+    state: &AppState,
+    tenant_id: &str,
+    actor: &str,
+    issued_at: i64,
+    revoked_at: Option<i64>,
+) -> Result<Option<&'static str>, ApiError> {
     if revoked_at.is_some_and(|revoked_at| issued_at <= revoked_at) {
         return Ok(Some("the actor was revoked"));
     }

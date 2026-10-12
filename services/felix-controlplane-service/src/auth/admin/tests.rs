@@ -53,14 +53,7 @@ async fn changing_an_issuer_revokes_the_tenant() {
         .await
         .expect("issuer");
 
-    upsert_idp_issuer(
-        Path("t1".to_string()),
-        State(state.clone()),
-        headers.clone(),
-        Json(issuer("https://idp.example", "roles")),
-    )
-    .await
-    .expect("changed");
+    upsert(&state, &headers, issuer("https://idp.example", "roles")).await;
     let changed = store
         .principal_revoked_at("t1", "anyone")
         .await
@@ -92,36 +85,48 @@ async fn deleting_an_issuer_revokes_the_tenant() {
     );
 }
 
-/// A removal whose revocation cannot be recorded is answered as an error
-/// after the retries, so the caller knows the sessions kept their rights.
+/// A removal and its revocation are one write: when it fails, the rule is
+/// still there and nobody was revoked, so the caller's retry does both.
 #[tokio::test]
-async fn a_removal_whose_revocation_fails_is_an_error() {
+async fn a_removal_and_its_revocation_succeed_or_fail_together() {
     let (state, store) = fixture().await;
     let headers = operator(&store).await;
-    let rule = || PolicyRule {
+    let rule = PolicyRule {
         subject: "p:alice".to_string(),
         object: "stream:t1/ns/feed".to_string(),
         action: "stream.publish".to_string(),
     };
-    let remove = |state: AppState, headers: HeaderMap| {
+    let remove = || {
         remove_policy(
             Path("t1".to_string()),
-            State(state),
-            headers,
+            State(state.clone()),
+            headers.clone(),
             Json(PolicyRequest {
-                subject: rule().subject,
-                object: rule().object,
-                action: rule().action,
+                subject: rule.subject.clone(),
+                object: rule.object.clone(),
+                action: rule.action.clone(),
             }),
         )
     };
-
-    // One failure is retried.
-    store.add_rbac_policy("t1", rule()).await.expect("policy");
-    store.faults.revocation_writes.store(1, Ordering::SeqCst);
-    remove(state.clone(), headers.clone())
+    store
+        .add_rbac_policy("t1", rule.clone())
         .await
-        .expect("retried");
+        .expect("policy");
+
+    store.faults.revocation_writes.store(1, Ordering::SeqCst);
+    let err = remove().await.expect_err("the write failed");
+    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let policies = store.list_rbac_policies("t1").await.expect("policies");
+    assert!(policies.contains(&rule), "removed without its revocation");
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "p:alice")
+            .await
+            .expect("read"),
+        None
+    );
+
+    remove().await.expect("the retry does both");
     assert!(
         store
             .principal_revoked_at("t1", "p:alice")
@@ -129,14 +134,50 @@ async fn a_removal_whose_revocation_fails_is_an_error() {
             .expect("read")
             .is_some()
     );
+}
 
-    // Failures past the retries are answered.
-    store.add_rbac_policy("t1", rule()).await.expect("policy");
+async fn upsert(state: &AppState, headers: &HeaderMap, config: IdpIssuerConfig) {
+    upsert_idp_issuer(
+        Path("t1".to_string()),
+        State(state.clone()),
+        headers.clone(),
+        Json(config),
+    )
+    .await
+    .expect("upserted");
+}
+
+/// Widening an issuer takes nothing back, so it revokes nobody. Dropping an
+/// audience does.
+#[tokio::test]
+async fn only_a_narrowed_issuer_revokes_the_tenant() {
+    let (state, store) = fixture().await;
+    let headers = operator(&store).await;
+    let mut config = issuer("https://idp.example", "groups");
     store
-        .faults
-        .revocation_writes
-        .store(u32::MAX, Ordering::SeqCst);
-    let err = remove(state, headers).await.expect_err("not recorded");
-    store.faults.revocation_writes.store(0, Ordering::SeqCst);
-    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        .upsert_idp_issuer("t1", config.clone())
+        .await
+        .expect("issuer");
+
+    config.audiences.push("another".to_string());
+    upsert(&state, &headers, config.clone()).await;
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "anyone")
+            .await
+            .expect("read"),
+        None,
+        "an added audience narrows nothing"
+    );
+
+    config.audiences.retain(|audience| audience == "another");
+    upsert(&state, &headers, config).await;
+    assert!(
+        store
+            .principal_revoked_at("t1", "anyone")
+            .await
+            .expect("read")
+            .is_some(),
+        "a dropped audience revokes the tenant"
+    );
 }

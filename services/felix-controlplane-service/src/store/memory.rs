@@ -655,6 +655,30 @@ impl AuthStore for InMemoryStore {
         auth::remove_rbac_grouping(self, tenant_id, &grouping).await
     }
 
+    async fn change_auth(
+        &self,
+        tenant_id: &str,
+        change: crate::store::AuthChange,
+        revocation: Option<crate::store::Revocation>,
+    ) -> StoreResult<()> {
+        #[cfg(test)]
+        if revocation.is_some() {
+            Faults::take(&self.faults.revocation_writes)?;
+        }
+        auth::change_auth(self, tenant_id, change).await?;
+        // Nothing below can fail, so the pair is all or nothing.
+        if let Some(revocation) = revocation {
+            revocations::revoke_principals(
+                self,
+                tenant_id,
+                revocation.principal_ids,
+                revocation.revoked_at,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
         auth::get_tenant_signing_keys(self, tenant_id).await
     }
@@ -725,6 +749,8 @@ impl AuthStore for InMemoryStore {
     }
 
     async fn insert_refresh_token(&self, token: RefreshToken) -> StoreResult<()> {
+        #[cfg(test)]
+        Faults::take(&self.faults.refresh_writes)?;
         refresh_tokens::insert_refresh_token(self, token).await
     }
 
@@ -735,6 +761,26 @@ impl AuthStore for InMemoryStore {
         now_secs: i64,
     ) -> StoreResult<RefreshTokenTake> {
         refresh_tokens::take_refresh_token(self, tenant_id, token_id, now_secs).await
+    }
+
+    async fn peek_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+    ) -> StoreResult<Option<RefreshToken>> {
+        refresh_tokens::peek_refresh_token(self, tenant_id, token_id).await
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+        now_secs: i64,
+        next: RefreshToken,
+    ) -> StoreResult<RefreshTokenTake> {
+        #[cfg(test)]
+        Faults::take(&self.faults.refresh_writes)?;
+        refresh_tokens::rotate_refresh_token(self, tenant_id, token_id, now_secs, next).await
     }
 
     async fn revoke_refresh_family(&self, tenant_id: &str, family_id: &str) -> StoreResult<u64> {
@@ -776,7 +822,27 @@ impl AuthStore for InMemoryStore {
         tenant_id: &str,
         principal_id: &str,
     ) -> StoreResult<Option<i64>> {
+        #[cfg(test)]
+        self.faults
+            .cutoff_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         revocations::principal_revoked_at(self, tenant_id, principal_id).await
+    }
+
+    async fn principals_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_ids: &[String],
+    ) -> StoreResult<Vec<Option<i64>>> {
+        #[cfg(test)]
+        self.faults
+            .cutoff_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut cutoffs = Vec::with_capacity(principal_ids.len());
+        for principal_id in principal_ids {
+            cutoffs.push(revocations::principal_revoked_at(self, tenant_id, principal_id).await?);
+        }
+        Ok(cutoffs)
     }
 }
 
@@ -847,6 +913,9 @@ impl ShardState {
 pub(crate) struct Faults {
     pub(crate) rbac_reads: std::sync::atomic::AtomicU32,
     pub(crate) revocation_writes: std::sync::atomic::AtomicU32,
+    pub(crate) refresh_writes: std::sync::atomic::AtomicU32,
+    /// Counts reads of revocation cutoffs, not a failure.
+    pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
 }
 
 #[cfg(test)]

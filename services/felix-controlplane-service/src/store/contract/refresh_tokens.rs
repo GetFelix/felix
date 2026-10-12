@@ -66,6 +66,58 @@ pub(crate) async fn run_refresh_contract(store: Arc<dyn crate::store::ControlPla
     revoking_a_principal_leaves_other_principals_alone(store).await;
     the_stored_record_carries_the_claims_a_refresh_needs(store).await;
     purging_removes_only_what_has_expired(store).await;
+    a_rotation_spends_and_stores_together(store).await;
+}
+
+async fn a_rotation_spends_and_stores_together(store: &dyn crate::store::ControlPlaneAuthStore) {
+    store
+        .insert_refresh_token(token("rotated", "family-rotated"))
+        .await
+        .expect("insert");
+    let peeked = store
+        .peek_refresh_token(TENANT, "rotated")
+        .await
+        .expect("peek")
+        .expect("stored");
+    assert!(!peeked.used, "a peek does not spend");
+
+    let first = store
+        .rotate_refresh_token(
+            TENANT,
+            "rotated",
+            NOW,
+            token("rotated-next", "family-rotated"),
+        )
+        .await
+        .expect("rotate");
+    assert!(matches!(first, RefreshTokenTake::Taken(_)), "{first:?}");
+    assert!(
+        store
+            .peek_refresh_token(TENANT, "rotated-next")
+            .await
+            .expect("peek")
+            .is_some(),
+        "the replacement is stored with the spend"
+    );
+
+    let again = store
+        .rotate_refresh_token(
+            TENANT,
+            "rotated",
+            NOW,
+            token("rotated-other", "family-rotated"),
+        )
+        .await
+        .expect("rotate");
+    assert!(matches!(again, RefreshTokenTake::Replayed(_)), "{again:?}");
+    assert!(
+        store
+            .peek_refresh_token(TENANT, "rotated-other")
+            .await
+            .expect("peek")
+            .is_none(),
+        "nothing is stored when nothing is spent"
+    );
 }
 
 async fn a_stored_token_can_be_spent_once(store: &dyn crate::store::ControlPlaneAuthStore) {

@@ -39,6 +39,45 @@ pub(super) async fn take_refresh_token(
     Ok(RefreshTokenTake::Taken(Box::new(token.clone())))
 }
 
+pub(super) async fn peek_refresh_token(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    token_id: &str,
+) -> StoreResult<Option<RefreshToken>> {
+    Ok(store
+        .refresh_tokens
+        .read()
+        .await
+        .get(&(tenant_id.to_string(), token_id.to_string()))
+        .cloned())
+}
+
+pub(super) async fn rotate_refresh_token(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    token_id: &str,
+    now_secs: i64,
+    next: RefreshToken,
+) -> StoreResult<RefreshTokenTake> {
+    // One lock for the spend and the insert, so no reader sees one without
+    // the other.
+    let mut tokens = store.refresh_tokens.write().await;
+    let key = (tenant_id.to_string(), token_id.to_string());
+    let Some(token) = tokens.get_mut(&key) else {
+        return Ok(RefreshTokenTake::Unusable);
+    };
+    if token.used {
+        return Ok(RefreshTokenTake::Replayed(Box::new(token.clone())));
+    }
+    if !token.is_live(now_secs) {
+        return Ok(RefreshTokenTake::Unusable);
+    }
+    token.used = true;
+    let taken = token.clone();
+    tokens.insert((next.tenant_id.clone(), next.token_id.clone()), next);
+    Ok(RefreshTokenTake::Taken(Box::new(taken)))
+}
+
 pub(super) async fn revoke_refresh_family(
     store: &InMemoryStore,
     tenant_id: &str,

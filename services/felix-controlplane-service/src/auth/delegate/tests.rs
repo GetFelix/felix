@@ -858,3 +858,50 @@ async fn a_gateways_connection_only_chain_still_refreshes() {
     .await
     .expect("refreshed");
 }
+
+/// A failed rotation leaves the presented refresh token unspent, so the
+/// client's retry is not a replay.
+#[tokio::test]
+async fn a_failed_rotation_does_not_spend_the_refresh_token() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
+    fixture
+        .memory
+        .faults
+        .refresh_writes
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let err = refresh(&fixture, bound.refresh_token.clone())
+        .await
+        .expect_err("the write failed");
+    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let Json(_) = refresh(&fixture, bound.refresh_token)
+        .await
+        .expect("the retry is not a replay");
+}
+
+/// `/token/delegate` reads the subject's and the caller's cutoffs once, which
+/// under Raft is one read-index on the leader.
+#[tokio::test]
+async fn a_delegation_reads_revocations_once() {
+    let fixture = fixture().await;
+    let token = alice_token(&fixture.keys, "t1", Duration::from_secs(120));
+    let reads = || {
+        fixture
+            .memory
+            .faults
+            .cutoff_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let before = reads();
+    delegate(
+        &fixture,
+        "t1",
+        caller(&fixture.keys, &["token.delegate:tenant:t1"]),
+        request(token),
+    )
+    .await
+    .expect("delegated");
+    assert_eq!(reads() - before, 1);
+}

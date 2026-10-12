@@ -69,12 +69,18 @@ pub(crate) enum LeaderRequest {
     ReleasePlacementLease {
         holder: String,
     },
-    /// A principal's revocation cutoff, read on the leader so a member that
+    /// Principals' revocation cutoffs, read on the leader so a member that
     /// has not applied a revocation yet does not mint past it. A leader that
     /// predates it fails to read it, and the asker reads its own state.
-    PrincipalRevokedAt {
+    RevocationCutoffs {
         tenant_id: String,
-        principal_id: String,
+        principal_ids: Vec<String>,
+    },
+    /// A refresh token as the leader holds it, read without spending it, so
+    /// a refresh does not miss a token this member has not applied yet.
+    PeekRefreshToken {
+        tenant_id: String,
+        token_id: String,
     },
 }
 
@@ -238,23 +244,43 @@ impl SoftState {
                 self.acquire_lease(&holder, ttl_millis).await
             }
             LeaderRequest::ReleasePlacementLease { holder } => self.release_lease(&holder).await,
-            LeaderRequest::PrincipalRevokedAt {
+            LeaderRequest::RevocationCutoffs {
                 tenant_id,
-                principal_id,
+                principal_ids,
             } => {
                 // Read-index first: a deposed leader may be missing the
                 // revocation the asker needs.
-                if !self.handle.confirm_leadership().await {
-                    return Err(NotLeader);
-                }
+                self.confirm_read().await?;
                 Ok(self
                     .machine
                     .store()
-                    .principal_revoked_at(&tenant_id, &principal_id)
+                    .principals_revoked_at(&tenant_id, &principal_ids)
                     .await
-                    .map(|revoked_at| MetaResponse::RevokedAt { revoked_at })
+                    .map(|cutoffs| MetaResponse::RevokedAt { cutoffs })
                     .map_err(Into::into))
             }
+            LeaderRequest::PeekRefreshToken {
+                tenant_id,
+                token_id,
+            } => {
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .peek_refresh_token(&tenant_id, &token_id)
+                    .await
+                    .map(|token| MetaResponse::RefreshToken { token })
+                    .map_err(Into::into))
+            }
+        }
+    }
+
+    /// A read-index before answering a read, bounded as a heartbeat's is.
+    async fn confirm_read(&self) -> Result<(), NotLeader> {
+        if self.handle.confirm_leadership_within(CONFIRM_WITHIN).await {
+            Ok(())
+        } else {
+            Err(NotLeader)
         }
     }
 

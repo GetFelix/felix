@@ -202,49 +202,41 @@ pub async fn refresh_token_handler(
     };
 
     let now = now_secs();
-    let take = state
+    let Some(found) = state
         .store
-        .take_refresh_token(&tenant_id, token_id, now)
+        .peek_refresh_token(&tenant_id, token_id)
         .await
-        .map_err(|err| api_internal("failed to read refresh token", &err))?;
-
-    let record = match take {
-        RefreshTokenTake::Taken(record) => *record,
-        RefreshTokenTake::Replayed(record) => {
-            // Nobody legitimately presents a spent token. Either it was stolen
-            // and used, or it was used and stolen; the store cannot tell which
-            // holder is which, so the chain ends for both and whoever is
-            // genuine re-exchanges.
-            tracing::warn!(
-                tenant_id = %tenant_id,
-                principal_id = %record.principal_id,
-                family_id = %record.family_id,
-                "a spent refresh token was presented again; revoking the rotation chain",
-            );
-            metrics::counter!("felix_refresh_token_replays_total").increment(1);
-            let revoked = state
-                .store
-                .revoke_refresh_family(&tenant_id, &record.family_id)
-                .await
-                .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
-            metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
-            return Err(unusable());
-        }
-        RefreshTokenTake::Unusable => return Err(unusable()),
-    };
-
-    // The secret is checked after the token is spent, deliberately. A wrong
-    // secret against a real token id means someone has half a credential, and
-    // letting that attempt leave the token usable would make guessing free.
-    if refresh_token::hash_secret(secret) != record.secret_hash {
-        metrics::counter!("felix_refresh_token_bad_secret_total").increment(1);
+        .map_err(|err| api_internal("failed to read refresh token", &err))?
+    else {
         return Err(unusable());
+    };
+    let cutoff = state
+        .store
+        .principal_revoked_at(&tenant_id, &found.principal_id)
+        .await
+        .map_err(|err| api_internal("failed to load revocations", &err))?;
+
+    // A wrong secret against a real token id means someone has half a
+    // credential, so it spends the token: leaving it usable would make
+    // guessing free.
+    if refresh_token::hash_secret(secret) != found.secret_hash {
+        let take = state
+            .store
+            .take_refresh_token(&tenant_id, token_id, now)
+            .await
+            .map_err(|err| api_internal("failed to read refresh token", &err))?;
+        return Err(match take {
+            RefreshTokenTake::Replayed(record) => replayed(&state, &tenant_id, &record).await?,
+            RefreshTokenTake::Taken(_) => {
+                metrics::counter!("felix_refresh_token_bad_secret_total").increment(1);
+                unusable()
+            }
+            RefreshTokenTake::Unusable => unusable(),
+        });
     }
 
-    // The chain keeps its exchange's audience. Checked after the spend, since
-    // the stored audience is only known then; a mismatch is still refused
-    // before anything is minted.
-    let audience = match &record.narrowing {
+    // The chain keeps its exchange's audience.
+    let audience = match &found.narrowing {
         Some(narrowing) => {
             let stored = crate::auth::exchange::token_audience(Some(&narrowing.audience))?;
             if request.audience.is_some() && requested_audience != stored {
@@ -256,6 +248,34 @@ pub async fn refresh_token_handler(
         }
         None => requested_audience,
     };
+
+    // The replacement stays in the same family, so a replay of any token in
+    // the chain can end the whole chain. It is stored in the same write that
+    // spends the token presented: a write that failed in between would leave
+    // the chain spent, and the client's retry would look like a replay.
+    let ttl = refresh_ttl();
+    let (mut next, next_secret) = issue(
+        &tenant_id,
+        &found.principal_id,
+        found.groups.clone(),
+        Some(found.family_id.clone()),
+        now,
+        ttl,
+    );
+    next.narrowing = found.narrowing.clone();
+    let take = state
+        .store
+        .rotate_refresh_token(&tenant_id, token_id, now, next)
+        .await
+        .map_err(|err| api_internal("failed to rotate refresh token", &err))?;
+    let record = match take {
+        RefreshTokenTake::Taken(record) => *record,
+        RefreshTokenTake::Replayed(record) => {
+            return Err(replayed(&state, &tenant_id, &record).await?);
+        }
+        RefreshTokenTake::Unusable => return Err(unusable()),
+    };
+    metrics::counter!("felix_refresh_tokens_issued_total", "via" => "refresh").increment(1);
 
     // Re-evaluated, never carried over: a grant removed since the last exchange
     // has to stop working at the next refresh.
@@ -321,18 +341,7 @@ pub async fn refresh_token_handler(
         ));
     }
 
-    // The token is spent, so a failed read here must not fail the refresh.
-    // Without the wait, a token minted in a revocation's second is refused by
-    // brokers and the client refreshes again.
-    if let Err(err) =
-        crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &record.principal_id).await
-    {
-        tracing::warn!(
-            tenant_id = %tenant_id,
-            status = %err.status,
-            "could not read revocations for a refresh; minting without waiting",
-        );
-    }
+    crate::auth::revocation::wait_past(cutoff).await;
     let access_ttl = crate::auth::exchange::access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,
@@ -348,25 +357,6 @@ pub async fn refresh_token_handler(
     )
     .map_err(|_| api_internal_message("failed to mint token"))?;
 
-    // The replacement stays in the same family, so a replay of any token in the
-    // chain can end the whole chain.
-    let ttl = refresh_ttl();
-    let (mut next, next_secret) = issue(
-        &tenant_id,
-        &record.principal_id,
-        record.groups.clone(),
-        Some(record.family_id.clone()),
-        now,
-        ttl,
-    );
-    next.narrowing = record.narrowing.clone();
-    state
-        .store
-        .insert_refresh_token(next)
-        .await
-        .map_err(|err| api_internal("failed to store refresh token", &err))?;
-    metrics::counter!("felix_refresh_tokens_issued_total", "via" => "refresh").increment(1);
-
     Ok(Json(TokenRefreshResponse {
         felix_token,
         expires_in: access_ttl.as_secs(),
@@ -374,6 +364,34 @@ pub async fn refresh_token_handler(
         refresh_token: next_secret,
         refresh_expires_in: ttl.as_secs(),
     }))
+}
+
+/// Answer a spent refresh token presented again. Nobody legitimately does
+/// that: either it was stolen and used, or used and stolen, and the store
+/// cannot tell which holder is which, so the chain ends for both and whoever
+/// is genuine re-exchanges.
+async fn replayed(
+    state: &AppState,
+    tenant_id: &str,
+    record: &RefreshToken,
+) -> Result<ApiError, ApiError> {
+    tracing::warn!(
+        tenant_id = %tenant_id,
+        principal_id = %record.principal_id,
+        family_id = %record.family_id,
+        "a spent refresh token was presented again; revoking the rotation chain",
+    );
+    metrics::counter!("felix_refresh_token_replays_total").increment(1);
+    let revoked = state
+        .store
+        .revoke_refresh_family(tenant_id, &record.family_id)
+        .await
+        .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
+    metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
+    Ok(refused(
+        Refusal::RefreshRefused,
+        "refresh token is not usable",
+    ))
 }
 
 #[cfg(test)]

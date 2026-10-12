@@ -39,6 +39,14 @@ pub(super) async fn insert_refresh_token(
     store: &PostgresStore,
     token: RefreshToken,
 ) -> StoreResult<()> {
+    let mut conn = store.pool.acquire().await?;
+    insert_refresh_token_on(&mut conn, &token).await
+}
+
+async fn insert_refresh_token_on(
+    conn: &mut sqlx::PgConnection,
+    token: &RefreshToken,
+) -> StoreResult<()> {
     sqlx::query(
         r#"INSERT INTO refresh_tokens
                  (tenant_id, token_id, principal_id, groups, secret_hash, family_id,
@@ -62,13 +70,62 @@ pub(super) async fn insert_refresh_token(
             .map(serde_json::to_value)
             .transpose()?,
     )
-    .execute(&store.pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
 
 pub(super) async fn take_refresh_token(
     store: &PostgresStore,
+    tenant_id: &str,
+    token_id: &str,
+    now_secs: i64,
+) -> StoreResult<RefreshTokenTake> {
+    let mut conn = store.pool.acquire().await?;
+    take_refresh_token_on(&mut conn, tenant_id, token_id, now_secs).await
+}
+
+/// [`take_refresh_token`] and the insert of `next` in one transaction.
+pub(super) async fn rotate_refresh_token(
+    store: &PostgresStore,
+    tenant_id: &str,
+    token_id: &str,
+    now_secs: i64,
+    next: RefreshToken,
+) -> StoreResult<RefreshTokenTake> {
+    let mut tx = store.pool.begin().await?;
+    let take = take_refresh_token_on(&mut tx, tenant_id, token_id, now_secs).await?;
+    if matches!(take, RefreshTokenTake::Taken(_)) {
+        insert_refresh_token_on(&mut tx, &next).await?;
+    }
+    tx.commit().await?;
+    Ok(take)
+}
+
+pub(super) async fn peek_refresh_token(
+    store: &PostgresStore,
+    tenant_id: &str,
+    token_id: &str,
+) -> StoreResult<Option<RefreshToken>> {
+    let row = sqlx::query(
+        r#"SELECT principal_id, groups, secret_hash, family_id,
+                      issued_at_secs, expires_at_secs, used, revoked, narrowing
+               FROM refresh_tokens WHERE tenant_id = $1 AND token_id = $2"#,
+    )
+    .bind(tenant_id)
+    .bind(token_id)
+    .fetch_optional(&store.pool)
+    .await?;
+    row.map(|row| {
+        let used: bool = row.try_get("used")?;
+        let revoked: bool = row.try_get("revoked")?;
+        PostgresStore::refresh_row(tenant_id, token_id, &row, used, revoked)
+    })
+    .transpose()
+}
+
+async fn take_refresh_token_on(
+    conn: &mut sqlx::PgConnection,
     tenant_id: &str,
     token_id: &str,
     now_secs: i64,
@@ -87,7 +144,7 @@ pub(super) async fn take_refresh_token(
     .bind(tenant_id)
     .bind(token_id)
     .bind(now_secs)
-    .fetch_optional(&store.pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = updated {
@@ -106,7 +163,7 @@ pub(super) async fn take_refresh_token(
     )
     .bind(tenant_id)
     .bind(token_id)
-    .fetch_optional(&store.pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     let Some(row) = existing else {

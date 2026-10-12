@@ -329,7 +329,10 @@ Three properties make that safe:
   database read yields nothing presentable.
 - **Every refresh token is single-use.** Refreshing spends the one presented and
   hands back its replacement. A stolen copy is worth one use, not a month of
-  them.
+  them. The spend and the replacement are one store write, so a refresh that
+  fails leaves the token presented unspent and the retry is not a replay.
+  (Under Raft, until every member is at metadata version 9 they are two
+  writes, as before.)
 - **A replay revokes the whole chain.** Nobody legitimately presents a spent
   token, so seeing one means two parties hold the chain. Both lose it, and the
   genuine holder re-exchanges. This is what makes single use *detect* theft
@@ -378,7 +381,8 @@ valid until they expire, which is what the short access TTL bounds. A `409`
 means some control-plane member predates revocations: the refresh tokens are
 revoked, the broker sessions are not, and the call is safe to repeat once the
 upgrade finishes. Removing the principal's groupings stops the next refresh
-too, and ends its chain.
+too, and ends its chain. `"principal_id": "*"` revokes the broker tokens of
+every principal of the tenant.
 
 ### Revoking a principal
 
@@ -392,19 +396,24 @@ actor is. These record one:
   subject and everyone who reaches it through role assignments.
 - Removing a role assignment (`DELETE /v1/tenants/{t}/rbac/groupings`), for
   the assignment's user and everyone who reaches it.
-- Deleting an IdP issuer, or changing how its tokens are read (keys,
-  audiences, subject or groups claim), for every principal of the tenant.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts, for every
+  principal of the tenant. Narrowing means dropping an audience or changing
+  the subject or groups claim; replacing means changing `jwks_url` or
+  `discovery_url`, since the old key source is no longer trusted. Adding an
+  audience, or anything else that only widens, revokes nobody.
 
 When the subjects a removal reaches include an IdP group (`group:...`), the
 control plane cannot tell who its members are, so the revocation covers every
 principal of the tenant (`principal_id` `*`). Every broker session in the
-tenant then has to authenticate again. The change is made first and the
-revocation recorded after it, retried a few times. If it still cannot be
-recorded, the request answers `500` saying so, and the sessions keep their
-rights until their tokens expire or until `refresh-tokens/revoke` is called for
-them. The one exception is a Raft control plane part-way through an upgrade,
-which cannot record revocations at all: the change succeeds and the skipped
-revocation is logged as a warning.
+tenant then has to authenticate again. The change and its revocation are one
+store write (one Raft entry, one Postgres transaction), so either both happen
+or neither does, and a failed request is safe to retry.
+
+Under Raft, a group with a member below metadata version 9 makes them two
+writes, as older builds did. If the second one fails, the change stands and the
+sessions it reached keep their rights; below version 7 it is skipped with a
+warning. To end them by hand, call `refresh-tokens/revoke` with the principals
+the change reached, or with `"principal_id": "*"` for the whole tenant.
 
 Brokers poll `GET /v1/principal-revocations/changes?since=<n>` on the catalog
 sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), with the same
@@ -471,11 +480,12 @@ A cutoff and a token's `iat` are both wall-clock seconds, taken by whichever
 control-plane member served the request: the cutoff by the member that took
 the revoke call or the RBAC removal, `iat` by the member that minted the token.
 Under the Raft store, and with several replicas over one Postgres, these can be
-different machines. Every check of a cutoff when minting or delegating reads
-it on the Raft leader after a read-index, so it sees every revocation already
-acknowledged, whatever the asking member has applied. (While the leader
-predates that read, a member reads its own state, and its apply lag adds to the
-window below.)
+different machines. `/token/exchange`, `/token/delegate` and `/token/refresh`
+read cutoffs on the Raft leader after a read-index, so they see every
+revocation already acknowledged, whatever the asking member has applied. A
+read that fails fails the request, before a refresh token is spent. While the
+leader predates that read, a member reads its own state, and its apply lag
+adds to the window below.
 
 That leaves clock skew. A token minted just before a revocation, on a member
 whose clock runs `d` seconds ahead of the member that took the revocation, can
