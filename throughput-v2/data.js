@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791802624120,
+  "lastUpdate": 1791817435750,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28912,6 +28912,58 @@ window.BENCHMARK_DATA = {
             "range": "35026.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1551484.51\nmean: 1549874.58\nstdev: 35026.62\ncv: 2.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8844af0eace87c2e1f44e79bc1ead74f082b254e",
+          "message": "deps: read config YAML with serde-saphyr instead of serde_yaml_ng (#1212)\n\n* deps: read config YAML with serde-saphyr instead of serde_yaml_ng (#1211)\n\nserde_yaml_ng pulled in unsafe-libyaml, which RUSTSEC-2024-0449 marks\nunmaintained, and cargo deny fails on it. serde-saphyr is pure Rust and\nforbids unsafe in its own code.\n\nThe parser options are pinned in felix_common::yaml (and mirrored in\nfelix-client, which cannot depend on it) so config files keep the meaning\nthey had: only true/false are booleans, << is an ordinary key, duplicate\nkeys are refused, and errors do not quote the file.\n\n* deps: refuse unknown YAML tags, pin serde-saphyr to ~1.3 (#1211)\n\nUnknown tags such as `!custom` are refused. `!!binary` on a string is\nkept as written, because the old parser did that and decoding it would\nsilently change the value. The client's copy of the options is tested\nagainst the documented set, and felix-common's yaml tests now run without\nthe feature. The CHANGELOG is now exact about which errors still quote\nthe value and about cert_path.\n\n* deps: drop serde_yaml_ng from the Node and Python binding lockfiles (#1211)",
+          "timestamp": "2026-10-12T07:57:07-07:00",
+          "tree_id": "b37d6f00d42b8d59ec017187738e643b8f7afad6",
+          "url": "https://github.com/GetFelix/felix/commit/8844af0eace87c2e1f44e79bc1ead74f082b254e"
+        },
+        "date": 1791817434929,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337464.43,
+            "range": "10195.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337464.43\nmean: 336570.17\nstdev: 10195.66\ncv: 3.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337464.43,
+            "range": "10195.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337464.43\nmean: 336570.17\nstdev: 10195.66\ncv: 3.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80049.01,
+            "range": "527.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80049.01\nmean: 79986.89\nstdev: 527.22\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 800490.08,
+            "range": "5272.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 800490.08\nmean: 799868.91\nstdev: 5272.25\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
