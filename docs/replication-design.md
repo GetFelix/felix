@@ -572,8 +572,10 @@ elected leader waits for the lease until the control plane is back (issue
    set. A replica that knows a newer set refuses and names it. The candidate
    learns it and stops standing. It may stand again at a later generation,
    on that set from the start, if it is still a member, so each generation
-   is fenced on one set. A candidate that answers another's fence at a newer
-   generation has given its own up and does not open. Only a member of the
+   is fenced on one set. A leader or candidate that answers another's fence
+   at a newer generation has given its own up and stops leading at once,
+   rather than counting acknowledgements against a set it learned from
+   someone else. Only a member of the
    set it knows stands at all.
 4. *Opening.* As a promotion does: it takes the answer furthest ahead,
    writes its generation-start record and opens.
@@ -596,7 +598,9 @@ is fenced on one set, two majorities of one set share a replica, and that
 replica promised the generation to one leader only. That is why a refused
 candidate does not fence on at the same generation with the set it learned:
 the model's first version did, and TLC found two leaders at one generation,
-each with a majority of a different set. A record acknowledged at generation `g` sits on a majority of
+each with a majority of a different set. It is also why a leader that
+answers a newer fence stops: leading on, it counted a majority of the set it
+learned there and acknowledged a record the new set held on one replica. A record acknowledged at generation `g` sits on a majority of
 the set the leader counted. A later leader fences a majority of its own set,
 and if that is the same set the two majorities share a replica, which either
 held the record when it answered or refused the old leader after, so the

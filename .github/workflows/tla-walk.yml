@@ -110,6 +110,8 @@ jobs:
       matrix:
         config:
           - FelixShardElectHandoff
+          - FelixShardElectSet
+          - FelixShardElectAdopt
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove

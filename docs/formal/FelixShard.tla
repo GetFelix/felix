@@ -196,8 +196,8 @@
 (* sender's pair; a replica holding a newer one refuses it, and otherwise  *)
 (* adopts it. A refused candidate learns the newer set and stops; it may  *)
 (* stand again at a later generation (RefuseStaleSet), so a generation is *)
-(* fenced on one set only, and a leader opens only while it still holds   *)
-(* its own promise. Only a member of its own set stands. A set change     *)
+(* fenced on one set only. A leader or candidate that answers a newer      *)
+(* fence stops leading. Only a member of its own set stands. A set change *)
 (* fences too, on the new set, and with `JointFence` on a majority of the  *)
 (* old set as well (FelixShardElectSetNoJoint.cfg drops that half).        *)
 (*                                                                         *)
@@ -1102,6 +1102,11 @@ Ahead(f, b) ==
 \*
 \* Under `SetCheck` the fence carries the leader's set, as a batch does, and
 \* a member of the old set answers a set change's fence under `JointFence`.
+\* A leader or candidate that answers stops leading there and then: it has
+\* promised a newer generation away, and the set it just learned is not the
+\* one its own generation counts. Leading on, it counted a majority of the
+\* learned set and acknowledged a record the new set did not hold
+\* (FelixShardElectAdopt.cfg, AckedOnMajority).
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ f \in FenceMembers(b)
@@ -1111,9 +1116,16 @@ AnswerFence(b, f) ==
     /\ LearnSet(f, b)
     /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
     /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
-    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
-                    hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    fencing, confirmed, opened, oldSet >>
+    /\ IF SetCheck /\ bgen[f] > 0
+       THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
+            /\ fencing' = [fencing EXCEPT ![f] = FALSE]
+            /\ queued' = [queued EXCEPT ![f] = 0]
+            /\ pending' = [pending EXCEPT ![f] = 0]
+            /\ oldSet' = [oldSet EXCEPT ![f] = {}]
+       ELSE UNCHANGED << bgen, fencing, queued, pending, oldSet >>
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, hwm, halted, acked, writes, staleCommit,
+                    confirmed, opened >>
     /\ UNCHANGED placeVars
 
 \* A replica that knows a newer set than the one a fence carries refuses it
@@ -1145,12 +1157,8 @@ RefuseStaleSet(b, f) ==
 \* the answer furthest ahead by `Ahead`, taken before this.
 \*
 \* A set change under `JointFence` also needs a majority of the old set.
-\* Under `SetCheck` a leader opens only while it still holds its own
-\* promise: one that answered a newer leader's fence, and may have learned
-\* a newer set there, no longer counts itself at its generation.
 OpenForWrites(b) ==
     /\ fencing[b]
-    /\ SetCheck => promised[b] = bgen[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
     /\ oldSet[b] /= {} => MajorityOf(answered[b] \cup {b}, oldSet[b])
     /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
