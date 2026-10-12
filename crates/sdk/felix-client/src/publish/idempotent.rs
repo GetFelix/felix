@@ -40,6 +40,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use super::routing::{StreamKey as RoutingStreamKey, StreamKeyRef as RoutingStreamKeyRef};
 use super::{StreamWidths, Width};
 use crate::client::Client;
 use crate::cluster::{Attempt, ClusterClient, Next, Retrying};
@@ -85,7 +86,9 @@ impl IdempotentProducer {
             producer_id,
             leaders: Mutex::new(HashMap::new()),
             widths: None,
-            numbered_by: std::sync::Mutex::new(HashMap::new()),
+            numbered_by: std::sync::Mutex::new(hashbrown::HashMap::with_hasher(
+                ahash::RandomState::new(),
+            )),
         };
         Self {
             producer_id,
@@ -94,7 +97,8 @@ impl IdempotentProducer {
         }
     }
 
-    /// The id the broker assigned this producer.
+    /// The id the broker assigned this producer. A stream created again at
+    /// another width is numbered from then on under a fresh id of its own.
     pub fn producer_id(&self) -> u64 {
         self.producer_id
     }
@@ -305,10 +309,14 @@ struct Driver {
     /// cadence against a broker that checks declared widths, and dropped on
     /// `stale_width` or `not_found`. Set when the driver starts.
     widths: Option<Arc<StreamWidths>>,
-    /// The width each keyed stream's cursors number by. A different one
-    /// (the stream was created again) resets the stream's cursors, since its
-    /// shards are not the shards they counted.
-    numbered_by: std::sync::Mutex<HashMap<StreamKey, Arc<Width>>>,
+    /// Per stream: the width its keyed cursors number by, and the producer
+    /// id its batches go out under. A different width resets the stream's
+    /// cursors under a fresh id: its shards are not the shards they counted,
+    /// and a leader may still hold this id's sequences for them (a width
+    /// that flapped back, or a log that outlived the stream).
+    numbered_by: std::sync::Mutex<
+        hashbrown::HashMap<RoutingStreamKey, (Arc<Width>, u64), ahash::RandomState>,
+    >,
 }
 
 impl Driver {
@@ -339,8 +347,11 @@ impl Driver {
                 }
             };
             let key = (tenant_id, namespace, stream, shard);
-            if let Some(width) = width {
-                self.number_by(&mut cursors, &key, width).await;
+            if let Some(width) = width
+                && let Err(err) = self.number_by(&mut cursors, &key, width).await
+            {
+                let _ = answer.send(Err(err));
+                continue;
             }
             let result = self
                 .publish_on_shard(&mut cursors, &key, routing_key, batches)
@@ -690,9 +701,9 @@ impl Driver {
                 &key.2,
                 routing_key,
                 key.3,
-                routing_key.and_then(|_| self.numbering(key)),
+                routing_key.and_then(|_| self.numbering(key).0),
                 batches,
-                self.producer_id,
+                self.numbering(key).1,
                 first,
             )
             .await;
@@ -721,41 +732,77 @@ impl Driver {
         }
     }
 
-    /// The width a shard's cursor numbers by, for routing its batches.
-    fn numbering(&self, key: &ShardKey) -> Option<Arc<Width>> {
-        self.numbered_by
+    /// The width a shard's keyed cursor numbers by, for routing its batches,
+    /// and the producer id the stream's batches go out under.
+    fn numbering(&self, key: &ShardKey) -> (Option<Arc<Width>>, u64) {
+        match self
+            .numbered_by
             .lock()
             .expect("numbered by")
-            .get(&(key.0.clone(), key.1.clone(), key.2.clone()))
-            .cloned()
+            .get(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
+        {
+            Some((width, producer_id)) => (Some(Arc::clone(width)), *producer_id),
+            None => (None, self.producer_id),
+        }
     }
 
-    /// Start the stream's cursors again if `width` is not the one they
-    /// counted under. Only a stream created again changes width, and its
-    /// shards have no sequences from before.
+    /// A producer id from the broker the source uses.
+    async fn fresh_producer_id(&self) -> Result<u64> {
+        let client = match &self.source {
+            Source::Single(client) => Arc::clone(client),
+            Source::Cluster(cluster) => cluster.client().await,
+        };
+        client
+            .producer_init()
+            .await
+            .context("take a fresh producer id for a stream created again")
+    }
+
+    /// Start the stream's cursors again, under a fresh producer id, if
+    /// `width` is not the one they counted under. Only a stream created again
+    /// changes width, and its shards have no sequences from this producer it
+    /// should continue; the fresh id keeps the new ones from meeting old
+    /// ones a leader still holds.
     async fn number_by(
         &self,
         cursors: &mut HashMap<ShardKey, Cursor>,
         key: &ShardKey,
         width: Arc<Width>,
-    ) {
-        let stream = (key.0.clone(), key.1.clone(), key.2.clone());
-        let previous = self
+    ) -> Result<()> {
+        let held = self
             .numbered_by
             .lock()
             .expect("numbered by")
-            .insert(stream, Arc::clone(&width));
-        if previous.is_some_and(|previous| {
-            (previous.shards, previous.routing) != (width.shards, width.routing)
-        }) {
-            let same_stream =
-                |shard: &ShardKey| shard.0 == key.0 && shard.1 == key.1 && shard.2 == key.2;
-            cursors.retain(|shard, _| !same_stream(shard));
-            self.leaders
-                .lock()
-                .await
-                .retain(|shard, _| !same_stream(shard));
+            .get(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
+            .map(|(held, _)| (held.shards, held.routing));
+        match held {
+            None => {
+                self.numbered_by.lock().expect("numbered by").insert(
+                    RoutingStreamKey::new(&key.0, &key.1, &key.2),
+                    (width, self.producer_id),
+                );
+            }
+            Some(held) if held == (width.shards, width.routing) => {}
+            Some(_) => {
+                let producer_id = self.fresh_producer_id().await?;
+                if let Some(entry) = self
+                    .numbered_by
+                    .lock()
+                    .expect("numbered by")
+                    .get_mut(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
+                {
+                    *entry = (width, producer_id);
+                }
+                let same_stream =
+                    |shard: &ShardKey| shard.0 == key.0 && shard.1 == key.1 && shard.2 == key.2;
+                cursors.retain(|shard, _| !same_stream(shard));
+                self.leaders
+                    .lock()
+                    .await
+                    .retain(|shard, _| !same_stream(shard));
+            }
         }
+        Ok(())
     }
 
     /// The shard a batch's sequence belongs to: 0 without a key, else the one
@@ -794,9 +841,6 @@ impl Driver {
         Ok((shard, Some(width)))
     }
 }
-
-/// A stream.
-type StreamKey = (String, String, String);
 
 /// One shard of one stream: what a sequence numbers.
 type ShardKey = (String, String, String, u32);

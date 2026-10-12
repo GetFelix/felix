@@ -198,13 +198,12 @@ impl ClusterClient {
     ) -> Result<Self> {
         let nodes = Arc::new(nodes::Nodes::new(server_name, config));
         let client = nodes.connect_any(seeds).await?;
-        let checked = client.supports_publish_width();
         let holder = Arc::new(RwLock::new(client));
         let cluster = Self {
             seeds: seeds.to_vec(),
             endpoints: RwLock::new(seeds.to_vec()),
             policy,
-            widths: cluster_widths(&holder, checked),
+            widths: cluster_widths(&holder),
             client: holder,
             owners: RwLock::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
@@ -349,6 +348,9 @@ struct Owner {
     /// mid-rebalance would otherwise take turns replacing each other.
     generation: u64,
     client: Arc<Client>,
+    /// The stream's width when this was learned; `None` for shard 0 of an
+    /// unkeyed publish.
+    width: Option<(u32, felix_wire::routing::ShardRouting)>,
 }
 
 #[cfg(test)]
@@ -356,7 +358,12 @@ mod tests;
 
 /// A cluster client's widths, asked of whichever client is in use when the
 /// question is asked. Re-asks go through that client's own re-ask stream.
-fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>, checked: bool) -> Arc<StreamWidths> {
+///
+/// Always declared and asked again, whatever the first broker negotiated:
+/// re-asking needs only `stream_shards`, and each declaration is sent only
+/// to a stream that negotiated it, and used for routing only by a client
+/// whose broker checks it.
+fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>) -> Arc<StreamWidths> {
     let learn: LearnWidth = {
         let client = Arc::clone(client);
         Arc::new(move |tenant_id, namespace, stream| {
@@ -378,5 +385,5 @@ fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>, checked: bool) -> Arc<Strea
             })
         })
     };
-    Arc::new(StreamWidths::new(learn, checked).rechecking_with(recheck))
+    Arc::new(StreamWidths::new(learn, true).rechecking_with(recheck))
 }

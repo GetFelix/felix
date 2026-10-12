@@ -202,6 +202,16 @@ impl StubBroker {
         self.seen.checks_width.store(true, Ordering::SeqCst);
     }
 
+    /// Delay every `stream_shards` answer by `millis`.
+    pub(super) fn delay_widths(&self, millis: u64) {
+        self.seen.width_latency.store(millis, Ordering::SeqCst);
+    }
+
+    /// The producer id and sequence of each idempotent batch it took.
+    pub(super) fn producer_sequences(&self) -> Vec<(u64, u64)> {
+        self.seen.producers.lock().unwrap().clone()
+    }
+
     /// `stream_shards` requests it answered.
     pub(super) fn width_asks(&self) -> usize {
         self.seen.width_asks.load(Ordering::SeqCst)
@@ -253,6 +263,12 @@ struct Seen {
     checks_width: Arc<AtomicBool>,
     width_asks: Arc<AtomicUsize>,
     widths_declared: Arc<AtomicUsize>,
+    /// Milliseconds each `stream_shards` answer waits before it is sent.
+    width_latency: Arc<AtomicU64>,
+    /// The producer id `producer_init` hands out next.
+    next_producer: Arc<AtomicU64>,
+    /// The producer id and sequence of each idempotent batch, in order.
+    producers: Arc<Mutex<Vec<(u64, u64)>>>,
 }
 
 impl Default for Seen {
@@ -273,17 +289,23 @@ impl Default for Seen {
             checks_width: Arc::default(),
             width_asks: Arc::default(),
             widths_declared: Arc::default(),
+            width_latency: Arc::default(),
+            next_producer: Arc::new(AtomicU64::new(1)),
+            producers: Arc::default(),
         }
     }
 }
 
 async fn serve_stream(
     connection: QuicConnection,
-    mut send: quinn::SendStream,
+    send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     script: Script,
     seen: Seen,
 ) -> Result<()> {
+    // Shared, so a delayed width answer can be written from a task of its
+    // own while later requests are read and answered.
+    let send = Arc::new(tokio::sync::Mutex::new(send));
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     // This stream's last `publish_width`, checked only if it advertised the
     // bit when the stream authenticated.
@@ -304,7 +326,10 @@ async fn serve_stream(
                     retry: None,
                     detail: None,
                 };
-                send.write_all(&binary_ack(id, refusal)?).await?;
+                send.lock()
+                    .await
+                    .write_all(&binary_ack(id, refusal)?)
+                    .await?;
                 continue;
             }
             seen.publishes.fetch_add(1, Ordering::SeqCst);
@@ -317,10 +342,17 @@ async fn serve_stream(
                     .lock()
                     .unwrap()
                     .push((batch.batch.key, producer.sequence));
+                seen.producers
+                    .lock()
+                    .unwrap()
+                    .push((producer.producer_id, producer.sequence));
             }
             let mut held = seen.acks_held.subscribe();
             held.wait_for(|held| !held).await?;
-            send.write_all(&binary_ack(id, script(id))?).await?;
+            send.lock()
+                .await
+                .write_all(&binary_ack(id, script(id))?)
+                .await?;
             continue;
         }
         match Message::decode(frame)? {
@@ -345,14 +377,14 @@ async fn serve_stream(
                     listener_ports: None,
                     publish_window: None,
                 };
-                write_message(&mut send, answer).await?;
+                write_message(&mut *send.lock().await, answer).await?;
             }
             Message::ProducerInit { request_id } => {
                 let answer = Message::ProducerInitOk {
                     request_id,
-                    producer_id: 1,
+                    producer_id: seen.next_producer.fetch_add(1, Ordering::SeqCst),
                 };
-                write_message(&mut send, answer).await?;
+                write_message(&mut *send.lock().await, answer).await?;
             }
             Message::PublishWidth { shards, .. } => {
                 seen.widths_declared.fetch_add(1, Ordering::SeqCst);
@@ -365,11 +397,22 @@ async fn serve_stream(
                     request_id,
                     routing: None,
                 };
-                write_message(&mut send, answer).await?;
+                // Each answer delayed on its own, as a network round trip is,
+                // so pipelined questions overlap their waits.
+                let latency = seen.width_latency.load(Ordering::SeqCst);
+                let send = Arc::clone(&send);
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(latency)).await;
+                    let _ = write_message(&mut *send.lock().await, answer).await;
+                });
             }
             Message::ShardOwners { request_id, .. } => {
                 let owners = seen.cache_owners.lock().unwrap().clone();
-                write_message(&mut send, Message::ShardOwnersView { owners, request_id }).await?;
+                write_message(
+                    &mut *send.lock().await,
+                    Message::ShardOwnersView { owners, request_id },
+                )
+                .await?;
             }
             // The script's error is the answer; anything else is success.
             Message::CachePut { request_id, .. } => {
@@ -379,7 +422,7 @@ async fn serve_stream(
                     error @ Message::Error { .. } => error,
                     _ => Message::CacheOk { request_id: id },
                 };
-                write_message(&mut send, answer).await?;
+                write_message(&mut *send.lock().await, answer).await?;
             }
             Message::CacheGet {
                 tenant_id,
@@ -401,7 +444,7 @@ async fn serve_stream(
                         version: None,
                     },
                 };
-                write_message(&mut send, answer).await?;
+                write_message(&mut *send.lock().await, answer).await?;
             }
             Message::Subscribe { shard, start, .. } => {
                 seen.subscribes.fetch_add(1, Ordering::SeqCst);
@@ -432,7 +475,7 @@ async fn serve_stream(
                     } => Some(*subscription_id),
                     _ => None,
                 };
-                write_message(&mut send, answer).await?;
+                write_message(&mut *send.lock().await, answer).await?;
                 if let Some(subscription_id) = opened {
                     let mut events = connection.open_uni().await?;
                     write_message(&mut events, Message::EventStreamHello { subscription_id })

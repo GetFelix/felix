@@ -428,10 +428,11 @@ before.
 
 A `ClusterClient` keeps its own widths, to pick the broker for a key, and an
 idempotent producer numbers each shard's batches by one. Both are dropped and
-asked again the same way. A producer's batches are routed and declared by the
-width they were numbered by, so a stale one is refused rather than taken on
-another shard's sequence; under a new width the producer's sequences start
-again, as the recreated stream's shards have none.
+asked again the same way, and a batch is routed and declared by the width that
+picked its broker or numbered it, so the broker that takes it checks that
+width. Under a new width a producer starts the stream's sequences again under
+a fresh producer id for that stream, so they never meet sequences a leader
+still holds; `IdempotentProducer::producer_id` keeps returning the first id.
 
 The ordering guarantee is per shard: every publish one client makes to one
 shard goes through one writer and one QUIC stream, so the shard holds them in

@@ -26,11 +26,17 @@ impl ClusterClient {
 
     /// Drop the stream's width when a publish to it says the width may be
     /// stale, so the next keyed publish asks again.
-    pub(super) fn forget_width_if_stale<T>(&self, key: &StreamKey, outcome: &Result<T>) {
+    pub(super) fn forget_width_if_stale<T>(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        outcome: &Result<T>,
+    ) {
         if let Err(err) = outcome
             && crate::publish::width_went_stale(err)
         {
-            self.widths.forget(&key.0, &key.1, &key.2);
+            self.widths.forget(tenant_id, namespace, stream);
         }
     }
 
@@ -47,6 +53,8 @@ impl ClusterClient {
         &self,
         key: ShardKey,
         owner: felix_wire::binary::PublishOwner,
+        // The width the shard number was worked out by, if keyed.
+        width: Option<(u32, felix_wire::routing::ShardRouting)>,
     ) {
         // Nowhere to route to. The cluster has not been told where clients
         // reach this broker, the same gap `NotLeader` has.
@@ -88,6 +96,7 @@ impl ClusterClient {
                         node_id: owner.node_id,
                         generation: owner.generation,
                         client,
+                        width,
                     },
                 );
             }

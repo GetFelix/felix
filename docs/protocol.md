@@ -1011,8 +1011,8 @@ on it sends one once. It does not send one for a width it could not learn: it
 then keeps the stream on one writer, which needs no check. Because a
 fire-and-forget publish hears no refusal, the Rust client also asks
 `stream_shards` again every 5 seconds (plus up to a second of jitter) while it
-publishes to a stream, over one long-lived control stream per client, and
-gives up a re-ask after 2 seconds. Only a broker that advertised the bit on
+publishes to a stream, pipelined over one long-lived control stream per
+client and matched by `request_id`, and gives up a re-ask after 2 seconds. Only a broker that advertised the bit on
 that very control stream is sent `publish_width`.
 
 ### CacheShards

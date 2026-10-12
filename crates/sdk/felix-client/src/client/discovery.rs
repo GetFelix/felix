@@ -27,12 +27,6 @@ impl Client {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_SHARDS)
     }
 
-    /// Whether this broker takes `publish_width` and checks keyed batches
-    /// against it.
-    pub(crate) fn supports_publish_width(&self) -> bool {
-        felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_PUBLISH_WIDTH)
-    }
-
     /// Whether this broker answers [`Client::cache_shards`].
     pub fn supports_cache_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_CACHE_SHARDS)

@@ -149,6 +149,11 @@ impl StreamWidths {
         }
     }
 
+    /// Whether the broker behind these widths checks declared ones.
+    pub(crate) fn declares(&self) -> bool {
+        self.declare
+    }
+
     /// What this uses to ask a width again, for another cache that should
     /// ask the same way.
     pub(crate) fn recheck(&self) -> LearnWidth {

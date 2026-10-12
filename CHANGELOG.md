@@ -23,8 +23,10 @@ for what the current release guarantees.
   fire-and-forget publishes are dropped. Against such a broker the Rust
   client also asks a stream's width again every 5 seconds while it publishes
   to it, so a fire-and-forget or idle client catches up. A `ClusterClient`'s
-  widths and an idempotent producer's numbering follow the same rules, and a
-  producer's sequences start again under a new width. Older brokers and
+  widths and an idempotent producer's numbering follow the same rules, and
+  their batches are declared by the width that routed or numbered them. Under
+  a new width a producer starts the stream's sequences again under a fresh
+  producer id. Older brokers and
   clients exchange the frames they always did.
 
 ## [0.6.0-preview.7] - 2026-10-11

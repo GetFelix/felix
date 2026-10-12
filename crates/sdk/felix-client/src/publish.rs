@@ -23,6 +23,8 @@ pub use routing::PublishSharding;
 pub(crate) use admission::PublishAdmission;
 pub(crate) use routing::width_went_stale;
 pub(crate) use shard_streams::{OpenWorker, ShardStreams};
+#[cfg(test)]
+pub(crate) use widths::REVALIDATE_TIMEOUT;
 pub(crate) use widths::{LearnWidth, StreamWidths, Width};
 pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
 
@@ -212,6 +214,7 @@ impl Publisher {
                 .publish_batch_binary_inner(
                     Some(&key),
                     None,
+                    None,
                     tenant_id,
                     namespace,
                     stream,
@@ -229,6 +232,7 @@ impl Publisher {
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
+            None,
             None,
             tenant_id,
             namespace,
@@ -248,7 +252,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> Result<()> {
-        self.publish_batch_binary_inner(None, None, tenant_id, namespace, stream, payloads)
+        self.publish_batch_binary_inner(None, None, None, tenant_id, namespace, stream, payloads)
             .await
             .map(|_| ())
     }
@@ -340,7 +344,7 @@ impl Publisher {
         ack: AckMode,
     ) -> Result<Option<u64>> {
         self.publish_batch_binary_acked_inner(
-            None, None, tenant_id, namespace, stream, payloads, ack,
+            None, None, None, tenant_id, namespace, stream, payloads, ack,
         )
         .await
         .map(|acked| acked.offset)
@@ -695,10 +699,19 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(None, None, tenant_id, namespace, stream, &[payload])
+                .publish_batch_binary_inner(
+                    None,
+                    None,
+                    None,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &[payload],
+                )
                 .await;
         }
         self.publish_batch_binary_acked_inner(
+            None,
             None,
             None,
             tenant_id,
@@ -712,7 +725,8 @@ impl Publisher {
 
     /// [`Publisher::publish_keyed`], reporting the shard's owner when this
     /// broker forwarded the batch rather than owning it. `shard` is the one
-    /// the key resolves to, which puts the publish on that shard's stream.
+    /// the key resolves to under `width`, the `ClusterClient`'s, which the
+    /// batch is routed and declared by (see [`Self::route_by`]).
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_keyed_reporting_owner(
         &self,
@@ -721,6 +735,7 @@ impl Publisher {
         stream: &str,
         key: bytes::Bytes,
         shard: u32,
+        width: Option<Arc<Width>>,
         payload: Vec<u8>,
         ack: AckMode,
     ) -> AckOutcome {
@@ -729,6 +744,7 @@ impl Publisher {
                 .publish_batch_binary_inner(
                     Some(&key),
                     Some(shard),
+                    width.clone(),
                     tenant_id,
                     namespace,
                     stream,
@@ -739,6 +755,7 @@ impl Publisher {
         self.publish_batch_binary_acked_inner(
             Some(&key),
             Some(shard),
+            width,
             tenant_id,
             namespace,
             stream,

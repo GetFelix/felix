@@ -124,8 +124,17 @@ impl Publisher {
         shard: Option<u32>,
         given: Option<Arc<Width>>,
     ) -> Result<Routed<'_>> {
+        // Only against a broker that checks it. Elsewhere a caller's width
+        // must not pick the writer: one that disagreed with the client's own
+        // would put a key on a second writer with nothing to refuse it.
         let given = given.filter(|width| {
-            width.declaration.is_some() && self.inner.sharding == PublishSharding::HashStream
+            width.declaration.is_some()
+                && self.inner.sharding == PublishSharding::HashStream
+                && self
+                    .inner
+                    .widths
+                    .as_ref()
+                    .is_some_and(|widths| widths.declares())
         });
         let (shard, width) = match (key, given) {
             (Some(key), Some(width)) => (
