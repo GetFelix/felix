@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791760581809,
+  "lastUpdate": 1791789032246,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36498,6 +36498,72 @@ window.BENCHMARK_DATA = {
             "range": "668.22",
             "unit": "us",
             "extra": "trials: 5\nmedian: 381.00\nmean: 846.20\nstdev: 668.22\ncv: 78.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e1af18fa6b5e81639cd9a0973799576dc0f4a8d",
+          "message": "fix(client): refuse keyed batches routed by a recreated stream's old width (#1067) (#1198)\n\n* fix(client): refuse keyed batches routed by a recreated stream's old width (#1067)\n\nA client picks each key's writer from the width it learned for the stream.\nA stream deleted and created again at another width left a client that never\nsaw a not_found routing by the old width, so keys now sharing a shard could\ngo out on two writers and reach it out of order.\n\nThe client now declares the width each keyed batch was routed by in a new\npublish_width message, written by the publish stream's writer ahead of a\nbatch whenever the width differs from the last one that stream carried. A\nbroker advertising FEATURE_PUBLISH_WIDTH (third extended feature bit) checks\nevery keyed batch to the declared stream against its routing snapshot and\nrefuses a mismatch: stale_width (retry, 17) when acknowledged, dropped when\nnot. The client drops the width on stale_width and, against such a broker,\nasks a stream's width again every 5 s while publishing to it, so\nfire-and-forget and idle clients catch up. Older peers exchange the frames\nthey always did.\n\nSpec-Unaffected: publish_width is a per-control-stream routing check at ingress, before a batch is dispatched or takes a place in any shard log; it only adds a refusal and changes no lease, fence, replication or acknowledgement step FelixShard models.\n\n* fix(client): close the remaining stale-width paths from review (#1067)\n\n- ClusterClient keeps its widths in a StreamWidths: dropped on stale_width\n  or not_found, and asked again on the same cadence.\n- An idempotent producer numbers by the width its source routes by, routes\n  and declares each batch by that same width, drops it on stale_width or\n  not_found, and starts a stream's sequences again under a new width.\n- Whether to send publish_width is decided per publish stream, from that\n  stream's own auth, so a stream to a broker without the bit never gets one.\n- A background re-ask gives up after 2 s and resets its due time, so a hung\n  answer cannot stop the checks.\n- Re-asks share one long-lived control stream per client, with jitter on the\n  interval, instead of authenticating a stream each.\n- The broker leaves a stream its routing snapshot does not know to the\n  normal route, so a deleted stream still answers not_found.\n\nSpec-Unaffected: publish_width is a per-control-stream routing check at ingress, before a batch is dispatched or takes a place in any shard log; it only adds a refusal and changes no lease, fence, replication or acknowledgement step FelixShard models.\n\n* fix(client): check the width that picked the broker, and never reuse sequences (#1067)\n\n- A ClusterClient's keyed batch carries the width that chose its broker down\n  to the publisher, which routes and declares by it, so the broker checks\n  that width; an owner learned under another width is dropped.\n- A ClusterClient's widths are always declared and re-asked, whatever the\n  first broker negotiated.\n- A width change starts the stream's producer cursors under a fresh producer\n  id for that stream, so a flapping width or a surviving log never meets a\n  reused sequence.\n- Re-asks are pipelined on the shared stream and matched by request id.\n- Producer and ClusterClient lookups borrow instead of cloning the stream\n  key per publish.\n\nSpec-Unaffected: publish_width is a per-control-stream routing check at ingress, before a batch is dispatched or takes a place in any shard log; it only adds a refusal and changes no lease, fence, replication or acknowledgement step FelixShard models.\n\n* fix(client): hold a stream's width and id while a batch on it is in doubt (#1067)\n\n- The producer keeps the width and producer id a stream is numbered by while\n  a batch on it is in doubt, so a flap cannot re-send that batch under a\n  fresh id; a re-send under a width that has gone fails and says why. A lone\n  stale_width refusal is known unapplied and frees its sequence.\n  IdempotentProducer::producer_id_for reports a stream's id.\n- An owner learned under another width is replaced whatever its generation.\n- A caller's width routes a batch only on a stream that negotiated the check;\n  elsewhere the client's own width does.\n- A width question registered after the shared stream died fails at once.\n\nSpec-Unaffected: publish_width is a per-control-stream routing check at ingress, before a batch is dispatched or takes a place in any shard log; it only adds a refusal and changes no lease, fence, replication or acknowledgement step FelixShard models.\n\n* feat(client): let a producer give up batches in doubt on a recreated stream (#1067)\n\nIdempotentProducer::abandon_in_doubt drops a stream's cursors and numbers it\nafresh under a new producer id, for a stream recreated at another width while\na batch was in doubt, whose re-send can never settle. The in-doubt error now\nleads with that way out and says the batch may land twice. A comment in\nroute_by says why a stream opened for a caller's width cannot be checked for\nthe bit before it is opened.\n\nSpec-Unaffected: client-side producer bookkeeping only; no broker, replication or lease behaviour changes.",
+          "timestamp": "2026-10-12T00:04:13-07:00",
+          "tree_id": "9b813205e5f70503a798b55b005f5115dc16b4b9",
+          "url": "https://github.com/GetFelix/felix/commit/9e1af18fa6b5e81639cd9a0973799576dc0f4a8d"
+        },
+        "date": 1791789028586,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 183.80\nstdev: 1.48\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 246.00\nstdev: 1.00\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 305,
+            "range": "13.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 305.00\nmean: 312.60\nstdev: 13.50\ncv: 4.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "10.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 224.00\nstdev: 10.65\ncv: 4.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "350.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 595.00\nstdev: 350.12\ncv: 58.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 604,
+            "range": "884.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 604.00\nmean: 1002.20\nstdev: 884.33\ncv: 88.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
