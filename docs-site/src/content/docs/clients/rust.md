@@ -432,7 +432,12 @@ asked again the same way, and a batch is routed and declared by the width that
 picked its broker or numbered it, so the broker that takes it checks that
 width. Under a new width a producer starts the stream's sequences again under
 a fresh producer id for that stream, so they never meet sequences a leader
-still holds; `IdempotentProducer::producer_id` keeps returning the first id.
+still holds. While a batch on the stream is in doubt it does not: the batch
+may have landed, and only a re-send under the width and id it was numbered by
+is answered as a duplicate. Until it settles, a re-send under a width that
+has gone is refused with an error that says so. `IdempotentProducer::producer_id`
+keeps returning the first id; `producer_id_for(tenant, namespace, stream)`
+returns the one a stream's batches go out under.
 
 The ordering guarantee is per shard: every publish one client makes to one
 shard goes through one writer and one QUIC stream, so the shard holds them in

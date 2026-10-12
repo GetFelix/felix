@@ -448,3 +448,54 @@ async fn a_stream_that_did_not_negotiate_widths_gets_no_declaration() {
         "declared to a stream that cannot read it"
     );
 }
+
+/// A caller's width routes a batch only on a stream whose broker checks it.
+/// A shard stream to a broker without the bit gets the batch by the client's
+/// own width, as every other publish to that broker does, so the two cannot
+/// put one key on two writers with nothing to refuse either.
+#[tokio::test]
+async fn a_callers_width_does_not_route_on_a_stream_that_cannot_check_it() {
+    let learn: LearnWidth =
+        Arc::new(|_, _, _| Box::pin(async { Ok((SHARDS, ShardRouting::Modulo)) }));
+    let open: OpenWorker = Arc::new(|| {
+        Box::pin(async {
+            let mut worker = fake_worker();
+            worker.takes_width = false;
+            Ok(worker)
+        })
+    });
+    let publisher = Publisher {
+        inner: Arc::new(PublisherInner::with_stream_widths(
+            Arc::new(vec![fake_worker()]),
+            16,
+            open,
+            StreamWidths::new(learn, true),
+        )),
+    };
+    let key = (0..)
+        .map(|i: u32| format!("key-{i}").into_bytes())
+        .find(|key| {
+            shard_for_routing(ShardRouting::Modulo, SHARDS, Some(key))
+                != shard_for_routing(ShardRouting::Modulo, 2, Some(key))
+        })
+        .expect("a key that moves");
+    let own = writer_for(&publisher, "orders", Some(&key)).await;
+    let callers = Arc::new(crate::publish::Width {
+        shards: 2,
+        routing: ShardRouting::Modulo,
+        declaration: Some(bytes::Bytes::from_static(b"declared")),
+        learned: true,
+    });
+    let routed = publisher
+        .route_by("t", "ns", "orders", Some(&key), None, Some(callers))
+        .await
+        .expect("route");
+    let Selected::Shard(worker) = routed.worker else {
+        panic!("routed to the pool");
+    };
+    assert!(
+        Arc::ptr_eq(&own, &worker),
+        "a caller's unchecked width picked a second writer"
+    );
+    assert!(routed.declaration.is_none());
+}

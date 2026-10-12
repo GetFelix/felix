@@ -68,7 +68,7 @@ impl ClusterClient {
         // A stale answer must not replace a fresher one. Checked before
         // connecting, so a late report does not even pay for the connection.
         if let Some(existing) = self.owners.read().await.get(&key)
-            && existing.generation >= owner.generation
+            && !replaces(existing, &owner, width)
         {
             return;
         }
@@ -80,7 +80,7 @@ impl ClusterClient {
                 // learned a newer owner while this one was connecting.
                 if owners
                     .get(&key)
-                    .is_some_and(|existing| existing.generation >= owner.generation)
+                    .is_some_and(|existing| !replaces(existing, &owner, width))
                 {
                     return;
                 }
@@ -132,4 +132,19 @@ impl ClusterClient {
             key.3
         ))
     }
+}
+
+/// Whether an owner learned now should take the place of `existing`.
+///
+/// Generations order answers about one shard. Under another width the shard
+/// number names another shard, so the generations say nothing about each
+/// other and the newer report wins: an entry from a stale width must not
+/// keep out the fresh owner. A late answer from the old width can still land
+/// here, and is dropped on its first use under the current width.
+fn replaces(
+    existing: &super::Owner,
+    owner: &felix_wire::binary::PublishOwner,
+    width: Option<(u32, felix_wire::routing::ShardRouting)>,
+) -> bool {
+    existing.width != width || existing.generation < owner.generation
 }

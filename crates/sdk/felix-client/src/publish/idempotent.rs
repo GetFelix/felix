@@ -66,6 +66,7 @@ const QUEUED: usize = 32;
 /// finish; [`Self::close`] waits for them.
 pub struct IdempotentProducer {
     producer_id: u64,
+    numbered_by: NumberedBy,
     requests: mpsc::Sender<Request>,
     driver: JoinHandle<()>,
 }
@@ -81,26 +82,41 @@ impl IdempotentProducer {
 
     fn start(source: Source, producer_id: u64) -> Self {
         let (requests, queued) = mpsc::channel(QUEUED);
+        let numbered_by: NumberedBy = Arc::new(std::sync::Mutex::new(
+            hashbrown::HashMap::with_hasher(ahash::RandomState::new()),
+        ));
         let driver = Driver {
             source,
             producer_id,
             leaders: Mutex::new(HashMap::new()),
             widths: None,
-            numbered_by: std::sync::Mutex::new(hashbrown::HashMap::with_hasher(
-                ahash::RandomState::new(),
-            )),
+            numbered_by: Arc::clone(&numbered_by),
         };
         Self {
             producer_id,
+            numbered_by,
             requests,
             driver: tokio::spawn(driver.run(queued)),
         }
     }
 
-    /// The id the broker assigned this producer. A stream created again at
-    /// another width is numbered from then on under a fresh id of its own.
+    /// The id the broker assigned this producer, which its batches go out
+    /// under unless a stream has been given one of its own; see
+    /// [`Self::producer_id_for`].
     pub fn producer_id(&self) -> u64 {
         self.producer_id
+    }
+
+    /// The id this producer's batches to `stream` go out under. The first
+    /// id, unless the stream was created again at another width: it is then
+    /// numbered afresh under an id of its own, so its new sequences never
+    /// meet ones a leader still holds.
+    pub fn producer_id_for(&self, tenant_id: &str, namespace: &str, stream: &str) -> u64 {
+        self.numbered_by
+            .lock()
+            .expect("numbered by")
+            .get(&RoutingStreamKeyRef::new(tenant_id, namespace, stream))
+            .map_or(self.producer_id, |(_, producer_id)| *producer_id)
     }
 
     /// Publish one payload, once, returning its log offset when the leader
@@ -314,10 +330,14 @@ struct Driver {
     /// cursors under a fresh id: its shards are not the shards they counted,
     /// and a leader may still hold this id's sequences for them (a width
     /// that flapped back, or a log that outlived the stream).
-    numbered_by: std::sync::Mutex<
-        hashbrown::HashMap<RoutingStreamKey, (Arc<Width>, u64), ahash::RandomState>,
-    >,
+    numbered_by: NumberedBy,
 }
+
+/// Per stream, the width its keyed cursors number by and the producer id its
+/// batches go out under. Shared with the producer, which reports the id.
+type NumberedBy = Arc<
+    std::sync::Mutex<hashbrown::HashMap<RoutingStreamKey, (Arc<Width>, u64), ahash::RandomState>>,
+>;
 
 impl Driver {
     /// Serve calls in the order they were made until the producer is dropped
@@ -346,16 +366,44 @@ impl Driver {
                     continue;
                 }
             };
+            // The width the stream is numbered by, which is not the one just
+            // learned while a batch on the stream is in doubt.
+            let shard = match (width, routing_key.as_deref()) {
+                (Some(width), Some(routing_key)) => {
+                    match self
+                        .number_by(&mut cursors, &tenant_id, &namespace, &stream, width)
+                        .await
+                    {
+                        Ok(numbered) => felix_wire::routing::shard_for_routing(
+                            numbered.routing,
+                            numbered.shards,
+                            Some(routing_key),
+                        ),
+                        Err(err) => {
+                            let _ = answer.send(Err(err));
+                            continue;
+                        }
+                    }
+                }
+                _ => shard,
+            };
             let key = (tenant_id, namespace, stream, shard);
-            if let Some(width) = width
-                && let Err(err) = self.number_by(&mut cursors, &key, width).await
-            {
-                let _ = answer.send(Err(err));
-                continue;
-            }
             let result = self
                 .publish_on_shard(&mut cursors, &key, routing_key, batches)
                 .await;
+            let result = result.map_err(|err| {
+                if super::routing::width_went_stale(&err) && in_doubt_on(&cursors, &key) {
+                    err.context(
+                        "the stream's width changed while a batch on it was in doubt. Under \
+                         the new width it could not be told apart from a new record, so it \
+                         was not re-sent there: re-send it once the stream's width is the \
+                         one it was numbered by, or start a new producer and accept that it \
+                         may land twice",
+                    )
+                } else {
+                    err
+                }
+            });
             // Nobody heard that these are in doubt, so nobody will re-send
             // them; the next call on the shard does it instead.
             if answer.send(result).is_err()
@@ -415,6 +463,9 @@ impl Driver {
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<Vec<Option<u64>>> {
         let mut batches = batches;
+        // A re-send of batches in doubt stays in doubt whatever its answer:
+        // the first send may have landed.
+        let resending = matches!(cursors.get(key), Some(Cursor::InDoubt { .. }));
         let (first, doubted) = match cursors.get(key) {
             None => (0, Vec::new()),
             Some(Cursor::Next(sequence)) => (*sequence, Vec::new()),
@@ -488,11 +539,20 @@ impl Driver {
                 // Anything short of a terminal refusal may have landed: a
                 // timeout, a dropped connection, or a not-leader refusal that
                 // ended a run of retries whose earlier attempts went unanswered.
+                let unsettled = batches.len() - acked.len() + doubted.len();
                 let cursor = match err.downcast_ref::<PublishRefused>() {
                     Some(refused)
                         if !matches!(refused.reason, PublishRefusalReason::NotLeader { .. }) =>
                     {
                         Cursor::Ended(refused.clone())
+                    }
+                    // Refused before it was written, and nothing went out
+                    // behind it: the sequence is free for another batch.
+                    _ if err.downcast_ref::<NotApplied>().is_some()
+                        && !resending
+                        && unsettled == 1 =>
+                    {
+                        Cursor::Next(settled)
                     }
                     _ => {
                         let mut unsettled = batches.split_off(acked.len());
@@ -525,8 +585,12 @@ impl Driver {
     ) -> (Vec<Option<u64>>, Result<()>) {
         match &self.source {
             Source::Single(client) => {
-                self.send_via(client, key, routing_key, batches, first)
-                    .await
+                // One attempt, after at most a not-leader refusal, which
+                // applied nothing either.
+                let (acked, result) = self
+                    .send_via(client, key, routing_key, batches, first)
+                    .await;
+                (acked, result.map_err(|err| refused_unapplied(err, true)))
             }
             Source::Cluster(cluster) => {
                 let started = std::time::Instant::now();
@@ -537,6 +601,9 @@ impl Driver {
                 // What the last failure asked for: `None` goes again at once
                 // through the entry broker, `Some` backs off at least that long.
                 let mut wait: Option<std::time::Duration> = None;
+                // Whether an earlier attempt may have landed. A refusal that
+                // applied nothing says so only of its own attempt.
+                let mut ambiguous = false;
                 for attempt in 0..policy.attempts.max(1) {
                     if attempt > 0
                         && let Some(at_least) = wait
@@ -572,6 +639,12 @@ impl Driver {
                         Ok(()) => return (acked, Ok(())),
                         Err(err) => err,
                     };
+                    // Retrying under the width the batch is numbered by
+                    // cannot help: the next call learns the stream's width.
+                    if is_stale_width(&err) {
+                        return (acked, Err(refused_unapplied(err, !ambiguous)));
+                    }
+                    ambiguous |= !applied_nothing(&err);
                     // A leader remembered now was either used for this attempt
                     // or learned by following a refusal during it, so the error
                     // came from that leader.
@@ -758,51 +831,67 @@ impl Driver {
             .context("take a fresh producer id for a stream created again")
     }
 
-    /// Start the stream's cursors again, under a fresh producer id, if
-    /// `width` is not the one they counted under. Only a stream created again
-    /// changes width, and its shards have no sequences from this producer it
-    /// should continue; the fresh id keeps the new ones from meeting old
-    /// ones a leader still holds.
+    /// The width the stream's keyed batches are numbered by, given that
+    /// `width` was just learned for it.
+    ///
+    /// A different width restarts the stream's cursors under a fresh
+    /// producer id: only a stream created again changes width, and the fresh
+    /// id keeps its new sequences from meeting old ones a leader still holds
+    /// (a width that flapped back, or a log that outlived the stream). Not
+    /// while a batch on the stream is in doubt, though. That batch may have
+    /// landed under the width and id it was numbered by, and only a re-send
+    /// under the same ones is answered as a duplicate; under fresh ones it
+    /// would be appended again. So the old width and id are kept until it is
+    /// settled, and if the old width really is gone its re-send is refused
+    /// and the caller is told why.
     async fn number_by(
         &self,
         cursors: &mut HashMap<ShardKey, Cursor>,
-        key: &ShardKey,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
         width: Arc<Width>,
-    ) -> Result<()> {
+    ) -> Result<Arc<Width>> {
+        let stream_key = RoutingStreamKeyRef::new(tenant_id, namespace, stream);
         let held = self
             .numbered_by
             .lock()
             .expect("numbered by")
-            .get(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
-            .map(|(held, _)| (held.shards, held.routing));
-        match held {
-            None => {
-                self.numbered_by.lock().expect("numbered by").insert(
-                    RoutingStreamKey::new(&key.0, &key.1, &key.2),
-                    (width, self.producer_id),
-                );
-            }
-            Some(held) if held == (width.shards, width.routing) => {}
-            Some(_) => {
-                let producer_id = self.fresh_producer_id().await?;
-                if let Some(entry) = self
-                    .numbered_by
-                    .lock()
-                    .expect("numbered by")
-                    .get_mut(&RoutingStreamKeyRef::new(&key.0, &key.1, &key.2))
-                {
-                    *entry = (width, producer_id);
-                }
-                let same_stream =
-                    |shard: &ShardKey| shard.0 == key.0 && shard.1 == key.1 && shard.2 == key.2;
-                cursors.retain(|shard, _| !same_stream(shard));
-                self.leaders
-                    .lock()
-                    .await
-                    .retain(|shard, _| !same_stream(shard));
-            }
+            .get(&stream_key)
+            .map(|(held, _)| Arc::clone(held));
+        let Some(held) = held else {
+            self.numbered_by.lock().expect("numbered by").insert(
+                RoutingStreamKey::new(tenant_id, namespace, stream),
+                (Arc::clone(&width), self.producer_id),
+            );
+            return Ok(width);
+        };
+        if (held.shards, held.routing) == (width.shards, width.routing) {
+            return Ok(held);
         }
-        Ok(())
+        let same_stream =
+            |shard: &ShardKey| shard.0 == tenant_id && shard.1 == namespace && shard.2 == stream;
+        if cursors
+            .iter()
+            .any(|(shard, cursor)| same_stream(shard) && matches!(cursor, Cursor::InDoubt { .. }))
+        {
+            return Ok(held);
+        }
+        let producer_id = self.fresh_producer_id().await?;
+        if let Some(entry) = self
+            .numbered_by
+            .lock()
+            .expect("numbered by")
+            .get_mut(&stream_key)
+        {
+            *entry = (Arc::clone(&width), producer_id);
+        }
+        cursors.retain(|shard, _| !same_stream(shard));
+        self.leaders
+            .lock()
+            .await
+            .retain(|shard, _| !same_stream(shard));
+        Ok(width)
     }
 
     /// The shard a batch's sequence belongs to: 0 without a key, else the one
@@ -878,4 +967,47 @@ enum Cursor {
         abandoned: bool,
     },
     Ended(PublishRefused),
+}
+
+/// Whether a batch on `key`'s stream is in doubt.
+fn in_doubt_on(cursors: &HashMap<ShardKey, Cursor>, key: &ShardKey) -> bool {
+    cursors.iter().any(|(shard, cursor)| {
+        shard.0 == key.0
+            && shard.1 == key.1
+            && shard.2 == key.2
+            && matches!(cursor, Cursor::InDoubt { .. })
+    })
+}
+
+/// Says a failed batch was refused before anything was written.
+#[derive(Debug)]
+struct NotApplied;
+
+impl std::fmt::Display for NotApplied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the batch was refused before it was written")
+    }
+}
+
+fn is_stale_width(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<crate::BrokerError>()
+        .is_some_and(|err| err.code == felix_wire::ErrorCode::StaleWidth)
+}
+
+/// Whether a failed attempt's answer says nothing it carried was written.
+fn applied_nothing(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<PublishRefused>().is_some()
+        || err
+            .downcast_ref::<crate::BrokerError>()
+            .is_some_and(|err| err.retry != felix_wire::RetryClass::OutcomeUnknown)
+}
+
+/// Mark a `stale_width` refusal as unapplied, when no earlier attempt of the
+/// same run may have landed.
+fn refused_unapplied(err: anyhow::Error, only_attempt_answered: bool) -> anyhow::Error {
+    if only_attempt_answered && is_stale_width(&err) {
+        err.context(NotApplied)
+    } else {
+        err
+    }
 }

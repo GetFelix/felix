@@ -87,16 +87,7 @@ impl WidthRechecks {
         stream: &str,
     ) -> Answer {
         let shared = self.shared().await?;
-        let (answer_tx, answer_rx) = oneshot::channel();
-        shared
-            .pending
-            .lock()
-            .expect("pending widths")
-            .insert(request_id, answer_tx);
-        let _asked = Asked {
-            pending: Arc::clone(&shared.pending),
-            request_id,
-        };
+        let (_asked, answer_rx) = wait_for(&shared.pending, &shared.dead, request_id)?;
         let sent = write_message(
             &mut *shared.send.lock().await,
             Message::StreamShards {
@@ -144,6 +135,30 @@ impl WidthRechecks {
         *slot = Some(Arc::clone(&shared));
         Ok(shared)
     }
+}
+
+/// Register a question's answer slot on the stream.
+///
+/// Fails at once if the reader has already stopped: it sets `dead` before
+/// it fails the questions it holds, so a question registered after that
+/// would wait for an answer nothing will give. Checked after the insert, so
+/// either the reader's drain sees this question or this sees `dead`.
+fn wait_for(
+    pending: &Pending,
+    dead: &AtomicBool,
+    request_id: u64,
+) -> Result<(Asked, oneshot::Receiver<Answer>)> {
+    let (answer_tx, answer_rx) = oneshot::channel();
+    pending
+        .lock()
+        .expect("pending widths")
+        .insert(request_id, answer_tx);
+    let asked = Asked {
+        pending: Arc::clone(pending),
+        request_id,
+    };
+    anyhow::ensure!(!dead.load(Ordering::Acquire), "the width stream closed");
+    Ok((asked, answer_rx))
 }
 
 /// Hand each answer to its question until the stream ends. Anything but an
@@ -194,3 +209,6 @@ async fn read_answers(
         let _ = asked.send(Err(anyhow::anyhow!("{message}")));
     }
 }
+
+#[cfg(test)]
+mod tests;

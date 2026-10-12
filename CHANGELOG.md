@@ -26,7 +26,12 @@ for what the current release guarantees.
   widths and an idempotent producer's numbering follow the same rules, and
   their batches are declared by the width that routed or numbered them. Under
   a new width a producer starts the stream's sequences again under a fresh
-  producer id. Older brokers and
+  producer id for that stream, except while a batch on it is in doubt: that
+  batch keeps the width and id it was numbered by until it settles, and a
+  re-send under a width that has since gone is refused with an error saying
+  so. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
+  id a stream's batches go out under. Older brokers and
   clients exchange the frames they always did.
 
 ## [0.6.0-preview.7] - 2026-10-11

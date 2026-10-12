@@ -127,7 +127,7 @@ impl Publisher {
         // Only against a broker that checks it. Elsewhere a caller's width
         // must not pick the writer: one that disagreed with the client's own
         // would put a key on a second writer with nothing to refuse it.
-        let given = given.filter(|width| {
+        let mut given = given.filter(|width| {
             width.declaration.is_some()
                 && self.inner.sharding == PublishSharding::HashStream
                 && self
@@ -136,33 +136,45 @@ impl Publisher {
                     .as_ref()
                     .is_some_and(|widths| widths.declares())
         });
-        let (shard, width) = match (key, given) {
-            (Some(key), Some(width)) => (
-                Some(felix_wire::routing::shard_for_routing(
-                    width.routing,
-                    width.shards,
-                    Some(key),
-                )),
-                Some(width),
-            ),
-            _ => {
-                self.shard_of(tenant_id, namespace, stream, key, shard)
-                    .await
+        let width = loop {
+            let by_given = key.is_some() && given.is_some();
+            let (shard, width) = match (key, given.clone()) {
+                (Some(key), Some(width)) => (
+                    Some(felix_wire::routing::shard_for_routing(
+                        width.routing,
+                        width.shards,
+                        Some(key),
+                    )),
+                    Some(width),
+                ),
+                _ => {
+                    self.shard_of(tenant_id, namespace, stream, key, shard)
+                        .await
+                }
+            };
+            let declaration = width.as_ref().and_then(|width| width.declaration.clone());
+            if self.inner.sharding == PublishSharding::HashStream
+                && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
+                && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
+            {
+                // A stream whose broker did not negotiate the bit would carry
+                // the batch unchecked, so it is routed by the client's own
+                // width, as any publish to that broker is.
+                if by_given && !worker.takes_width {
+                    given = None;
+                    continue;
+                }
+                // Only to a broker that negotiated it on this stream: any
+                // other cannot decode `publish_width` and would close it.
+                let declaration = declaration.filter(|_| worker.takes_width);
+                return Ok(Routed {
+                    worker: Selected::Shard(worker),
+                    declaration,
+                });
             }
+            break width;
         };
         let declaration = width.and_then(|width| width.declaration.clone());
-        if self.inner.sharding == PublishSharding::HashStream
-            && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
-            && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
-        {
-            // Only to a broker that negotiated it on this stream: any other
-            // cannot decode `publish_width` and would close the stream.
-            let declaration = declaration.filter(|_| worker.takes_width);
-            return Ok(Routed {
-                worker: Selected::Shard(worker),
-                declaration,
-            });
-        }
         // Without shard streams the pool carries all of a stream's keys on
         // one writer, so there is nothing for a stale width to split. With
         // them, the pool carries the shards past the cap beside the shards

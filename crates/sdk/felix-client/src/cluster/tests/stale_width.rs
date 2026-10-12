@@ -331,3 +331,152 @@ async fn a_cluster_client_re_asks_even_against_an_older_broker() -> Result<()> {
     );
     Ok(())
 }
+
+/// **An owner learned under one width does not keep out an owner learned
+/// under another,** whatever their generations: the shard numbers name
+/// different shards. A late answer from the old width replaces the entry
+/// too, and the next publish under the current width goes through the entry
+/// broker instead of to it.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_owner_from_another_width_is_replaced() -> Result<()> {
+    let (server_config, cert) = crate::test_support::build_server_config()?;
+    let entry = StubBroker::start_with(server_config.clone(), ok)?;
+    let owner = StubBroker::start_with(server_config, ok)?;
+    let cluster = ClusterClient::connect(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 1)?,
+    )
+    .await?;
+    let key = moving_key(2);
+    let shard = felix_wire::routing::shard_for(STREAM_SHARDS, Some(&key));
+    let shard_key = (
+        "t1".to_string(),
+        "default".to_string(),
+        "orders".to_string(),
+        shard,
+    );
+    let reported = |generation| felix_wire::binary::PublishOwner {
+        node_id: "owner".to_string(),
+        addr: Some(owner.addr.to_string()),
+        generation,
+    };
+    let modulo = felix_wire::routing::ShardRouting::Modulo;
+    cluster
+        .remember_owner(shard_key.clone(), reported(5), Some((2, modulo)))
+        .await;
+    cluster
+        .remember_owner(
+            shard_key.clone(),
+            reported(1),
+            Some((STREAM_SHARDS, modulo)),
+        )
+        .await;
+    assert_eq!(
+        owner_width(&cluster, &shard_key).await,
+        Some((STREAM_SHARDS, modulo))
+    );
+
+    // A late answer from the old width lands, and the next publish, under
+    // the stream's width, does not follow it.
+    cluster
+        .remember_owner(shard_key.clone(), reported(1), Some((2, modulo)))
+        .await;
+    let before = owner.publishes();
+    cluster
+        .publish_keyed(
+            "t1",
+            "default",
+            "orders",
+            b"x".to_vec(),
+            key,
+            AckMode::PerBatch,
+        )
+        .await?;
+    assert_eq!(
+        owner.publishes(),
+        before,
+        "followed an owner from the old width"
+    );
+    assert_eq!(owner_width(&cluster, &shard_key).await, None);
+    Ok(())
+}
+
+async fn owner_width(
+    cluster: &ClusterClient,
+    shard: &crate::cluster::ShardKey,
+) -> Option<(u32, felix_wire::routing::ShardRouting)> {
+    cluster
+        .owners
+        .read()
+        .await
+        .get(shard)
+        .and_then(|owner| owner.width)
+}
+
+/// **A width that flaps while a batch is in doubt does not append it twice.**
+/// The batch may have landed under the width and id it was numbered by, and
+/// only a re-send under those is answered as a duplicate. So the producer
+/// keeps them until the batch is settled: under another width the re-send
+/// is refused and the caller told why, and once the width is back the
+/// re-send settles it under the same id and sequence.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_batch_in_doubt_keeps_its_width_and_id_through_a_flap() -> Result<()> {
+    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let script = {
+        let answered = Arc::clone(&answered);
+        move |request_id| match answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            1 => Message::PublishError {
+                request_id,
+                message: "no majority".to_string(),
+                code: Some(felix_wire::ErrorCode::QuorumTimeout),
+                retry: Some(felix_wire::RetryClass::OutcomeUnknown),
+                detail: None,
+            },
+            _ => ok(request_id),
+        }
+    };
+    let (broker, cert) = StubBroker::start(script)?;
+    broker.check_widths();
+    let client = Arc::new(
+        Client::connect(
+            broker.addr,
+            "localhost",
+            build_client_config_with_overrides(cert, 1)?,
+        )
+        .await?,
+    );
+    let producer = client.idempotent_producer().await?;
+    let key = moving_key(2);
+    let publish = |payload: &'static [u8]| {
+        producer.publish_keyed("t1", "default", "orders", key.clone(), payload.to_vec())
+    };
+    publish(b"a").await?;
+    publish(b"b").await.expect_err("the outcome is unknown");
+
+    // A lagging broker says two shards while `b` is in doubt.
+    broker.set_width(2);
+    client.publish_widths().forget("t1", "default", "orders");
+    let refused = publish(b"b")
+        .await
+        .expect_err("held to the width it was numbered by");
+    assert!(
+        format!("{refused:#}").contains("width changed while a batch on it was in doubt"),
+        "{refused:#}"
+    );
+
+    // The width is back, and `b` settles under the id and sequence it had.
+    broker.set_width(STREAM_SHARDS);
+    client.publish_widths().forget("t1", "default", "orders");
+    publish(b"b").await?;
+    publish(b"c").await?;
+    let first = producer.producer_id();
+    assert_eq!(
+        broker.producer_sequences(),
+        vec![(first, 0), (first, 1), (first, 1), (first, 2)]
+    );
+    assert_eq!(producer.producer_id_for("t1", "default", "orders"), first);
+    Ok(())
+}
