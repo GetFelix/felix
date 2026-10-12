@@ -4,7 +4,7 @@
 (* the dead-letter log and the cursor log, two logs on every replica,     *)
 (* each flushed on its own.                                                *)
 (*                                                                         *)
-(* A group passes a record by finishing it (Ack) or by giving up on it,    *)
+(* A group passes a record by finishing it or by giving up on it,          *)
 (* which writes a dead letter first. Each cursor record says what it needs *)
 (* of the dead-letter log beneath it: the log's length when it was written *)
 (* (`e`, the broker's `dlq_end`) and the generation that wrote the entry   *)
@@ -76,6 +76,7 @@ vars == << dl, cur, dlDur, curDur, gen, leader, serving, processed, crashes >>
 Max(S) == CHOOSE m \in S : \A x \in S : x <= m
 Min2(a, b) == IF a < b THEN a ELSE b
 Majority == { Q \in SUBSET Replicas : 2 * Cardinality(Q) > Cardinality(Replicas) }
+Fenced == { Q \in Majority : \A R \in Majority : Cardinality(Q) <= Cardinality(R) }
 
 LabelAt(l, e) == IF e = 0 THEN 0 ELSE l[e].g
 LastLabel(l) == LabelAt(l, Len(l))
@@ -144,15 +145,6 @@ Init ==
     /\ processed = {}
     /\ crashes = 0
 
-\* A consumer finishes the group's next record.
-Ack(grp) ==
-    LET o == Pos(leader, grp) IN
-    /\ serving
-    /\ o < N
-    /\ << grp, o >> \notin processed
-    /\ processed' = processed \cup {<< grp, o >>}
-    /\ UNCHANGED << dl, cur, dlDur, curDur, gen, leader, serving, crashes >>
-
 \* The group gives up on its next record: the dead letter is written first.
 DeadLetter(grp) ==
     LET o == Pos(leader, grp) IN
@@ -162,21 +154,24 @@ DeadLetter(grp) ==
     /\ dl' = [dl EXCEPT ![leader] = Append(@, [grp |-> grp, o |-> o, g |-> gen[leader]])]
     /\ UNCHANGED << cur, dlDur, curDur, gen, leader, serving, processed, crashes >>
 
-\* The cursor passes a record that was finished or dead-lettered, needing
-\* the dead-letter log as it is now, which is synced first.
+\* The cursor passes a record that a consumer finishes now or that was
+\* dead-lettered, needing the dead-letter log as it is now, which is synced
+\* first. A finish the cursor never passes only redelivers, so the two are
+\* one step here.
 Advance(grp) ==
     LET o == Pos(leader, grp)
         e == Len(dl[leader])
     IN /\ serving
        /\ o < N
-       /\ << grp, o >> \in processed \/ o \in DeadIn(dl[leader], grp)
        /\ Len(cur[leader]) < MaxCursors
+       /\ processed' = IF o \in DeadIn(dl[leader], grp) THEN processed
+                        ELSE processed \cup {<< grp, o >>}
        /\ cur' = [cur EXCEPT ![leader] = Append(@,
               [grp |-> grp, p |-> o + 1, e |-> e, dg |-> LastLabel(dl[leader]),
                org |-> IF e = 0 THEN o + 1 ELSE OriginIn(cur[leader], grp),
                g |-> gen[leader]])]
        /\ dlDur' = [dlDur EXCEPT ![leader] = e]
-       /\ UNCHANGED << dl, curDur, gen, leader, serving, processed, crashes >>
+       /\ UNCHANGED << dl, curDur, gen, leader, serving, crashes >>
 
 \* A crash keeps, of each log, what was synced and any part of the rest:
 \* each log reaches disk on its own, whenever its writer gets to it.
@@ -238,11 +233,12 @@ Serve(b, g, newDl, newCur) ==
     /\ serving' = TRUE
 
 \* The leader is lost or moved; `b` is promoted at the next generation and
-\* fences a majority with it.
+\* fences a majority with it. Only the smallest majorities: the replica a
+\* larger one would take from is in one of them.
 Promote(b) ==
     LET g == Max({ gen[r] : r \in Replicas }) + 1 IN
     /\ g <= MaxGen
-    /\ \E Q \in Majority :
+    /\ \E Q \in Fenced :
         /\ b \in Q
         /\ gen' = [r \in Replicas |-> IF r \in Q THEN g ELSE gen[r]]
         /\ \/ \* The group round reached the majority.
@@ -266,7 +262,7 @@ Promote(b) ==
     /\ UNCHANGED << processed, crashes >>
 
 Next ==
-    \/ \E grp \in Groups : Ack(grp) \/ DeadLetter(grp) \/ Advance(grp)
+    \/ \E grp \in Groups : DeadLetter(grp) \/ Advance(grp)
     \/ \E r \in Replicas : Crash(r)
     \/ Recover
     \/ \E f \in Replicas : ShipDeadLetters(f) \/ ShipCursors(f)
