@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791792763200,
+  "lastUpdate": 1791802621408,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36630,6 +36630,72 @@ window.BENCHMARK_DATA = {
             "range": "1100.35",
             "unit": "us",
             "extra": "trials: 5\nmedian: 923.00\nmean: 1280.00\nstdev: 1100.35\ncv: 85.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "271c2cc609e0e477be94019a88fea07d1a0d4366",
+          "message": "fix(controlplane): check a delegating gateway against its revocations and current RBAC (#1205) (#1206)\n\n* fix(controlplane): check a delegating gateway against its revocations and current RBAC (#1205)\n\n/token/delegate compared both principals' revocation cutoffs with the\nsubject token's iat and trusted token.delegate from the caller's token,\nso a revoked gateway could keep binding and delegating fresh user tokens\nwith its unexpired control-plane token. The gateway's own iat is now\nchecked against its cutoff, and token.delegate against current RBAC, on\n/token/delegate, actor_token on /token/exchange, and refresh of a chain\nbound to a gateway.\n\nBrokers also warn and export feed-health metrics while the revocation\nfeed is unreachable, and the docs state the fail-open and clock bounds.\n\n* fix(controlplane): address review of the delegating-gateway fix (#1205)\n\n- Refresh no longer ends a gateway-bound chain on a revocation that merely\n  reached the gateway; only a live loss of token.delegate ends it.\n- The live token.delegate check counts IdP groups only from trusted issuers,\n  and bare names only in legacy mode. Deleting or re-trusting an issuer\n  revokes the tenant. A revocation that cannot be recorded after a removal\n  is retried, then answered as an error.\n- The revocation feed gauge is set when a broker starts following the feed.\n- /token/delegate answers actor_refused for a revoked or de-granted caller.\n- /token/refresh reads before spending the refresh token.\n- Raft reads revocation cutoffs on the leader after a read-index.\n\n* fix(controlplane): make auth changes and refresh rotation single writes (#1205)\n\n- An auth change that takes rights back and its revocation are one store\n  write (Raft level 9 entry, one Postgres transaction), so a failure leaves\n  neither and a retry does both. Below level 9 Raft writes them separately.\n- An issuer change revokes the tenant only when it narrows or replaces trust.\n- Leader reads use the bounded read-index.\n- /token/delegate reads both cutoffs in one leader request.\n- /token/refresh peeks, then spends and stores the replacement in one write.\n- Docs state exactly which reads go through the leader.\n\n* fix(controlplane): reuse grace window for refresh retries; checks before the spend (#1205)\n\n- A rotation records when the token was spent and what replaced it. A\n  spent token presented with the right secret within\n  FELIX_REFRESH_REUSE_GRACE_SECONDS (default 30, 0 off), while its\n  replacement is unused, spends that replacement for a new token instead\n  of revoking the chain. Covers a lost answer and concurrent refreshes.\n  Postgres migration 0027; Raft level 9.\n- RBAC evaluation, the gateway check and the mint run before the spend.\n- Deleting an unknown issuer is a 404 and revokes nobody.\n\n* docs(auth): state the concurrent-refresh and pre-level-9 limits of the grace window (#1205)\n\n* test(controlplane): create the tenant before the change-and-revoke contract adds a rule (#1205)\n\nPostgres keeps RBAC rules only for an existing tenant.",
+          "timestamp": "2026-10-12T03:53:45-07:00",
+          "tree_id": "20c48ae71e067f0301be14187ccab246294993c1",
+          "url": "https://github.com/GetFelix/felix/commit/271c2cc609e0e477be94019a88fea07d1a0d4366"
+        },
+        "date": 1791802617408,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 74.00\nstdev: 0.71\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 99,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 98.20\nstdev: 2.28\ncv: 2.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 133,
+            "range": "16.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 139.60\nstdev: 16.59\ncv: 11.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 93.80\nstdev: 0.84\ncv: 0.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "21.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 225.80\nstdev: 21.79\ncv: 9.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 387,
+            "range": "815.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 929.40\nstdev: 815.65\ncv: 87.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
