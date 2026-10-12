@@ -16,6 +16,7 @@ use super::*;
 use crate::ReplicaHandler;
 
 mod cache;
+mod groups;
 mod times;
 
 const TENANT: &str = "t1";
@@ -253,6 +254,15 @@ impl PeerRequester for Replicas {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "unreachable".to_string(),
+            });
+        }
+        // As the pool refuses it, before anything is sent.
+        if let Some(needed) = crate::peer::pool::required_capability(&message)
+            && !replica.capabilities.contains(needed)
+        {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
             });
         }
         self.sent

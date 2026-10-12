@@ -10,7 +10,9 @@
 //! own: whatever a majority held when it answered is in that log.
 //!
 //! A cache shard is fenced the same way, its cache log first and then its
-//! counter log, each taking the log furthest ahead among the answers.
+//! counter log, each taking the log furthest ahead among the answers. A
+//! stream shard's dead-letter and group cursor logs follow its records the
+//! same way, on the replicas that offer `GROUP_FENCE`.
 //!
 //! Only when every replica offered the capabilities. Otherwise the shard
 //! opens as it always has, on the lease, and a mixed fleet behaves exactly as
@@ -119,9 +121,17 @@ pub async fn fence_shard<R: PeerRequester>(
         .collect();
     // The shard's own log first: its fence is what refuses the old leader on
     // every log the shard has. A cache's counters are fenced after it, for
-    // where each replica's counter log ends.
+    // where each replica's counter log ends, and a stream's group logs the
+    // same way. Dead letters before cursors, the order they are written in.
     let (required, logs): (_, &[LogKind]) = match key.kind {
-        ShardKind::Stream => (REQUIRED, &[LogKind::Stream]),
+        ShardKind::Stream => (
+            REQUIRED,
+            &[
+                LogKind::Stream,
+                LogKind::GroupDeadLetters,
+                LogKind::GroupCursors,
+            ],
+        ),
         ShardKind::Cache => (REQUIRED_FOR_CACHES, &[LogKind::Cache, LogKind::Counters]),
     };
 
@@ -173,7 +183,14 @@ pub async fn fence_shard<R: PeerRequester>(
                 LogKind::Cache => "this broker could not open the shard's cache log",
                 // No counter store here, so no counters to take.
                 LogKind::Counters if broker.counters().is_none() => continue,
-                _ => "this broker could not open the shard's counter log",
+                LogKind::Counters => "this broker could not open the shard's counter log",
+                // No consumer groups here, so no group state to serve.
+                LogKind::GroupCursors | LogKind::GroupDeadLetters
+                    if broker.group_reader().is_none() =>
+                {
+                    continue;
+                }
+                _ => "this broker could not open the shard's group logs",
             };
             if lease_fallback {
                 return Outcome::Lease {
@@ -221,6 +238,9 @@ async fn fence_log<R: PeerRequester>(
     let voters = replicas.len() + 1;
     let needed = voters / 2 + 1;
     let mut answered: Vec<(String, std::net::SocketAddr, FenceOk)> = Vec::new();
+    // Replicas that do not fence group logs, for a group log's fence.
+    let mut lacking = 0;
+    let group_log = matches!(kind, LogKind::GroupCursors | LogKind::GroupDeadLetters);
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
@@ -247,6 +267,7 @@ async fn fence_log<R: PeerRequester>(
                     took(&answered),
                 ));
             }
+            Err(PeerError::Unsupported { .. }) if group_log => lacking += 1,
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
                 return Err(Outcome::Lease { lacking: node_id });
             }
@@ -268,6 +289,18 @@ async fn fence_log<R: PeerRequester>(
         }
     }
     drop(asks);
+    // A fleet part way through an upgrade: the shard's own log is fenced, and
+    // its group logs open as they did before the group fence existed.
+    if group_log && answered.len() + 1 < needed && answered.len() + 1 + lacking >= needed {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            log = ?kind,
+            "too few replicas fence group logs to make a majority; serving \
+             without catching them up",
+        );
+        return Ok(None);
+    }
     if answered.len() + 1 < needed {
         return Err(Outcome::pending(
             format!(
@@ -428,7 +461,9 @@ async fn catch_up<R: PeerRequester>(
                 InternalMessage::ReplicateRecords(batch)
                 | InternalMessage::ReplicateMarkedRecords(batch)
                 | InternalMessage::ReplicateCacheRecords(batch)
-                | InternalMessage::ReplicateCounterRecords(batch),
+                | InternalMessage::ReplicateCounterRecords(batch)
+                | InternalMessage::ReplicateGroupRecords(batch)
+                | InternalMessage::ReplicateDeadLetterRecords(batch),
             ) => batch,
             other => {
                 return Err(format!(
@@ -505,8 +540,9 @@ async fn catch_up<R: PeerRequester>(
         crate::replica::label_appended(log, compared_from, tail, shard.generation, Some(&taken))
             .map_err(|err| format!("could not label the records from {compared_from}: {err}"))?;
     }
-    // A cache's index and a counter shard's sums catch up with the tail on
-    // their next read; a stream's commit order has to be told.
+    // A cache's index, a counter shard's sums and the group logs' entries
+    // catch up with the tail on their next read; a stream's commit order has
+    // to be told.
     if kind == LogKind::Stream
         && let Err(err) = broker
             .adopt_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)

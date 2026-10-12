@@ -56,6 +56,11 @@ impl PeerCapabilities {
     /// Answers [`Ping`](super::Ping), so a follower can tell a leader that
     /// is quiet from one it cannot reach.
     pub const PING: Self = Self(1 << 7);
+    /// Answers [`Fence`] and [`ReplicateFetch`] for a stream shard's dead-letter
+    /// and group cursor logs ([`ReplicaLog::GroupDeadLetters`],
+    /// [`ReplicaLog::GroupCursors`]). A promoted stream leader takes the
+    /// furthest-ahead copy of each when a majority offers it.
+    pub const GROUP_FENCE: Self = Self(1 << 8);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -81,11 +86,13 @@ impl PeerCapabilities {
 /// The replica persists the generation before it answers, so the promise
 /// survives a restart. `log` names the shard's own log, `Stream` or `Cache`;
 /// the cursor, dead-letter and counter logs belong to the shard and are
-/// fenced with it. A promoted cache leader also fences `Counters`, to learn
-/// where each replica's counter log ends.
+/// fenced with it. A promoted leader also fences those logs, to learn where
+/// each replica's copy ends.
 ///
-/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`], and for
-/// `Counters` only to one that advertised [`PeerCapabilities::CACHE_FENCE`].
+/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`], for
+/// `Counters` only to one that advertised [`PeerCapabilities::CACHE_FENCE`],
+/// and for the group logs only to one that advertised
+/// [`PeerCapabilities::GROUP_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
     pub correlation_id: u64,
@@ -115,8 +122,9 @@ pub struct FenceOk {
 /// `max_bytes` of them, and none past the replica's end. Only a leader at the
 /// generation the replica last accepted is answered: a fenced replica's log
 /// is not for an older leader to read. Sent only to a peer that advertised
-/// [`PeerCapabilities::TAIL_FETCH`], and for `Counters` only to one that
-/// advertised [`PeerCapabilities::CACHE_FENCE`].
+/// [`PeerCapabilities::TAIL_FETCH`], for `Counters` only to one that
+/// advertised [`PeerCapabilities::CACHE_FENCE`], and for the group logs only
+/// to one that advertised [`PeerCapabilities::GROUP_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicateFetch {
     pub correlation_id: u64,

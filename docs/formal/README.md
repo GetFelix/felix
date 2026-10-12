@@ -85,11 +85,13 @@ One shard, three brokers, one control plane, discrete time.
   wait. The report counts claimed writes only, as the broker's write fence
   does. Reports carry the generation they were made at and one from a
   superseded generation is dropped on arrival, as the store does.
-  The logs that ride a shard (consumer-group cursors, dead letters,
-  counters) are not modelled separately. They are written through the same
-  fence, the drained report waits for them to be on the successor, and a
-  follower without them is left out of the report's candidates, so a write to
-  any of them is modelled as a write to the one log.
+  The consumer-group cursor and dead-letter logs that ride a stream shard
+  are not modelled separately. They are written through the same fence,
+  shipped to each follower in the order they are written (dead letters before
+  the cursors that pass them), fenced and taken from the furthest copy at
+  promotion, and the drained report waits for them to be on the successor,
+  so a write to either is modelled as a write to the one log. A cache's
+  counter log is modelled on its own, under `Counters`.
 - **Re-sends**, under `Resends`. A client may send a write it has no answer
   for again, as an idempotent producer does after a lost acknowledgement or a
   leader change. The serving broker appends it unless it already knows the

@@ -138,4 +138,14 @@ fn a_counter_fence_needs_the_cache_fence() {
         required_capability(&fetch(ReplicaLog::Counters)),
         Some(PeerCapabilities::TAIL_FETCH.union(PeerCapabilities::CACHE_FENCE))
     );
+    for log in [ReplicaLog::GroupCursors, ReplicaLog::GroupDeadLetters] {
+        assert_eq!(
+            required_capability(&fence(log)),
+            Some(PeerCapabilities::FENCE.union(PeerCapabilities::GROUP_FENCE))
+        );
+        assert_eq!(
+            required_capability(&fetch(log)),
+            Some(PeerCapabilities::TAIL_FETCH.union(PeerCapabilities::GROUP_FENCE))
+        );
+    }
 }

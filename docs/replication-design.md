@@ -405,7 +405,12 @@ When the fence applies:
   (`a_counter_fence_older_than_the_cache_fence_is_refused`). Taking another
   log drops the cache's index or the counter sums above the cut, so the
   shard serves what its log now holds (`a_superseded_put_is_gone_from_the_index`).
-  A cache kept in memory has no log to fence and opens on the lease. A cache
+  A cache kept in memory has no log to fence and opens on the lease. A stream
+  shard fences its records' log, then its dead-letter log, then its group
+  cursor log, and takes the furthest ahead of each the same way
+  (`the_group_logs_furthest_ahead_are_taken_too`). Without that, a leader
+  promoted from a follower behind on group state opens with cursors that put
+  its groups back before work they finished. A cache
   or counter log this broker has but cannot open (the shard is closing, out of
   file descriptors, a failed recovery) is not the same: under `fenced_caches`
   the shard stays closed and the next pass tries again
@@ -417,7 +422,13 @@ When the fence applies:
   handshake with this broker in either direction says, and this broker offers
   them too. Otherwise the shard opens at once
   on the lease, exactly as before (`a_mixed_fleet_fails_over_on_the_lease`),
-  and a peer that did not offer them is never sent either message.
+  and a peer that did not offer them is never sent either message. The group
+  logs are fenced on the replicas that offer `GROUP_FENCE`. When too few of
+  them do to make a majority, a fleet part way through an upgrade, the shard
+  opens on its fenced records and keeps the group logs it has
+  (`without_the_group_fence_the_group_logs_stay_as_they_are`). Otherwise it
+  waits for a majority to take their fence too
+  (`a_group_fence_without_a_majority_keeps_the_shard_closed`).
   `felix_broker_promotions_opened_total{path}` says which path each new
   leadership took, promoted or not.
 
@@ -870,10 +881,9 @@ A poll whose round is refused has already recorded its claims. They were never
 handed out, so they lapse and are delivered again, as after any failover.
 
 The alternative was to acknowledge group state on a majority. That would stop
-the redelivery after a failover, but the promotion fence catches up only the
-stream's own log, so a new leader could open without a group write a majority
-held. The fence would have to carry the group logs' tails too, which is a
-separate change.
+the redelivery after a failover. The promotion fence does take the furthest
+copy of the group logs among a majority, which that would rest on, but group
+writes are still acknowledged on the leader's own durability.
 
 **What the lease still does**:
 
@@ -1555,9 +1565,9 @@ down or draining broker) and adds it as `joining` with the move reason
 toward the quorum, and it is seated once it is within the lag bound. On a
 durable `Quorum` stream or a `Quorum` cache it must also hold what a majority
 of the old set holds and be named caught up, so a cache's copy waits for the
-counter log too. The consumer-group and dead-letter logs a stream ships beside
-it are not waited for: nothing is acknowledged on them, and promotion does not
-check them either. Both checks read the newcomer's position from the leader's report, and a
+counter log too, and a `Quorum` stream's copy for the group cursor and
+dead-letter logs as far as a majority holds them, since the report leaves out
+a follower short of those. Both checks read the newcomer's position from the leader's report, and a
 report names only followers whose position is known. A leader whose log is
 empty has nothing to ship and never hears from the newcomer, so it reports a
 follower of an empty log at offset zero without asking: nothing below that
@@ -1820,6 +1830,19 @@ gets its counters at the end of the pass
 
 A stream shard's group cursors and dead letters ride the exchanges too, beside
 the shard's log rather than ahead of it, since nothing waits on their marks.
+Dead letters go first. A group's dead letter is durable before its cursor
+passes the record, and a follower has to hold them in that order too: promoted
+with the cursor and not the dead letter, it would neither redeliver the record
+nor list it as dead. So the leader reads the cursor log's tail, ships the dead
+letters, and ships cursors only up to that tail and only to a follower that
+now holds every dead letter written before it. A cursor written in between
+waits for the next pass
+(`the_dead_letter_reaches_a_follower_before_the_cursor_that_passed_it`,
+`a_cursor_written_after_the_dead_letters_shipped_waits_for_them`). The end of
+the pass and a drain ship them the same way. On a `Quorum` stream the report
+also leaves out a follower short of what a majority holds of either log, as
+it does for a `Quorum` cache's counters
+(`a_follower_short_of_the_group_logs_is_not_caught_up`).
 Shipped at the end of the pass instead, they went to every follower that was
 not busy, and a dead follower whose exchange had nothing of the shard's to send
 held the end of the pass, and with it the next pass and the publishes waiting

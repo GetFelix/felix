@@ -242,6 +242,21 @@ impl ConsumerGroups {
             .map_err(BrokerError::from)
     }
 
+    /// Forget what was read from a shard's log, for replication after it cut
+    /// records from it. The next read replays the log.
+    pub(crate) async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        self.cursors
+            .forget_index(tenant_id, namespace, stream, shard)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// Close a shard's cursor log, for a shard this broker no longer holds.
     /// The next read or commit opens it afresh.
     pub async fn close_shard(

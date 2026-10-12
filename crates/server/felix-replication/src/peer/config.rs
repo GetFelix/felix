@@ -238,6 +238,7 @@ impl PeerTransportConfig {
                 .union(PeerCapabilities::FENCE)
                 .union(PeerCapabilities::TAIL_FETCH)
                 .union(PeerCapabilities::CACHE_FENCE)
+                .union(PeerCapabilities::GROUP_FENCE)
                 .union(PeerCapabilities::BALLOTS)
         } else {
             labels

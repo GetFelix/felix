@@ -52,6 +52,59 @@ pub async fn ship_once_with<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
 ) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once`], shipping nothing at or past `end`. `UpToDate` once the
+/// follower has everything below it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ship_once_until<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    end: u64,
+) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        None,
+        Some(end),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ship_batch<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    end: Option<u64>,
+) -> Progress {
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -97,7 +150,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     }
 
-    let records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
+    let mut records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
         Ok(records) => records,
         // The follower is asking for records this leader has already trimmed.
         // Shipping cannot bridge that: the records are not here to send, and
@@ -141,6 +194,13 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     };
 
+    if let Some(end) = end {
+        // Not level with the tail, so a rebuild under way is not finished.
+        if records.first().is_some_and(|record| record.offset >= end) {
+            return Progress::UpToDate;
+        }
+        records.retain(|record| record.offset < end);
+    }
     if records.is_empty() {
         if cursor.rebuilding {
             cursor.rebuilding = false;

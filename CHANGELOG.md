@@ -11,6 +11,19 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+
+- A follower could store a consumer group's cursor past a record before the
+  dead letter for it. The leader shipped cursors ahead of dead letters, so a
+  leader dying between the two left a promoted follower that neither
+  redelivered the record nor listed it as dead. Dead letters now go first,
+  and a cursor goes only to a follower that holds every dead letter written
+  before it. A promoted stream leader also fences the dead-letter and cursor
+  logs and takes the furthest-ahead copy of each from a majority before it
+  serves, on replicas that offer the new internal capability `GROUP_FENCE`
+  (`1 << 8`), and a `Quorum` stream's report leaves out a follower short of
+  what a majority holds of either log (#1202).
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded
