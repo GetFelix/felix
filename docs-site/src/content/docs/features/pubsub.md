@@ -236,10 +236,13 @@ latency grew; 256 MiB, the default, was enough.
 `subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
 on the broker. It is off by default because it gives up isolation: once slow
 subscribers hold the shared budget, a fast subscriber's batch meets the
-overflow policy too. Without it, the worst case is every subscriber holding its
-full `subscriber_queue_max_bytes`: 1,000 slow subscribers at the 256 MiB
-default could pin 250 GiB. In production, set the total to what the broker can
-afford for queued payloads. Any size works, including totals above 4 GiB.
+overflow policy too. Without it, each subscriber can hold up to
+`subscriber_queue_max_bytes` or its largest single batch, whichever is larger,
+since an oversize batch still enters an empty queue: 1,000 slow subscribers at
+the 256 MiB default could pin 250 GiB. With `subscriber_queue_max_bytes` set to
+`0` there is no per-subscriber byte term at all, and only queue capacity times
+batch size limits a subscriber. In production, set the total to what the broker
+can afford for queued payloads. Any size works, including totals above 4 GiB.
 
 Two other in-memory buffers are bounded by entry count only. A stream shard's
 replay ring keeps its most recent 1024 records for cursor replay and fanout,

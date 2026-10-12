@@ -335,9 +335,13 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   batches (64 x 64 KiB) at fanout 10 was throttled.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
   bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
-  once slow subscribers fill it, fast ones drop too. Without it, worst-case queued memory is the
-  number of subscribers times `subscriber_queue_max_bytes`, so set it in production. Totals above
-  4 GiB are honoured: past that the budget counts in units of a few bytes, each batch rounded up.
+  once slow subscribers fill it, fast ones drop too. Without it, each subscriber can hold up to
+  `subscriber_queue_max_bytes` or its largest single batch, whichever is larger (an oversize batch
+  still enters an empty queue), so worst-case queued memory is the number of subscribers times
+  that. With `subscriber_queue_max_bytes` at `0`, only queue capacity times batch size limits a
+  subscriber. Set the total in production. Totals above 4 GiB are honoured: the budget then
+  counts in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit.
 - Under `block`, a subscriber that stops reading holds the shard's publishers with no timeout
   until it reads or disconnects. Order and gap-freedom are kept.
 - The replay ring (1024 records per stream shard) and each cache watch queue (1024 changes) are

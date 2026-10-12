@@ -15,13 +15,15 @@ for what the current release guarantees.
 
 - `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
   silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
-  in units of a few bytes, each batch rounded up to a whole unit (#1200).
+  in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit (#1200).
 
 ### Documentation
 
-- Worst-case subscriber queue memory without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` is
-  subscribers times `FELIX_SUB_QUEUE_MAX_BYTES`; the docs now recommend setting the total
-  in production. They also say that under `block` one subscriber that stops reading holds
+- Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
+  `FELIX_SUB_QUEUE_MAX_BYTES` or its largest batch, whichever is larger, and with the
+  per-subscriber bound at `0` only queue capacity times batch size limits it; the docs now
+  say so and recommend setting the total in production. They also say that under `block` one subscriber that stops reading holds
   a shard's publishers with no timeout, and that the replay ring and cache watch queues are
   bounded by entry count only (#1201).
 - The replication design no longer says a lagging non-successor follower is skipped while

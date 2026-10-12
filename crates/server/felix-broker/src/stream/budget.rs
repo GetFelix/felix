@@ -20,9 +20,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A pool of queued payload bytes: one subscriber's, or the broker's.
 ///
-/// A semaphore acquire takes at most `u32::MAX` permits, so a budget above
-/// that counts in units of `1 << shift` bytes, each batch rounded up to a
-/// whole unit. Under 4 GiB a unit is one byte.
+/// A semaphore acquire takes at most `u32::MAX` permits (fewer on 32-bit,
+/// where the semaphore's own limit is about 512 MiB), so a larger budget
+/// counts in units of `1 << shift` bytes, each batch rounded up to a whole
+/// unit. On 64-bit a unit is one byte under 4 GiB.
 #[derive(Debug, Clone)]
 pub(crate) struct ByteBudget {
     permits: Arc<Semaphore>,

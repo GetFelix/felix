@@ -71,6 +71,7 @@ async fn hold_waits_for_room() {
     assert_eq!(sub.own_available(), Some(5));
 }
 
+#[cfg(target_pointer_width = "64")]
 #[test]
 fn a_budget_above_four_gib_is_not_cut_to_four_gib() {
     const GIB: usize = 1 << 30;
@@ -88,6 +89,7 @@ fn a_budget_above_four_gib_is_not_cut_to_four_gib() {
     drop(tenth);
 }
 
+#[cfg(target_pointer_width = "64")]
 #[test]
 fn a_large_budget_rounds_each_batch_up_to_a_whole_unit() {
     let sub = bytes(0, 8 << 30).for_subscriber();
@@ -98,6 +100,7 @@ fn a_large_budget_rounds_each_batch_up_to_a_whole_unit() {
     assert_eq!(broker.available(), 8 << 30);
 }
 
+#[cfg(target_pointer_width = "64")]
 #[tokio::test]
 async fn both_bounds_above_four_gib_hold_and_wait_in_bytes() {
     const GIB: usize = 1 << 30;

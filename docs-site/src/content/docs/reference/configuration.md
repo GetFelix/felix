@@ -447,7 +447,7 @@ subscriber_queue_max_bytes: 268435456
 
 #### `subscriber_queue_max_bytes_total`
 
-**Description**: Payload bytes all subscriber queues on the broker may hold together. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber queue it sits in, which is what each queue keeps alive, so the real memory is at most this. Without it, worst-case queued memory is the number of subscribers times `subscriber_queue_max_bytes`, so set it in production. Values above 4 GiB are honoured.
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber queue it sits in, which is what each queue keeps alive, so the real memory is at most this. Without it, each subscriber can hold up to `subscriber_queue_max_bytes` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `subscriber_queue_max_bytes: 0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
 
 **Type**: `usize` (bytes)
 
