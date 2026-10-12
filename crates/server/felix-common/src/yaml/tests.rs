@@ -153,3 +153,13 @@ fn an_error_does_not_quote_the_file() {
         assert!(err.contains(line), "{err}");
     }
 }
+
+#[test]
+fn an_unknown_tag_is_refused() {
+    for text in ["name: !custom x", "list: !custom [a]", "count: !custom 1"] {
+        assert!(from_str::<Strict>(text).is_err(), "{text} was accepted");
+    }
+    assert_eq!(strict("name: !!str 5").name.as_deref(), Some("5"));
+    // Kept as written, as before, rather than decoded to "hi".
+    assert_eq!(strict("name: !!binary aGk=").name.as_deref(), Some("aGk="));
+}

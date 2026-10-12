@@ -18,18 +18,25 @@ pub type Error = serde_saphyr::Error;
 /// - `<<` is an ordinary key, not a merge. With `deny_unknown_fields` it is
 ///   refused like any other unknown key.
 /// - A duplicate key is an error.
-/// - Errors carry a line and column but never quote the file, which may
-///   hold a credential.
+/// - A tag the parser does not know (`!custom`) is an error. `!!binary` on a
+///   string is kept as written, not decoded.
+/// - Errors carry a line and column. A wrong-typed value is not quoted, since
+///   the file may hold a credential; an unknown enum value is.
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
     serde_saphyr::from_str_with_options(text, options())
 }
 
+// Mirrored in felix-client's `ClientConfigOverride::parse`; change both.
 fn options() -> serde_saphyr::Options {
     serde_saphyr::options! {
         strict_booleans: true,
         merge_keys: serde_saphyr::options::MergeKeyPolicy::AsOrdinary,
         duplicate_keys: serde_saphyr::options::DuplicateKeyPolicy::Error,
         with_snippet: false,
+        reject_unsupported_tags: true,
+        // The old parser kept `!!binary` text as written; decoding it would
+        // silently change the value.
+        ignore_binary_tag_for_string: true,
     }
 }
 

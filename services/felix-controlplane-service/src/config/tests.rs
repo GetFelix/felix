@@ -894,3 +894,15 @@ fn yaml_1_1_spellings_merge_keys_and_null_paths_are_refused() {
         );
     }
 }
+
+/// A quoted empty path still parses, as it did; it is a bare or null one that
+/// is refused.
+#[test]
+fn a_quoted_empty_cert_path_still_parses() {
+    assert!(
+        felix_common::yaml::from_str::<ControlPlaneConfigOverride>(
+            "tls:\n  cert_path: ''\n  key_path: k\n"
+        )
+        .is_ok()
+    );
+}

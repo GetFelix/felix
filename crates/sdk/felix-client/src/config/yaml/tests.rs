@@ -43,3 +43,30 @@ fn config_yaml_error_does_not_quote_the_token() {
         .to_string();
     assert!(!err.contains("s3cret-token"), "{err}");
 }
+
+/// The client's copy of the services' options has to stay the documented set.
+#[test]
+fn config_yaml_options_match_the_services() {
+    let options = super::options();
+    assert!(options.strict_booleans);
+    assert!(matches!(
+        options.merge_keys,
+        serde_saphyr::options::MergeKeyPolicy::AsOrdinary
+    ));
+    assert!(matches!(
+        options.duplicate_keys,
+        serde_saphyr::options::DuplicateKeyPolicy::Error
+    ));
+    assert!(!options.with_snippet);
+    assert!(options.reject_unsupported_tags);
+    assert!(!options.legacy_octal_numbers);
+    assert!(ClientConfigOverride::parse("auth_token: !custom x").is_err());
+    assert!(options.ignore_binary_tag_for_string);
+    assert_eq!(
+        ClientConfigOverride::parse("auth_token: !!binary aGk=")
+            .expect("parse")
+            .auth_token
+            .as_deref(),
+        Some("aGk=")
+    );
+}

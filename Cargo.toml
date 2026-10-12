@@ -99,7 +99,9 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 utoipa = "6.0.0"
-serde-saphyr = { version = "1.3", default-features = false }
+# `~1.3`: parsing defaults can change in a minor release, and they decide what
+# a config file means. Moving to 1.4 should be a deliberate bump.
+serde-saphyr = { version = "~1.3", default-features = false }
 bytes = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.

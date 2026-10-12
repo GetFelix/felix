@@ -39,7 +39,9 @@ pub mod lifecycle;
 pub mod membership;
 #[cfg(feature = "tls")]
 pub mod tls;
-#[cfg(feature = "yaml")]
+// Also under `test`, so `cargo test -p felix-common` runs its tests without
+// the feature; the dev-dependency supplies serde-saphyr.
+#[cfg(any(feature = "yaml", test))]
 pub mod yaml;
 
 pub use error::{Error, Result};

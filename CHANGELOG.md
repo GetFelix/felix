@@ -41,11 +41,15 @@ for what the current release guarantees.
     `ack_on_commit: "true"`), `1_000`, a file that is only `~` or `null`, and
     a tab before the first key.
   - Now refused: an explicit tag that contradicts the setting's type
-    (`!!str 5` for a number, `!!int "5"` for a string), and a null or empty
-    `tls.cert_path`/`key_path` in the control plane file. That used to be read
-    as the path `~` or the empty path.
-  - Parse errors name the key and give a line and column, but no longer
-    quote the value, which could be a token.
+    (`!!str 5` for a number, `!!int "5"` for a string); a tag the parser does
+    not know (`!custom x`, which used to read as `x`); and a bare or
+    null `tls.cert_path`/`key_path` in the control plane file (`cert_path:` or
+    `cert_path: ~`), which used to be read as the path `""` or `~`. A quoted
+    `cert_path: ''` is still accepted, as before. `!!binary` on a string
+    setting is still kept as written, not decoded.
+  - Parse errors name the key and give a line and column. A wrong-typed
+    value is no longer quoted, since it could be a token; an unknown enum
+    value still is.
   - `--print-config` puts double quotes, not single quotes, around strings
     that need them, and also quotes `yes` and `1_000`. The output still reads
     back to the same values.
