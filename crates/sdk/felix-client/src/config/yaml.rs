@@ -37,6 +37,21 @@ pub(super) struct ClientConfigOverride {
 }
 
 impl ClientConfigOverride {
+    /// Read a config file with the same rules the services use
+    /// (`felix_common::yaml`, which this published crate cannot depend on):
+    /// only `true`/`false` are booleans, `<<` is not a merge, duplicate keys
+    /// are refused, and an error never quotes the file, which may hold the
+    /// auth token.
+    pub(super) fn parse(text: &str) -> Result<Self, serde_saphyr::Error> {
+        let options = serde_saphyr::options! {
+            strict_booleans: true,
+            merge_keys: serde_saphyr::options::MergeKeyPolicy::AsOrdinary,
+            duplicate_keys: serde_saphyr::options::DuplicateKeyPolicy::Error,
+            with_snippet: false,
+        };
+        serde_saphyr::from_str_with_options(text, options)
+    }
+
     pub(super) fn apply(&self, config: &mut ClientConfig) {
         if let Some(value) = self.publish_conn_pool
             && value > 0
@@ -166,3 +181,6 @@ fn parse_sharding(value: &str) -> Option<PublishSharding> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

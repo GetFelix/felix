@@ -65,7 +65,7 @@ felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-pre
 arc-swap = { workspace = true }
 base64 = { workspace = true }
 felix-broker = { path = "../../crates/server/felix-broker", version = "0.6.0-preview.7" }
-felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.7", features = ["lifecycle", "tls"] }
+felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.7", features = ["lifecycle", "tls", "yaml"] }
 felix-client = { path = "../../crates/sdk/felix-client", version = "0.6.0-preview.7" }
 felix-authz = { path = "../../crates/server/felix-authz", version = "0.6.0-preview.7" }
 felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.6.0-preview.7" }
@@ -93,7 +93,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml_ng = { workspace = true }
+serde-saphyr = { workspace = true, features = ["serialize"] }
 tokio = { workspace = true }
 # TLS on the Kafka listener, which is plain TCP rather than QUIC.
 tokio-rustls = { workspace = true }

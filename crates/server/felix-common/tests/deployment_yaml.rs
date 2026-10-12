@@ -14,8 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use serde_yaml_ng::Value;
+use serde_json::Value;
 
 /// The only two images a release publishes.
 const PUBLISHED_IMAGES: &[&str] = &["felix-broker", "felix-controlplane"];
@@ -115,9 +114,12 @@ fn fenced(langs: &[&str]) -> Vec<Block> {
 
 /// Every document in a block; a Kubernetes page separates several with `---`.
 fn documents(block: &Block) -> Result<Vec<Value>, String> {
-    serde_yaml_ng::Deserializer::from_str(&block.text)
-        .map(|doc| Value::deserialize(doc).map_err(|err| err.to_string()))
-        .collect()
+    // The services' config-file rules, so `yes` in a manifest stays a string.
+    let options = serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::options::MergeKeyPolicy::AsOrdinary,
+    };
+    serde_saphyr::from_multiple_with_options(&block.text, options).map_err(|err| err.to_string())
 }
 
 fn dockerfile_args(path: &Path) -> BTreeSet<String> {
@@ -153,12 +155,12 @@ fn every_dockerfile_arg() -> BTreeSet<String> {
 fn visit<'a>(value: &'a Value, key: Option<&'a str>, f: &mut dyn FnMut(Option<&str>, &Value)) {
     f(key, value);
     match value {
-        Value::Mapping(map) => {
+        Value::Object(map) => {
             for (k, v) in map {
-                visit(v, k.as_str(), f);
+                visit(v, Some(k), f);
             }
         }
-        Value::Sequence(items) => {
+        Value::Array(items) => {
             for item in items {
                 visit(item, key, f);
             }
@@ -198,14 +200,13 @@ fn build_args_in_the_docs_are_declared_by_a_dockerfile() {
             continue;
         };
         for doc in docs {
-            let Some(services) = doc.get("services").and_then(Value::as_mapping) else {
+            let Some(services) = doc.get("services").and_then(Value::as_object) else {
                 continue;
             };
             for (name, service) in services {
-                let Some(build) = service.get("build").and_then(Value::as_mapping) else {
+                let Some(build) = service.get("build").and_then(Value::as_object) else {
                     continue;
                 };
-                let name = name.as_str().unwrap_or("?");
                 let context = build.get("context").and_then(Value::as_str).unwrap_or(".");
                 let dockerfile = build
                     .get("dockerfile")
@@ -222,11 +223,8 @@ fn build_args_in_the_docs_are_declared_by_a_dockerfile() {
                 }
                 let declared = dockerfile_args(&path);
                 let args: Vec<String> = match build.get("args") {
-                    Some(Value::Mapping(map)) => map
-                        .keys()
-                        .filter_map(|k| k.as_str().map(String::from))
-                        .collect(),
-                    Some(Value::Sequence(items)) => items
+                    Some(Value::Object(map)) => map.keys().cloned().collect(),
+                    Some(Value::Array(items)) => items
                         .iter()
                         .filter_map(Value::as_str)
                         .map(|item| item.split('=').next().unwrap_or_default().to_string())
@@ -331,27 +329,23 @@ fn felix_env_vars_in_the_docs_yaml_are_ones_the_binaries_read() {
             };
             visit(&doc, None, &mut |key, value| match (key, value) {
                 // Compose: `environment:` as a mapping or as `KEY=value` items.
-                (Some("environment"), Value::Mapping(map)) => {
-                    for k in map.keys() {
-                        if let Some(name) = k.as_str() {
-                            check(name);
-                        }
+                (Some("environment"), Value::Object(map)) => {
+                    for name in map.keys() {
+                        check(name);
                     }
                 }
                 (Some("environment"), Value::String(item)) => {
                     check(item.split('=').next().unwrap_or_default());
                 }
                 // Kubernetes: `env: - name: X`, and ConfigMap `data:` keys.
-                (Some("env"), Value::Mapping(map)) => {
+                (Some("env"), Value::Object(map)) => {
                     if let Some(name) = map.get("name").and_then(Value::as_str) {
                         check(name);
                     }
                 }
-                (Some("data"), Value::Mapping(map)) => {
-                    for k in map.keys() {
-                        if let Some(name) = k.as_str() {
-                            check(name);
-                        }
+                (Some("data"), Value::Object(map)) => {
+                    for name in map.keys() {
+                        check(name);
                     }
                 }
                 _ => {}

@@ -20,7 +20,11 @@ of it is configured here: it is chosen by using `ClusterClient` rather than
 - Environment variables next
 - YAML overrides last (if provided by `config_path` or `FELIX_CLIENT_CONFIG`)
 
-If a YAML path is provided and cannot be read or parsed, it returns an error.
+If a YAML path is provided and cannot be read or parsed, it returns an error. The file is read
+with the same rules as the broker's (only `true`/`false` are booleans, `<<` is
+not a merge key); see
+[Configuration](../docs-site/src/content/docs/reference/configuration.md#how-the-file-is-read).
+Unknown keys are ignored here, unlike in the broker.
 
 ## Config File Path
 

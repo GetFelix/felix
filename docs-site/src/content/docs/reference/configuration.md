@@ -64,6 +64,17 @@ max_subscriber_writer_lanes: 8
 subscriber_lane_shard: auto
 ```
 
+### How the file is read
+
+The broker, the control plane and `felix-client` read their files with the same rules:
+
+- Booleans are `true` and `false` only, in any case. `yes`, `no`, `on` and `off` are refused for a boolean setting.
+- Integers are decimal, `0x` hex or `0o` octal. A leading zero (`0777`) is refused, so it can't be read as YAML 1.1 octal.
+- `~`, `null` or an empty value leaves the setting at its default. So does an empty or comment-only file.
+- `<<` is an ordinary key, not a merge. The broker and control plane refuse it like any other key they don't know.
+- Anchors and aliases work. A duplicate key is refused, and so is a second document after `---`.
+- A parse error names the key, line and column. It doesn't quote the value, which may be a token.
+
 ## Network Configuration
 
 ### `quic_bind`
