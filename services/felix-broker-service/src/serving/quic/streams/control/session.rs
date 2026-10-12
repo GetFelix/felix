@@ -13,7 +13,9 @@ use crate::serving::quic::handlers::publish::{
 /// Extended feature bits this broker serves, sent in `server_features_hi`.
 /// `stream_deleted` is sent only to a client that offered it, when a stream
 /// it reads is deleted.
-const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT | felix_wire::FEATURE_STREAM_DELETED;
+const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
+    | felix_wire::FEATURE_STREAM_DELETED
+    | felix_wire::FEATURE_PUBLISH_WIDTH;
 
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,

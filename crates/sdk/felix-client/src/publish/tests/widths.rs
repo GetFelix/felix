@@ -9,7 +9,9 @@ use felix_wire::routing::{ShardRouting, shard_for_routing};
 use super::fake_worker;
 use crate::publish::routing::Selected;
 use crate::publish::writer::PublishWorker;
-use crate::publish::{LearnWidth, OpenWorker, PublishSharding, Publisher, PublisherInner};
+use crate::publish::{
+    LearnWidth, OpenWorker, PublishSharding, Publisher, PublisherInner, StreamWidths,
+};
 
 const SHARDS: u32 = 4;
 
@@ -22,6 +24,12 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_checking(None)
+}
+
+/// A fixture whose widths are asked again `every` this long, or at the
+/// default interval.
+fn fixture_checking(every: Option<std::time::Duration>) -> Fixture {
     let learned = Arc::new(AtomicUsize::new(0));
     let fail = Arc::new(AtomicBool::new(false));
     let width = Arc::new(AtomicU32::new(SHARDS));
@@ -46,7 +54,15 @@ fn fixture() -> Fixture {
     let pool = Arc::new(vec![fake_worker(), fake_worker()]);
     Fixture {
         publisher: Publisher {
-            inner: Arc::new(PublisherInner::with_widths(pool, 16, open, learn)),
+            inner: Arc::new(PublisherInner::with_stream_widths(
+                pool,
+                16,
+                open,
+                match every {
+                    Some(every) => StreamWidths::new(learn, true).checking_every(every),
+                    None => StreamWidths::new(learn, true),
+                },
+            )),
         },
         learned,
         fail,
@@ -60,6 +76,7 @@ async fn writer_for(publisher: &Publisher, stream: &str, key: Option<&[u8]>) -> 
         .route("t", "ns", stream, key, None)
         .await
         .expect("route")
+        .worker
     {
         Selected::Shard(worker) => worker,
         Selected::Pooled(_) => panic!("routed to the pool"),
@@ -154,7 +171,8 @@ async fn round_robin_does_not_ask_the_width() {
     assert_eq!(
         publisher
             .shard_of("t", "ns", "orders", Some(b"k"), None)
-            .await,
+            .await
+            .0,
         None
     );
     assert_eq!(learned.load(Ordering::SeqCst), 0);
@@ -174,6 +192,7 @@ async fn a_callers_own_shard_never_picks_a_second_writer() {
             .route("t", "ns", "orders", Some(&key), Some(believed))
             .await
             .expect("route")
+            .worker
         {
             Selected::Shard(worker) => worker,
             Selected::Pooled(_) => panic!("routed to the pool"),
@@ -235,4 +254,120 @@ async fn a_stream_reported_gone_is_asked_its_width_again() {
         );
     }
     assert_eq!(f.learned.load(Ordering::SeqCst), 2);
+}
+
+/// A `stale_width` refusal drops the kept width like `not_found` does: the
+/// broker saw the batch routed by a width the stream no longer has.
+#[tokio::test]
+async fn a_stale_width_refusal_drops_the_kept_width() {
+    let f = fixture();
+    writer_for(&f.publisher, "orders", Some(&key_on(1, 0))).await;
+    f.width.store(2, Ordering::SeqCst);
+    let stale: anyhow::Result<()> = Err(crate::error::refused(
+        "publish rejected",
+        "routed by a width of 4 shards".to_string(),
+        Some(felix_wire::ErrorCode::StaleWidth),
+        None,
+        None,
+    ));
+    f.publisher
+        .forget_width_if_gone("t", "ns", "orders", Some(b"k"), &stale);
+    let first = writer_for(&f.publisher, "orders", Some(&key_of(2, 1, 0))).await;
+    for skip in 1..8 {
+        let writer = writer_for(&f.publisher, "orders", Some(&key_of(2, 1, skip))).await;
+        assert!(
+            Arc::ptr_eq(&first, &writer),
+            "new shard 1 is on two writers"
+        );
+    }
+    assert_eq!(f.learned.load(Ordering::SeqCst), 2);
+}
+
+/// The width a keyed publish was routed by travels with it, so the broker
+/// can refuse it if the stream has another. The one-shard fallback for a
+/// width that could not be learned keeps the stream on one writer and
+/// declares nothing.
+#[tokio::test]
+async fn a_keyed_publish_carries_the_width_it_was_routed_by() {
+    let f = fixture();
+    let routed = f
+        .publisher
+        .route("t", "ns", "orders", Some(&key_on(2, 0)), None)
+        .await
+        .expect("route");
+    let declaration = routed.declaration.clone().expect("a declaration");
+    let frame = felix_wire::Frame::decode(declaration).expect("frame");
+    assert_eq!(
+        felix_wire::Message::decode(frame).expect("message"),
+        felix_wire::Message::PublishWidth {
+            tenant_id: "t".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shards: SHARDS,
+            routing: None,
+        }
+    );
+    let unkeyed = f
+        .publisher
+        .route("t", "ns", "orders", None, None)
+        .await
+        .expect("route");
+    assert!(unkeyed.declaration.is_none());
+
+    f.fail.store(true, Ordering::SeqCst);
+    let fallback = f
+        .publisher
+        .route("t", "ns", "payments", Some(b"k"), None)
+        .await
+        .expect("route");
+    assert!(fallback.declaration.is_none());
+}
+
+/// The case nothing refuses: a stream deleted and created again two shards
+/// wide while this client only sends fire-and-forget publishes, or is idle.
+/// The width is asked again once due, and the new answer replaces the old,
+/// so keys sharing a new shard share its writer.
+#[tokio::test]
+async fn a_checked_width_is_asked_again_and_a_new_answer_taken() {
+    let f = fixture_checking(Some(std::time::Duration::ZERO));
+    let before = writer_for(&f.publisher, "orders", Some(&key_on(1, 0))).await;
+    f.width.store(2, Ordering::SeqCst);
+    // Due at once, so this publish starts the check in the background and
+    // is itself still routed by the old width.
+    let still = writer_for(&f.publisher, "orders", Some(&key_on(1, 0))).await;
+    assert!(Arc::ptr_eq(&before, &still));
+    let mut taken = false;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+        let first = writer_for(&f.publisher, "orders", Some(&key_of(2, 1, 0))).await;
+        if all_on(&f.publisher, &first).await {
+            taken = true;
+            break;
+        }
+    }
+    assert!(taken, "the new width was never taken");
+    assert!(f.learned.load(Ordering::SeqCst) >= 2);
+}
+
+/// Every key on new shard 1 of a two-shard stream goes to `first`.
+async fn all_on(publisher: &Publisher, first: &Arc<PublishWorker>) -> bool {
+    for skip in 0..8 {
+        let writer = writer_for(publisher, "orders", Some(&key_of(2, 1, skip))).await;
+        if !Arc::ptr_eq(first, &writer) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Without a newer answer the kept width stays, and a width is not asked
+/// again before it is due.
+#[tokio::test]
+async fn a_width_is_not_asked_again_before_it_is_due() {
+    let f = fixture();
+    for shard in 0..SHARDS {
+        writer_for(&f.publisher, "orders", Some(&key_on(shard, 0))).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(f.learned.load(Ordering::SeqCst), 1);
 }

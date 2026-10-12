@@ -16,6 +16,7 @@ async fn handle_binary_publish_batch_control_requires_auth() {
         &publish_ctx,
         &frame,
         None,
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -39,6 +40,7 @@ async fn handle_binary_publish_batch_control_tenant_mismatch() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -62,6 +64,7 @@ async fn handle_binary_publish_batch_control_forbidden() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -85,6 +88,7 @@ async fn handle_binary_publish_batch_control_missing_stream_is_ok() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -124,6 +128,7 @@ async fn handle_binary_publish_batch_control_enqueue_dropped_is_ok() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -161,6 +166,7 @@ async fn handle_binary_publish_batch_control_enqueue_error_is_ok() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )
@@ -205,6 +211,7 @@ async fn an_accepted_binary_batch_is_counted_with_its_payload_bytes() {
         &publish_ctx,
         &frame,
         Some(&auth_ctx),
+        None,
         false,
         &watch::channel(false).0,
     )

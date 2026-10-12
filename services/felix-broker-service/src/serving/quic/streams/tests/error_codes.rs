@@ -107,3 +107,66 @@ async fn an_unnegotiated_client_gets_the_old_frame() -> Result<()> {
     }
     Ok(())
 }
+
+/// A client's `publish_width` holds for the keyed batches after it: one
+/// routed by a width the stream does not have here is refused with
+/// `stale_width` and nothing else is tried.
+#[tokio::test]
+async fn a_batch_routed_by_a_stale_width_is_told_stale_width() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let auth = auth_fixture("t1", default_perms());
+    let error_codes = Arc::new(ErrorCodeSupport::default());
+    let keyed_batch = |request_id: u64| Message::PublishBatch {
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        stream: "updates".to_string(),
+        payloads: vec![b"payload".to_vec()],
+        key: Some(bytes::Bytes::from_static(b"customer-7")),
+        request_id: Some(request_id),
+        ack: Some(felix_wire::AckMode::PerBatch),
+    };
+    let width = |shards: u32| Message::PublishWidth {
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        stream: "updates".to_string(),
+        shards,
+        routing: None,
+    };
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_offering(
+            &auth,
+            Some(felix_wire::FEATURE_ERROR_CODES),
+        )))),
+        // Routed by the width of the stream before it was created again.
+        Ok(Some(frame_from_message(width(4)))),
+        Ok(Some(frame_from_message(keyed_batch(1)))),
+        // A broker with no cluster serves every stream as one shard. This one
+        // has not heard of the stream, so the batch gets as far as that.
+        Ok(Some(frame_from_message(width(1)))),
+        Ok(Some(frame_from_message(keyed_batch(2)))),
+    ];
+    let (_, outgoing) = run_control_loop_with_codes(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+        Arc::clone(&error_codes),
+    )
+    .await?;
+    let errors: Vec<_> = outgoing
+        .into_iter()
+        .filter_map(|outgoing| match outgoing {
+            Outgoing::Message(message @ Message::PublishError { .. }) => {
+                Some(error_codes.shape(message))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(
+        code_of(&errors[0]),
+        (Some(ErrorCode::StaleWidth), Some(RetryClass::Retry))
+    );
+    assert_eq!(code_of(&errors[1]).0, Some(ErrorCode::NotFound));
+    Ok(())
+}

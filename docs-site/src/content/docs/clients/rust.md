@@ -410,10 +410,21 @@ extra round trip to authenticate it, and stays open. A client keeps at most
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,
 whoever publishes: a plain publisher, a `ClusterClient` or an idempotent
-producer. So two of them never put one key on two writers. The width is kept
-until a publish to the stream is refused with `not_found`: only a deleted
-stream can come back with another width. If the width cannot be learned,
-every keyed publish to that stream goes on shard 0's stream, as one writer.
+producer. So two of them never put one key on two writers. If the width
+cannot be learned, every keyed publish to that stream goes on shard 0's
+stream, as one writer.
+
+A stream deleted and created again at another width makes the kept width
+stale, and two keys that now share a shard could go out on two writers. A
+broker advertising `FEATURE_PUBLISH_WIDTH` is told the width each keyed batch
+was routed by and refuses one routed by a width the stream no longer has, so
+nothing sent that way is written. An acknowledged publish fails with
+`stale_width` (`Retry`), and the client drops the width so a retry asks for
+the new one. A fire-and-forget publish is dropped; the client asks for a
+width again every 5 seconds while it publishes to the stream, so it catches
+up without a refusal to read. A refusal with `not_found` also drops the
+width. Against an older broker the width is kept until `not_found`, as
+before.
 
 The ordering guarantee is per shard: every publish one client makes to one
 shard goes through one writer and one QUIC stream, so the shard holds them in
@@ -472,7 +483,8 @@ success. The codes and their classes are listed under
 - `Retry` and `Redirect` (`shard_unavailable`, `draining`, `not_leader`) from a
   cached shard owner drop that owner and go straight to the entry broker, even
   from `publish`, since nothing was applied. From the entry broker the retrying
-  paths back off.
+  paths back off. `stale_claim` and `stale_width` back off too: neither says
+  the owner is wrong.
 - `RetryAfter` backs off for at least `retry_after_ms`. `not_found` is retried
   for 5 s from the first one, long enough for a newly promoted broker to hear
   about the stream from the control plane and no longer.

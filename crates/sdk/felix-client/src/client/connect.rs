@@ -279,6 +279,7 @@ impl Client {
             &credentials,
             &auth_tenant_id,
             server_features,
+            server_features_hi,
             &cache_request_counter,
             runtime_config.max_frame_bytes,
         );
@@ -468,6 +469,7 @@ pub(super) fn stream_widths(
     credentials: &Arc<Credentials>,
     auth_tenant_id: &str,
     server_features: u32,
+    server_features_hi: u32,
     requests: &Arc<AtomicU64>,
     max_frame_bytes: usize,
 ) -> Arc<StreamWidths> {
@@ -499,7 +501,10 @@ pub(super) fn stream_widths(
             .await
         })
     });
-    Arc::new(StreamWidths::new(learn))
+    Arc::new(StreamWidths::new(
+        learn,
+        felix_wire::supports_feature(server_features_hi, felix_wire::FEATURE_PUBLISH_WIDTH),
+    ))
 }
 
 /// Open one cache stream as `credentials` and start the worker that owns it.

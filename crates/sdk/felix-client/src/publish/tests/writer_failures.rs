@@ -228,6 +228,7 @@ async fn run_publisher_writer_binary_bytes_write_error_drains_queue() -> Result<
         bytes,
         item_count: payloads.len(),
         sample: false,
+        declaration: None,
         ack: AckMode::None,
         request_id: None,
         _permit: test_publish_permit(),

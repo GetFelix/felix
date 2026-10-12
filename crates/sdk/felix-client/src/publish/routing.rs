@@ -20,9 +20,11 @@ use std::sync::atomic::Ordering;
 
 use ahash::RandomState;
 use anyhow::Result;
+use bytes::Bytes;
 use hashbrown::HashMap;
 
 use super::Publisher;
+use super::widths::Width;
 use super::writer::PublishWorker;
 
 pub(super) const STREAM_SHARD_CACHE_CAPACITY: usize = 1024;
@@ -73,6 +75,22 @@ impl Deref for Selected<'_> {
     }
 }
 
+/// A publish's writer, and the `publish_width` to send ahead of it.
+pub(super) struct Routed<'a> {
+    pub(super) worker: Selected<'a>,
+    /// Set for a keyed publish whose width the broker checks, when the
+    /// writer may carry more than one shard of the stream over time.
+    pub(super) declaration: Option<Bytes>,
+}
+
+impl Deref for Routed<'_> {
+    type Target = PublishWorker;
+
+    fn deref(&self) -> &PublishWorker {
+        &self.worker
+    }
+}
+
 impl Publisher {
     /// The writer for a publish with `key`: its shard's own stream when the
     /// client can tell the shard and has or can get a stream for it, else
@@ -87,22 +105,39 @@ impl Publisher {
         stream: &str,
         key: Option<&[u8]>,
         shard: Option<u32>,
-    ) -> Result<Selected<'_>> {
-        let shard = self
+    ) -> Result<Routed<'_>> {
+        let (shard, width) = self
             .shard_of(tenant_id, namespace, stream, key, shard)
             .await;
+        let declaration = width.and_then(|width| width.declaration.clone());
         if self.inner.sharding == PublishSharding::HashStream
             && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
             && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
         {
-            return Ok(Selected::Shard(worker));
+            return Ok(Routed {
+                worker: Selected::Shard(worker),
+                declaration,
+            });
         }
-        self.select_worker(tenant_id, namespace, stream)
-            .map(Selected::Pooled)
+        // Without shard streams the pool carries all of a stream's keys on
+        // one writer, so there is nothing for a stale width to split. With
+        // them, the pool carries the shards past the cap beside the shards
+        // that have streams, and is checked like they are.
+        let declaration = declaration.filter(|_| {
+            self.inner
+                .shard_streams
+                .as_ref()
+                .is_some_and(|s| s.enabled())
+        });
+        Ok(Routed {
+            worker: Selected::Pooled(self.select_worker(tenant_id, namespace, stream)?),
+            declaration,
+        })
     }
 
     /// The shard whose writer a publish goes to: 0 without a key, else the
-    /// one the key maps to under the width this client keeps for the stream.
+    /// one the key maps to under the width this client keeps for the stream,
+    /// with that width.
     ///
     /// The caller's `shard` is used only by a publisher with no widths. Every
     /// other path publishing through this client, a `ClusterClient` or an
@@ -116,22 +151,26 @@ impl Publisher {
         stream: &str,
         key: Option<&[u8]>,
         shard: Option<u32>,
-    ) -> Option<u32> {
+    ) -> (Option<u32>, Option<Arc<Width>>) {
         let Some(key) = key else {
-            return Some(0);
+            return (Some(0), None);
         };
         if self.inner.sharding != PublishSharding::HashStream {
-            return shard;
+            return (shard, None);
         }
         match &self.inner.widths {
-            Some(widths) => Some(widths.shard_of(tenant_id, namespace, stream, key).await),
-            None => shard,
+            Some(widths) => {
+                let (shard, width) = widths.shard_of(tenant_id, namespace, stream, key).await;
+                (Some(shard), Some(width))
+            }
+            None => (shard, None),
         }
     }
 
-    /// Ask a stream's width again once the broker says the stream is gone: it
-    /// may be created again with another width. Nothing sent to it while it
-    /// was gone landed, so no shard of the new stream is left on two writers.
+    /// Ask a stream's width again once the broker says the stream is gone (it
+    /// may be created again with another width) or that a publish was routed
+    /// by a width it no longer has. Nothing refused either way landed, so no
+    /// shard of the new stream is left on two writers.
     pub(super) fn forget_width_if_gone<T>(
         &self,
         tenant_id: &str,
@@ -141,9 +180,12 @@ impl Publisher {
         outcome: &Result<T>,
     ) {
         if let (Some(_), Some(widths), Err(err)) = (key, &self.inner.widths, outcome)
-            && err
-                .downcast_ref::<crate::BrokerError>()
-                .is_some_and(|err| err.code == felix_wire::ErrorCode::NotFound)
+            && err.downcast_ref::<crate::BrokerError>().is_some_and(|err| {
+                matches!(
+                    err.code,
+                    felix_wire::ErrorCode::NotFound | felix_wire::ErrorCode::StaleWidth
+                )
+            })
         {
             widths.forget(tenant_id, namespace, stream);
         }
@@ -259,9 +301,9 @@ impl StreamKey {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct StreamKeyRef<'a> {
-    tenant_id: &'a str,
-    namespace: &'a str,
-    stream: &'a str,
+    pub(super) tenant_id: &'a str,
+    pub(super) namespace: &'a str,
+    pub(super) stream: &'a str,
 }
 
 impl<'a> StreamKeyRef<'a> {

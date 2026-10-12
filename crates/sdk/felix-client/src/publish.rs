@@ -38,7 +38,7 @@ use crate::telemetry::frame_counters;
 use crate::telemetry::maybe_append_publish_ts_batch;
 #[cfg(feature = "telemetry")]
 use crate::timings;
-use routing::{STREAM_SHARD_CACHE_CAPACITY, StreamShardCache};
+use routing::{Routed, STREAM_SHARD_CACHE_CAPACITY, StreamShardCache};
 use send::CancelledAfterEnqueue;
 use writer::PublishRequest;
 
@@ -298,6 +298,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::None,
                 request_id: None,
                 _permit: permit,
@@ -582,7 +583,7 @@ impl Publisher {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_idempotent_binary(
         &self,
-        worker: &PublishWorker,
+        worker: &Routed<'_>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -613,6 +614,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample: false,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::PerBatch,
                 request_id: Some(request_id),
                 _permit: permit,
@@ -874,8 +876,19 @@ impl PublisherInner {
         open: OpenWorker,
         learn: LearnWidth,
     ) -> Self {
+        Self::with_stream_widths(workers, cap, open, StreamWidths::new(learn, true))
+    }
+
+    /// [`Self::with_shard_streams`] that keeps stream widths in `widths`.
+    #[cfg(test)]
+    pub(crate) fn with_stream_widths(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+        widths: StreamWidths,
+    ) -> Self {
         let mut inner = Self::with_shard_streams(workers, cap, open);
-        inner.widths = Some(Arc::new(StreamWidths::new(learn)));
+        inner.widths = Some(Arc::new(widths));
         inner
     }
 }
