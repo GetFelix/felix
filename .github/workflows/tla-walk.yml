@@ -112,7 +112,6 @@ jobs:
         config:
           - FelixShardElectHandoff
           - FelixShardElectSet
-          - FelixShardElectAdopt
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove

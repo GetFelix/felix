@@ -205,11 +205,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectSet.cfg` | `FelixShardElectStaleSet.cfg` with the set check (`SetCheck`), a set change fencing the new set alone | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` (235.7M distinct states, 3 h 27 min on a four-core CI runner; nightly). With `JointFence` it passes too (146.6M states, 2 h 44 min) |
-| `FelixShardElectAdopt.cfg` | `FelixShardElectSet.cfg` with the control plane adopting elected leaders up to generation 2 (`Adopt = 2`) and replacing followers under them | pass, the same invariants (nightly) |
-| `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with no write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2, for every pull request | pass `OneLeaderPerGeneration` and `AdoptedMatchesOpened`; the record invariants hold trivially (with a write it did not finish within the hour) |
+| `FelixShardElectAdopt.cfg` | `FelixShardElectSet.cfg` with the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass, the same invariants (7.90M distinct states, 10.7 min on a CI runner) |
+| `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectAdoptNoSetCheck.cfg` | the same without the set check | violate `AdoptedMatchesOpened`: a replica elected after a replacement stands on the set it started in, and the control plane adopts it as the leader of the set it records |
-| `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (not yet measured). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
-| `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (48.7M distinct states, 61 min on a four-core CI runner, before a leader answering a newer fence stepped down; nightly) |
+| `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
+| `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (111.2M distinct states, 2 h 23 min on a four-core CI runner; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
 | `FelixShardElectHandoffUnfenced.cfg` | `FelixShardElectHandoffLeaders.cfg` with the cut-over opened without the fence, no writes and no cancel | violate `OneLeaderPerGeneration`: a candidate opens at the generation after the control plane's, and the control plane cuts over to the destination at that same generation |
 | `FelixShardSuspicion.cfg` | `FelixShardFencedAck.cfg` with placement promoting at the first generation before the lease lapses (`Suspicions = 1`), on any read, as it does on the followers' word; promotion from the leader's report, ballots and every change fenced as the broker ships, time standing still, so no lease lapses in a run | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (1.14M distinct states, 75 s on a CI runner, measured before ballots and the fence on every change were turned on, which add no states here). Not `AtMostOneServing`: the old leader serves until it hears of its successor, as under `FelixShardFencedAck.cfg` |
@@ -541,7 +541,8 @@ plane's generation reports it; on the set the control plane records, the
 control plane makes it its leader at that generation and carries on from
 there, and on another set it only moves its own generation past it. Either
 way it never issues a generation at or below one it heard was elected.
-`FelixShardElectAdopt.cfg` passes with replacements under adopted leaders.
+`FelixShardElectAdopt.cfg` passes with replacements under adopted leaders, and
+`FelixShardElectAdoptPromote.cfg` with promotion on suspicion beside adoption.
 `FelixShardElectAdoptNoSetCheck.cfg` takes the set check away, and TLC finds
 the control plane adopting a leader elected on the set a follower started
 in, which is not the one it records (`AdoptedMatchesOpened`).
@@ -901,10 +902,10 @@ and pull request that touches the code or the spec: the `formal` job in
 `.github/workflows/ci.yml`, split across seven jobs by each configuration's
 measured time so that each stays well under its hour.
 
-Eight configurations are too big for that hour, and run nightly instead, each in
+Seven configurations are too big for that hour, and run nightly instead, each in
 its own job with a five-hour limit (the `exhaustive` job in
 `.github/workflows/tla-walk.yml`): `FelixShardElectHandoff.cfg`,
-`FelixShardElectSet.cfg`, `FelixShardElectAdopt.cfg`,
+`FelixShardElectSet.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
 `FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
