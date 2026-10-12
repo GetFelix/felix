@@ -63,8 +63,8 @@ Groups == 1..G
 VARIABLES
     dl,         \* each replica's dead-letter log: [grp, o, g]
     cur,        \* each replica's cursor log: [grp, p, e, dg, org, g]
-    dlDur,      \* how much of each dead-letter log is on disk
-    curDur,     \* how much of each cursor log is on disk
+    dlDur,      \* how much of each dead-letter log was synced
+    curDur,     \* how much of each cursor log was synced
     gen,        \* the generation each replica last accepted
     leader,
     serving,    \* the leader has checked its cursors and serves
@@ -178,23 +178,18 @@ Advance(grp) ==
        /\ dlDur' = [dlDur EXCEPT ![leader] = e]
        /\ UNCHANGED << dl, curDur, gen, leader, serving, processed, crashes >>
 
-\* Each log reaches disk on its own.
-FlushDeadLetters(r) ==
-    /\ dlDur' = [dlDur EXCEPT ![r] = Len(dl[r])]
-    /\ UNCHANGED << dl, cur, curDur, gen, leader, serving, processed, crashes >>
-
-FlushCursors(r) ==
-    /\ curDur' = [curDur EXCEPT ![r] = Len(cur[r])]
-    /\ UNCHANGED << dl, cur, dlDur, gen, leader, serving, processed, crashes >>
-
-\* A crash keeps what each log had on disk.
+\* A crash keeps, of each log, what was synced and any part of the rest:
+\* each log reaches disk on its own, whenever its writer gets to it.
 Crash(r) ==
     /\ crashes < MaxCrashes
-    /\ dl' = [dl EXCEPT ![r] = SubSeq(dl[r], 1, dlDur[r])]
-    /\ cur' = [cur EXCEPT ![r] = SubSeq(cur[r], 1, curDur[r])]
+    /\ \E k \in dlDur[r]..Len(dl[r]), j \in curDur[r]..Len(cur[r]) :
+        /\ dl' = [dl EXCEPT ![r] = SubSeq(dl[r], 1, k)]
+        /\ cur' = [cur EXCEPT ![r] = SubSeq(cur[r], 1, j)]
+        /\ dlDur' = [dlDur EXCEPT ![r] = k]
+        /\ curDur' = [curDur EXCEPT ![r] = j]
     /\ serving' = IF r = leader THEN FALSE ELSE serving
     /\ crashes' = crashes + 1
-    /\ UNCHANGED << dlDur, curDur, gen, leader, processed >>
+    /\ UNCHANGED << gen, leader, processed >>
 
 \* The leader comes back and checks its cursors before serving.
 Recover ==
@@ -272,7 +267,7 @@ Promote(b) ==
 
 Next ==
     \/ \E grp \in Groups : Ack(grp) \/ DeadLetter(grp) \/ Advance(grp)
-    \/ \E r \in Replicas : FlushDeadLetters(r) \/ FlushCursors(r) \/ Crash(r)
+    \/ \E r \in Replicas : Crash(r)
     \/ Recover
     \/ \E f \in Replicas : ShipDeadLetters(f) \/ ShipCursors(f)
     \/ \E b \in Replicas : Promote(b)
