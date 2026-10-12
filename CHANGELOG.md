@@ -11,6 +11,80 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Security
+- A revoked gateway can no longer delegate with a `felix-controlplane` token
+  it got before the revocation (#1205). `/token/delegate` checked the
+  revocation cutoffs against the user's token only, and trusted
+  `token.delegate` from the caller's token, which stays valid for its TTL. Now
+  `/token/delegate` and `actor_token` on `/token/exchange` refuse, with
+  `actor_refused`, a gateway whose token predates a revocation of it or that
+  current RBAC no longer grants `token.delegate`. A refresh of a user chain
+  bound to a gateway is refused, and the chain ended, once RBAC no longer
+  grants the gateway `token.delegate`.
+- Revocation cutoffs are read on the Raft leader when minting or delegating,
+  so a member that has not applied a revocation yet no longer mints past it.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts (an
+  audience dropped, the subject or groups claim changed, or `jwks_url` or
+  `discovery_url` changed), revokes the tenant's sessions, as removing a rule
+  that reached an IdP group does. Adding an audience revokes nobody.
+
+### Changed
+- **YAML parser: `serde_yaml_ng` replaced by `serde-saphyr` (#1211).** The broker,
+  control plane and `felix-client` read their config files with
+  `serde-saphyr` 1.3, a pure-Rust parser. `serde_yaml_ng` pulled in
+  `unsafe-libyaml`, which is unmaintained (RUSTSEC-2024-0449). `felix-client`
+  users get the new dependency in place of `serde_yaml_ng`. A config file that
+  loaded before loads to the same values, and the 1.1 spellings that were
+  refused still are: `yes`/`no`/`on`/`off` for a boolean, `0777`, a `<<` merge
+  key, a duplicate key, an unknown key. Some inputs behave differently:
+  - Now accepted: a quoted number or boolean (`max_frame_bytes: "1024"`,
+    `ack_on_commit: "true"`), `1_000`, a file that is only `~` or `null`, and
+    a tab before the first key.
+  - Now refused: an explicit tag that contradicts the setting's type
+    (`!!str 5` for a number, `!!int "5"` for a string); a tag the parser does
+    not know (`!custom x`, which used to read as `x`); and a bare or
+    null `tls.cert_path`/`key_path` in the control plane file (`cert_path:` or
+    `cert_path: ~`), which used to be read as the path `""` or `~`. A quoted
+    `cert_path: ''` is still accepted, as before. `!!binary` on a string
+    setting is still kept as written, not decoded.
+  - Parse errors name the key and give a line and column. A wrong-typed
+    value is no longer quoted, since it could be a token; an unknown enum
+    value still is.
+  - `--print-config` puts double quotes, not single quotes, around strings
+    that need them, and also quotes `yes` and `1_000`. The output still reads
+    back to the same values.
+- An auth change that takes rights back (an RBAC rule removed, an issuer
+  deleted or narrowed) and its revocation are one store write: one Raft entry
+  (metadata level 9) or one Postgres transaction. A failed request changed
+  nothing and is safe to retry. Below level 9 the Raft proposer writes them
+  separately, as before.
+- `/token/refresh` does its store reads before spending the refresh token, and
+  spends it in the same write that stores the replacement (Raft level 9), so a
+  failed refresh no longer turns the client's retry into a replay that ends
+  the chain.
+- `/token/delegate` reads the subject's and the caller's revocation cutoffs in
+  one leader read.
+- A spent refresh token presented again with the right secret within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default; 0 turns it off) of its
+  rotation, while its replacement is unused, gets a working token instead of
+  revoking the chain. This covers a refresh whose answer was lost and two
+  concurrent refreshes. Replay detection is blind for that window. Postgres
+  migration `0027_refresh_token_rotation`; under Raft, metadata level 9.
+- Deleting an IdP issuer the tenant does not have answers `404` and revokes
+  nobody.
+
+**Upgrade note.** A Raft control plane needs every member at metadata level 9
+before auth changes and their revocations, and refresh rotations, are single
+entries.
+
+### Added
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+
 ### Fixed
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
@@ -35,6 +109,20 @@ for what the current release guarantees.
   `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
   id a stream's batches go out under. Older brokers and
   clients exchange the frames they always did.
+- `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
+  silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
+  in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit (#1200).
+
+### Documentation
+- Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
+  `FELIX_SUB_QUEUE_MAX_BYTES` or its largest batch, whichever is larger, and with the
+  per-subscriber bound at `0` only queue capacity times batch size limits it; the docs now
+  say so and recommend setting the total in production. They also say that under `block` one subscriber that stops reading holds
+  a shard's publishers with no timeout, and that the replay ring and cache watch queues are
+  bounded by entry count only (#1201).
+- The replication design no longer says a lagging non-successor follower is skipped while
+  a shard drains: it is not gated on, but the drained pass still ships to it and waits.
 
 ### Documentation
 

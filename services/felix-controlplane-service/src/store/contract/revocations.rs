@@ -1,10 +1,13 @@
 //! Principal revocations every backend must satisfy.
 use std::sync::Arc;
 
+use crate::auth::rbac::policy_store::PolicyRule;
 use crate::auth::revocation::{ALL_PRINCIPALS, PrincipalRevocation};
-use crate::store::ControlPlaneAuthStore;
+use crate::store::{AuthChange, ControlPlaneAuthStore, Revocation, StoreError};
 
 const TENANT: &str = "revocation-t";
+/// Its own tenant, so the tenant-wide revocation above does not mask it.
+const CHANGE_TENANT: &str = "revocation-change-t";
 
 fn rows_of_tenant(items: &[PrincipalRevocation]) -> Vec<(&str, i64)> {
     items
@@ -106,5 +109,74 @@ pub(crate) async fn run_revocation_contract(store: Arc<dyn ControlPlaneAuthStore
             .iter()
             .any(|row| row.tenant_id == TENANT && row.principal_id == ALL_PRINCIPALS),
         "a cursor from another store starts over"
+    );
+
+    a_change_and_its_revocation_commit_together(store.as_ref()).await;
+}
+
+async fn a_change_and_its_revocation_commit_together(store: &dyn ControlPlaneAuthStore) {
+    let policy = PolicyRule {
+        subject: "dave".to_string(),
+        object: format!("tenant:{CHANGE_TENANT}"),
+        action: "stream.publish".to_string(),
+    };
+    let revoking = |principal: &str| {
+        Some(Revocation {
+            principal_ids: vec![principal.to_string()],
+            revoked_at: 300,
+        })
+    };
+    // Postgres holds rules only for a tenant that exists.
+    let _ = store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: CHANGE_TENANT.to_string(),
+            display_name: "Revocation change".to_string(),
+        })
+        .await;
+    store
+        .add_rbac_policy(CHANGE_TENANT, policy.clone())
+        .await
+        .expect("policy");
+    store
+        .change_auth(
+            CHANGE_TENANT,
+            AuthChange::RemovePolicy(policy.clone()),
+            revoking("dave"),
+        )
+        .await
+        .expect("change");
+    assert!(
+        !store
+            .list_rbac_policies(CHANGE_TENANT)
+            .await
+            .expect("policies")
+            .contains(&policy)
+    );
+    assert_eq!(
+        store
+            .principal_revoked_at(CHANGE_TENANT, "dave")
+            .await
+            .expect("read"),
+        Some(300)
+    );
+
+    // A change that does not happen records no revocation either.
+    let missing = store
+        .change_auth(
+            CHANGE_TENANT,
+            AuthChange::RemovePolicy(policy),
+            revoking("erin"),
+        )
+        .await;
+    assert!(
+        matches!(missing, Err(StoreError::NotFound(_))),
+        "{missing:?}"
+    );
+    assert_eq!(
+        store
+            .principal_revoked_at(CHANGE_TENANT, "erin")
+            .await
+            .expect("read"),
+        None
     );
 }

@@ -591,7 +591,7 @@ export FELIX_SUB_QUEUE_MAX_BYTES="268435456"
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
 
-**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`.
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`. Without it, each subscriber can hold up to `FELIX_SUB_QUEUE_MAX_BYTES` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `FELIX_SUB_QUEUE_MAX_BYTES=0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
 
 **Type**: Non-negative integer (bytes)
 
@@ -2082,6 +2082,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | `false` | Also link each IdP group under its bare name (`group:{name}`) as well as its issuer-scoped one (`group:{issuer}#{name}`), while groupings are migrated. It lets any IdP the tenant trusts claim any bare group name, so turn it off afterwards. |
 | `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS` | `false` | Let `/token/delegate` take a subject token with no `may_act` claim. Any holder of `token.delegate` can then delegate any such broker token of the tenant it gets hold of, a stolen one included, so turn it on only while gateways move to sending `actor_token` on exchange. A token whose `may_act` names another caller is refused either way. |
 | `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` | `900` | Lifetime of a Felix access token minted by the token exchange. The default is short to limit blast radius if a token leaks. Prefer refresh over raising it: a long-running process should refresh rather than hold one long-lived bearer token. |
+| `FELIX_REFRESH_REUSE_GRACE_SECONDS` | `30` | How long after a refresh token is spent a retry with it, with the right secret, still gets a working token while its replacement is unused, instead of revoking the chain. Covers a refresh whose answer was lost and two concurrent refreshes. Replay detection is blind for this long. `0` turns it off. |
 | `FELIX_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Lifetime of a refresh token (30 days). This is how a long-running process stays authenticated without standing IdP credentials. Refresh tokens are single-use and rotate on every refresh, so this bounds a stolen and never used token. One that is used produces a replay, which revokes its whole chain immediately. |
 | `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
 | `FELIX_RAFT_DATA_DIR` | unset | Where the Raft log, vote, and snapshots live. Must survive restarts: it is what makes a restart a rejoin rather than a fresh member. |

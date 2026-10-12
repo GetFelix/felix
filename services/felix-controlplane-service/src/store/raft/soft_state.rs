@@ -28,12 +28,12 @@ use tokio::time::Instant;
 
 use crate::model::{Node, NodeLifecycle};
 use crate::raft::{LeaderService, NotLeader, RaftHandle};
-use crate::store::ControlPlaneStore;
 use crate::store::raft::command::{
     HeartbeatSeen, MetaCommand, MetaError, MetaResponse, MetaResult, NodeIncarnation,
     decode_result, encode_command, encode_result,
 };
 use crate::store::raft::state_machine::MetadataStateMachine;
+use crate::store::{AuthStore, ControlPlaneStore};
 
 /// How long a heartbeat waits for a quorum to confirm this member still
 /// leads. Short: a broker retries, and one stuck here holds nothing.
@@ -68,6 +68,19 @@ pub(crate) enum LeaderRequest {
     },
     ReleasePlacementLease {
         holder: String,
+    },
+    /// Principals' revocation cutoffs, read on the leader so a member that
+    /// has not applied a revocation yet does not mint past it. A leader that
+    /// predates it fails to read it, and the asker reads its own state.
+    RevocationCutoffs {
+        tenant_id: String,
+        principal_ids: Vec<String>,
+    },
+    /// A refresh token as the leader holds it, read without spending it, so
+    /// a refresh does not miss a token this member has not applied yet.
+    PeekRefreshToken {
+        tenant_id: String,
+        token_id: String,
     },
 }
 
@@ -231,6 +244,43 @@ impl SoftState {
                 self.acquire_lease(&holder, ttl_millis).await
             }
             LeaderRequest::ReleasePlacementLease { holder } => self.release_lease(&holder).await,
+            LeaderRequest::RevocationCutoffs {
+                tenant_id,
+                principal_ids,
+            } => {
+                // Read-index first: a deposed leader may be missing the
+                // revocation the asker needs.
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .principals_revoked_at(&tenant_id, &principal_ids)
+                    .await
+                    .map(|cutoffs| MetaResponse::RevokedAt { cutoffs })
+                    .map_err(Into::into))
+            }
+            LeaderRequest::PeekRefreshToken {
+                tenant_id,
+                token_id,
+            } => {
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .peek_refresh_token(&tenant_id, &token_id)
+                    .await
+                    .map(|token| MetaResponse::RefreshToken { token })
+                    .map_err(Into::into))
+            }
+        }
+    }
+
+    /// A read-index before answering a read, bounded as a heartbeat's is.
+    async fn confirm_read(&self) -> Result<(), NotLeader> {
+        if self.handle.confirm_leadership_within(CONFIRM_WITHIN).await {
+            Ok(())
+        } else {
+            Err(NotLeader)
         }
     }
 

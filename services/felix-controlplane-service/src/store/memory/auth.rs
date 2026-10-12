@@ -348,3 +348,20 @@ fn remove_all<T: PartialEq>(entries: Option<&mut Vec<T>>, rule: &T, what: &str) 
     }
     Ok(())
 }
+
+/// The change half of [`crate::store::AuthStore::change_auth`].
+pub(super) async fn change_auth(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    change: crate::store::AuthChange,
+) -> StoreResult<()> {
+    use crate::store::AuthChange;
+    match change {
+        AuthChange::RemovePolicy(policy) => remove_rbac_policy(store, tenant_id, &policy).await,
+        AuthChange::RemoveGrouping(grouping) => {
+            remove_rbac_grouping(store, tenant_id, &grouping).await
+        }
+        AuthChange::UpsertIssuer(issuer) => upsert_idp_issuer(store, tenant_id, issuer).await,
+        AuthChange::DeleteIssuer(issuer) => delete_idp_issuer(store, tenant_id, &issuer).await,
+    }
+}

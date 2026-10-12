@@ -111,7 +111,7 @@ impl ControlPlaneConfig {
         if let Ok(path) = std::env::var("FELIX_CONTROLPLANE_CONFIG") {
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("read FELIX_CONTROLPLANE_CONFIG: {path}"))?;
-            let override_cfg: ControlPlaneConfigOverride = serde_yaml_ng::from_str(&contents)
+            let override_cfg: ControlPlaneConfigOverride = felix_common::yaml::from_str(&contents)
                 .with_context(|| "parse control plane config yaml")?;
             config.apply(override_cfg)?;
         }
