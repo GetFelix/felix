@@ -260,12 +260,9 @@ async fn ship_batch<R: PeerRequester>(
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
         // Without them the follower labels the records with this leader's
         // generation, including any this leader inherited. A fence compares
-        // the labels of a stream log, and of a cache shard's cache and
-        // counter logs; the group logs go without.
+        // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
-            && offered
-                .zip(labels_needed(log_kind))
-                .is_some_and(|(offered, needed)| offered.contains(needed)))
+            && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
@@ -490,15 +487,18 @@ pub(crate) fn carry_marks(
 }
 
 /// What a follower must have offered for `log_kind`'s batches to carry their
-/// generations; `None` for a group log, which no fence compares.
-fn labels_needed(log_kind: felix_broker::LogKind) -> Option<PeerCapabilities> {
-    match log_kind {
-        felix_broker::LogKind::Stream => Some(PeerCapabilities::GENERATION_LABELS),
+/// generations: the labels, and the fence that compares them.
+fn labels_needed(log_kind: felix_broker::LogKind) -> PeerCapabilities {
+    let fence = match log_kind {
+        felix_broker::LogKind::Stream => PeerCapabilities::NONE,
         felix_broker::LogKind::Cache | felix_broker::LogKind::Counters => {
-            Some(PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::CACHE_FENCE))
+            PeerCapabilities::CACHE_FENCE
         }
-        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => None,
-    }
+        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
+            PeerCapabilities::GROUP_FENCE
+        }
+    };
+    PeerCapabilities::GENERATION_LABELS.union(fence)
 }
 
 pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {

@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 
+use crate::FollowerCursor;
+
 use super::*;
 
 /// How long a mark may take once there is a majority for it.
@@ -474,4 +476,82 @@ async fn a_follower_short_of_the_group_logs_is_not_caught_up() {
 
     let report = pass.reports.last().expect("a report");
     assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+}
+
+/// The leader's dead-letter and cursor logs, two records in each.
+async fn two_of_each(broker: &Broker) -> (felix_broker::StreamLog, felix_broker::StreamLog) {
+    let open = |kind| broker.shard_log(kind, TENANT, NAMESPACE, STREAM, 0);
+    let dead = open(felix_broker::LogKind::GroupDeadLetters)
+        .await
+        .expect("dead letters");
+    let cursors = open(felix_broker::LogKind::GroupCursors)
+        .await
+        .expect("cursors");
+    for log in [&dead, &cursors] {
+        log.append(&[Bytes::from_static(b"1"), Bytes::from_static(b"2")])
+            .await
+            .expect("append");
+    }
+    (dead, cursors)
+}
+
+fn at(node_id: &str, confirmed: u64) -> FollowerCursor {
+    let mut cursor = FollowerCursor::new(
+        node_id.to_string(),
+        "10.0.0.1:7002".parse().expect("addr"),
+        confirmed,
+    );
+    cursor.confirmed = confirmed;
+    cursor
+}
+
+/// **Ranked together, a pair of group logs always leaves a candidate.** b
+/// is ahead on dead letters and c on cursors. Each log's "as far as a
+/// majority" set alone names a different one of them, and the two together
+/// name nobody: a leader dying then has no follower to promote.
+#[tokio::test]
+async fn followers_ahead_on_different_group_logs_leave_a_candidate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _, _) = leader_with_groups(dir.path()).await;
+    let (dead, cursors) = two_of_each(&broker).await;
+
+    let level = group_level(
+        [
+            (Some(dead), vec![at("broker-b", 2), at("broker-c", 1)]),
+            (Some(cursors), vec![at("broker-b", 1), at("broker-c", 2)]),
+        ],
+        None,
+    )
+    .await;
+
+    assert_eq!(level, Some(vec!["broker-b".to_string()]));
+}
+
+/// **No cursor goes out without the dead-letter log beside it.** A broker
+/// with consumer groups always has both, so a dead-letter log missing here
+/// is one that failed to open, and what it holds is unknown.
+#[tokio::test]
+async fn without_the_dead_letter_log_no_cursor_ships() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _, _) = leader_with_groups(dir.path()).await;
+    let (_, cursors) = two_of_each(&broker).await;
+    let follower = GroupFollower::default();
+    let mut cursor = at("broker-b", 0);
+
+    ship_group_logs(
+        &follower,
+        &felix_wire::internal::ShardRef {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: STREAM.to_string(),
+            shard: 0,
+            generation: GENERATION,
+        },
+        Some((&cursors, &mut cursor)),
+        None,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert!(follower.landed_on("broker-b").is_empty());
 }

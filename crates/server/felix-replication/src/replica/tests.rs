@@ -15,6 +15,7 @@ use tempfile::TempDir;
 use super::*;
 
 mod fence;
+mod groups;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";

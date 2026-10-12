@@ -108,7 +108,9 @@ never have dialled the one that shipped to it.
 | `1 << 5` | `RECORD_TIMES` | reads `ReplicateTimedRecords` and stores each record's time as sent, and answers `ReplicateTimedFetch` |
 | `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
 | `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
-| `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted |
+| `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
+
+<!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
@@ -122,9 +124,11 @@ fleet finalizes `fenced_caches` and it waits for a majority that answers
 instead. A leader sends cache and counter batches with their generation labels
 only to a follower that offered both `GENERATION_LABELS` and `CACHE_FENCE`.
 
-A promoted stream shard fences its group logs on the replicas that offered
-`GROUP_FENCE`, and waits for a majority of them; when too few offered it to
-make one, it opens without them.
+A promoted stream shard fences both group logs on every replica in one round,
+beside its records' fence, and takes the pair from the one replica furthest
+ahead when a majority, itself included, took both; otherwise it keeps its own.
+A leader sends group batches with their generation labels only to a follower
+that offered both `GENERATION_LABELS` and `GROUP_FENCE`.
 
 ### Versioning
 
@@ -611,9 +615,11 @@ A promoted cache leader then sends `Fence` again with `log` = `Counters`, at
 the same generation, to a replica that offered `CACHE_FENCE`, to learn where
 that replica's counter log ends. The replica takes it at the generation its
 cache log accepted or a newer one, and refuses an older one with `FencedEpoch`.
-A promoted stream leader does the same with `log` = `GroupDeadLetters` and then
-`GroupCursors`, to a replica that offered `GROUP_FENCE`, checked against the
-generation its stream log accepted.
+A promoted stream leader sends `Fence` with `log` = `GroupDeadLetters` and
+with `log` = `GroupCursors` beside its stream fence, at the same generation, to
+a replica that offered `GROUP_FENCE`. The replica checks them against the
+generation its stream log accepted as well as their own, and answers a broker
+with no consumer groups as an empty log (`log_end` 0, `last_generation` 0).
 
 The answer, `FenceOk` (kind 30), says where the replica's copy stands: one past
 its last record, its commit offset, and the generation its last record was

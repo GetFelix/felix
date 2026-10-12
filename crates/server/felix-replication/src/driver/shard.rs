@@ -1073,29 +1073,70 @@ fn limit_to(report: &mut ShardReport, level: Option<&[String]>) {
 }
 
 /// The followers holding a stream shard's group logs as far as a majority
-/// does. `None` when the shard has neither log here.
-async fn group_level(
+/// does, the two logs ranked together. `None` when the shard has neither log
+/// here.
+///
+/// Ranked by dead letters, then cursors, as promotion picks which replica's
+/// pair to take. Two separate "as far as a majority" sets can each miss a
+/// different follower under steady writes and leave no candidate; ranked
+/// together, at least a majority holds the level, the leader included.
+pub(super) async fn group_level(
     logs: [(Option<felix_broker::StreamLog>, Vec<FollowerCursor>); 2],
     learner: Option<&str>,
 ) -> Option<Vec<String>> {
-    let mut level: Option<Vec<String>> = None;
-    for (log, followers) in logs {
-        let Some(log) = log else {
-            continue;
-        };
-        let held = match log.tail_offset().await {
-            Ok(tail) => caught_up(quorum_offset_without(tail, &followers, learner), &followers),
-            Err(_) => Vec::new(),
-        };
-        level = Some(match level {
-            Some(level) => level
-                .into_iter()
-                .filter(|node| held.contains(node))
-                .collect(),
-            None => held,
-        });
+    let [(dead_log, dead), (cursor_log, cursors)] = logs;
+    if dead_log.is_none() && cursor_log.is_none() {
+        return None;
     }
-    level
+    let tail = |log: Option<felix_broker::StreamLog>| async move {
+        match log {
+            Some(log) => log.tail_offset().await.ok(),
+            None => Some(0),
+        }
+    };
+    let (Some(dead_tail), Some(cursor_tail)) = (tail(dead_log).await, tail(cursor_log).await)
+    else {
+        return Some(Vec::new());
+    };
+    let held = |followers: &[FollowerCursor], node: &str, tail: u64| {
+        followers
+            .iter()
+            .find(|cursor| cursor.node_id == node)
+            .map_or(Some(0), |cursor| {
+                cursor.halted.is_none().then(|| cursor.confirmed.min(tail))
+            })
+    };
+    // Each follower's pair, `None` for one halted on either log. A move's
+    // destination may be level but does not set the level.
+    let followers: Vec<(String, Option<(u64, u64)>)> = dead
+        .iter()
+        .chain(cursors.iter())
+        .map(|cursor| cursor.node_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|node| {
+            let pair = held(&dead, node, dead_tail).zip(held(&cursors, node, cursor_tail));
+            (node.to_string(), pair)
+        })
+        .collect();
+    let voters = || {
+        followers
+            .iter()
+            .filter(|(node, _)| Some(node.as_str()) != learner)
+    };
+    let needed = crate::quorum::majority_of(voters().count());
+    let mut pairs: Vec<(u64, u64)> = std::iter::once((dead_tail, cursor_tail))
+        .chain(voters().filter_map(|(_, pair)| *pair))
+        .collect();
+    pairs.sort_unstable_by(|a, b| b.cmp(a));
+    let level = pairs.get(needed - 1).copied().unwrap_or((0, 0));
+    Some(
+        followers
+            .into_iter()
+            .filter(|(_, pair)| pair.is_some_and(|pair| pair >= level))
+            .map(|(node, _)| node)
+            .collect(),
+    )
 }
 
 /// `report`, with where each follower has got with the counter log.
@@ -1308,7 +1349,7 @@ pub(super) async fn ship_aux_logs<R: PeerRequester>(
 /// too: promoted with the cursor and not the dead letter, it would skip the
 /// record silently. So the cursor tail is read first, the cursors go only up
 /// to it, and only once the follower holds every dead letter written by then.
-async fn ship_group_logs<R: PeerRequester>(
+pub(super) async fn ship_group_logs<R: PeerRequester>(
     requester: &R,
     shard: &ShardRef,
     group: Option<(&felix_broker::StreamLog, &mut FollowerCursor)>,
@@ -1319,7 +1360,12 @@ async fn ship_group_logs<R: PeerRequester>(
         Some((log, _)) => log.tail_offset().await.ok(),
         None => None,
     };
-    if let Some((log, cursor)) = dead_letters {
+    // Consumer groups always keep both logs, so no dead-letter log here is
+    // one that could not be opened: no cursor goes past what it may hold.
+    let Some((log, cursor)) = dead_letters else {
+        return;
+    };
+    {
         let needed = log.tail_offset().await.ok();
         ship_all(
             requester,
@@ -1449,9 +1495,8 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
     if entry.generation != route.generation {
         *entry = ShardCursors::at(route.generation);
     }
-    // Base stays zero here. These logs are written only when group state
-    // changes, so comparing from the start costs almost nothing, and the
-    // leader does not open them at takeover to record a generation against.
+    // Base stays zero here. These logs are written only when their state
+    // changes, so comparing from the start costs almost nothing.
     reconcile_followers(entry, route);
 
     let shard = shard_ref(key, route);

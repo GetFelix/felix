@@ -18,11 +18,13 @@ for what the current release guarantees.
   leader dying between the two left a promoted follower that neither
   redelivered the record nor listed it as dead. Dead letters now go first,
   and a cursor goes only to a follower that holds every dead letter written
-  before it. A promoted stream leader also fences the dead-letter and cursor
-  logs and takes the furthest-ahead copy of each from a majority before it
-  serves, on replicas that offer the new internal capability `GROUP_FENCE`
-  (`1 << 8`), and a `Quorum` stream's report leaves out a follower short of
-  what a majority holds of either log (#1202).
+  before it. A promoted stream leader fences the dead-letter and cursor logs
+  in one round beside its records and takes both from the one replica whose
+  pair is furthest ahead, on replicas that offer the new internal capability
+  `GROUP_FENCE` (`1 << 8`). Both logs now carry generation labels like the
+  records, any copy dropping dead letters drops the cursors that may depend
+  on them first, and a `Quorum` stream's report leaves out a follower short
+  of the pair a majority holds (#1202).
 
 ## [0.6.0-preview.7] - 2026-10-11
 

@@ -58,9 +58,12 @@ impl PeerCapabilities {
     pub const PING: Self = Self(1 << 7);
     /// Answers [`Fence`] and [`ReplicateFetch`] for a stream shard's dead-letter
     /// and group cursor logs ([`ReplicaLog::GroupDeadLetters`],
-    /// [`ReplicaLog::GroupCursors`]). A promoted stream leader takes the
-    /// furthest-ahead copy of each when a majority offers it.
+    /// [`ReplicaLog::GroupCursors`]), as empty logs when it keeps no consumer
+    /// groups, and reads group batches labelled with their generations. A
+    /// promoted stream leader takes both from the replica whose pair is
+    /// furthest ahead once a majority has taken both fences.
     pub const GROUP_FENCE: Self = Self(1 << 8);
+    // `1 << 9` is reserved for `ELECTION` (#1009).
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

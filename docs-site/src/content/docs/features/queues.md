@@ -184,9 +184,10 @@ A replica never holds a group's position past a record without the dead letter
 for it: dead letters are shipped first, and a position goes only to a replica
 that already has every dead letter written before it. So a failover at any
 point either redelivers a record or lists it as dead, never neither. Before it
-serves, a promoted leader takes the most complete copy of the position and
-the dead-letter list that a majority of the shard's replicas holds, as it does
-for the records. Group writes are acknowledged once they are durable on the
+serves, a promoted leader takes the position and the dead-letter list
+together from the replica whose copy of the pair is most complete among a
+majority of the shard's replicas, never one from one replica and one from
+another. Group writes are acknowledged once they are durable on the
 leader, so a failover can still lose the newest ack and redeliver that record.
 
 ## Long work, backoff, and giving up yourself

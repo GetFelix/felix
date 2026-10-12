@@ -155,6 +155,8 @@ struct Replica {
     handler: ReplicaHandler,
     capabilities: PeerCapabilities,
     reachable: bool,
+    /// Logs whose fence never reaches this replica.
+    unreachable_logs: Vec<ReplicaLog>,
     _dir: TempDir,
 }
 
@@ -167,6 +169,7 @@ impl Replica {
             broker,
             capabilities: REQUIRED,
             reachable: true,
+            unreachable_logs: Vec::new(),
             _dir: dir,
         }
     }
@@ -250,7 +253,13 @@ impl PeerRequester for Replicas {
         message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
         let replica = self.get(node_id);
-        if !replica.reachable {
+        let fenced_log = match &message {
+            InternalMessage::Fence(fence) => Some(fence.log),
+            _ => None,
+        };
+        if !replica.reachable
+            || fenced_log.is_some_and(|log| replica.unreachable_logs.contains(&log))
+        {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "unreachable".to_string(),

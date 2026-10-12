@@ -138,6 +138,13 @@ impl ReplicaHandler {
                 .rebuild_above_commit(correlation_id, &key, log_kind, &log, &request, from, commit)
                 .await;
         }
+        if log_kind == felix_broker::LogKind::GroupDeadLetters
+            && let Err(err) =
+                cut_dependent_cursors(&self.broker, &key, &log, log.base_offset()).await
+        {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err);
+        }
         if let Err(err) = log.rebuild_at(request.base_offset).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
@@ -566,7 +573,21 @@ impl ReplicaHandler {
                 );
                 metrics::record_replicated(metrics::OUTCOME_BELOW_COMMIT);
             }
-            match repairable.filter(|_| below_commit.is_none()) {
+            // Dead letters take the cursors that may depend on them first.
+            let cursors_cut = match log_kind {
+                felix_broker::LogKind::GroupDeadLetters if repairable.is_some() => {
+                    cut_dependent_cursors(&self.broker, &key, &log, diverged_at)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(stream = %key.stream, shard = key.shard, error = %err,
+                                "could not drop the cursors past a divergent dead-letter suffix; \
+                                 replication stops here");
+                        })
+                        .is_ok()
+                }
+                _ => true,
+            };
+            match repairable.filter(|_| below_commit.is_none() && cursors_cut) {
                 Some(previous) => match log.truncate(diverged_at).await {
                     Ok(()) => {
                         tracing::warn!(
@@ -601,7 +622,7 @@ impl ReplicaHandler {
                         "could not drop a divergent suffix; replication stops here",
                     ),
                 },
-                None if below_commit.is_some() => {}
+                None if below_commit.is_some() || !cursors_cut => {}
                 None => tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -788,6 +809,27 @@ impl ReplicaHandler {
             )
             .await
         else {
+            // A broker without consumer groups holds no group state and can
+            // store none, so it answers as an empty log rather than leaving
+            // the leader waiting on a promise it has no log to keep.
+            if matches!(
+                log_kind,
+                felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters
+            ) && self.broker.group_reader().is_none()
+            {
+                if let Some(refusal) = self
+                    .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+                    .await
+                {
+                    return refusal;
+                }
+                return InternalMessage::FenceOk(FenceOk {
+                    correlation_id,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                });
+            }
             // Nowhere to keep the promise, so no promise: the leader must not
             // count this broker toward its majority.
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
@@ -1076,14 +1118,6 @@ impl ReplicaHandler {
     }
 }
 
-/// Refuse a sender older than a leader this log already accepted, or another
-/// node at the generation it accepted, and persist a newer one, with its
-/// ballot, before anything it sends is stored or acknowledged.
-///
-/// The routing view in `check_role` is rebuilt after a restart and may lag;
-/// this is what still refuses a leader this broker has seen superseded.
-/// `sender` is the node id the peer gave in its `Hello`, or `None` when this
-/// broker does not keep ballots, and then only the generation is checked.
 fn log_kind(log: ReplicaLog) -> felix_broker::LogKind {
     match log {
         ReplicaLog::Stream => felix_broker::LogKind::Stream,
@@ -1094,6 +1128,14 @@ fn log_kind(log: ReplicaLog) -> felix_broker::LogKind {
     }
 }
 
+/// Refuse a sender older than a leader this log already accepted, or another
+/// node at the generation it accepted, and persist a newer one, with its
+/// ballot, before anything it sends is stored or acknowledged.
+///
+/// The routing view in `check_role` is rebuilt after a restart and may lag;
+/// this is what still refuses a leader this broker has seen superseded.
+/// `sender` is the node id the peer gave in its `Hello`, or `None` when this
+/// broker does not keep ballots, and then only the generation is checked.
 async fn accept_sender(
     log: &felix_broker::StreamLog,
     correlation_id: u64,
@@ -1260,6 +1302,76 @@ pub(crate) fn generations_over(
 
 /// The generation the record just below `log_end` was written at, from the
 /// log's generation history; zero for an empty log.
+/// Before a stream shard's dead letters from `from` on are dropped, drop the
+/// cursors that may have passed a record on the strength of one of them:
+/// those written in the generation that wrote the dead letter at `from`, or
+/// later. A leader writes a dead letter before the cursor that passes its
+/// record, so a cursor from an earlier generation depends on none of them.
+/// Dropping a cursor only redelivers; keeping one past a dropped dead letter
+/// skips a record. Done first, so a crash between the two leaves cursors
+/// short, not dead letters.
+pub(crate) async fn cut_dependent_cursors(
+    broker: &felix_broker::Broker,
+    key: &felix_router::ShardKey,
+    dead_letters: &felix_broker::StreamLog,
+    from: u64,
+) -> Result<(), String> {
+    if broker.group_reader().is_none() {
+        return Ok(());
+    }
+    let Some(cursors) = broker
+        .shard_log(
+            felix_broker::LogKind::GroupCursors,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+        )
+        .await
+    else {
+        return Err("could not open the shard's cursor log to cut it first".to_string());
+    };
+    let tail = cursors.tail_offset().await.map_err(|err| err.to_string())?;
+    let generation = last_generation(&dead_letters.generations(), from + 1);
+    let epochs = cursors.generations();
+    // With no history the cursors' generations are unknown, so all of them go.
+    let cut = match epochs.iter().find(|epoch| epoch.generation >= generation) {
+        Some(epoch) => epoch.start_offset,
+        None if epochs.is_empty() => 0,
+        None => tail,
+    }
+    .max(cursors.base_offset());
+    if cut >= tail {
+        return Ok(());
+    }
+    cursors
+        .truncate(cut)
+        .await
+        .map_err(|err| format!("could not cut the cursor log back to {cut}: {err}"))?;
+    if let Err(err) = broker
+        .reset_log(
+            felix_broker::LogKind::GroupCursors,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            cut,
+        )
+        .await
+    {
+        tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
+            "cut the cursor log but could not reset what was read from it");
+    }
+    tracing::warn!(
+        stream = %key.stream,
+        shard = key.shard,
+        from,
+        cut,
+        "dropped cursors that may pass dead letters being dropped; their records are redelivered",
+    );
+    Ok(())
+}
+
 pub(crate) fn last_generation(generations: &[felix_storage::log::Epoch], log_end: u64) -> u64 {
     generations
         .iter()
