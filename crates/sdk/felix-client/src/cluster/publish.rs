@@ -83,8 +83,15 @@ impl ClusterClient {
         // with the same function the broker routes with, so the cache is
         // bounded by shard count rather than by distinct keys.
         let shard = self.shard_of(&stream_key, Some(key.as_ref())).await;
-        let shard: ShardKey = (stream_key.0, stream_key.1, stream_key.2, shard);
-        self.publish_to_shard(shard, payload, Some(key), ack).await
+        let shard: ShardKey = (
+            stream_key.0.clone(),
+            stream_key.1.clone(),
+            stream_key.2.clone(),
+            shard,
+        );
+        let outcome = self.publish_to_shard(shard, payload, Some(key), ack).await;
+        self.forget_width_if_stale(&stream_key, &outcome);
+        outcome
     }
 
     /// Publish, reconnecting *and sending the record again* if the broker in

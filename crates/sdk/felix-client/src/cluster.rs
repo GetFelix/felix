@@ -75,6 +75,7 @@ use tokio::sync::RwLock;
 
 use crate::client::Client;
 use crate::config::ClientConfig;
+use crate::publish::{LearnWidth, StreamWidths};
 
 /// How many times a subscribe or watch will follow a redirect before giving up.
 ///
@@ -139,7 +140,8 @@ pub struct ClusterClient {
     /// Replaced wholesale on reconnect. `RwLock` rather than a swap because a
     /// reconnect must exclude the publishes that would otherwise keep using the
     /// client being replaced.
-    client: RwLock<Arc<Client>>,
+    /// Shared with `widths`, which asks whichever client is in use.
+    client: Arc<RwLock<Arc<Client>>>,
     /// Where a shard's publishes should go, learned from the acks of the ones
     /// that were forwarded.
     ///
@@ -157,13 +159,12 @@ pub struct ClusterClient {
     /// How many shards each stream was placed with and how keys map onto
     /// them, as the cluster last said.
     ///
-    /// Asked once per stream rather than per publish. A stale width is not a
-    /// correctness problem: the shard number is only a cache key for an owner
-    /// learned from an ack, so a client that computes a different number than
-    /// the broker still routes to the right broker -- it just keys the entry
-    /// differently. What the width buys is a cache bounded by shard count
-    /// instead of by the number of distinct routing keys.
-    shards: RwLock<HashMap<StreamKey, (u32, felix_wire::routing::ShardRouting)>>,
+    /// The shard number picks the broker a keyed publish goes to, so a stale
+    /// width can send two keys that now share a shard through two brokers,
+    /// and so two writers. Kept like a plain client's widths: asked again on
+    /// the same cadence against brokers that check declared widths, and
+    /// dropped when a publish says the stream is gone or the width stale.
+    widths: Arc<StreamWidths>,
     /// The broker that last served each shard's consumer groups, found by
     /// following `NotLeader`. Apart from `owners` because it is learned from a
     /// different answer, and a group redirect carries no fresher generation
@@ -197,13 +198,15 @@ impl ClusterClient {
     ) -> Result<Self> {
         let nodes = Arc::new(nodes::Nodes::new(server_name, config));
         let client = nodes.connect_any(seeds).await?;
+        let checked = client.supports_publish_width();
+        let holder = Arc::new(RwLock::new(client));
         let cluster = Self {
             seeds: seeds.to_vec(),
             endpoints: RwLock::new(seeds.to_vec()),
             policy,
-            client: RwLock::new(client),
+            widths: cluster_widths(&holder, checked),
+            client: holder,
             owners: RwLock::new(HashMap::new()),
-            shards: RwLock::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
@@ -224,6 +227,11 @@ impl ClusterClient {
     /// resuming it is the caller's to do with the offsets it has been given.
     pub async fn client(&self) -> Arc<Client> {
         Arc::clone(&*self.client.read().await)
+    }
+
+    /// The widths this client routes keyed publishes by.
+    pub(crate) fn stream_widths(&self) -> Arc<StreamWidths> {
+        Arc::clone(&self.widths)
     }
 
     pub(crate) fn policy(&self) -> &ReconnectPolicy {
@@ -345,3 +353,30 @@ struct Owner {
 
 #[cfg(test)]
 mod tests;
+
+/// A cluster client's widths, asked of whichever client is in use when the
+/// question is asked. Re-asks go through that client's own re-ask stream.
+fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>, checked: bool) -> Arc<StreamWidths> {
+    let learn: LearnWidth = {
+        let client = Arc::clone(client);
+        Arc::new(move |tenant_id, namespace, stream| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let client = Arc::clone(&*client.read().await);
+                client.stream_routing(&tenant_id, &namespace, &stream).await
+            })
+        })
+    };
+    let recheck: LearnWidth = {
+        let client = Arc::clone(client);
+        Arc::new(move |tenant_id, namespace, stream| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let client = Arc::clone(&*client.read().await);
+                let recheck = client.publish_widths().recheck();
+                recheck(tenant_id, namespace, stream).await
+            })
+        })
+    };
+    Arc::new(StreamWidths::new(learn, checked).rechecking_with(recheck))
+}

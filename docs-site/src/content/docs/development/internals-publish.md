@@ -46,7 +46,9 @@ pub async fn publish(
    differs from the last one that stream carried; the broker refuses a batch
    whose declared width is not the stream's (`resolve_declared_shard` in
    `handlers/publish/route.rs`), and the client asks the width again every
-   5 s and on a `stale_width` refusal. `route()`
+   5 s (over one shared control stream, `rechecking_with`) and on a
+   `stale_width` refusal. A writer whose own `auth` did not negotiate the bit
+   (`PublishWorker::takes_width`) is never sent one. `route()`
    then asks `ShardStreams` (`publish/shard_streams.rs`) for the shard's own
    stream, opening it on the shard's first publish on the least-loaded
    connection. A pipelining stream is answered in request order, so a shard

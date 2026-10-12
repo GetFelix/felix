@@ -371,3 +371,80 @@ async fn a_width_is_not_asked_again_before_it_is_due() {
     }
     assert_eq!(f.learned.load(Ordering::SeqCst), 1);
 }
+
+/// A re-ask that never answers is given up, and the width is asked again on
+/// the next interval rather than never again.
+#[tokio::test]
+async fn a_re_ask_that_hangs_does_not_stop_the_checks() {
+    let hang = Arc::new(AtomicBool::new(false));
+    let width = Arc::new(AtomicU32::new(SHARDS));
+    let learn: LearnWidth = {
+        let hang = Arc::clone(&hang);
+        let width = Arc::clone(&width);
+        Arc::new(move |_, _, _| {
+            let hang = hang.load(Ordering::SeqCst);
+            let width = width.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if hang {
+                    std::future::pending::<()>().await;
+                }
+                Ok((width, ShardRouting::Modulo))
+            })
+        })
+    };
+    let widths = StreamWidths::new(learn, true)
+        .checking_every(std::time::Duration::ZERO)
+        .giving_up_after(std::time::Duration::from_millis(20));
+    let key = key_on(1, 0);
+    assert_eq!(
+        widths.shard_of("t", "ns", "orders", &key).await.1.shards,
+        SHARDS
+    );
+    hang.store(true, Ordering::SeqCst);
+    // Starts a check that hangs.
+    widths.shard_of("t", "ns", "orders", &key).await;
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    hang.store(false, Ordering::SeqCst);
+    width.store(2, Ordering::SeqCst);
+    for _ in 0..100 {
+        if widths.shard_of("t", "ns", "orders", &key).await.1.shards == 2 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the width was never asked again after a re-ask hung");
+}
+
+/// A shard stream to a broker that did not negotiate `FEATURE_PUBLISH_WIDTH`
+/// gets no `publish_width`, even when the client's other streams take one:
+/// it could not decode the frame and would close the stream.
+#[tokio::test]
+async fn a_stream_that_did_not_negotiate_widths_gets_no_declaration() {
+    let learn: LearnWidth =
+        Arc::new(|_, _, _| Box::pin(async { Ok((SHARDS, ShardRouting::Modulo)) }));
+    let open: OpenWorker = Arc::new(|| {
+        Box::pin(async {
+            let mut worker = fake_worker();
+            worker.takes_width = false;
+            Ok(worker)
+        })
+    });
+    let pool = Arc::new(vec![fake_worker()]);
+    let publisher = Publisher {
+        inner: Arc::new(PublisherInner::with_stream_widths(
+            pool,
+            16,
+            open,
+            StreamWidths::new(learn, true),
+        )),
+    };
+    let routed = publisher
+        .route("t", "ns", "orders", Some(&key_on(1, 0)), None)
+        .await
+        .expect("route");
+    assert!(matches!(routed.worker, Selected::Shard(_)));
+    assert!(
+        routed.declaration.is_none(),
+        "declared to a stream that cannot read it"
+    );
+}

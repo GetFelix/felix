@@ -106,14 +106,49 @@ impl Publisher {
         key: Option<&[u8]>,
         shard: Option<u32>,
     ) -> Result<Routed<'_>> {
-        let (shard, width) = self
-            .shard_of(tenant_id, namespace, stream, key, shard)
-            .await;
+        self.route_by(tenant_id, namespace, stream, key, shard, None)
+            .await
+    }
+
+    /// [`Self::route`], by `given` rather than the client's own width when
+    /// `given` is one the broker checks. An idempotent producer numbers a
+    /// batch by the shard of the width it holds, so the batch has to be
+    /// routed and declared by that same width: if it is stale, the broker
+    /// refuses the batch instead of taking it on another shard's sequence.
+    pub(super) async fn route_by(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&[u8]>,
+        shard: Option<u32>,
+        given: Option<Arc<Width>>,
+    ) -> Result<Routed<'_>> {
+        let given = given.filter(|width| {
+            width.declaration.is_some() && self.inner.sharding == PublishSharding::HashStream
+        });
+        let (shard, width) = match (key, given) {
+            (Some(key), Some(width)) => (
+                Some(felix_wire::routing::shard_for_routing(
+                    width.routing,
+                    width.shards,
+                    Some(key),
+                )),
+                Some(width),
+            ),
+            _ => {
+                self.shard_of(tenant_id, namespace, stream, key, shard)
+                    .await
+            }
+        };
         let declaration = width.and_then(|width| width.declaration.clone());
         if self.inner.sharding == PublishSharding::HashStream
             && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
             && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
         {
+            // Only to a broker that negotiated it on this stream: any other
+            // cannot decode `publish_width` and would close the stream.
+            let declaration = declaration.filter(|_| worker.takes_width);
             return Ok(Routed {
                 worker: Selected::Shard(worker),
                 declaration,
@@ -123,14 +158,17 @@ impl Publisher {
         // one writer, so there is nothing for a stale width to split. With
         // them, the pool carries the shards past the cap beside the shards
         // that have streams, and is checked like they are.
+        let worker = self.select_worker(tenant_id, namespace, stream)?;
         let declaration = declaration.filter(|_| {
-            self.inner
-                .shard_streams
-                .as_ref()
-                .is_some_and(|s| s.enabled())
+            worker.takes_width
+                && self
+                    .inner
+                    .shard_streams
+                    .as_ref()
+                    .is_some_and(|streams| streams.enabled())
         });
         Ok(Routed {
-            worker: Selected::Pooled(self.select_worker(tenant_id, namespace, stream)?),
+            worker: Selected::Pooled(worker),
             declaration,
         })
     }
@@ -180,12 +218,7 @@ impl Publisher {
         outcome: &Result<T>,
     ) {
         if let (Some(_), Some(widths), Err(err)) = (key, &self.inner.widths, outcome)
-            && err.downcast_ref::<crate::BrokerError>().is_some_and(|err| {
-                matches!(
-                    err.code,
-                    felix_wire::ErrorCode::NotFound | felix_wire::ErrorCode::StaleWidth
-                )
-            })
+            && width_went_stale(err)
         {
             widths.forget(tenant_id, namespace, stream);
         }
@@ -233,6 +266,18 @@ impl Publisher {
         };
         live_from(workers, index)
     }
+}
+
+/// Whether a failed publish says the width it was routed by may be stale:
+/// the stream is gone (it may come back at another width), or the broker
+/// said the width is not the stream's.
+pub(crate) fn width_went_stale(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<crate::BrokerError>().is_some_and(|err| {
+        matches!(
+            err.code,
+            felix_wire::ErrorCode::NotFound | felix_wire::ErrorCode::StaleWidth
+        )
+    })
 }
 
 /// The first worker at or after `index` whose writer is still running.

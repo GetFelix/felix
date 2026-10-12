@@ -1001,15 +1001,19 @@ the stream it names (`publish_batch`, `publish_idempotent` and the binary batch
 frames) against its own routing snapshot. A batch whose declared width or
 mapping differs is not written: refused with `stale_width` when acknowledged,
 dropped when not. Unkeyed batches, single `publish` messages and batches to
-other streams are not checked. A stream the snapshot does not know, and every
-stream on a broker with no cluster, counts as one `modulo` shard.
+other streams are not checked, and neither is a stream the snapshot does not
+know (a deleted one is answered `not_found` as before) or any stream on a
+broker with no cluster, where every stream is one shard.
 
 A client sends one ahead of a keyed batch whenever the width differs from the
 last one that control stream carried, so a stream with one shard's publishes
 on it sends one once. It does not send one for a width it could not learn: it
 then keeps the stream on one writer, which needs no check. Because a
 fire-and-forget publish hears no refusal, the Rust client also asks
-`stream_shards` again every 5 seconds while it publishes to a stream.
+`stream_shards` again every 5 seconds (plus up to a second of jitter) while it
+publishes to a stream, over one long-lived control stream per client, and
+gives up a re-ask after 2 seconds. Only a broker that advertised the bit on
+that very control stream is sent `publish_width`.
 
 ### CacheShards
 ```

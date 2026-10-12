@@ -243,8 +243,7 @@ pub(crate) struct DeclaredWidth {
 /// was created again at another width since, keys now sharing a shard can be
 /// on two writers and reach the shard out of order, so nothing routed by a
 /// stale width is let through. Publishes to a stream the client declared
-/// nothing for are not checked. One routing-snapshot lookup either way, as
-/// [`resolve_shard`] does.
+/// nothing for, or one the routing snapshot does not know, are not checked.
 pub(crate) fn resolve_declared_shard(
     publish_ctx: &PublishContext,
     declared: Option<&DeclaredWidth>,
@@ -267,23 +266,26 @@ pub(crate) fn resolve_declared_shard(
             key,
         ));
     };
-    // What `shard_for_key` falls back to for a stream the snapshot does not
-    // know, and what a broker with no cluster serves.
-    let (shards, routing) = publish_ctx
-        .ingress
-        .as_ref()
-        .and_then(|ingress| {
-            ingress.placement_for(
-                crate::shards::ShardKind::Stream,
-                tenant_id,
-                namespace,
-                stream,
-            )
-        })
-        .map_or(
-            (1, felix_wire::routing::ShardRouting::Modulo),
-            |placement| (placement.shards, placement.routing),
-        );
+    // A stream the snapshot does not know is left to the route, which
+    // answers `not_found` for one that is gone. A broker with no cluster has
+    // one shard per stream, which no width can split.
+    let Some(placement) = publish_ctx.ingress.as_ref().and_then(|ingress| {
+        ingress.placement_for(
+            crate::shards::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+        )
+    }) else {
+        return Ok(resolve_shard(
+            publish_ctx,
+            tenant_id,
+            namespace,
+            stream,
+            key,
+        ));
+    };
+    let (shards, routing) = (placement.shards, placement.routing);
     if (shards, routing) != (declared.shards, declared.routing) {
         count_publish("stale_width");
         return Err(ClientError::new(

@@ -426,6 +426,13 @@ up without a refusal to read. A refusal with `not_found` also drops the
 width. Against an older broker the width is kept until `not_found`, as
 before.
 
+A `ClusterClient` keeps its own widths, to pick the broker for a key, and an
+idempotent producer numbers each shard's batches by one. Both are dropped and
+asked again the same way. A producer's batches are routed and declared by the
+width they were numbered by, so a stale one is refused rather than taken on
+another shard's sequence; under a new width the producer's sequences start
+again, as the recreated stream's shards have none.
+
 The ordering guarantee is per shard: every publish one client makes to one
 shard goes through one writer and one QUIC stream, so the shard holds them in
 the order they were issued. Unkeyed publishes are all shard 0, so a stream

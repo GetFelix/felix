@@ -12,7 +12,7 @@
 //! [`StubBroker::set_events`] ends it with a lag or a move.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -191,6 +191,27 @@ impl StubBroker {
         self.seen.acks_held.send_replace(false);
     }
 
+    /// Answer `stream_shards` with `shards` from now on: the stream was
+    /// created again at that width.
+    pub(super) fn set_width(&self, shards: u32) {
+        self.seen.width.store(shards, Ordering::SeqCst);
+    }
+
+    /// Advertise `FEATURE_PUBLISH_WIDTH` to streams authenticated from now on.
+    pub(super) fn check_widths(&self) {
+        self.seen.checks_width.store(true, Ordering::SeqCst);
+    }
+
+    /// `stream_shards` requests it answered.
+    pub(super) fn width_asks(&self) -> usize {
+        self.seen.width_asks.load(Ordering::SeqCst)
+    }
+
+    /// `publish_width` messages it was sent.
+    pub(super) fn widths_declared(&self) -> usize {
+        self.seen.widths_declared.load(Ordering::SeqCst)
+    }
+
     /// Close every client connection, as a broker that lost its network
     /// would, while still accepting new ones.
     pub(super) fn drop_connections(&self) {
@@ -225,6 +246,13 @@ struct Seen {
     tokens: Arc<Mutex<Vec<String>>>,
     /// True while publish answers are held back.
     acks_held: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The width `stream_shards` answers with.
+    width: Arc<AtomicU32>,
+    /// Advertise `FEATURE_PUBLISH_WIDTH` and refuse a keyed batch whose
+    /// declared width is not `width`, as a broker does.
+    checks_width: Arc<AtomicBool>,
+    width_asks: Arc<AtomicUsize>,
+    widths_declared: Arc<AtomicUsize>,
 }
 
 impl Default for Seen {
@@ -241,6 +269,10 @@ impl Default for Seen {
             cache_owners: Arc::default(),
             tokens: Arc::default(),
             acks_held: Arc::new(tokio::sync::watch::channel(false).0),
+            width: Arc::new(AtomicU32::new(STREAM_SHARDS)),
+            checks_width: Arc::default(),
+            width_asks: Arc::default(),
+            widths_declared: Arc::default(),
         }
     }
 }
@@ -253,10 +285,28 @@ async fn serve_stream(
     seen: Seen,
 ) -> Result<()> {
     let mut scratch = BytesMut::with_capacity(64 * 1024);
+    // This stream's last `publish_width`, checked only if it advertised the
+    // bit when the stream authenticated.
+    let mut declared: Option<u32> = None;
+    let mut checks_width = false;
     while let Some(frame) = read_frame_into(&mut recv, &mut scratch, false).await? {
         if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_ACKED != 0 {
             let batch = felix_wire::binary::decode_acked_publish_batch(&frame)?;
             let id = batch.request_id;
+            if checks_width
+                && batch.batch.key.is_some()
+                && declared.is_some_and(|declared| declared != seen.width.load(Ordering::SeqCst))
+            {
+                let refusal = Message::PublishError {
+                    request_id: id,
+                    message: "routed by a stale width".to_string(),
+                    code: Some(felix_wire::ErrorCode::StaleWidth),
+                    retry: None,
+                    detail: None,
+                };
+                send.write_all(&binary_ack(id, refusal)?).await?;
+                continue;
+            }
             seen.publishes.fetch_add(1, Ordering::SeqCst);
             if let Some(producer) = batch.producer {
                 seen.batch_streams
@@ -276,15 +326,22 @@ async fn serve_stream(
         match Message::decode(frame)? {
             Message::Auth { token, .. } => {
                 seen.tokens.lock().unwrap().push(token);
+                checks_width = seen.checks_width.load(Ordering::SeqCst);
+                let extended = if checks_width {
+                    felix_wire::FEATURE_EXTENDED
+                } else {
+                    0
+                };
                 let answer = Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
                     server_features: Some(
                         felix_wire::FEATURE_ERROR_CODES
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
                             | felix_wire::FEATURE_STREAM_SHARDS
-                            | felix_wire::FEATURE_SHARD_OWNERS,
+                            | felix_wire::FEATURE_SHARD_OWNERS
+                            | extended,
                     ),
-                    server_features_hi: None,
+                    server_features_hi: checks_width.then_some(felix_wire::FEATURE_PUBLISH_WIDTH),
                     listener_ports: None,
                     publish_window: None,
                 };
@@ -297,9 +354,14 @@ async fn serve_stream(
                 };
                 write_message(&mut send, answer).await?;
             }
+            Message::PublishWidth { shards, .. } => {
+                seen.widths_declared.fetch_add(1, Ordering::SeqCst);
+                declared = Some(shards);
+            }
             Message::StreamShards { request_id, .. } => {
+                seen.width_asks.fetch_add(1, Ordering::SeqCst);
                 let answer = Message::StreamShardsView {
-                    shards: STREAM_SHARDS,
+                    shards: seen.width.load(Ordering::SeqCst),
                     request_id,
                     routing: None,
                 };

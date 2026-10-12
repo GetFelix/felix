@@ -45,6 +45,10 @@ use super::routing::{StreamKey, StreamKeyRef};
 /// publishes to a stream created again at another width keep being dropped.
 pub(crate) const REVALIDATE_AFTER: Duration = Duration::from_secs(5);
 
+/// How long a background re-ask may take before it is given up and the
+/// width is asked again on the next interval.
+pub(crate) const REVALIDATE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Asks the broker for a stream's width and mapping
 /// ([`crate::Client::stream_routing`]).
 pub(crate) type LearnWidth = Arc<
@@ -66,6 +70,9 @@ pub(crate) struct Width {
     /// is the broker's answer rather than the one-shard fallback. The
     /// fallback keeps the stream on one writer, which needs no check.
     pub(crate) declaration: Option<Bytes>,
+    /// The broker's answer, not the fallback for a width that could not be
+    /// learned.
+    pub(crate) learned: bool,
 }
 
 impl Width {
@@ -74,6 +81,7 @@ impl Width {
             shards: 1,
             routing: ShardRouting::default(),
             declaration: None,
+            learned: false,
         }
     }
 
@@ -96,6 +104,7 @@ impl Width {
             shards,
             routing,
             declaration,
+            learned: true,
         }
     }
 }
@@ -115,23 +124,47 @@ struct Entry {
 /// learned again with a different answer.
 pub(crate) struct StreamWidths {
     learn: LearnWidth,
+    /// What a background re-ask uses: `learn` unless the client has a
+    /// cheaper way to ask (one long-lived stream instead of one per ask).
+    recheck: LearnWidth,
     known: Arc<RwLock<HashMap<StreamKey, Arc<Entry>, RandomState>>>,
     /// The broker advertised `FEATURE_PUBLISH_WIDTH`.
     declare: bool,
-    /// [`REVALIDATE_AFTER`], but for tests.
+    /// [`REVALIDATE_AFTER`] and [`REVALIDATE_TIMEOUT`], but for tests.
     check_after: Duration,
+    check_timeout: Duration,
     origin: Instant,
 }
 
 impl StreamWidths {
     pub(crate) fn new(learn: LearnWidth, declare: bool) -> Self {
         Self {
+            recheck: Arc::clone(&learn),
             learn,
             known: Arc::new(RwLock::new(HashMap::with_hasher(RandomState::new()))),
             declare,
             check_after: REVALIDATE_AFTER,
+            check_timeout: REVALIDATE_TIMEOUT,
             origin: Instant::now(),
         }
+    }
+
+    /// What this uses to ask a width again, for another cache that should
+    /// ask the same way.
+    pub(crate) fn recheck(&self) -> LearnWidth {
+        Arc::clone(&self.recheck)
+    }
+
+    /// Re-ask with `recheck` instead of `learn`.
+    pub(crate) fn rechecking_with(mut self, recheck: LearnWidth) -> Self {
+        self.recheck = recheck;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn giving_up_after(mut self, timeout: Duration) -> Self {
+        self.check_timeout = timeout;
+        self
     }
 
     #[cfg(test)]
@@ -214,7 +247,7 @@ impl StreamWidths {
         {
             return;
         }
-        let learn = Arc::clone(&self.learn);
+        let learn = Arc::clone(&self.recheck);
         let known = Arc::clone(&self.known);
         let entry = Arc::clone(entry);
         let held = (current.shards, current.routing);
@@ -224,12 +257,22 @@ impl StreamWidths {
             key.namespace.to_string(),
             key.stream.to_string(),
         );
-        let (origin, check_after) = (self.origin, self.check_after);
+        let (origin, check_after, check_timeout) =
+            (self.origin, self.check_after, self.check_timeout);
+        let spread = spread(&owned, check_after);
         tokio::spawn(async move {
-            let answer = learn(tenant_id.clone(), namespace.clone(), stream.clone()).await;
-            let due = millis_since(origin).saturating_add(check_after.as_millis() as u64);
+            // Bounded, so a re-ask that never answers cannot leave `due` at
+            // `u64::MAX` and stop the stream from ever being checked again.
+            let answer = tokio::time::timeout(
+                check_timeout,
+                learn(tenant_id.clone(), namespace.clone(), stream.clone()),
+            )
+            .await;
+            let due = millis_since(origin)
+                .saturating_add(check_after.as_millis() as u64)
+                .saturating_add(spread);
             match answer {
-                Ok((shards, routing)) if shards > 0 && (shards, routing) != held => {
+                Ok(Ok((shards, routing))) if shards > 0 && (shards, routing) != held => {
                     let width = Width::learned(
                         StreamKeyRef::new(&tenant_id, &namespace, &stream),
                         shards,
@@ -268,6 +311,16 @@ impl StreamWidths {
     fn due_from_now(&self) -> u64 {
         millis_since(self.origin).saturating_add(self.check_after.as_millis() as u64)
     }
+}
+
+/// Up to a fifth of the interval, different per stream and per check, so a
+/// client's streams are not all asked again in the same tick.
+fn spread(key: &StreamKey, every: Duration) -> u64 {
+    let range = (every.as_millis() as u64) / 5;
+    if range == 0 {
+        return 0;
+    }
+    RandomState::new().hash_one(key) % range
 }
 
 fn millis_since(origin: Instant) -> u64 {

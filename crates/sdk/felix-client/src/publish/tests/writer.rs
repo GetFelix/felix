@@ -254,6 +254,7 @@ async fn finish_skips_finish_request_when_channel_closed() {
                 request_counter: AtomicU64::new(1),
                 server_flags: felix_wire::KNOWN_FLAGS,
                 publish_window: 0,
+                takes_width: false,
             }]),
             PublishSharding::RoundRobin,
         )),

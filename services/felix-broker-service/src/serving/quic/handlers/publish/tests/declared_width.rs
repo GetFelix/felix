@@ -56,6 +56,20 @@ async fn a_declared_width_must_match_the_streams_own() {
     );
 }
 
+/// A stream the routing snapshot does not know is left to the route, which
+/// says `not_found` for a deleted one.
+#[tokio::test]
+async fn an_unknown_stream_is_not_checked() {
+    let (mut context, _rx, _tx) = make_publish_context(1);
+    context.ingress = Some(Arc::new(ingress_with_routing(8, ShardRouting::JumpHash)));
+    let stale = declared("gone", 4, ShardRouting::Modulo);
+    assert_eq!(
+        resolve_declared_shard(&context, Some(&stale), "t1", "ns", "gone", Some(b"k"))
+            .expect("not checked"),
+        0
+    );
+}
+
 /// The issue's case end to end on the unacknowledged path: a client still
 /// routing by the width of a stream since created again one shard wide.
 #[tokio::test]
@@ -76,7 +90,9 @@ async fn an_unacked_batch_routed_by_a_stale_width_is_not_written() {
         let auth_ctx = &auth_ctx;
         let frame = &frame;
         async move {
-            let (publish_ctx, mut rx, _tx) = make_publish_context(4);
+            let (mut publish_ctx, mut rx, _tx) = make_publish_context(4);
+            // One modulo shard, led and served here.
+            publish_ctx.ingress = Some(Arc::new(ingress_for("broker-a", true)));
             handle_binary_publish_batch_control(
                 broker,
                 &mut HashMap::new(),
@@ -103,4 +119,56 @@ async fn an_unacked_batch_routed_by_a_stale_width_is_not_written() {
     );
     assert!(publish(Some(declared("stream", 1, ShardRouting::Modulo))).await);
     assert!(publish(None).await, "an undeclared batch was refused");
+}
+
+/// The acknowledged path answers `stale_width`, the code the client drops
+/// its width on.
+#[tokio::test]
+async fn an_acked_batch_routed_by_a_stale_width_is_told_stale_width() {
+    let broker = broker_with_stream().await;
+    let (mut publish_ctx, _rx, _tx) = make_publish_context(4);
+    publish_ctx.ingress = Some(Arc::new(ingress_with_routing(1, ShardRouting::Modulo)));
+    let (out_tx, mut out_rx) = mpsc::channel(1);
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(
+        AckTimeoutState::new(Instant::now()),
+    ));
+    let stale = declared("stream", 4, ShardRouting::Modulo);
+    handle_publish_batch_message(
+        0,
+        &broker,
+        &publish_ctx,
+        Some(&stale),
+        &mut HashMap::new(),
+        &mut String::new(),
+        false,
+        false,
+        AckEncoding::Json,
+        &out_tx,
+        &Arc::new(AtomicUsize::new(0)),
+        &watch::channel(false).0,
+        &ack_timeout_state,
+        &watch::channel(false).0,
+        &CommitAcks::detached(Arc::new(Semaphore::new(1))),
+        "t1".to_string(),
+        "ns".to_string(),
+        "stream".to_string(),
+        vec![Bytes::from_static(b"payload")],
+        Some(Bytes::from_static(b"customer-7")),
+        Some(9),
+        Some(felix_wire::AckMode::PerBatch),
+        false,
+        String::new(),
+        None,
+    )
+    .await
+    .expect("handled");
+    match out_rx.recv().await.expect("outgoing") {
+        Outgoing::Message(Message::PublishError {
+            request_id, code, ..
+        }) => {
+            assert_eq!(request_id, 9);
+            assert_eq!(code, Some(felix_wire::ErrorCode::StaleWidth));
+        }
+        other => panic!("unexpected outgoing {other:?}"),
+    }
 }

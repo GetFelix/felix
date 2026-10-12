@@ -21,8 +21,9 @@ pub use idempotent::IdempotentProducer;
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
+pub(crate) use routing::width_went_stale;
 pub(crate) use shard_streams::{OpenWorker, ShardStreams};
-pub(crate) use widths::{LearnWidth, StreamWidths};
+pub(crate) use widths::{LearnWidth, StreamWidths, Width};
 pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -370,6 +371,7 @@ impl Publisher {
             stream,
             None,
             0,
+            None,
             payloads,
             producer_id,
             sequence,
@@ -380,7 +382,8 @@ impl Publisher {
     /// [`Self::publish_idempotent_batch`] with an optional routing key, which
     /// decides the shard and so whose sequence `sequence` is. `shard` is the
     /// one the key resolves to (0 without one), which puts the batch on that
-    /// shard's stream when this publisher has shard streams.
+    /// shard's stream when this publisher has shard streams. `width` is the
+    /// width `shard` was worked out by; see [`Self::route_by`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_idempotent_batch_routed(
         &self,
@@ -389,18 +392,20 @@ impl Publisher {
         stream: &str,
         key: Option<&bytes::Bytes>,
         shard: u32,
+        width: Option<Arc<Width>>,
         payloads: Vec<Vec<u8>>,
         producer_id: u64,
         sequence: u64,
     ) -> Result<Option<u64>> {
         let outcome = async {
             let worker = self
-                .route(
+                .route_by(
                     tenant_id,
                     namespace,
                     stream,
                     key.map(|key| key.as_ref()),
                     Some(shard),
+                    width,
                 )
                 .await?;
             if self.supports_binary_idempotent_for(key) {
@@ -463,8 +468,8 @@ impl Publisher {
     /// idempotent batch, this sends one batch at a time.
     ///
     /// `shard` is the shard whose sequences these are: `key`'s, or 0 without
-    /// one. A publisher with shard streams sends them on that shard's stream,
-    /// so a shard's sequences only ever go out on one writer.
+    /// one, under `width`. A publisher with shard streams sends them on that
+    /// shard's stream, so a shard's sequences only ever go out on one writer.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_idempotent_pipelined(
         &self,
@@ -473,17 +478,19 @@ impl Publisher {
         stream: &str,
         key: Option<&bytes::Bytes>,
         shard: u32,
+        width: Option<Arc<Width>>,
         batches: &[Vec<Vec<u8>>],
         producer_id: u64,
         first_sequence: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
         let worker = match self
-            .route(
+            .route_by(
                 tenant_id,
                 namespace,
                 stream,
                 key.map(|key| key.as_ref()),
                 Some(shard),
+                width.clone(),
             )
             .await
         {
@@ -505,6 +512,7 @@ impl Publisher {
                         stream,
                         key,
                         shard,
+                        width.clone(),
                         payloads.clone(),
                         producer_id,
                         first_sequence + index as u64,

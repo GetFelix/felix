@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::Client;
-use super::discovery::ask_stream_routing;
+use super::discovery::{ask_stream_routing, ask_stream_routing_on};
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
 use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
@@ -473,6 +473,7 @@ pub(super) fn stream_widths(
     requests: &Arc<AtomicU64>,
     max_frame_bytes: usize,
 ) -> Arc<StreamWidths> {
+    let (recheck_credentials, recheck_requests) = (Arc::clone(credentials), Arc::clone(requests));
     let node = Arc::clone(event_node);
     let credentials = Arc::clone(credentials);
     let requests = Arc::clone(requests);
@@ -501,10 +502,50 @@ pub(super) fn stream_widths(
             .await
         })
     });
-    Arc::new(StreamWidths::new(
-        learn,
-        felix_wire::supports_feature(server_features_hi, felix_wire::FEATURE_PUBLISH_WIDTH),
-    ))
+    // Re-asks run every few seconds per stream published to, so they share
+    // one stream rather than authenticate a new one each time. Taken out
+    // while in use: a re-ask that times out drops it with its answer unread,
+    // and the next one opens a fresh stream.
+    let shared: Arc<tokio::sync::Mutex<Option<OpenedStream>>> = Arc::default();
+    let node = Arc::clone(event_node);
+    let credentials = recheck_credentials;
+    let requests = recheck_requests;
+    let tenant = auth_tenant_id.to_string();
+    let recheck: LearnWidth = Arc::new(move |tenant_id, namespace, stream| {
+        let node = Arc::clone(&node);
+        let credentials = Arc::clone(&credentials);
+        let shared = Arc::clone(&shared);
+        let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tenant = tenant.clone();
+        Box::pin(async move {
+            anyhow::ensure!(tenant_id == tenant, "tenant mismatch");
+            let mut slot = shared.lock().await;
+            let mut opened = match slot.take() {
+                Some(opened) => opened,
+                None => node.open_as(&credentials).await?,
+            };
+            let answer = ask_stream_routing_on(
+                &mut opened,
+                request_id,
+                max_frame_bytes,
+                &tenant_id,
+                &namespace,
+                &stream,
+            )
+            .await;
+            if answer.is_ok() {
+                *slot = Some(opened);
+            }
+            answer
+        })
+    });
+    Arc::new(
+        StreamWidths::new(
+            learn,
+            felix_wire::supports_feature(server_features_hi, felix_wire::FEATURE_PUBLISH_WIDTH),
+        )
+        .rechecking_with(recheck),
+    )
 }
 
 /// Open one cache stream as `credentials` and start the worker that owns it.
@@ -573,6 +614,10 @@ pub(super) fn spawn_publish_worker(
         request_counter: AtomicU64::new(1),
         server_flags: negotiated.server_flags,
         publish_window: negotiated.publish_window,
+        takes_width: felix_wire::supports_feature(
+            negotiated.server_features_hi,
+            felix_wire::FEATURE_PUBLISH_WIDTH,
+        ),
     }
 }
 

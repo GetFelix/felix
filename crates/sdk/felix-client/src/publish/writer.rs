@@ -34,6 +34,10 @@ pub(crate) struct PublishWorker {
     /// The publish window the broker granted, with answers in request order.
     /// `0` when it did not.
     pub(crate) publish_window: u32,
+    /// The broker on this stream advertised `FEATURE_PUBLISH_WIDTH`. Asked
+    /// per stream: one that did not would take `publish_width` as a frame it
+    /// cannot decode and close the stream.
+    pub(crate) takes_width: bool,
 }
 
 pub(crate) enum PublishRequest {

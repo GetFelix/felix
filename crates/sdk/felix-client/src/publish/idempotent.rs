@@ -37,10 +37,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_wire::routing::ShardRouting;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use super::{StreamWidths, Width};
 use crate::client::Client;
 use crate::cluster::{Attempt, ClusterClient, Next, Retrying};
 use crate::{PublishRefusalReason, PublishRefused};
@@ -84,7 +84,8 @@ impl IdempotentProducer {
             source,
             producer_id,
             leaders: Mutex::new(HashMap::new()),
-            widths: Mutex::new(HashMap::new()),
+            widths: None,
+            numbered_by: std::sync::Mutex::new(HashMap::new()),
         };
         Self {
             producer_id,
@@ -300,14 +301,21 @@ struct Driver {
     /// The broker a refusal named as the leader of a shard, kept so the next
     /// batch goes straight there rather than being refused again.
     leaders: Mutex<HashMap<ShardKey, Arc<Client>>>,
-    /// Each keyed stream's width and mapping, asked once.
-    widths: Mutex<HashMap<StreamKey, (u32, ShardRouting)>>,
+    /// Each keyed stream's width and mapping. Asked again on the client's
+    /// cadence against a broker that checks declared widths, and dropped on
+    /// `stale_width` or `not_found`. Set when the driver starts.
+    widths: Option<Arc<StreamWidths>>,
+    /// The width each keyed stream's cursors number by. A different one
+    /// (the stream was created again) resets the stream's cursors, since its
+    /// shards are not the shards they counted.
+    numbered_by: std::sync::Mutex<HashMap<StreamKey, Arc<Width>>>,
 }
 
 impl Driver {
     /// Serve calls in the order they were made until the producer is dropped
     /// and its queue is empty.
-    async fn run(self, mut requests: mpsc::Receiver<Request>) {
+    async fn run(mut self, mut requests: mpsc::Receiver<Request>) {
+        self.widths = Some(self.stream_widths().await);
         // Per shard, because that is what the leader numbers. An unkeyed
         // batch is shard 0's.
         let mut cursors: HashMap<ShardKey, Cursor> = HashMap::new();
@@ -320,7 +328,7 @@ impl Driver {
                 batches,
                 answer,
             } = request;
-            let shard = match self
+            let (shard, width) = match self
                 .shard_for(&tenant_id, &namespace, &stream, routing_key.as_deref())
                 .await
             {
@@ -331,6 +339,9 @@ impl Driver {
                 }
             };
             let key = (tenant_id, namespace, stream, shard);
+            if let Some(width) = width {
+                self.number_by(&mut cursors, &key, width).await;
+            }
             let result = self
                 .publish_on_shard(&mut cursors, &key, routing_key, batches)
                 .await;
@@ -679,6 +690,7 @@ impl Driver {
                 &key.2,
                 routing_key,
                 key.3,
+                routing_key.and_then(|_| self.numbering(key)),
                 batches,
                 self.producer_id,
                 first,
@@ -691,7 +703,59 @@ impl Driver {
             routing_key.map(|key| key.as_ref()),
             &result,
         );
+        if routing_key.is_some()
+            && let (Err(err), Some(widths)) = (&result, &self.widths)
+            && super::routing::width_went_stale(err)
+        {
+            widths.forget(&key.0, &key.1, &key.2);
+        }
         (acked, result)
+    }
+
+    /// The widths the source routes keyed publishes by, so the producer
+    /// numbers a batch by the width it is routed and checked by.
+    async fn stream_widths(&self) -> Arc<StreamWidths> {
+        match &self.source {
+            Source::Single(client) => Arc::clone(client.publish_widths()),
+            Source::Cluster(cluster) => cluster.stream_widths(),
+        }
+    }
+
+    /// The width a shard's cursor numbers by, for routing its batches.
+    fn numbering(&self, key: &ShardKey) -> Option<Arc<Width>> {
+        self.numbered_by
+            .lock()
+            .expect("numbered by")
+            .get(&(key.0.clone(), key.1.clone(), key.2.clone()))
+            .cloned()
+    }
+
+    /// Start the stream's cursors again if `width` is not the one they
+    /// counted under. Only a stream created again changes width, and its
+    /// shards have no sequences from before.
+    async fn number_by(
+        &self,
+        cursors: &mut HashMap<ShardKey, Cursor>,
+        key: &ShardKey,
+        width: Arc<Width>,
+    ) {
+        let stream = (key.0.clone(), key.1.clone(), key.2.clone());
+        let previous = self
+            .numbered_by
+            .lock()
+            .expect("numbered by")
+            .insert(stream, Arc::clone(&width));
+        if previous.is_some_and(|previous| {
+            (previous.shards, previous.routing) != (width.shards, width.routing)
+        }) {
+            let same_stream =
+                |shard: &ShardKey| shard.0 == key.0 && shard.1 == key.1 && shard.2 == key.2;
+            cursors.retain(|shard, _| !same_stream(shard));
+            self.leaders
+                .lock()
+                .await
+                .retain(|shard, _| !same_stream(shard));
+        }
     }
 
     /// The shard a batch's sequence belongs to: 0 without a key, else the one
@@ -707,49 +771,27 @@ impl Driver {
         namespace: &str,
         stream: &str,
         routing_key: Option<&[u8]>,
-    ) -> Result<u32> {
+    ) -> Result<(u32, Option<Arc<Width>>)> {
         let Some(routing_key) = routing_key else {
-            return Ok(0);
+            return Ok((0, None));
         };
-        let stream_key: StreamKey = (
-            tenant_id.to_string(),
-            namespace.to_string(),
-            stream.to_string(),
-        );
-        let known = self.widths.lock().await.get(&stream_key).copied();
-        let (shards, routing) = match known {
-            Some(width) => width,
-            None => {
-                let client = match &self.source {
-                    Source::Single(client) => {
-                        client.stream_routing(tenant_id, namespace, stream).await
-                    }
-                    Source::Cluster(cluster) => {
-                        cluster
-                            .client()
-                            .await
-                            .stream_routing(tenant_id, namespace, stream)
-                            .await
-                    }
-                };
-                let width = client.with_context(|| {
-                    format!(
-                        "learn {stream}'s shards, to number a keyed batch against the right one"
-                    )
-                })?;
-                anyhow::ensure!(
-                    width.0 > 0,
-                    "the broker knows of no stream {stream} in {tenant_id}/{namespace}"
-                );
-                self.widths.lock().await.insert(stream_key, width);
-                width
-            }
-        };
-        Ok(felix_wire::routing::shard_for_routing(
-            routing,
-            shards,
-            Some(routing_key),
-        ))
+        let widths = self
+            .widths
+            .as_ref()
+            .expect("widths set when the driver starts");
+        let (shard, width) = widths
+            .shard_of(tenant_id, namespace, stream, routing_key)
+            .await;
+        if !width.learned {
+            // Not kept: the next call asks again rather than numbering by a
+            // guess.
+            widths.forget(tenant_id, namespace, stream);
+            anyhow::bail!(
+                "could not learn {stream}'s shards in {tenant_id}/{namespace}, to number a keyed \
+                 batch against the right one"
+            );
+        }
+        Ok((shard, Some(width)))
     }
 }
 
@@ -767,6 +809,7 @@ fn starts_alike(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> bool {
 
 /// Where a producer's batches go: one broker, or whichever a cluster client
 /// is using, with the shard's leader remembered once a refusal names it.
+#[derive(Clone)]
 enum Source {
     Single(Arc<Client>),
     Cluster(Arc<ClusterClient>),
