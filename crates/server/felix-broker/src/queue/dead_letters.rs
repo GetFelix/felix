@@ -317,6 +317,29 @@ impl DeadLetters {
             .map_err(BrokerError::from)
     }
 
+    /// Where this shard's dead-letter log ends and the generations that wrote
+    /// it, synced first: what a cursor written next may need beneath it, or
+    /// what a stored cursor is checked against.
+    pub(crate) async fn synced_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<super::cursors::DeadLetterLog> {
+        let log = crate::durable::StreamLog::from_log(
+            self.shard_log(tenant_id, namespace, stream, shard).await?,
+        );
+        let end = log.tail_offset().await?;
+        if log.unsynced_bytes() > 0 {
+            log.sync().await?;
+        }
+        Ok(super::cursors::DeadLetterLog {
+            end,
+            epochs: log.generations(),
+        })
+    }
+
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent.
     pub async fn shard_log_at(
         &self,

@@ -8,6 +8,8 @@ use crate::durable::{DurableStorage, StreamLog};
 use crate::queue::DeadLetters;
 use crate::queue::tracker::MAX_CLAIM;
 
+mod dependencies;
+
 const T: &str = "t1";
 const NS: &str = "ns";
 const S: &str = "orders";

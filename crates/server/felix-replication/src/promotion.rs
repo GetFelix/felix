@@ -463,11 +463,18 @@ fn newer_leader(answer: &Result<InternalMessage, PeerError>) -> Option<&str> {
     }
 }
 
-/// Take the dead-letter and cursor logs together from the answer whose pair
-/// is furthest ahead, if it is ahead of this broker's: by dead letters
-/// first, since a lost dead letter is a skipped record and a lost cursor only
-/// a redelivery. Both from one replica, because a cursor from one replica and
-/// dead letters from another can pass a record neither lists.
+/// Take the dead-letter log from the answer whose pair is furthest ahead, if
+/// it is ahead of this broker's, ranked by dead letters first since a lost
+/// dead letter is a skipped record and a lost cursor only a redelivery; and
+/// that replica's cursors, each group going to the further of its two
+/// positions.
+///
+/// The cursors need not match the dead-letter log beside them: each cursor
+/// record says which dead letters it needs, and the shard's cursors are
+/// checked against the dead-letter log it ends up with before it is served
+/// (`GroupReader`). So this broker's own further cursors are kept as long as
+/// they still stand, and taking the replica's appends rather than replaces,
+/// so no group is erased.
 async fn take_groups<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -481,6 +488,7 @@ async fn take_groups<R: PeerRequester>(
         answered,
     } = round;
     let took: Vec<String> = answered.iter().map(|(node, ..)| node.clone()).collect();
+    let pending = |why: String| Outcome::pending(why, took.clone());
     let position = |log: &felix_broker::StreamLog| {
         let log = log.clone();
         async move {
@@ -491,10 +499,10 @@ async fn take_groups<R: PeerRequester>(
             Ok::<_, String>((last_generation(&log.generations(), end), end))
         }
     };
-    let own = match (position(&dead_letters).await, position(&cursors).await) {
-        (Ok(dead), Ok(cursor)) => (dead, cursor),
-        (Err(why), _) | (_, Err(why)) => return Err(Outcome::pending(why, took)),
-    };
+    let own = (
+        position(&dead_letters).await.map_err(pending)?,
+        position(&cursors).await.map_err(pending)?,
+    );
     let of = |ok: &FenceOk| (ok.last_generation, ok.log_end);
     let best = answered
         .iter()
@@ -503,29 +511,97 @@ async fn take_groups<R: PeerRequester>(
     let Some((node_id, addr, dead, cursor)) = best else {
         return Ok(None);
     };
-    // Dead letters first: a dead letter more never makes a cursor wrong, and
-    // one dropped takes the cursors that may depend on it with it. So each
-    // log is measured again as it is reached.
-    for (kind, log, target) in [
-        (LogKind::GroupDeadLetters, &dead_letters, dead),
-        (LogKind::GroupCursors, &cursors, cursor),
-    ] {
-        let own = position(log)
-            .await
-            .map_err(|why| Outcome::pending(why, took.clone()))?;
-        if of(target) == own {
-            continue;
-        }
-        let from = Source {
+    let from = |target| Source {
+        node_id,
+        addr: *addr,
+        target,
+    };
+    if of(dead) > own.0 {
+        catch_up(
+            requester,
+            broker,
+            &dead_letters,
+            LogKind::GroupDeadLetters,
+            key,
+            shard,
+            from(dead),
+        )
+        .await
+        .map_err(pending)?;
+    }
+    if of(cursor) != own.1 {
+        let groups = broker
+            .consumer_groups()
+            .ok_or_else(|| pending("this broker keeps no consumer groups".to_string()))?;
+        let records = read_all(
+            requester,
             node_id,
-            addr: *addr,
-            target,
-        };
-        catch_up(requester, broker, log, kind, key, shard, from)
+            *addr,
+            shard,
+            LogKind::GroupCursors,
+            cursor.log_end,
+        )
+        .await
+        .map_err(pending)?;
+        groups
+            .adopt(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &records,
+            )
             .await
-            .map_err(|why| Outcome::pending(why, took.clone()))?;
+            .map_err(|err| pending(format!("could not take {node_id}'s cursors: {err}")))?;
+    }
+    if let Some(reader) = broker.group_reader() {
+        reader.invalidate(&key.tenant_id, &key.namespace, &key.stream, key.shard);
     }
     Ok(Some(node_id.clone()))
+}
+
+/// Every record of `node_id`'s `kind` log below `end`, from where its log
+/// begins.
+async fn read_all<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    end: u64,
+) -> Result<Vec<bytes::Bytes>, String> {
+    let mut records = Vec::new();
+    let mut next = 0;
+    while next < end {
+        let request = InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log: crate::ship::replica_log(kind),
+            from_offset: next,
+            max_bytes: FETCH_BYTES,
+            labelled: false,
+            timed: false,
+        });
+        let batch = match requester.request(node_id, addr, request).await {
+            Ok(
+                InternalMessage::ReplicateGroupRecords(batch)
+                | InternalMessage::ReplicateRecords(batch)
+                | InternalMessage::ReplicateMarkedRecords(batch),
+            ) => batch,
+            other => {
+                return Err(format!(
+                    "reading {node_id}'s {kind:?} log from {next} failed: {:?}",
+                    other.map(|answer| answer.kind())
+                ));
+            }
+        };
+        if batch.payloads.is_empty() {
+            break;
+        }
+        next = batch.first_offset + batch.payloads.len() as u64;
+        records.extend(batch.payloads);
+    }
+    Ok(records)
 }
 
 /// The replica whose log a promoted leader takes, and how far it reaches.
@@ -545,9 +621,6 @@ async fn drop_superseded(
     offset: u64,
     from: &str,
 ) -> Result<(), String> {
-    if kind == LogKind::GroupDeadLetters {
-        crate::replica::cut_dependent_cursors(broker, key, log, offset).await?;
-    }
     log.truncate(offset)
         .await
         .map_err(|err| format!("could not drop this broker's records from {offset}: {err}"))?;

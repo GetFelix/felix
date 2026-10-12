@@ -74,6 +74,7 @@ tlc() {
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
+    FelixGroups*) module="FelixGroups" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
     -config "$cfg.cfg" "$module.tla")
@@ -182,6 +183,12 @@ expectations=(
   "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
   "FelixShardSuspicion pass"
   "FelixShardSuspicionLease violates AtMostOneServing"
+  "FelixGroups pass"
+  "FelixGroupsNoCheck violates NoSkip"
+  "FelixGroupsLengthOnly violates NoSkip"
+  "FelixGroupsDropGroup violates NoSkip"
+  "FelixGroupsSplitSources pass"
+  "FelixGroupsSplitSourcesLengthOnly violates NoSkip"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family

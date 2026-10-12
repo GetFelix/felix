@@ -1,6 +1,6 @@
-//! A follower's dead-letter and cursor logs: a cursor never outlives the
-//! dead letters it may have passed records on, and a broker without
-//! consumer groups answers their fence as empty logs.
+//! A follower's dead-letter and cursor logs: a cursor whose dead letters the
+//! follower's log no longer holds is not what it serves once promoted, and a
+//! broker without consumer groups answers their fence as empty logs.
 
 use felix_wire::internal::{Fence, FenceOk, ReplicaLog, ReplicateRebuild};
 
@@ -33,44 +33,75 @@ fn group_broker(dir: &std::path::Path) -> Arc<Broker> {
     )
 }
 
-async fn held_in(broker: &Broker, log: felix_broker::LogKind) -> Vec<String> {
-    broker
-        .shard_log(log, TENANT, NAMESPACE, STREAM, 0)
-        .await
-        .expect("log")
-        .read_from(0, 1 << 20)
-        .await
-        .expect("read")
-        .iter()
-        .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
-        .collect()
+fn put(key: &str, value: &[u8]) -> Bytes {
+    felix_storage::cache::CacheOp::Put {
+        key: key.to_string(),
+        value: Bytes::copy_from_slice(value),
+        expires_at_millis: 0,
+        version: None,
+    }
+    .encode()
 }
 
-/// A follower holding generation 4's record, a dead letter and the cursor
-/// past its record.
+fn records(generation: u64, payloads: &[Bytes]) -> ReplicateRecords {
+    ReplicateRecords {
+        checksum: felix_wire::internal::batch_checksum(payloads, &[], &[]),
+        payloads: payloads.to_vec(),
+        ..batch(generation, 0, &[])
+    }
+}
+
+fn workers() -> felix_broker::GroupKey {
+    felix_broker::GroupKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        group: "workers".to_string(),
+    }
+}
+
+/// A follower holding generation 4's record, `workers`' dead letter for
+/// offset 1, and its cursor past it.
 async fn following(dir: &std::path::Path) -> Arc<Broker> {
     let broker = group_broker(dir);
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
-    for (log, value) in [
-        (felix_broker::LogKind::Stream, "a"),
-        (felix_broker::LogKind::GroupDeadLetters, "dead 1"),
-        (felix_broker::LogKind::GroupCursors, "at 2"),
+    let mut cursor = vec![2];
+    for field in [2u64, 1, 4, 0] {
+        cursor.extend_from_slice(&field.to_be_bytes());
+    }
+    for (log, payload) in [
+        (felix_broker::LogKind::Stream, Bytes::from_static(b"a")),
+        (
+            felix_broker::LogKind::GroupDeadLetters,
+            put("workers\u{1f}1", b""),
+        ),
+        (felix_broker::LogKind::GroupCursors, put("workers", &cursor)),
     ] {
-        let answer = handler.apply(SENDER, batch(4, 0, &[value]), log).await;
+        let answer = handler.apply(SENDER, records(4, &[payload]), log).await;
         assert!(
             matches!(answer, InternalMessage::ReplicateOk(_)),
             "{answer:?}"
         );
     }
+    assert_eq!(serves(&broker).await, Some(2));
     broker
 }
 
-/// **A divergent dead letter a newer leader replaces takes the cursors of
-/// its generation with it**, before it goes. Left, the cursor past offset 1
-/// would outlive the only record that offset was given up on, and this
-/// follower, promoted, would neither redeliver it nor list it.
+/// Where the broker would serve `workers` from, were it promoted now.
+async fn serves(broker: &Broker) -> Option<u64> {
+    let reader = broker.group_reader().expect("groups");
+    reader.reset_shard(TENANT, NAMESPACE, STREAM, 0).await;
+    reader.committed(&workers()).await.expect("cursor")
+}
+
+/// **A dead letter a newer leader replaced leaves the cursor past it
+/// unserved.** The follower drops its divergent dead letter for another
+/// group's at the same offset. Its cursor log still says `workers` passed
+/// offset 1, but promoted, it serves `workers` from where the group was
+/// placed, and offset 1 is delivered again.
 #[tokio::test]
-async fn a_dropped_dead_letter_takes_its_generations_cursors() {
+async fn a_replaced_dead_letter_leaves_its_cursor_unserved() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = following(dir.path()).await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
@@ -78,7 +109,7 @@ async fn a_dropped_dead_letter_takes_its_generations_cursors() {
     let answer = handler
         .apply(
             SENDER,
-            batch(5, 0, &["other"]),
+            records(5, &[put("others\u{1f}0", b"")]),
             felix_broker::LogKind::GroupDeadLetters,
         )
         .await;
@@ -87,20 +118,12 @@ async fn a_dropped_dead_letter_takes_its_generations_cursors() {
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    assert_eq!(
-        held_in(&broker, felix_broker::LogKind::GroupDeadLetters).await,
-        vec!["other"]
-    );
-    assert!(
-        held_in(&broker, felix_broker::LogKind::GroupCursors)
-            .await
-            .is_empty()
-    );
+    assert_eq!(serves(&broker).await, Some(0));
 }
 
 /// **So does a dead-letter log the leader has the follower discard.**
 #[tokio::test]
-async fn a_rebuilt_dead_letter_log_takes_the_cursors_with_it() {
+async fn a_rebuilt_dead_letter_log_leaves_its_cursor_unserved() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = following(dir.path()).await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
@@ -121,11 +144,7 @@ async fn a_rebuilt_dead_letter_log_takes_the_cursors_with_it() {
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    assert!(
-        held_in(&broker, felix_broker::LogKind::GroupCursors)
-            .await
-            .is_empty()
-    );
+    assert_eq!(serves(&broker).await, Some(0));
 }
 
 /// **A broker without consumer groups answers the group fence as empty

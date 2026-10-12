@@ -1,13 +1,17 @@
 //! A promoted stream shard's group logs: both fenced in one round beside its
-//! records, a replica counting once it took both, and taken together from the
-//! one replica whose pair is furthest ahead.
+//! records, a replica counting once it took both; the dead-letter log taken
+//! from the replica whose pair is furthest ahead, and that replica's cursors
+//! merged in, each checked against the dead letters the leader ends up with.
 
 use felix_broker::LogKind;
 
 use super::*;
 
-/// What a replica offers once it fences group logs.
-const WITH_GROUPS: PeerCapabilities = REQUIRED.union(PeerCapabilities::GROUP_FENCE);
+/// What a replica offers once it fences group logs, with the labels every
+/// build that fences sends.
+const WITH_GROUPS: PeerCapabilities = REQUIRED
+    .union(PeerCapabilities::GROUP_FENCE)
+    .union(PeerCapabilities::GENERATION_LABELS);
 
 const FOLLOWERS: [&str; 4] = ["broker-b", "broker-c", "broker-d", "broker-e"];
 
@@ -115,7 +119,32 @@ fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
     replicas
 }
 
-/// Store `values` in `node_id`'s `log` as a leader at `generation` shipped
+fn put(key: &str, value: &[u8]) -> Bytes {
+    felix_storage::cache::CacheOp::Put {
+        key: key.to_string(),
+        value: Bytes::copy_from_slice(value),
+        expires_at_millis: 0,
+        version: None,
+    }
+    .encode()
+}
+
+/// `group`'s dead letter for `offset`, as the dead-letter log stores it.
+fn dead(group: &str, offset: u64) -> Bytes {
+    put(&format!("{group}\u{1f}{offset}"), b"")
+}
+
+/// `group`'s cursor at `offset`, needing the dead-letter log up to `end` as
+/// generation `generation` wrote it, as the cursor log stores it.
+fn cursor(group: &str, offset: u64, end: u64, generation: u64, origin: u64) -> Bytes {
+    let mut value = vec![2];
+    for field in [offset, end, generation, origin] {
+        value.extend_from_slice(&field.to_be_bytes());
+    }
+    put(group, &value)
+}
+
+/// Store `payloads` in `node_id`'s `log` as a leader at `generation` shipped
 /// them, in a set of `size`.
 async fn holds(
     replicas: &Replicas,
@@ -123,17 +152,34 @@ async fn holds(
     node_id: &str,
     log: LogKind,
     generation: u64,
-    values: &[&str],
+    payloads: &[Bytes],
 ) {
     let handler = ReplicaHandler::new(
         Arc::clone(&replicas.get(node_id).broker),
         replica_router(node_id, size, generation),
     );
-    let answer = handler.apply(None, batch(generation, 0, values), log).await;
+    let batch = ReplicateRecords {
+        checksum: batch_checksum(payloads, &[], &[]),
+        payloads: payloads.to_vec(),
+        ..batch(generation, 0, &[])
+    };
+    let answer = handler.apply(None, batch, log).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{node_id} did not store the setup batch: {answer:?}"
     );
+}
+
+/// Write `payloads` to the leader's own `log`, as it wrote them leading at
+/// `generation`.
+async fn wrote(broker: &Broker, log: LogKind, generation: u64, payloads: &[Bytes]) {
+    let log = broker
+        .shard_log(log, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("generation");
+    log.append(payloads).await.expect("append");
 }
 
 /// The promoted leader, holding the shard's record from generation 4.
@@ -144,40 +190,66 @@ async fn group_leader() -> (Arc<Broker>, TempDir) {
     (broker, dir)
 }
 
-/// The leader's dead letters and cursors after the fence.
-async fn pair(broker: &Broker) -> (Vec<String>, Vec<String>) {
+fn group(name: &str) -> felix_broker::GroupKey {
+    felix_broker::GroupKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        group: name.to_string(),
+    }
+}
+
+/// Where the leader serves `name` from, and what it lists as dead, once its
+/// cursors are checked against its dead letters.
+async fn serves(broker: &Broker, name: &str) -> (Option<u64>, Vec<u64>) {
+    let reader = broker.group_reader().expect("groups");
     (
-        held_in(broker, LogKind::GroupDeadLetters).await,
-        held_in(broker, LogKind::GroupCursors).await,
+        reader.committed(&group(name)).await.expect("cursor"),
+        reader.dead_lettered(&group(name)).await.expect("dead"),
     )
 }
 
-/// **A promoted stream leader takes the group logs furthest ahead, as well
+/// b holds the shard's record, `workers`' dead letter for offset 1 and its
+/// cursor past it, from generation 4.
+async fn b_gave_up_on_one(replicas: &Replicas, size: usize) {
+    holds(
+        replicas,
+        size,
+        "broker-b",
+        LogKind::Stream,
+        4,
+        &[Bytes::from_static(b"a")],
+    )
+    .await;
+    holds(
+        replicas,
+        size,
+        "broker-b",
+        LogKind::GroupDeadLetters,
+        4,
+        &[dead("workers", 1)],
+    )
+    .await;
+    holds(
+        replicas,
+        size,
+        "broker-b",
+        LogKind::GroupCursors,
+        4,
+        &[cursor("workers", 2, 1, 4, 0)],
+    )
+    .await;
+}
+
+/// **A promoted stream leader takes the group state furthest ahead, as well
 /// as the records.** b holds a dead letter and the cursor past it that the
 /// leader never got. Opening without them puts the group back before work it
 /// finished, and redrives nothing it gave up on.
 #[tokio::test]
 async fn the_group_logs_furthest_ahead_are_taken_too() {
     let mut replicas = group_replicas(3, WITH_GROUPS);
-    holds(&replicas, 3, "broker-b", LogKind::Stream, 4, &["a"]).await;
-    holds(
-        &replicas,
-        3,
-        "broker-b",
-        LogKind::GroupDeadLetters,
-        4,
-        &["dead 1"],
-    )
-    .await;
-    holds(
-        &replicas,
-        3,
-        "broker-b",
-        LogKind::GroupCursors,
-        4,
-        &["at 2"],
-    )
-    .await;
+    b_gave_up_on_one(&replicas, 3).await;
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
 
@@ -189,43 +261,29 @@ async fn the_group_logs_furthest_ahead_are_taken_too() {
             caught_up_from: Some("broker-b".to_string())
         }
     );
-    assert_eq!(
-        pair(&leader).await,
-        (vec!["dead 1".to_string()], vec!["at 2".to_string()])
-    );
+    assert_eq!(serves(&leader, "workers").await, (Some(2), vec![1]));
     // The records' log and both group logs, in one round.
     assert_eq!(replicas.sent(Kind::Fence).len(), 3);
 }
 
 /// **A replica counts toward the group logs' majority only once it took
-/// both fences.** Of five, b's dead-letter fence does not reach it but its
-/// cursor fence does. Counted on its cursors alone, the leader would take
-/// b's cursor past offset 1 and keep a dead-letter list without it: the
-/// record neither redelivered nor dead. c and d make the majority instead.
+/// both fences.** Of five, b's dead-letter fence does not reach it. c and d
+/// make the majority, and offset 1 is still owed rather than passed.
 #[tokio::test]
-async fn a_cursor_is_never_taken_without_the_dead_letters_beside_it() {
+async fn a_replica_counts_once_it_took_both_group_fences() {
     let mut replicas = group_replicas(5, WITH_GROUPS);
-    for id in ["broker-b", "broker-c", "broker-d"] {
-        holds(&replicas, 5, id, LogKind::Stream, 4, &["a"]).await;
+    b_gave_up_on_one(&replicas, 5).await;
+    for id in ["broker-c", "broker-d"] {
+        holds(
+            &replicas,
+            5,
+            id,
+            LogKind::Stream,
+            4,
+            &[Bytes::from_static(b"a")],
+        )
+        .await;
     }
-    holds(
-        &replicas,
-        5,
-        "broker-b",
-        LogKind::GroupDeadLetters,
-        4,
-        &["dead 1"],
-    )
-    .await;
-    holds(
-        &replicas,
-        5,
-        "broker-b",
-        LogKind::GroupCursors,
-        4,
-        &["at 2"],
-    )
-    .await;
     replicas.get_mut("broker-b").unreachable_logs = vec![ReplicaLog::GroupDeadLetters];
     replicas.get_mut("broker-e").reachable = false;
     let (leader, _dir) = group_leader().await;
@@ -233,122 +291,76 @@ async fn a_cursor_is_never_taken_without_the_dead_letters_beside_it() {
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(5), true).await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
-    assert_eq!(pair(&leader).await, (Vec::new(), Vec::new()));
+    assert_eq!(serves(&leader, "workers").await, (None, Vec::new()));
 }
 
-/// **Both logs come from one replica, chosen by its dead letters first.** b
-/// has a dead letter c lacks, c has cursors further than b's. Each log's
-/// furthest copy on its own would be b's dead letters with c's cursors,
-/// which may pass b's dead-lettered record in c's history without listing it.
+/// **A cursor is checked against the generation that wrote its dead
+/// letters, not only the log's length.** The leader's cursor passed offset 1
+/// on a dead letter generation 3 wrote; b's newer log replaced it with
+/// another group's at the same offset. The log is as long as the cursor
+/// needs, but its dead letter is gone, so the group goes back to where it
+/// was placed.
 #[tokio::test]
-async fn the_pair_is_taken_from_one_replica() {
-    let mut replicas = group_replicas(5, WITH_GROUPS);
-    for id in ["broker-b", "broker-c"] {
-        holds(&replicas, 5, id, LogKind::Stream, 4, &["a"]).await;
-    }
-    holds(
-        &replicas,
-        5,
-        "broker-b",
-        LogKind::GroupDeadLetters,
-        4,
-        &["dead 1"],
-    )
-    .await;
-    holds(
-        &replicas,
-        5,
-        "broker-b",
-        LogKind::GroupCursors,
-        4,
-        &["b at 2"],
-    )
-    .await;
-    holds(
-        &replicas,
-        5,
-        "broker-c",
-        LogKind::GroupCursors,
-        4,
-        &["c at 1", "c at 3"],
-    )
-    .await;
-    replicas.get_mut("broker-d").reachable = false;
-    replicas.get_mut("broker-e").reachable = false;
-    let (leader, _dir) = group_leader().await;
-
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(5), true).await;
-
-    assert_eq!(
-        outcome,
-        Outcome::Fenced {
-            caught_up_from: Some("broker-b".to_string())
-        }
-    );
-    assert_eq!(
-        pair(&leader).await,
-        (vec!["dead 1".to_string()], vec!["b at 2".to_string()])
-    );
-}
-
-/// **A dead-letter suffix the leader drops takes its cursors with it.** The
-/// leader's dead letter and cursors are generation 3's; b's newer dead
-/// letters supersede that dead letter, though b's cursors are older and
-/// shorter than the leader's. Kept, the leader's cursors would pass the
-/// record of a dead letter it no longer has.
-#[tokio::test]
-async fn a_superseded_dead_letter_takes_the_cursors_past_it() {
+async fn a_cursor_is_checked_against_its_dead_letters_generation() {
     let mut replicas = group_replicas(3, WITH_GROUPS);
-    // Shipped by generation 2's leader, before generation 4's.
     holds(
         &replicas,
         3,
         "broker-b",
-        LogKind::GroupCursors,
-        2,
-        &["b at 1"],
+        LogKind::Stream,
+        4,
+        &[Bytes::from_static(b"a")],
     )
     .await;
-    holds(&replicas, 3, "broker-b", LogKind::Stream, 4, &["a"]).await;
     holds(
         &replicas,
         3,
         "broker-b",
         LogKind::GroupDeadLetters,
         4,
-        &["new dead"],
+        &[dead("others", 0)],
     )
     .await;
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
-    holding(&leader, LogKind::GroupDeadLetters, 3, &["old dead"]).await;
-    holding(&leader, LogKind::GroupCursors, 3, &["p1", "p2", "p3"]).await;
+    wrote(&leader, LogKind::GroupDeadLetters, 3, &[dead("workers", 1)]).await;
+    wrote(
+        &leader,
+        LogKind::GroupCursors,
+        3,
+        &[cursor("workers", 2, 1, 3, 0)],
+    )
+    .await;
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
-    assert_eq!(
-        pair(&leader).await,
-        (vec!["new dead".to_string()], vec!["b at 1".to_string()])
-    );
+    assert_eq!(serves(&leader, "workers").await, (Some(0), Vec::new()));
 }
 
-/// **A newer generation's shorter group logs beat an older generation's
-/// longer ones.** This broker led generation 6 and wrote there; b holds more
-/// of generation 4. Ordered by length alone, the leader would replace what
-/// it wrote with b's stale copy. The generation labels that order them are
-/// what a leader records on its group logs at takeover.
+/// **This broker's own further cursor is kept while it still stands.** b's
+/// dead-letter and cursor logs are both longer and are taken, but b's
+/// cursor for `workers` is behind the leader's, which needs only the dead
+/// letter both have.
 #[tokio::test]
-async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
+async fn an_own_further_cursor_is_kept_while_it_stands() {
     let mut replicas = group_replicas(3, WITH_GROUPS);
-    holds(&replicas, 3, "broker-b", LogKind::Stream, 4, &["a"]).await;
+    holds(
+        &replicas,
+        3,
+        "broker-b",
+        LogKind::Stream,
+        4,
+        &[Bytes::from_static(b"a")],
+    )
+    .await;
     holds(
         &replicas,
         3,
         "broker-b",
         LogKind::GroupDeadLetters,
         4,
-        &["l1", "l2"],
+        &[dead("workers", 1), dead("others", 0)],
     )
     .await;
     holds(
@@ -357,13 +369,86 @@ async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
         "broker-b",
         LogKind::GroupCursors,
         4,
-        &["l at 1", "l at 2"],
+        &[cursor("workers", 1, 0, 4, 1), cursor("workers", 2, 1, 4, 0)],
     )
     .await;
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
-    holding(&leader, LogKind::GroupDeadLetters, 6, &["q dead"]).await;
-    holding(&leader, LogKind::GroupCursors, 6, &["q at 1"]).await;
+    wrote(&leader, LogKind::GroupDeadLetters, 4, &[dead("workers", 1)]).await;
+    wrote(
+        &leader,
+        LogKind::GroupCursors,
+        4,
+        &[cursor("workers", 3, 1, 4, 0)],
+    )
+    .await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    assert_eq!(serves(&leader, "workers").await, (Some(3), vec![1]));
+    assert_eq!(serves(&leader, "others").await, (None, vec![0]));
+}
+
+/// **A group only this broker had is kept**: the replica's cursors are
+/// merged in, never put in place of this broker's.
+#[tokio::test]
+async fn a_group_only_this_broker_had_is_kept() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    b_gave_up_on_one(&replicas, 3).await;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = group_leader().await;
+    wrote(
+        &leader,
+        LogKind::GroupCursors,
+        3,
+        &[cursor("solo", 5, 0, 0, 5)],
+    )
+    .await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    assert_eq!(serves(&leader, "solo").await, (Some(5), Vec::new()));
+    assert_eq!(serves(&leader, "workers").await, (Some(2), vec![1]));
+}
+
+/// **A newer generation's shorter group state beats an older generation's
+/// longer one.** This broker led generation 6 and wrote there; b holds more
+/// of generation 4. Ordered by length alone, the leader would take b's stale
+/// dead letters. The generation labels that order them are what a leader
+/// records on its group logs at takeover.
+#[tokio::test]
+async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    holds(
+        &replicas,
+        3,
+        "broker-b",
+        LogKind::Stream,
+        4,
+        &[Bytes::from_static(b"a")],
+    )
+    .await;
+    holds(
+        &replicas,
+        3,
+        "broker-b",
+        LogKind::GroupDeadLetters,
+        4,
+        &[dead("workers", 0), dead("others", 0)],
+    )
+    .await;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = group_leader().await;
+    wrote(&leader, LogKind::GroupDeadLetters, 6, &[dead("workers", 1)]).await;
+    wrote(
+        &leader,
+        LogKind::GroupCursors,
+        6,
+        &[cursor("workers", 2, 1, 6, 0)],
+    )
+    .await;
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
 
@@ -373,10 +458,7 @@ async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
             caught_up_from: None
         }
     );
-    assert_eq!(
-        pair(&leader).await,
-        (vec!["q dead".to_string()], vec!["q at 1".to_string()])
-    );
+    assert_eq!(serves(&leader, "workers").await, (Some(2), vec![1]));
 }
 
 /// **Too few replicas that fence group logs leaves them as they are**, and
@@ -385,25 +467,7 @@ async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
 #[tokio::test]
 async fn without_the_group_fence_the_group_logs_stay_as_they_are() {
     let mut replicas = group_replicas(3, REQUIRED);
-    holds(&replicas, 3, "broker-b", LogKind::Stream, 4, &["a"]).await;
-    holds(
-        &replicas,
-        3,
-        "broker-b",
-        LogKind::GroupDeadLetters,
-        4,
-        &["dead 1"],
-    )
-    .await;
-    holds(
-        &replicas,
-        3,
-        "broker-b",
-        LogKind::GroupCursors,
-        4,
-        &["at 2"],
-    )
-    .await;
+    b_gave_up_on_one(&replicas, 3).await;
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
 
@@ -415,7 +479,7 @@ async fn without_the_group_fence_the_group_logs_stay_as_they_are() {
             caught_up_from: None
         }
     );
-    assert_eq!(pair(&leader).await, (Vec::new(), Vec::new()));
+    assert_eq!(serves(&leader, "workers").await, (None, Vec::new()));
     assert_eq!(replicas.sent(Kind::Fence), vec!["broker-b"]);
 }
 
