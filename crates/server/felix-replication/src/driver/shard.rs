@@ -44,8 +44,9 @@ pub(super) const COPY_SLICE: Duration = Duration::from_millis(50);
 /// exchange, and its position would not reach a report until the end.
 /// Placement gives up a restore whose copy's reported position has not moved
 /// for `FELIX_SHARD_RESTORE_STALL_MS` (two minutes by default), so a copy
-/// has to be seen moving well inside that. A follower near the tail answers
-/// long before this.
+/// has to be seen moving well inside that. A cache's counter log gets its own
+/// slice ahead of the records. A follower near the tail answers long before
+/// this.
 pub(super) const CATCH_UP_SLICE: Duration = Duration::from_secs(5);
 
 /// Cursors for one shard, valid only at `generation`.
@@ -526,14 +527,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     dead_letters,
                     counters,
                 } = &mut rode;
+                // Sliced like the records, so a long counter catch-up shows up
+                // in the reports as it goes rather than only once it is done.
+                let mut counters_cut = false;
                 if let (Some(log), Some(counters)) = (&counter_log, counters.as_mut()) {
-                    ship_all(
+                    counters_cut = ship_for(
                         requester,
                         log,
                         &shard,
                         felix_broker::LogKind::Counters,
                         counters,
                         rebuilds,
+                        CATCH_UP_SLICE,
                     )
                     .await;
                 }
@@ -609,7 +614,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cut
                 };
                 let (cut, ()) = futures::future::join(records, groups).await;
-                Shipped { cursor, rode, cut }
+                Shipped {
+                    cursor,
+                    rode,
+                    cut: cut || counters_cut,
+                }
             });
             exchange
         })
@@ -1351,6 +1360,36 @@ async fn ship_all<R: PeerRequester>(
     )
     .await
     {}
+}
+
+/// [`ship_all`], handing the cursor back once `slice` has passed. True if it
+/// was cut off with more to send.
+async fn ship_for<R: PeerRequester>(
+    requester: &R,
+    log: &felix_broker::StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    rebuilds: &Rebuilds,
+    slice: Duration,
+) -> bool {
+    let started = tokio::time::Instant::now();
+    while let Progress::Stored { .. } = crate::ship_once(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        MAX_BATCH_BYTES,
+        rebuilds,
+    )
+    .await
+    {
+        if started.elapsed() >= slice {
+            return true;
+        }
+    }
+    false
 }
 
 /// Add cursors for new replicas and drop those no longer in the set.

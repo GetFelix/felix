@@ -435,3 +435,114 @@ async fn a_report_says_where_each_follower_is_in_the_counter_log() {
         ]
     );
 }
+
+/// Takes one counter record per batch, slowly; everything else at once.
+struct SlowCounters {
+    per_batch: Duration,
+}
+
+impl PeerRequester for SlowCounters {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let durable_offset = match message {
+            InternalMessage::ReplicateCounterRecords(batch) => {
+                tokio::time::sleep(self.per_batch).await;
+                batch.first_offset + 1
+            }
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateCacheRecords(batch) => {
+                batch.first_offset + batch.payloads.len() as u64
+            }
+            other => panic!("unexpected {:?}", other.kind()),
+        };
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset,
+        }))
+    }
+}
+
+/// **A long counter catch-up is reported a slice at a time.** Placement
+/// drops a restore whose reported position stops moving, and for a cache used
+/// only for counters the counter offset is that position. Shipped in one go,
+/// it would only move once the whole catch-up was done.
+#[tokio::test(start_paused = true)]
+async fn a_counter_catch_up_is_reported_a_slice_at_a_time() {
+    const PER_BATCH: Duration = Duration::from_secs(2);
+    const ADDS: u64 = 8;
+    let (broker, router, _dir) = quorum_cache().await;
+    for _ in 0..ADDS {
+        broker
+            .counters()
+            .expect("counters")
+            .add(TENANT, NAMESPACE, STREAM, 0, "hits", 1)
+            .await
+            .expect("add");
+    }
+    let counters_tail = broker
+        .shard_log(
+            felix_broker::LogKind::Counters,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+        )
+        .await
+        .expect("log")
+        .tail_offset()
+        .await
+        .expect("tail");
+    let requester = SlowCounters {
+        per_batch: PER_BATCH,
+    };
+    let marks = QuorumMarks::new();
+    let mut maps: [HashMap<ShardKey, ShardCursors>; 4] = Default::default();
+    let mut reported = Vec::new();
+    loop {
+        let started = tokio::time::Instant::now();
+        let [cursors, group, dead_letters, counters] = &mut maps;
+        let pass = replicate_once(
+            &requester,
+            &broker,
+            &router,
+            &marks,
+            None,
+            cursors,
+            group,
+            dead_letters,
+            counters,
+        )
+        .await;
+        let took = started.elapsed();
+        assert!(
+            took <= CATCH_UP_SLICE + PER_BATCH,
+            "one pass took {took:?}: it waited for the whole counter catch-up",
+        );
+        let offset = pass
+            .reports
+            .iter()
+            .find(|report| report.key == cache_key())
+            .and_then(|report| {
+                report
+                    .counter_offsets
+                    .iter()
+                    .find(|(node, _)| node == "broker-b")
+                    .map(|(_, offset)| *offset)
+            });
+        reported.push(offset);
+        if !pass.copying {
+            break;
+        }
+        assert!(reported.len() <= ADDS as usize, "the catch-up never finished");
+    }
+    assert!(reported.len() > 1, "caught up in one pass: {reported:?}");
+    assert!(
+        reported.windows(2).all(|pair| pair[0] < pair[1]),
+        "every pass reported broker-b further on: {reported:?}",
+    );
+    assert_eq!(reported.last(), Some(&Some(counters_tail)));
+}
