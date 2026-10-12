@@ -113,6 +113,25 @@ entries.
   silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
   in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
   batch rounded up to a whole unit (#1200).
+- A consumer group could pass a record that was neither finished nor listed
+  as dead. The dead letter is written before the cursor passes the record,
+  but replication shipped cursors first, the two logs flush separately, and
+  a follower's dead letters can be replaced by a newer leader's, so a copy
+  could hold a cursor without the dead letter it relied on and serve it once
+  promoted. Each cursor now records the dead-letter log it needs (its end
+  and the generation that wrote it) and the group's origin; dead letters
+  are synced before a cursor that needs them; and before a broker serves a
+  shard's groups, a cursor that no longer stands is put back to the latest
+  one that does or to its origin, never removed. Dead letters ship before
+  cursors. A promoted stream leader fences both group logs in one round
+  beside its records, takes the dead-letter log of the replica furthest
+  ahead and merges that replica's cursors into its own, on replicas that
+  offer the new internal capability `GROUP_FENCE` (`1 << 8`). Group logs
+  carry generation labels like the records, and a `Quorum` stream's report
+  leaves out a follower short of the pair a majority holds. The cursor
+  value is a new 33-byte layout, written once the fleet finalizes the new
+  `group_cursor_dependencies` feature, and by a single broker from the
+  start; an older build cannot read it (#1202).
 
 ### Documentation
 - Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to

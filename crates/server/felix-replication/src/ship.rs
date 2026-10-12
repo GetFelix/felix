@@ -52,6 +52,59 @@ pub async fn ship_once_with<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
 ) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once`], shipping nothing at or past `end`. `UpToDate` once the
+/// follower has everything below it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ship_once_until<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    end: u64,
+) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        None,
+        Some(end),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ship_batch<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    end: Option<u64>,
+) -> Progress {
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -97,7 +150,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     }
 
-    let records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
+    let mut records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
         Ok(records) => records,
         // The follower is asking for records this leader has already trimmed.
         // Shipping cannot bridge that: the records are not here to send, and
@@ -141,6 +194,13 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     };
 
+    if let Some(end) = end {
+        // Not level with the tail, so a rebuild under way is not finished.
+        if records.first().is_some_and(|record| record.offset >= end) {
+            return Progress::UpToDate;
+        }
+        records.retain(|record| record.offset < end);
+    }
     if records.is_empty() {
         if cursor.rebuilding {
             cursor.rebuilding = false;
@@ -200,12 +260,9 @@ pub async fn ship_once_with<R: PeerRequester>(
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
         // Without them the follower labels the records with this leader's
         // generation, including any this leader inherited. A fence compares
-        // the labels of a stream log, and of a cache shard's cache and
-        // counter logs; the group logs go without.
+        // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
-            && offered
-                .zip(labels_needed(log_kind))
-                .is_some_and(|(offered, needed)| offered.contains(needed)))
+            && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
@@ -430,15 +487,18 @@ pub(crate) fn carry_marks(
 }
 
 /// What a follower must have offered for `log_kind`'s batches to carry their
-/// generations; `None` for a group log, which no fence compares.
-fn labels_needed(log_kind: felix_broker::LogKind) -> Option<PeerCapabilities> {
-    match log_kind {
-        felix_broker::LogKind::Stream => Some(PeerCapabilities::GENERATION_LABELS),
+/// generations: the labels, and the fence that compares them.
+fn labels_needed(log_kind: felix_broker::LogKind) -> PeerCapabilities {
+    let fence = match log_kind {
+        felix_broker::LogKind::Stream => PeerCapabilities::NONE,
         felix_broker::LogKind::Cache | felix_broker::LogKind::Counters => {
-            Some(PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::CACHE_FENCE))
+            PeerCapabilities::CACHE_FENCE
         }
-        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => None,
-    }
+        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
+            PeerCapabilities::GROUP_FENCE
+        }
+    };
+    PeerCapabilities::GENERATION_LABELS.union(fence)
 }
 
 pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {

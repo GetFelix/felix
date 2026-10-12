@@ -529,18 +529,19 @@ impl PeerRequester for PeerPool {
 }
 
 /// The capability a peer must have said it has before `message` goes to it.
-fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
-    match message {
-        InternalMessage::Fence(fence) if fence.log == ReplicaLog::Counters => {
-            Some(PeerCapabilities::FENCE.union(PeerCapabilities::CACHE_FENCE))
+pub(crate) fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
+    let (base, log) = match message {
+        InternalMessage::Fence(fence) => (PeerCapabilities::FENCE, fence.log),
+        InternalMessage::ReplicateFetch(fetch) => (PeerCapabilities::TAIL_FETCH, fetch.log),
+        _ => return None,
+    };
+    Some(match log {
+        ReplicaLog::Counters => base.union(PeerCapabilities::CACHE_FENCE),
+        ReplicaLog::GroupCursors | ReplicaLog::GroupDeadLetters => {
+            base.union(PeerCapabilities::GROUP_FENCE)
         }
-        InternalMessage::Fence(_) => Some(PeerCapabilities::FENCE),
-        InternalMessage::ReplicateFetch(fetch) if fetch.log == ReplicaLog::Counters => {
-            Some(PeerCapabilities::TAIL_FETCH.union(PeerCapabilities::CACHE_FENCE))
-        }
-        InternalMessage::ReplicateFetch(_) => Some(PeerCapabilities::TAIL_FETCH),
-        _ => None,
-    }
+        ReplicaLog::Stream | ReplicaLog::Cache => base,
+    })
 }
 
 #[cfg(test)]

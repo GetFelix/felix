@@ -108,9 +108,12 @@ never have dialled the one that shipped to it.
 | `1 << 5` | `RECORD_TIMES` | reads `ReplicateTimedRecords` and stores each record's time as sent, and answers `ReplicateTimedFetch` |
 | `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
 | `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
+| `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
 
-`FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE` and
-`BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
+<!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
+
+`FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
+`GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
 still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES` and `PING`,
 which are not the fence's.
@@ -120,6 +123,13 @@ A promoted cache shard is fenced only when every replica offered `FENCE`,
 fleet finalizes `fenced_caches` and it waits for a majority that answers
 instead. A leader sends cache and counter batches with their generation labels
 only to a follower that offered both `GENERATION_LABELS` and `CACHE_FENCE`.
+
+A promoted stream shard fences both group logs on every replica in one round,
+beside its records' fence. When a majority, itself included, took both, it
+takes the dead-letter log of the replica whose pair is furthest ahead and
+merges that replica's cursors into its own; otherwise it keeps its own.
+A leader sends group batches with their generation labels only to a follower
+that offered both `GENERATION_LABELS` and `GROUP_FENCE`.
 
 ### Versioning
 
@@ -606,6 +616,11 @@ A promoted cache leader then sends `Fence` again with `log` = `Counters`, at
 the same generation, to a replica that offered `CACHE_FENCE`, to learn where
 that replica's counter log ends. The replica takes it at the generation its
 cache log accepted or a newer one, and refuses an older one with `FencedEpoch`.
+A promoted stream leader sends `Fence` with `log` = `GroupDeadLetters` and
+with `log` = `GroupCursors` beside its stream fence, at the same generation, to
+a replica that offered `GROUP_FENCE`. The replica checks them against the
+generation its stream log accepted as well as their own, and answers a broker
+with no consumer groups as an empty log (`log_end` 0, `last_generation` 0).
 
 The answer, `FenceOk` (kind 30), says where the replica's copy stands: one past
 its last record, its commit offset, and the generation its last record was
@@ -618,7 +633,7 @@ the leader does with it.
 | is asked again at the generation it took | `FenceOk` again |
 | has accepted a newer generation, or its routing view has one | `FencedEpoch` |
 | is outside the replica set | `Unauthorized` |
-| names a log other than the shard's own | `Malformed` |
+| has no copy of the named log to keep the promise in | `Unauthorized` |
 | predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
 
 The fence comes with a promotion, usually before the replica's routing view
@@ -631,7 +646,10 @@ budget, and is answered with the records as a leader ships them
 (`ReplicateRecords`, or `ReplicateMarkedRecords` when any record carries a
 producer mark), at most 4 MiB and none past the replica's end. Only a leader
 at exactly the generation the replica last accepted is answered: an older one
-gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`.
+gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`. A fetch
+of a cursor log (`log` = `GroupCursors`) from below the log's first record is
+answered from that record: a promoted leader reads the whole log to merge the
+replica's groups into its own, and compaction may have trimmed its head.
 `ReplicateLabelledFetch` (kind 33) is the same body, sent to a replica that
 offered `GENERATION_LABELS` and answered with `ReplicateLabelledRecords`, so
 the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind

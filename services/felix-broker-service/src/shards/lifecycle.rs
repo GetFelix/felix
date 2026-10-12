@@ -1085,6 +1085,39 @@ impl DurableShardStore {
     /// generation-start record, as a stream's does, since the cache and
     /// counter marks then count only past it. A fenced leadership's are written when
     /// its fence opens the shard.
+    /// Label a stream shard's dead-letter and cursor logs with the generation
+    /// this broker leads, as its records are. Without it what it writes there
+    /// carries the generation before, and a promotion choosing the
+    /// furthest-ahead copy by generation would take a longer, older one over
+    /// it. They take no generation-start record: no mark counts on them.
+    async fn open_group_logs(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        begins_here: bool,
+    ) -> anyhow::Result<()> {
+        let Some(starts) = &self.generation_starts else {
+            return Ok(());
+        };
+        if starts.broker.group_reader().is_none() {
+            return Ok(());
+        }
+        for kind in GROUP_LOGS {
+            let Some(log) = starts
+                .broker
+                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+            else {
+                anyhow::bail!("open the shard's {kind:?} log");
+            };
+            if begins_here {
+                record_term_start(&log, key, generation, true).await?;
+            }
+            accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
+        }
+        Ok(())
+    }
+
     async fn open_cache(
         &self,
         key: &ShardKey,
@@ -1166,7 +1199,7 @@ impl ShardStore for DurableShardStore {
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
         }
-        Ok(())
+        self.open_group_logs(key, generation, begins_here).await
     }
 
     async fn release(&self, key: &ShardKey) -> anyhow::Result<()> {
@@ -1415,6 +1448,12 @@ async fn open(
 ///
 /// With `required`, a failure is returned rather than logged: the quorum mark
 /// counts from this start once the fleet finalized `generation_start`.
+/// A stream shard's group logs, dead letters first, as they are written.
+pub(crate) const GROUP_LOGS: [felix_broker::LogKind; 2] = [
+    felix_broker::LogKind::GroupDeadLetters,
+    felix_broker::LogKind::GroupCursors,
+];
+
 pub async fn record_term_start(
     log: &felix_broker::StreamLog,
     key: &ShardKey,
