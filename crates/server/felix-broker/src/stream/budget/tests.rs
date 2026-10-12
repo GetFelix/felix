@@ -70,3 +70,54 @@ async fn hold_waits_for_room() {
     let _held = waiter.await.expect("join");
     assert_eq!(sub.own_available(), Some(5));
 }
+
+#[test]
+fn a_budget_above_four_gib_is_not_cut_to_four_gib() {
+    const GIB: usize = 1 << 30;
+    let sub = bytes(0, 10 * GIB + 1).for_subscriber();
+    let broker = sub.broker.as_ref().expect("broker budget");
+    assert_eq!(broker.available(), 10 * GIB);
+    let held: Vec<_> = (0..9)
+        .map(|_| sub.try_hold(GIB).expect("nine GiB fit in ten"))
+        .collect();
+    assert_eq!(broker.available(), GIB);
+    let tenth = sub.try_hold(GIB).expect("the tenth GiB fits");
+    assert_eq!(sub.try_hold(GIB).err(), Some(ByteBound::Broker));
+    drop(held);
+    assert_eq!(broker.available(), 9 * GIB);
+    drop(tenth);
+}
+
+#[test]
+fn a_large_budget_rounds_each_batch_up_to_a_whole_unit() {
+    let sub = bytes(0, 8 << 30).for_subscriber();
+    let broker = sub.broker.as_ref().expect("broker budget");
+    let held = sub.try_hold(1).expect("room");
+    assert_eq!(broker.available(), (8 << 30) - 4);
+    drop(held);
+    assert_eq!(broker.available(), 8 << 30);
+}
+
+#[tokio::test]
+async fn both_bounds_above_four_gib_hold_and_wait_in_bytes() {
+    const GIB: usize = 1 << 30;
+    let sub = bytes(6 * GIB, 12 * GIB).for_subscriber();
+    assert_eq!(sub.own_available(), Some(6 * GIB));
+    let first = sub.hold(5 * GIB).await;
+    assert_eq!(sub.try_hold(2 * GIB).err(), Some(ByteBound::Subscriber));
+    let waiting = tokio::spawn({
+        let sub = sub.clone();
+        async move { sub.hold(2 * GIB).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiting.is_finished(), "waits on its own bound");
+    drop(first);
+    let second = waiting.await.expect("hold");
+    assert_eq!(sub.own_available(), Some(4 * GIB));
+    drop(second);
+    // A batch over the whole bound still goes through an empty queue.
+    let oversize = sub.try_hold(20 * GIB).expect("empty queue");
+    assert_eq!(sub.own_available(), Some(0));
+    drop(oversize);
+    assert_eq!(sub.own_available(), Some(6 * GIB));
+}

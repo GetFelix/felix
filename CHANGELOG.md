@@ -11,6 +11,22 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+
+- `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
+  silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
+  in units of a few bytes, each batch rounded up to a whole unit (#1200).
+
+### Documentation
+
+- Worst-case subscriber queue memory without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` is
+  subscribers times `FELIX_SUB_QUEUE_MAX_BYTES`; the docs now recommend setting the total
+  in production. They also say that under `block` one subscriber that stops reading holds
+  a shard's publishers with no timeout, and that the replay ring and cache watch queues are
+  bounded by entry count only (#1201).
+- The replication design no longer says a lagging non-successor follower is skipped while
+  a shard drains: it is not gated on, but the drained pass still ships to it and waits.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded

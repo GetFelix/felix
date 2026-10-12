@@ -591,7 +591,7 @@ export FELIX_SUB_QUEUE_MAX_BYTES="268435456"
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
 
-**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`.
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`. Without it, worst-case queued memory is the number of subscribers times `FELIX_SUB_QUEUE_MAX_BYTES`, so set it in production. Values above 4 GiB are honoured.
 
 **Type**: Non-negative integer (bytes)
 

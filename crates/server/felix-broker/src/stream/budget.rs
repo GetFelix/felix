@@ -19,33 +19,46 @@ use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A pool of queued payload bytes: one subscriber's, or the broker's.
+///
+/// A semaphore acquire takes at most `u32::MAX` permits, so a budget above
+/// that counts in units of `1 << shift` bytes, each batch rounded up to a
+/// whole unit. Under 4 GiB a unit is one byte.
 #[derive(Debug, Clone)]
 pub(crate) struct ByteBudget {
     permits: Arc<Semaphore>,
+    /// The whole budget, in units.
     max: u32,
+    shift: u32,
 }
 
 impl ByteBudget {
-    /// `None` for zero, which leaves queues unbounded by bytes. A semaphore
-    /// counts at most `u32::MAX` per acquire, so a larger budget is that.
+    /// `None` for zero, which leaves queues unbounded by bytes.
     pub(crate) fn new(max_bytes: usize) -> Option<Self> {
-        let max = u32::try_from(max_bytes).unwrap_or(u32::MAX);
+        let limit = (u32::MAX as usize).min(Semaphore::MAX_PERMITS);
+        let mut shift = 0;
+        while max_bytes >> shift > limit {
+            shift += 1;
+        }
+        let max = u32::try_from(max_bytes >> shift).expect("within u32");
         (max > 0).then(|| Self {
             permits: Arc::new(Semaphore::new(max as usize)),
             max,
+            shift,
         })
     }
 
     /// Bytes not held by any queued batch.
     #[cfg(test)]
     fn available(&self) -> usize {
-        self.permits.available_permits()
+        self.permits.available_permits() << self.shift
     }
 
     /// A batch larger than the whole budget asks for all of it, so it goes
     /// through once the queue is empty instead of never.
     fn want(&self, bytes: usize) -> u32 {
-        u32::try_from(bytes).unwrap_or(u32::MAX).min(self.max)
+        let partial = bytes & ((1 << self.shift) - 1) != 0;
+        let units = (bytes >> self.shift) + usize::from(partial);
+        u32::try_from(units).unwrap_or(u32::MAX).min(self.max)
     }
 
     fn try_take(&self, bytes: usize) -> Option<OwnedSemaphorePermit> {
