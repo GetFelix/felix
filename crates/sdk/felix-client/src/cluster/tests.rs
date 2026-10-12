@@ -8,6 +8,7 @@ mod keyed_producer;
 mod offsets;
 mod sharded_deleted;
 mod sharded_lag;
+mod stale_width;
 mod stub_broker;
 
 use std::time::Duration;

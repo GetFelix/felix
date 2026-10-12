@@ -463,10 +463,7 @@ fn an_extended_word_without_the_marker_is_ignored() {
 #[test]
 fn stream_deleted_is_the_second_extended_bit() {
     assert_eq!(crate::FEATURE_STREAM_DELETED, 0x0000_0002);
-    assert_eq!(
-        crate::KNOWN_FEATURES_HI,
-        crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED
-    );
+    assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_STREAM_DELETED, 0);
     assert!(!crate::supports_feature(
         crate::peer_features_hi(crate::KNOWN_FEATURES, Some(crate::FEATURE_STREAM_DELETED)),
         crate::FEATURE_STREAM_DELETED
@@ -478,4 +475,19 @@ fn stream_deleted_is_the_second_extended_bit() {
         ),
         crate::FEATURE_STREAM_DELETED
     ));
+}
+
+/// `publish_width` is the third extended bit, advertised only in the second
+/// word, so a broker answering a client that sent none never claims it.
+#[test]
+fn publish_width_is_the_third_extended_bit() {
+    assert_eq!(crate::FEATURE_PUBLISH_WIDTH, 0x0000_0004);
+    assert_eq!(
+        crate::KNOWN_FEATURES_HI,
+        crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED | crate::FEATURE_PUBLISH_WIDTH
+    );
+    assert_eq!(
+        crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_PUBLISH_WIDTH, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
 }

@@ -64,7 +64,10 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
     on the least-loaded connection, and kept. Shards past the cap use the
     pool. Only with `hash_stream`. A plain `Client` learns a stream's width
     from the broker on its first keyed publish to it; a `ClusterClient`
-    already knows it.
+    already knows it. Against a broker with `FEATURE_PUBLISH_WIDTH` the
+    width is declared ahead of keyed batches and checked by the broker, and
+    asked again every 5 s, so a stream created again at another width is
+    picked up.
 
 ### Cache Parallelism
 

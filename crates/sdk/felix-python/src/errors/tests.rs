@@ -20,6 +20,7 @@ fn every_code_maps_to_a_class_that_matches_its_retry_class() {
         ("internal", Kind::OutcomeUnknown),
         ("storage", Kind::OutcomeUnknown),
         ("stale_claim", Kind::Generic),
+        ("stale_width", Kind::Generic),
         ("revoked", Kind::Auth),
     ];
     assert_eq!(expected.len(), ErrorCode::ALL.len(), "a code is unmapped");

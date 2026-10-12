@@ -102,6 +102,7 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
         0,
         &leader.broker,
         &queued,
+        None,
         &mut HashMap::new(),
         &mut String::new(),
         false,

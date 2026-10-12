@@ -381,9 +381,18 @@ pub const FEATURE_INSPECT: u32 = 0x0000_0001;
 /// not ended by a delete.
 pub const FEATURE_STREAM_DELETED: u32 = 0x0000_0002;
 
+/// The broker takes `publish_width` and checks keyed publishes against it.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*:
+/// `publish_width` is a request, and an older broker has no arm for it. A
+/// client that sees the bit declares the width it routed each stream's keyed
+/// publishes by, and asks it again when the broker refuses one with
+/// `stale_width`.
+pub const FEATURE_PUBLISH_WIDTH: u32 = 0x0000_0004;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
-pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT | FEATURE_STREAM_DELETED;
+pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT | FEATURE_STREAM_DELETED | FEATURE_PUBLISH_WIDTH;
 
 /// The peer reads the other side's extended feature word.
 ///

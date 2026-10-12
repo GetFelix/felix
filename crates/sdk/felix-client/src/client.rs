@@ -21,6 +21,7 @@ pub use inspect::SubscriptionsPage;
 pub use groups::{GroupInfo, GroupMember, GroupPollOptions, GroupPosition};
 pub use subscribe::StreamPage;
 mod publish;
+mod rechecks;
 mod subscribe;
 
 use std::net::SocketAddr;

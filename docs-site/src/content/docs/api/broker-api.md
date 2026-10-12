@@ -1072,6 +1072,7 @@ specified in [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/do
 | `subscription_lagged` | The last frame on a durable-stream subscription whose queue on the broker dropped records, with the offset to resume from. Sent only with `FEATURE_SUBSCRIPTION_LAGGED`. |
 | `cache_watch` | Watch a cache key or prefix: current values, then every change. |
 | `counter_add` / `counter_get` | Add to and read a cache's counters. |
+| `publish_width` | The width the client routed the keyed batches that follow to one stream by. The broker refuses a keyed batch routed by a width the stream does not have with `stale_width`. Sent only with `FEATURE_PUBLISH_WIDTH`. |
 | `producer_init` / `publish_idempotent` | Take a producer id and publish numbered batches that land once when re-sent. |
 | `unsupported` | The answer to a request type the broker does not know, when both sides negotiated `FEATURE_UNSUPPORTED`. |
 

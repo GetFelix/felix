@@ -61,6 +61,45 @@ entries.
   how revocation fails open meanwhile, and the clock-skew bound on revocation
   cutoffs across control-plane members.
 
+### Fixed
+- A client can no longer split one shard across two writers by routing with
+  the width of a stream that was deleted and created again at another width
+  (#1067). The client declares the width it routed each keyed batch by in a
+  new `publish_width` message, sent once per width per publish stream, and a
+  broker advertising the new extended feature `FEATURE_PUBLISH_WIDTH` refuses
+  a keyed batch routed by a width the stream does not have: acknowledged
+  publishes fail with the new error code `stale_width` (`retry`, 17), and the
+  client drops the width so the retry asks for the current one;
+  fire-and-forget publishes are dropped. Against such a broker the Rust
+  client also asks a stream's width again every 5 seconds while it publishes
+  to it, so a fire-and-forget or idle client catches up. A `ClusterClient`'s
+  widths and an idempotent producer's numbering follow the same rules, and
+  their batches are declared by the width that routed or numbered them. Under
+  a new width a producer starts the stream's sequences again under a fresh
+  producer id for that stream, except while a batch on it is in doubt: that
+  batch keeps the width and id it was numbered by until it settles, and a
+  re-send under a width that has since gone is refused with an error saying
+  so. The new `IdempotentProducer::abandon_in_doubt(tenant, namespace, stream)`
+  gives such batches up and numbers the stream afresh under a new id; an
+  abandoned batch may land twice. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
+  id a stream's batches go out under. Older brokers and
+  clients exchange the frames they always did.
+- `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
+  silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
+  in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit (#1200).
+
+### Documentation
+- Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
+  `FELIX_SUB_QUEUE_MAX_BYTES` or its largest batch, whichever is larger, and with the
+  per-subscriber bound at `0` only queue capacity times batch size limits it; the docs now
+  say so and recommend setting the total in production. They also say that under `block` one subscriber that stops reading holds
+  a shard's publishers with no timeout, and that the replay ring and cache watch queues are
+  bounded by entry count only (#1201).
+- The replication design no longer says a lagging non-successor follower is skipped while
+  a shard drains: it is not gated on, but the drained pass still ships to it and waits.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded

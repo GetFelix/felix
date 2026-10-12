@@ -225,6 +225,80 @@ pub(crate) fn resolve_shard(
     })
 }
 
+/// The width a client routed one stream's keyed publishes by, from its last
+/// `publish_width` on this control stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeclaredWidth {
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) stream: String,
+    pub(crate) shards: u32,
+    pub(crate) routing: felix_wire::routing::ShardRouting,
+}
+
+/// [`resolve_shard`], refusing a keyed publish routed by a width this broker
+/// does not hold for the stream.
+///
+/// A client picks each key's writer from the width it learned. If the stream
+/// was created again at another width since, keys now sharing a shard can be
+/// on two writers and reach the shard out of order, so nothing routed by a
+/// stale width is let through. Publishes to a stream the client declared
+/// nothing for, or one the routing snapshot does not know, are not checked.
+pub(crate) fn resolve_declared_shard(
+    publish_ctx: &PublishContext,
+    declared: Option<&DeclaredWidth>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    key: Option<&[u8]>,
+) -> Result<u32, ClientError> {
+    let Some(declared) = declared.filter(|declared| {
+        key.is_some()
+            && declared.stream == stream
+            && declared.namespace == namespace
+            && declared.tenant_id == tenant_id
+    }) else {
+        return Ok(resolve_shard(
+            publish_ctx,
+            tenant_id,
+            namespace,
+            stream,
+            key,
+        ));
+    };
+    // A stream the snapshot does not know is left to the route, which
+    // answers `not_found` for one that is gone. A broker with no cluster has
+    // one shard per stream, which no width can split.
+    let Some(placement) = publish_ctx.ingress.as_ref().and_then(|ingress| {
+        ingress.placement_for(
+            crate::shards::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+        )
+    }) else {
+        return Ok(resolve_shard(
+            publish_ctx,
+            tenant_id,
+            namespace,
+            stream,
+            key,
+        ));
+    };
+    let (shards, routing) = (placement.shards, placement.routing);
+    if (shards, routing) != (declared.shards, declared.routing) {
+        count_publish("stale_width");
+        return Err(ClientError::new(
+            felix_wire::ErrorCode::StaleWidth,
+            format!(
+                "routed by a width of {} shards; the stream has {shards} here",
+                declared.shards
+            ),
+        ));
+    }
+    Ok(felix_wire::routing::shard_for_routing(routing, shards, key))
+}
+
 /// Turn a resolved route into a publish target.
 ///
 /// `Err` means this broker cannot serve the publish: the stream did not
