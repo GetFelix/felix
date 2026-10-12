@@ -39,7 +39,7 @@
 (* full. This module takes from it only that a promotion fences a majority *)
 (* and that a replica refuses a leader older than one it accepted.        *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Replicas,
@@ -278,6 +278,9 @@ Next ==
     \/ \E b \in Replicas : Promote(b)
 
 Spec == Init /\ [][Next]_vars
+
+\* Nothing here tells one replica from another.
+Symmetry == Permutations(Replicas)
 
 NoSkip ==
     serving =>
