@@ -285,3 +285,31 @@ fn stream_deleted_round_trips() {
     );
     assert_eq!(Message::decode(frame).expect("decode"), deleted);
 }
+
+#[test]
+fn publish_width_round_trips_and_omits_modulo() {
+    let modulo = Message::PublishWidth {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shards: 4,
+        routing: None,
+    };
+    let frame = modulo.encode().expect("encode");
+    let text = std::str::from_utf8(&frame.payload).expect("utf8");
+    assert_eq!(
+        text,
+        r#"{"type":"publish_width","tenant_id":"t1","namespace":"ns","stream":"orders","shards":4}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), modulo);
+
+    let jump = Message::PublishWidth {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shards: 8,
+        routing: Some(crate::routing::ShardRouting::JumpHash),
+    };
+    let frame = jump.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), jump);
+}

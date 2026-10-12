@@ -204,7 +204,12 @@ silently miss records.
 
 Under `block`, a batch reaches every subscriber with room before the publish
 waits on the full ones. The next batch on the shard waits behind it, though,
-so over time the fast subscribers still move at the slow one's pace.
+so over time the fast subscribers still move at the slow one's pace. The wait
+has no timeout: one subscriber that stops reading without disconnecting holds
+every publisher on the shard until it reads again or goes away. Nothing is
+dropped and nothing is reordered while it waits, which is what `block` is for,
+but on a durable stream a resumable subscriber under `drop_new` usually gets
+the same no-gap result without that risk.
 
 The overflow policy covers live records only. A subscription resumed from an
 earlier offset reads history the broker pages off disk for it alone, with no
@@ -231,7 +236,18 @@ latency grew; 256 MiB, the default, was enough.
 `subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
 on the broker. It is off by default because it gives up isolation: once slow
 subscribers hold the shared budget, a fast subscriber's batch meets the
-overflow policy too.
+overflow policy too. Without it, each subscriber can hold up to
+`subscriber_queue_max_bytes` or its largest single batch, whichever is larger,
+since an oversize batch still enters an empty queue: 1,000 slow subscribers at
+the 256 MiB default could pin 250 GiB. With `subscriber_queue_max_bytes` set to
+`0` there is no per-subscriber byte term at all, and only queue capacity times
+batch size limits a subscriber. In production, set the total to what the broker
+can afford for queued payloads. Any size works, including totals above 4 GiB.
+
+Two other in-memory buffers are bounded by entry count only. A stream shard's
+replay ring keeps its most recent 1024 records for cursor replay and fanout,
+however large those records are. A cache watch's queue holds up to 1024
+changes, each with its value. Neither counts toward the byte bounds above.
 
 `DropOld` is accepted in configuration and counted separately, but it currently
 behaves as `DropNew`: the arriving record is the one discarded. The metric

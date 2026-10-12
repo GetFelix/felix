@@ -292,14 +292,32 @@ pub(super) async fn ask_stream_routing(
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
-    let OpenedStream {
-        mut send,
-        mut recv,
-        lease: _lease,
-        ..
-    } = event_node.open_as(credentials).await?;
+    let mut opened = event_node.open_as(credentials).await?;
+    let answer = ask_stream_routing_on(
+        &mut opened,
+        request_id,
+        max_frame_bytes,
+        tenant_id,
+        namespace,
+        stream,
+    )
+    .await;
+    let _ = opened.send.finish();
+    answer
+}
+
+/// [`ask_stream_routing`] on a stream already open, which stays open for the
+/// next question. One question at a time: answers are read in order.
+pub(super) async fn ask_stream_routing_on(
+    opened: &mut OpenedStream,
+    request_id: u64,
+    max_frame_bytes: usize,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> Result<(u32, felix_wire::routing::ShardRouting)> {
     write_message(
-        &mut send,
+        &mut opened.send,
         Message::StreamShards {
             tenant_id: tenant_id.to_string(),
             namespace: namespace.to_string(),
@@ -310,12 +328,19 @@ pub(super) async fn ask_stream_routing(
     .await
     .context("send stream shards request")?;
     let mut scratch = BytesMut::with_capacity(4 * 1024);
-    let answer = read_message_with_limit(&mut recv, &mut scratch, max_frame_bytes).await?;
-    let _ = send.finish();
+    let answer = read_message_with_limit(&mut opened.recv, &mut scratch, max_frame_bytes).await?;
     match answer {
         Some(Message::StreamShardsView {
-            shards, routing, ..
-        }) => Ok((shards, routing.unwrap_or_default())),
+            shards,
+            routing,
+            request_id: answered,
+        }) => {
+            anyhow::ensure!(
+                answered == request_id,
+                "stream shards answered request {answered}, not {request_id}"
+            );
+            Ok((shards, routing.unwrap_or_default()))
+        }
         Some(Message::Error {
             message,
             code,

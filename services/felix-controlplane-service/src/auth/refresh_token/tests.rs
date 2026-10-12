@@ -48,6 +48,7 @@ fn liveness_needs_all_three_conditions() {
         used: false,
         revoked: false,
         narrowing: None,
+        rotated: None,
     };
     assert!(base.is_live(50));
 

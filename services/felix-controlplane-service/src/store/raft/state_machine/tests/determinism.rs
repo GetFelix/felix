@@ -118,6 +118,7 @@ async fn a_restored_machine_has_the_leaders_refresh_tokens() {
             audience: "felix-broker".to_string(),
             may_act: None,
         }),
+        rotated: None,
     };
     let leader = machine();
     for command in [

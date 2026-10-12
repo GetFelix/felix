@@ -610,7 +610,8 @@ client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
 `code` is one of `unauthenticated`, `forbidden`, `not_found`,
 `invalid_request`, `shard_unavailable`, `not_leader`, `quorum_timeout`,
 `leadership_lost`, `unacknowledged`, `overloaded`, `limit_exceeded`,
-`draining`, `internal`, `storage`, `stale_claim` or `revoked`. A client must
+`draining`, `internal`, `storage`, `stale_claim`, `revoked` or
+`stale_width`. A client must
 accept a code it does not know. An `error` can also be the last frame on a
 subscription's or cache watch's event stream, as when the credential it was
 opened with is revoked. `retry` says what the client may do next: send again, wait
@@ -873,7 +874,11 @@ of one shard, and `subscriptions_list`, the subscriptions it serves with their
 queues and drops, for a token holding `node.view:cluster:*`. See
 [Diagnosing a cluster](/deployment/diagnosing/). The second is
 `FEATURE_STREAM_DELETED` (`0x2`), offered by a client that reads
-`stream_deleted`.
+`stream_deleted`. The third is `FEATURE_PUBLISH_WIDTH` (`0x4`): the broker
+takes `publish_width`, the width a client routed a stream's keyed batches by,
+and refuses a keyed batch routed by a width the stream does not have with
+`stale_width`. That is what stops a client still holding the width of a
+stream deleted and created again from putting one shard on two writers.
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).

@@ -100,13 +100,19 @@ pub(crate) async fn wait_out_revocation(
     tenant_id: &str,
     principal_id: &str,
 ) -> Result<(), ApiError> {
-    let Some(revoked_at) = state
+    let revoked_at = state
         .store
         .principal_revoked_at(tenant_id, principal_id)
         .await
-        .map_err(|err| api_internal("failed to load revocations", &err))?
-    else {
-        return Ok(());
+        .map_err(|err| api_internal("failed to load revocations", &err))?;
+    wait_past(revoked_at).await;
+    Ok(())
+}
+
+/// [`wait_out_revocation`] for a cutoff already read.
+pub(crate) async fn wait_past(revoked_at: Option<i64>) {
+    let Some(revoked_at) = revoked_at else {
+        return;
     };
     let now_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -116,7 +122,6 @@ pub(crate) async fn wait_out_revocation(
     if wait_millis > 0 {
         tokio::time::sleep(Duration::from_millis(wait_millis as u64).min(MAX_MINT_WAIT)).await;
     }
-    Ok(())
 }
 
 /// Principal revocations since a position, for brokers.

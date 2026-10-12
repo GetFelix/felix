@@ -55,6 +55,7 @@ pub(super) fn fake_worker() -> PublishWorker {
         request_counter: AtomicU64::new(1),
         server_flags: felix_wire::KNOWN_FLAGS,
         publish_window: 0,
+        takes_width: true,
     }
 }
 

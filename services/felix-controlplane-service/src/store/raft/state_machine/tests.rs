@@ -334,6 +334,7 @@ fn script() -> Vec<MetaCommand> {
                 used: false,
                 revoked: false,
                 narrowing: None,
+                rotated: None,
             },
         });
     }
