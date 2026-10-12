@@ -125,8 +125,9 @@ instead. A leader sends cache and counter batches with their generation labels
 only to a follower that offered both `GENERATION_LABELS` and `CACHE_FENCE`.
 
 A promoted stream shard fences both group logs on every replica in one round,
-beside its records' fence, and takes the pair from the one replica furthest
-ahead when a majority, itself included, took both; otherwise it keeps its own.
+beside its records' fence. When a majority, itself included, took both, it
+takes the dead-letter log of the replica whose pair is furthest ahead and
+merges that replica's cursors into its own; otherwise it keeps its own.
 A leader sends group batches with their generation labels only to a follower
 that offered both `GENERATION_LABELS` and `GROUP_FENCE`.
 
@@ -645,7 +646,10 @@ budget, and is answered with the records as a leader ships them
 (`ReplicateRecords`, or `ReplicateMarkedRecords` when any record carries a
 producer mark), at most 4 MiB and none past the replica's end. Only a leader
 at exactly the generation the replica last accepted is answered: an older one
-gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`.
+gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`. A fetch
+of a cursor log (`log` = `GroupCursors`) from below the log's first record is
+answered from that record: a promoted leader reads the whole log to merge the
+replica's groups into its own, and compaction may have trimmed its head.
 `ReplicateLabelledFetch` (kind 33) is the same body, sent to a replica that
 offered `GENERATION_LABELS` and answered with `ReplicateLabelledRecords`, so
 the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind

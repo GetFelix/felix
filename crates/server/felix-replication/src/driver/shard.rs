@@ -1365,6 +1365,12 @@ pub(super) async fn ship_group_logs<R: PeerRequester>(
     let Some((log, cursor)) = dead_letters else {
         return;
     };
+    // Synced first, so a follower never holds a dead letter this leader
+    // could lose in a crash and write again differently at the same offset
+    // and generation: a cursor names its dead letters by those two.
+    if log.unsynced_bytes() > 0 && log.sync().await.is_err() {
+        return;
+    }
     {
         let needed = log.tail_offset().await.ok();
         ship_all(

@@ -742,3 +742,39 @@ can lag by the filesystem's writeback delay; it is synced at open (with its
 directory entry, so a fresh shard's first segment has a mark), at clean
 shutdown and close, and after a truncation or reset. A missing or corrupt mark
 reads as absent.
+
+## Consumer-group cursor values
+
+A consumer group's cursor is a cache-log entry on its own root: the key is
+the group's name, the value one of two layouts, told apart by length. This
+is the value inside a record, not the segment format, so `FORMAT_VERSION`
+does not cover it; the first byte versions the newer layout.
+
+```text
+Legacy, 8 bytes:
+ 0   8  offset        u64 BE  where the group resumes
+
+Dependent, 33 bytes:
+ 0   1  version       u8      2
+ 1   8  offset        u64 BE  where the group resumes
+ 9   8  dlq_end       u64 BE  the shard's dead-letter log end at the commit
+17   8  dlq_gen       u64 BE  the generation that wrote the entry just below
+                              dlq_end (from the dead-letter log's `epochs`),
+                              0 when dlq_end is 0
+25   8  origin        u64 BE  the last position the group was put at needing
+                              no dead letter
+```
+
+A cursor stands while the shard's dead-letter log reaches `dlq_end` and the
+generation at that end is still `dlq_gen`; `dlq_end` 0 needs nothing. A
+legacy value carries no dependency and is read as needing nothing, with its
+offset as its origin: it was written by a build that made no such promise,
+so there is nothing to check it against. Any other length, or a 33-byte
+value whose first byte is not 2, is refused rather than read as an offset.
+
+A build before the dependent layout refuses a 33-byte value, so a cluster
+writes it only once the fleet finalizes `group_cursor_dependencies`; a lone
+broker writes it from the start. Until then cursors are legacy values, and
+a crash that keeps a cursor's tail and loses the dead letter it passed a
+record on is not caught. See `docs/replication-design.md` ("Group state at
+promotion").

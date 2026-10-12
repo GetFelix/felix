@@ -446,55 +446,80 @@ sees, so its deposed leader is kept out by the lease alone either way.
 
 #### Group state at promotion
 
-A stream shard's dead-letter log and group cursor log are one pair. A
-group's dead letter is written before its cursor passes the record, so a
-cursor is only good beside the dead letters its leader had written by then.
-A cursor from one copy beside dead letters from another can pass a record
-neither lists, which is a record that is never redelivered and never shown
-as dead. Everything below keeps the pair from one source.
+A stream shard's consumer-group state is two logs: the dead letters and the
+cursors. A group's dead letter is written before its cursor passes the
+record, so a cursor is only good while the dead letters it passed records on
+are beside it. Without them it passes a record that is neither redelivered
+nor listed as dead. The two logs flush separately, are shipped separately,
+and are each replaced on a follower by a newer leader's, so any copy can be
+left with a cursor whose dead letters are gone. What keeps the guarantee is
+one rule, applied wherever a copy is about to be served.
 
+- **A cursor says what it needs.** Each cursor record carries the
+  dead-letter log's end when it was committed and the generation that wrote
+  the entry at that end, and the group's origin: where it was last placed
+  needing no dead letter (see `docs/storage-format.md`, "Consumer-group
+  cursor values"). The leader syncs its dead letters before a cursor that
+  needs them and before it ships them, so one generation never puts two
+  different entries at one offset where a cursor or a follower could see
+  both, and the pair names those dead letters exactly
+  (`a_commit_records_the_dead_letters_beneath_it`). Shipping unsynced dead
+  letters was a hole TLC found: a leader that crashed after shipping one
+  wrote another at the same offset and generation, and a cursor needing the
+  second was taken by a follower holding the first.
+- **It is checked before the shard is served.** Before a broker serves a
+  shard's groups, once after it starts, again at each term and again after
+  replication rewrites either group log, each group whose latest cursor does
+  not stand on the dead-letter log it holds is put back, by appending, to its
+  latest record that still stands or else to its origin, and that is synced
+  first (`a_cursor_left_without_its_dead_letter_falls_back`,
+  `the_latest_cursor_that_still_stands_is_kept`,
+  `a_refilled_dead_letter_log_does_not_restore_a_cursor`,
+  `a_replaced_dead_letter_leaves_its_cursor_unserved`,
+  `a_rebuilt_dead_letter_log_leaves_its_cursor_unserved`). That covers a
+  crash that kept one log's tail and not the other's, a follower's divergent
+  suffix, a rebuild, and anything a promotion took. A group is never
+  removed, so a seek `if_new` finds it where it fell back rather than
+  creating it afresh at the tail
+  (`an_if_new_seek_finds_a_group_that_fell_back`).
 - **Fenced in one round.** The promoted leader sends `Fence` for both group
-  logs to every replica at once, beside the records' fence rather than after
-  it, and counts a replica only once it has taken both
-  (`a_cursor_is_never_taken_without_the_dead_letters_beside_it`). Each group
-  log keeps the promise on its own log, so the old leader is refused there
-  whichever fence lands first. A promotion waits on one round of fences, as
-  before; the group fences cost one more fsync on each replica, in parallel
-  with the records' fence.
-- **Taken from one replica.** Of the answers and its own copy, the leader
-  takes the pair furthest ahead, ranked by the dead-letter log first and the
-  cursor log second, each by (last generation, length), and makes both of
-  its logs that replica's (`the_pair_is_taken_from_one_replica`). Dead
-  letters first, because losing one skips a record where losing a cursor
-  only redelivers. The cursor log is taken even when it is shorter than the
-  leader's own.
+  logs to every replica at once, beside the records' fence, and counts a
+  replica only once it has taken both
+  (`a_replica_counts_once_it_took_both_group_fences`). Each group log keeps
+  the promise on its own log, so the old leader is refused there whichever
+  fence lands first.
+- **Taken from the replica furthest ahead.** Of the answers and its own
+  copy, the leader picks the pair furthest ahead, ranked by the dead-letter
+  log first, each log by (last generation, length), and takes that replica's
+  dead-letter log (`the_group_logs_furthest_ahead_are_taken_too`). It merges
+  that replica's cursors into its own, each group going to the further
+  position, by appending: its own further cursor survives while it still
+  stands (`an_own_further_cursor_is_kept_while_it_stands`), and no group it
+  had is erased (`a_group_only_this_broker_had_is_kept`). Merged cursors are
+  checked like any other, so taking them from a different lineage than the
+  dead letters is safe (`a_cursor_is_checked_against_its_dead_letters_generation`).
 - **Labelled like the records.** A leader records where its generation
   begins on both group logs when it opens the shard and again when its fence
   opens it, and ships them labelled to followers that offer `GROUP_FENCE`. A
   newer generation's shorter pair then outranks an older generation's longer
   one (`a_newer_shorter_pair_is_kept_over_an_older_longer_one`,
   `an_open_labels_the_group_logs`,
-  `a_fenced_open_labels_the_group_logs_past_what_the_fence_took`).
-- **Dead letters dropped take their cursors first.** Wherever a copy drops
-  dead letters, as a follower replacing a divergent suffix, a follower
-  discarding its copy for a rebuild, or a promoted leader replacing its own,
-  it first drops the cursors written in that generation or later, which are
-  the only ones that can depend on them. A crash in between leaves cursors
-  short, which redelivers
-  (`a_dropped_dead_letter_takes_its_generations_cursors`,
-  `a_rebuilt_dead_letter_log_takes_the_cursors_with_it`,
-  `a_superseded_dead_letter_takes_the_cursors_past_it`).
+  `a_fenced_open_labels_the_group_logs_past_what_the_fence_took`). A group
+  log this broker cannot open or label at that point keeps the shard closed,
+  as a stream or cache log does, and the next pass tries again.
 - **Never waiting for good.** A replica without consumer groups answers the
   group fence as two empty logs (`a_replica_without_consumer_groups_counts_as_empty`,
   `without_consumer_groups_the_group_fence_answers_empty`). When fewer than a
   majority take both fences, because some replicas predate `GROUP_FENCE` or
-  did not answer, the leader serves the pair it holds
-  (`without_the_group_fence_the_group_logs_stay_as_they_are`). That pair is
-  consistent, because a follower gets dead letters before the cursors that
-  pass them (see [What is implemented so far](#what-is-implemented-so-far)),
-  so this can redeliver work a majority had finished but cannot skip a
-  record. Only a newer leader's
-  answer keeps the shard closed.
+  did not answer, the leader serves the pair it holds, checked like any other
+  (`without_the_group_fence_the_group_logs_stay_as_they_are`). That can
+  redeliver work a majority had finished but cannot skip a record. Only a
+  newer leader's answer keeps the shard closed.
+
+`FelixGroups.tla` models the two logs on every replica, independent flushes
+and crashes, the check, the fence and the fallback, and checks that no
+group's cursor passes a record that is neither finished nor dead
+(`NoSkip`). See `docs/formal/README.md`.
 
 ### Ballots
 
@@ -924,9 +949,10 @@ A poll whose round is refused has already recorded its claims. They were never
 handed out, so they lapse and are delivered again, as after any failover.
 
 The alternative was to acknowledge group state on a majority. That would stop
-the redelivery after a failover. The promotion fence does take the furthest
-copy of the group logs among a majority, which that would rest on, but group
-writes are still acknowledged on the leader's own durability.
+the redelivery after a failover, but the promotion fence takes the group logs
+only when a majority answers it and otherwise serves the leader's own, so a
+group write a majority held could still be lost. Group writes are
+acknowledged on the leader's own durability.
 
 **What the lease still does**:
 
@@ -1872,12 +1898,13 @@ gets its counters at the end of the pass
 
 A stream shard's group cursors and dead letters ride the exchanges too, beside
 the shard's log rather than ahead of it, since nothing waits on their marks.
-Dead letters go first. A group's dead letter is durable before its cursor
-passes the record, and a follower has to hold them in that order too: promoted
-with the cursor and not the dead letter, it would neither redeliver the record
-nor list it as dead. So the leader reads the cursor log's tail, ships the dead
+Dead letters go first. The leader reads the cursor log's tail, ships the dead
 letters, and ships cursors only up to that tail and only to a follower that
-now holds every dead letter written before it. A cursor written in between
+now holds every dead letter written before it, so a follower's cursors stand
+on its dead letters as far as shipping can make them. What shipping cannot
+help, a follower's own crash or its dead letters replaced by a newer
+leader's, the check before serving catches
+([Group state at promotion](#group-state-at-promotion)). A cursor written in between
 waits for the next pass
 (`the_dead_letter_reaches_a_follower_before_the_cursor_that_passed_it`,
 `a_cursor_written_after_the_dead_letters_shipped_waits_for_them`). The end of

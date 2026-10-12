@@ -9,7 +9,8 @@
 (* of the dead-letter log beneath it: the log's length when it was written *)
 (* (`e`, the broker's `dlq_end`) and the generation that wrote the entry   *)
 (* at that length (`dg`). The leader syncs its dead letters before a       *)
-(* cursor that needs them. Before a broker serves the shard, after a crash *)
+(* cursor that needs them, and before it ships them. Before a broker      *)
+(* serves the shard, after a crash                                         *)
 (* or a promotion, each group whose latest cursor no longer stands on the  *)
 (* dead-letter log it has is put back to its latest record that does, or  *)
 (* to its origin: where it was last placed needing no dead letter.        *)
@@ -30,6 +31,7 @@
 (*   KeepGroups     -- a group with no standing cursor goes to its origin *)
 (*                     rather than being dropped, which a seek `if_new`   *)
 (*                     would recreate at the tail.                        *)
+(*   SyncBeforeShip -- dead letters are synced before they are shipped.    *)
 (* SplitSources takes the dead letters from the replica furthest ahead on *)
 (* them and replaces the cursors with the one furthest ahead on cursors.  *)
 (*                                                                         *)
@@ -49,10 +51,12 @@ CONSTANTS
     CheckCursors,
     DependencyGen,
     KeepGroups,
-    SplitSources
+    SplitSources,
+    SyncBeforeShip
 
 ASSUME /\ CheckCursors \in BOOLEAN /\ DependencyGen \in BOOLEAN
        /\ KeepGroups \in BOOLEAN /\ SplitSources \in BOOLEAN
+       /\ SyncBeforeShip \in BOOLEAN
 
 Groups == 1..G
 
@@ -201,15 +205,18 @@ Recover ==
     /\ serving' = TRUE
     /\ UNCHANGED << dl, dlDur, gen, leader, processed, crashes >>
 
-\* The leader ships its dead letters to a follower, which takes the
-\* leader's log over its own.
+\* The leader syncs its dead letters and ships them to a follower, which
+\* takes the leader's log over its own. Synced first, or a crash could lose
+\* one a follower holds and the leader write another at the same offset
+\* and generation (FelixGroupsShipUnsynced.cfg).
 ShipDeadLetters(f) ==
     /\ serving
     /\ f /= leader
     /\ gen[f] <= gen[leader]
     /\ dl[f] /= dl[leader]
     /\ dl' = [dl EXCEPT ![f] = dl[leader]]
-    /\ dlDur' = [dlDur EXCEPT ![f] = Min2(@, CommonPrefix(dl[f], dl[leader]))]
+    /\ dlDur' = [dlDur EXCEPT ![f] = Min2(@, CommonPrefix(dl[f], dl[leader])),
+                               ![leader] = IF SyncBeforeShip THEN Len(dl[leader]) ELSE @]
     /\ gen' = [gen EXCEPT ![f] = gen[leader]]
     /\ UNCHANGED << cur, curDur, leader, serving, processed, crashes >>
 

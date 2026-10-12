@@ -12,9 +12,9 @@ use crate::error::{BrokerError, Result};
 /// A group's dead letter is durable before its cursor passes the record, so
 /// every dead letter a cursor passed on is below the log's end when the
 /// cursor was written. The generation pins which dead letters those were: a
-/// leader syncs its dead letters before a cursor that needs them, so one
-/// generation never writes two different records at one offset that a
-/// cursor could have needed.
+/// leader syncs its dead letters before a cursor that needs them and before
+/// it ships them, so one generation never puts two different records at one
+/// offset where a cursor or a replica could see both.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DeadLetterMark {
     pub(crate) end: u64,

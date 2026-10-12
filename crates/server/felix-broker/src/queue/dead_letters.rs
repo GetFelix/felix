@@ -9,7 +9,9 @@
 //! Durable, and written before the group's cursor moves past the record. The
 //! other order would let a crash in between leave the cursor beyond a record
 //! nothing says was ever attempted, which is a silent skip rather than a
-//! dead letter.
+//! dead letter. The two logs flush separately, so the cursor also records
+//! how far this log reached (see `cursors`), and is put back before it is
+//! served if this log no longer reaches that far.
 //!
 //! A key → latest-value projection again, like the cursors themselves. **One
 //! log per stream shard**, exactly as the cursors are shaped, with the group

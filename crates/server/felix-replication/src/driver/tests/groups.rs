@@ -243,6 +243,18 @@ async fn a_dead_follower_holds_no_pass_on_a_dead_letter() {
             )
             .await
             .expect("dead letter");
+        // Synced here, off the paused clock: the leader syncs dead letters
+        // before it ships them, and a sync inside the pass would let the
+        // paused clock jump to the dead follower's timer.
+        felix_broker::StreamLog::from_log(
+            dead_letters
+                .shard_log(TENANT, NAMESPACE, STREAM, 0)
+                .await
+                .expect("log"),
+        )
+        .sync()
+        .await
+        .expect("sync");
     })
     .await;
 }

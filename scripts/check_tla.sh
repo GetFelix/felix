@@ -189,6 +189,7 @@ expectations=(
   "FelixGroupsDropGroup violates NoSkip"
   "FelixGroupsSplitSources pass"
   "FelixGroupsSplitSourcesLengthOnly violates NoSkip"
+  "FelixGroupsShipUnsynced violates NoSkip"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family

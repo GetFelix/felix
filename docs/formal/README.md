@@ -86,14 +86,12 @@ One shard, three brokers, one control plane, discrete time.
   does. Reports carry the generation they were made at and one from a
   superseded generation is dropped on arrival, as the store does.
   The consumer-group dead-letter and cursor logs that ride a stream shard
-  are not modelled separately: the one log stands for the pair. That holds
-  because the pair behaves as one log does. It is written through the same
-  fence, shipped to each follower dead letters first so every copy is a
-  consistent pair, labelled with the generations that wrote it, fenced in
-  one round where a replica counts only once it took both, taken whole from
-  the one copy furthest ahead, and cut cursors-first wherever dead letters
-  are dropped; the drained report waits for both on the successor. A cache's
-  counter log is modelled on its own, under `Counters`.
+  are written through the same fence as its records, and here a write to
+  either is a write to the one log. That says nothing about how the two
+  relate to each other, and they are not one log: they flush, ship and are
+  replaced separately. `FelixGroups.tla` models them as two (see
+  [Group state: two logs per replica](#group-state-two-logs-per-replica)).
+  A cache's counter log is modelled on its own, under `Counters`.
 - **Re-sends**, under `Resends`. A client may send a write it has no answer
   for again, as an idempotent producer does after a lost acknowledgement or a
   leader change. The serving broker appends it unless it already knows the
@@ -259,6 +257,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixAtomicCommit.cfg` | `FelixAtomicCommit.tla`: two atomic commits, each one record, applied whole by three views on every broker, across two promotions | pass `NoPartialCommit` and `CommitSurvives` (21.8K distinct states) |
 | `FelixAtomicCommitSplitRecords.cfg` | the same with each part written as its own record, the mark stopping only at a commit's end | violate `NoPartialCommit` |
 | `FelixAtomicCommitPartialApply.cfg` | the same with the views applying a record one part at a time | violate `NoPartialCommit` |
+| `FelixGroups.cfg` | `FelixGroups.tla`: two groups' dead-letter and cursor logs on three replicas, flushed separately, across a crash and two promotions; each cursor checked against the dead letters it needs before a shard is served | pass `NoSkip` |
+| `FelixGroupsNoCheck.cfg` | the same with cursors served unchecked | violate `NoSkip` |
+| `FelixGroupsLengthOnly.cfg` | the same with the check comparing the dead-letter log's length only | violate `NoSkip` |
+| `FelixGroupsDropGroup.cfg` | the same with a group that has nothing standing dropped, and recreated at the tail | violate `NoSkip` |
+| `FelixGroupsSplitSources.cfg` | the same with a promotion taking dead letters and cursors from different replicas, cursors replacing its own | pass `NoSkip` |
+| `FelixGroupsSplitSourcesLengthOnly.cfg` | the same with the check comparing lengths only | violate `NoSkip` |
+| `FelixGroupsShipUnsynced.cfg` | `FelixGroups.cfg` with dead letters shipped before they are synced | violate `NoSkip` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -822,6 +827,47 @@ without the state, and once promoted it keeps that half and its mark covers
 it with its next commit. Applied a part at a time, it fails on one broker
 with no failover at all. Those two are why the record is one record and why
 the state view is updated under the ring's lock.
+
+### Group state: two logs per replica
+
+`FelixGroups.tla` models a stream shard's consumer-group state as what it
+is: a dead-letter log and a cursor log on every replica, each flushed on its
+own, each shipped and replaced on its own, with crashes that keep whatever
+each had on disk. A group passes a record by finishing it or by giving up on
+it, which writes a dead letter first. `NoSkip` says that on the serving
+leader every record a group's cursor has passed was finished or is that
+group's dead letter.
+
+Nothing about the order of writes or shipping keeps that on its own: a
+follower's dead letters can be lost in a crash its cursors survive, or
+replaced by a newer leader's before the cursors that relied on them are.
+What keeps it is that each cursor record names the dead letters it needs
+(the log's length at the commit and the generation at that length), the
+leader syncs its dead letters before a cursor that needs them and before it
+ships them, so one generation never puts two different entries at one
+offset where anyone could see both, and every broker checks its cursors
+against the dead letters it holds before it serves, putting a group back to
+its latest standing cursor or its origin, never removing it.
+`FelixGroupsNoCheck.cfg` serves cursors unchecked, `FelixGroupsLengthOnly.cfg`
+checks the length alone (a lost dead letter's offset refilled by another
+group's), `FelixGroupsDropGroup.cfg` drops a group with nothing standing,
+and `FelixGroupsShipUnsynced.cfg` ships dead letters before syncing them (a
+crash loses one a follower holds, and the leader writes another at the same
+offset and generation); TLC finds a skip in each. The last one was found by
+TLC in the model as first written, and is why the leader syncs before it
+ships.
+
+The promotion fences both logs in one round, takes the dead letters of the
+answer furthest ahead and merges that replica's cursors into its own, or
+serves its own pair when the round falls short. `FelixGroupsSplitSources.cfg`
+takes the dead letters from one replica and the cursors from another, and
+passes: with the check in place the pair need not come from one place, and
+taking it from one only keeps more of the groups' progress. With the check
+comparing lengths only, `FelixGroupsSplitSourcesLengthOnly.cfg`, it fails.
+
+The fence itself, the lease and the records' log are `FelixShard.tla`'s; this
+model takes from it only that a promotion fences a majority and a replica
+refuses a leader older than one it accepted.
 
 ## Which configurations run where
 

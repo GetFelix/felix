@@ -13,18 +13,25 @@ for what the current release guarantees.
 
 ### Fixed
 
-- A follower could store a consumer group's cursor past a record before the
-  dead letter for it. The leader shipped cursors ahead of dead letters, so a
-  leader dying between the two left a promoted follower that neither
-  redelivered the record nor listed it as dead. Dead letters now go first,
-  and a cursor goes only to a follower that holds every dead letter written
-  before it. A promoted stream leader fences the dead-letter and cursor logs
-  in one round beside its records and takes both from the one replica whose
-  pair is furthest ahead, on replicas that offer the new internal capability
-  `GROUP_FENCE` (`1 << 8`). Both logs now carry generation labels like the
-  records, any copy dropping dead letters drops the cursors that may depend
-  on them first, and a `Quorum` stream's report leaves out a follower short
-  of the pair a majority holds (#1202).
+- A consumer group could pass a record that was neither finished nor listed
+  as dead. The dead letter is written before the cursor passes the record,
+  but replication shipped cursors first, the two logs flush separately, and
+  a follower's dead letters can be replaced by a newer leader's, so a copy
+  could hold a cursor without the dead letter it relied on and serve it once
+  promoted. Each cursor now records the dead-letter log it needs (its end
+  and the generation that wrote it) and the group's origin; dead letters
+  are synced before a cursor that needs them; and before a broker serves a
+  shard's groups, a cursor that no longer stands is put back to the latest
+  one that does or to its origin, never removed. Dead letters ship before
+  cursors. A promoted stream leader fences both group logs in one round
+  beside its records, takes the dead-letter log of the replica furthest
+  ahead and merges that replica's cursors into its own, on replicas that
+  offer the new internal capability `GROUP_FENCE` (`1 << 8`). Group logs
+  carry generation labels like the records, and a `Quorum` stream's report
+  leaves out a follower short of the pair a majority holds. The cursor
+  value is a new 33-byte layout, written once the fleet finalizes the new
+  `group_cursor_dependencies` feature, and by a single broker from the
+  start; an older build cannot read it (#1202).
 
 ## [0.6.0-preview.7] - 2026-10-11
 
