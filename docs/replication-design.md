@@ -581,8 +581,9 @@ elected leader waits for the lease until the control plane is back (issue
    writes its generation-start record and opens.
 5. *Set changes.* A replacement's join, a seat and a grow fence like any
    change of leader, carrying the new set to a majority of it before the
-   leader serves at the new generation. With the joint fence they also need
-   a majority of the old set (decision 2 below).
+   leader serves at the new generation. They need no majority of the old
+   set as well: a set changes one replica at a time, so any majority of it
+   and of the set before it share a replica (decision 2 below).
 6. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 7. *Adoption.* The elected leader reports its generation and set's
@@ -607,9 +608,8 @@ held the record when it answered or refused the old leader after, so the
 catch-up brings it. If the candidate's set is older, a majority of it took
 the fence of the set change that came after, learned the newer set and
 refuses the candidate. If the candidate's set is newer, the change that made
-it fenced a majority of the old set before the new one served (with the joint
-fence) or shares a replica with every majority of it (one replica at a time,
-without). The generation-start record covers Raft's Figure 8 as it does for
+it fenced a majority of the new set, and since a set changes one replica at a
+time that majority shares a replica with every majority of the old one. The generation-start record covers Raft's Figure 8 as it does for
 promotions. Adoption cannot name a second leader: the control plane only
 names the leader that opened at that generation, and its own next generation
 is above it.
@@ -621,8 +621,10 @@ is above it.
    fallback, held back for 2×S so that it does not race an election, and
    promotion on a lapsed lease stays as the backstop.
 2. A set change uses the joint fence, a majority of the old set and of the
-   new, if the model shows it is needed. `FelixShardElectSetNoJoint.cfg`
-   decides.
+   new, if the model shows it is needed. It does not: with the set change
+   fencing the new set alone, `FelixShardElectSet.cfg` passes (235.7M
+   distinct states, 3 h 27 min on a four-core CI runner), so there is no
+   joint fence. With it the same configuration passes too (146.6M states).
 3. "One leader serving" means `OneLeaderPerGeneration` and the
    acknowledged-record invariants (`AckedHeldByLeader`, `AckedAgree`,
    `AckedOnMajority`, `NoTruncationBelowHwm`). `AtMostOneServing` stays
@@ -666,7 +668,7 @@ down across a leader kill) and the docs that describe it as shipped.
 **The model.** `SetCheck`, `JointFence` and `Adopt` in
 `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set check:
 electing on the current set"). `FelixShardElectSet.cfg` passes with the set
-check and the joint fence; `FelixShardElectStaleSet.cfg` without the set
+check and a set change fencing the new set; `FelixShardElectStaleSet.cfg` without the set
 check finds a replica that left opening on the old set without an
 acknowledged record. `FelixShardElectAdopt.cfg` adds adoption and passes;
 `FelixShardElectAdoptNoSetCheck.cfg` finds the control plane adopting a

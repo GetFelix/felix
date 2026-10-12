@@ -43,7 +43,8 @@ for what the current release guarantees.
   `docs/replication-design.md`. The TLA+ model gains `SetCheck`, `JointFence`,
   `Adopt`, the persisted `setGen`, `RefuseStaleSet`, `CpAdopt` and the
   `AdoptedMatchesOpened` invariant, with `FelixShardElectSet.cfg`,
-  `FelixShardElectSetNoJoint.cfg`, `FelixShardElectAdopt.cfg`,
+  `FelixShardElectStepDown.cfg`, `FelixShardElectAdopt.cfg`,
+  `FelixShardElectAdoptPromote.cfg`,
   `FelixShardElectAdoptNoSetCheck.cfg` and the `FelixShardWalkElect.cfg` walk
   and its stale-set twin. `FelixShardElectHandoff.cfg` now runs with the set
   check on.

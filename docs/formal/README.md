@@ -203,12 +203,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElect.cfg` | `FelixShardFencedAck.cfg` with replicas electing themselves (`Elections = 2`) and ballots, two writes, time standing still so the control plane never promotes | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (not yet measured) |
 | `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
-| `FelixShardElectSet.cfg` | `FelixShardElectStaleSet.cfg` with the set check and the joint fence (`SetCheck`, `JointFence`) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` (over 40 min on a CI runner; nightly) |
-| `FelixShardElectSetNoJoint.cfg` | the same with a set change fencing the new set alone | decides whether the joint fence is needed; run by hand (see below) |
+| `FelixShardElectSet.cfg` | `FelixShardElectStaleSet.cfg` with the set check (`SetCheck`), a set change fencing the new set alone | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` (235.7M distinct states, 3 h 27 min on a four-core CI runner; nightly). With `JointFence` it passes too (146.6M states, 2 h 44 min) |
 | `FelixShardElectAdopt.cfg` | `FelixShardElectSet.cfg` with the control plane adopting elected leaders up to generation 2 (`Adopt = 2`) and replacing followers under them | pass, the same invariants (nightly) |
-| `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2, for every pull request (the spare `FelixShardElectAdopt.cfg` needs is too big for it, even without the write) | pass, the same invariants (not yet measured) |
+| `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with no write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2, for every pull request | pass `OneLeaderPerGeneration` and `AdoptedMatchesOpened`; the record invariants hold trivially (with a write it did not finish within the hour) |
 | `FelixShardElectAdoptNoSetCheck.cfg` | the same without the set check | violate `AdoptedMatchesOpened`: a replica elected after a replacement stands on the set it started in, and the control plane adopts it as the leader of the set it records |
-| `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2 and `L = 2`, one write, one generation of elections and the set check: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (not yet measured). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
+| `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (not yet measured). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (48.7M distinct states, 61 min on a four-core CI runner, before a leader answering a newer fence stepped down; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
 | `FelixShardElectHandoffUnfenced.cfg` | `FelixShardElectHandoffLeaders.cfg` with the cut-over opened without the fence, no writes and no cancel | violate `OneLeaderPerGeneration`: a candidate opens at the generation after the control plane's, and the control plane cuts over to the destination at that same generation |
@@ -508,7 +507,7 @@ the sender's. A refused candidate learns the newer set and stops standing.
 It may stand again at a later generation, fenced on that set from the
 start, if it is still a member. A set change fences before it
 opens, carrying the new set to a majority of it. With `JointFence` it also
-needs a majority of the old set. `FelixShardElectSet.cfg` passes with both:
+needs a majority of the old set. `FelixShardElectSet.cfg` passes either way:
 the replica that left is refused by a follower that took the change's fence,
 learns it is out, and stops.
 
@@ -528,11 +527,13 @@ record the new set held on d alone (`AckedOnMajority`, 18 states). A leader
 or candidate that answers a fence at a newer generation has promised its own
 away, so it now stops leading there and then.
 
-`FelixShardElectSetNoJoint.cfg` fences the new set alone. It decides whether
-the joint half is needed. Felix changes a set one replica at a time, a join
-beside a follower then the seat that drops it, and any majority of a set and
-of the one after it share a replica, which is the argument for Raft's
-single-server changes.
+Whether the joint half is needed was the open question (decision 2 in
+`docs/replication-design.md`). TLC says no: `FelixShardElectSet.cfg` passes
+with a set change fencing the new set alone, 235.7M distinct states, and with
+`JointFence` too. Felix changes a set one replica at a time, a join beside a
+follower then the seat that drops it, and any majority of a set and of the
+one after it share a replica, which is the argument for Raft's single-server
+changes. So the design has no joint fence; the knob stays to show it.
 
 `Adopt` is the control plane's half. A leader that opened above the control
 plane's generation reports it; on the set the control plane records, the
@@ -900,7 +901,7 @@ and pull request that touches the code or the spec: the `formal` job in
 measured time so that each stays well under its hour.
 
 Eight configurations are too big for that hour, and run nightly instead, each in
-its own job with a two-and-a-half-hour limit (the `exhaustive` job in
+its own job with a five-hour limit (the `exhaustive` job in
 `.github/workflows/tla-walk.yml`): `FelixShardElectHandoff.cfg`,
 `FelixShardElectSet.cfg`, `FelixShardElectAdopt.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
@@ -940,7 +941,7 @@ per family:
 | `FelixShardWalkMovesDestination.cfg` | the same with a failover free to name the destination | violate `AckedHeldByLeader` |
 | `FelixShardWalkHandoff.cfg` | the broker as built under the lease (`FelixShardFencedPromotion.cfg` with start records) with `FelixShardHandoff.cfg`'s move; `FelixShardRealMargins.cfg`'s margins and drift, writes acknowledged on commit | pass every invariant and `AckedHeldByLeader` |
 | `FelixShardWalkHandoffNoWait.cfg` | the same cutting over without waiting for the drained report | violate `AtMostOneServing` |
-| `FelixShardWalkElect.cfg` | `FelixShardWalkSpares.cfg` with replicas electing themselves up to two generations past the control plane's, the set check and the joint fence, and the control plane adopting elected leaders up to generation 10 | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` |
+| `FelixShardWalkElect.cfg` | `FelixShardWalkSpares.cfg` with replicas electing themselves up to two generations past the control plane's, the set check, and the control plane adopting elected leaders up to generation 10 | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` |
 | `FelixShardWalkElectStaleSet.cfg` | the same without the set check | violate `AckedHeldByLeader` |
 
 Every walk runs with ballots and every change of leader fenced

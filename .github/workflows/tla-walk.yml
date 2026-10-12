@@ -98,13 +98,14 @@ jobs:
           retention-days: 14
 
   # Exhaustive checks of the configurations the per-push job cannot fit, each
-  # in its own job: the longest measured is an hour on a four-core runner.
+  # in its own job: the longest measured is three and a half hours on a
+  # four-core runner (FelixShardElectSet).
   # Not on pull requests: hours of runner time for a change to the walks.
   exhaustive:
     name: Check ${{ matrix.config }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
