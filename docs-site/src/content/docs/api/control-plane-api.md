@@ -74,8 +74,12 @@ from it, and only that gateway can pass it to `/token/delegate`.
 `actor_token_type` is optional and must be
 `urn:ietf:params:oauth:token-type:jwt`. An `actor_token` with
 `"audience": "felix-controlplane"` is a `400`. One that does not verify for the
-tenant (bad signature, expired, another tenant or audience) or lacks
-`token.delegate` is a `403` with code `actor_refused`:
+tenant (bad signature, expired, another tenant or audience), lacks
+`token.delegate`, was issued before a revocation of the gateway, or belongs to
+a gateway current RBAC no longer grants `token.delegate` is a `403` with code
+`actor_refused`. `/token/delegate` answers the same code when the caller's own
+token was issued before a revocation of it or RBAC no longer grants it
+`token.delegate`. Either way, mint a new gateway token and retry:
 
 ```json
 {"code": "actor_refused", "message": "invalid actor token", "request_id": null}
@@ -217,7 +221,10 @@ RBAC endpoints are split by capability:
 Removing a policy or a grouping also revokes the broker tokens of everyone the
 rule reached, so their open streams end and they authenticate again under the
 rules as they are now. A rule that reached an IdP group revokes the whole
-tenant. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+tenant, and so does deleting an IdP issuer or changing how its tokens are read.
+If the revocation cannot be recorded after a few tries, the request answers
+`500` although the change was made; revoke the principals with
+`refresh-tokens/revoke`. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
 
 - `GET /v1/principal-revocations/changes?since=<n>` -> requires
   `node.view:cluster:*`. The feed brokers poll: `{"items": [{"seq",

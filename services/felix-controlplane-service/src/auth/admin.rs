@@ -39,6 +39,7 @@ use crate::auth::rbac::authorize::{
     validate_assignment_allowed, validate_new_rule_allowed,
 };
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
+use crate::auth::revocation::ALL_PRINCIPALS;
 use crate::store::StoreError;
 
 #[derive(Debug, Deserialize, ToSchema, Clone)]
@@ -97,8 +98,12 @@ pub async fn upsert_idp_issuer(
         .list_idp_issuers(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load issuers", &err))?;
-    let needs_cluster = match issuers.iter().find(|item| item.issuer == body.issuer) {
-        Some(current) => !same_trust(current, &body),
+    let current = issuers.iter().find(|item| item.issuer == body.issuer);
+    // A changed issuer can read different principals and groups out of the
+    // same IdP tokens, which takes grants back like removing a rule does.
+    let retrusted = current.is_some_and(|current| !same_trust(current, &body));
+    let needs_cluster = match current {
+        Some(_) => retrusted,
         None => issuer_used_elsewhere(&state, &tenant_id, &body.issuer).await?,
     };
     if needs_cluster {
@@ -109,6 +114,9 @@ pub async fn upsert_idp_issuer(
         .upsert_idp_issuer(&tenant_id, body)
         .await
         .map_err(|err| api_internal("failed to upsert issuer", &err))?;
+    if retrusted {
+        end_sessions_after_removal(&state, &tenant_id, vec![ALL_PRINCIPALS.to_string()]).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -180,6 +188,8 @@ pub async fn delete_idp_issuer(
         .delete_idp_issuer(&tenant_id, &issuer)
         .await
         .map_err(|err| api_internal("failed to delete issuer", &err))?;
+    // Every grant through the issuer's groups, and to its principals, is gone.
+    end_sessions_after_removal(&state, &tenant_id, vec![ALL_PRINCIPALS.to_string()]).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -413,7 +423,7 @@ pub async fn remove_policy(
     let reached = crate::auth::revocation::reached_by(&groupings, &rule.subject);
     match state.store.remove_rbac_policy(&tenant_id, rule).await {
         Ok(()) => {
-            end_sessions_after_removal(&state, &tenant_id, reached).await;
+            end_sessions_after_removal(&state, &tenant_id, reached).await?;
             Ok(StatusCode::NO_CONTENT)
         }
         Err(StoreError::NotFound(_)) => Err(api_not_found("policy not found")),
@@ -480,7 +490,7 @@ pub async fn remove_grouping(
     let reached = crate::auth::revocation::reached_by(&groupings, &grouping.user);
     match state.store.remove_rbac_grouping(&tenant_id, grouping).await {
         Ok(()) => {
-            end_sessions_after_removal(&state, &tenant_id, reached).await;
+            end_sessions_after_removal(&state, &tenant_id, reached).await?;
             Ok(StatusCode::NO_CONTENT)
         }
         Err(StoreError::NotFound(_)) => Err(api_not_found("grouping not found")),
@@ -559,17 +569,46 @@ pub async fn revoke_principal_refresh_tokens(
 }
 
 /// End the broker sessions of everyone a removed rule reached, so they come
-/// back with tokens minted under the rules as they are now. The removal has
-/// already happened, so a failure here is logged rather than answered: the
-/// rights are gone from every token minted from now on either way.
-async fn end_sessions_after_removal(state: &AppState, tenant_id: &str, reached: Vec<String>) {
-    if let Err(err) = crate::auth::revocation::revoke(state, tenant_id, reached).await {
-        tracing::warn!(
-            tenant_id = %tenant_id,
-            error = %err,
-            "removed an RBAC rule but could not end the sessions it reached; \
-             they keep their rights until their tokens expire",
-        );
+/// back with tokens minted under the rules as they are now.
+///
+/// The removal has already happened, so a failed write is retried and then
+/// answered as an error: the caller has to know the sessions kept their
+/// rights. A control plane part-way through an upgrade cannot record one at
+/// all (`409`); that is logged and the removal stands, as documented.
+async fn end_sessions_after_removal(
+    state: &AppState,
+    tenant_id: &str,
+    reached: Vec<String>,
+) -> Result<(), ApiError> {
+    const ATTEMPTS: u32 = 3;
+    let mut attempt = 1;
+    loop {
+        match crate::auth::revocation::revoke(state, tenant_id, reached.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(StoreError::Conflict(what)) => {
+                tracing::warn!(
+                    tenant_id = %tenant_id,
+                    reason = %what,
+                    "removed an RBAC rule but cannot record revocations until every \
+                     member is upgraded; the sessions it reached keep their rights \
+                     until their tokens expire",
+                );
+                return Ok(());
+            }
+            Err(err) if attempt < ATTEMPTS => {
+                tracing::warn!(tenant_id = %tenant_id, error = %err, attempt, "retrying a revocation");
+                tokio::time::sleep(std::time::Duration::from_millis(100 * u64::from(attempt)))
+                    .await;
+                attempt += 1;
+            }
+            Err(err) => {
+                return Err(api_internal(
+                    "the change was made, but the sessions it reached were not ended; \
+                     revoke them with POST /v1/tenants/{tenant_id}/refresh-tokens/revoke",
+                    &err,
+                ));
+            }
+        }
     }
 }
 
@@ -642,3 +681,6 @@ fn policy_in_scope(policy: &PolicyRule, scopes: &[ParsedObject], tenant_id: &str
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests;

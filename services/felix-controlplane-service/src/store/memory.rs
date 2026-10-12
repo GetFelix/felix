@@ -86,6 +86,9 @@ use change_log::ChangeLog;
 pub struct InMemoryStore {
     /// Store-level configuration (change window, paging limit, etc.).
     config: StoreConfig,
+    /// Failures a test asks for.
+    #[cfg(test)]
+    pub(crate) faults: Faults,
     /// Authoritative tenant objects keyed by `tenant_id`.
     tenants: Arc<RwLock<HashMap<String, Tenant>>>,
     /// Authoritative namespaces keyed by `(tenant_id, namespace)`.
@@ -182,6 +185,8 @@ impl InMemoryStore {
         // Once capacity is exceeded, oldest changes are evicted.
         Self {
             config,
+            #[cfg(test)]
+            faults: Faults::default(),
             tenants: Arc::new(RwLock::new(HashMap::new())),
             namespaces: Arc::new(RwLock::new(HashMap::new())),
             streams: Arc::new(RwLock::new(HashMap::new())),
@@ -605,6 +610,8 @@ impl AuthStore for InMemoryStore {
     }
 
     async fn list_rbac_policies(&self, tenant_id: &str) -> StoreResult<Vec<PolicyRule>> {
+        #[cfg(test)]
+        Faults::take(&self.faults.rbac_reads)?;
         auth::list_rbac_policies(self, tenant_id).await
     }
 
@@ -752,6 +759,8 @@ impl AuthStore for InMemoryStore {
         principal_ids: Vec<String>,
         revoked_at: i64,
     ) -> StoreResult<()> {
+        #[cfg(test)]
+        Faults::take(&self.faults.revocation_writes)?;
         revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at).await
     }
 
@@ -828,6 +837,30 @@ impl ShardState {
             key: key.clone(),
             assignment,
         });
+    }
+}
+
+/// How many of the next calls of each kind fail, for tests of what a caller
+/// does with a store error.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Faults {
+    pub(crate) rbac_reads: std::sync::atomic::AtomicU32,
+    pub(crate) revocation_writes: std::sync::atomic::AtomicU32,
+}
+
+#[cfg(test)]
+impl Faults {
+    fn take(remaining: &std::sync::atomic::AtomicU32) -> StoreResult<()> {
+        use std::sync::atomic::Ordering;
+        match remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        }) {
+            Ok(_) => Err(crate::store::StoreError::Unexpected(anyhow::anyhow!(
+                "injected store failure"
+            ))),
+            Err(_) => Ok(()),
+        }
     }
 }
 

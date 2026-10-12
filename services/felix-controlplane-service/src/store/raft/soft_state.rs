@@ -28,12 +28,12 @@ use tokio::time::Instant;
 
 use crate::model::{Node, NodeLifecycle};
 use crate::raft::{LeaderService, NotLeader, RaftHandle};
-use crate::store::ControlPlaneStore;
 use crate::store::raft::command::{
     HeartbeatSeen, MetaCommand, MetaError, MetaResponse, MetaResult, NodeIncarnation,
     decode_result, encode_command, encode_result,
 };
 use crate::store::raft::state_machine::MetadataStateMachine;
+use crate::store::{AuthStore, ControlPlaneStore};
 
 /// How long a heartbeat waits for a quorum to confirm this member still
 /// leads. Short: a broker retries, and one stuck here holds nothing.
@@ -68,6 +68,13 @@ pub(crate) enum LeaderRequest {
     },
     ReleasePlacementLease {
         holder: String,
+    },
+    /// A principal's revocation cutoff, read on the leader so a member that
+    /// has not applied a revocation yet does not mint past it. A leader that
+    /// predates it fails to read it, and the asker reads its own state.
+    PrincipalRevokedAt {
+        tenant_id: String,
+        principal_id: String,
     },
 }
 
@@ -231,6 +238,23 @@ impl SoftState {
                 self.acquire_lease(&holder, ttl_millis).await
             }
             LeaderRequest::ReleasePlacementLease { holder } => self.release_lease(&holder).await,
+            LeaderRequest::PrincipalRevokedAt {
+                tenant_id,
+                principal_id,
+            } => {
+                // Read-index first: a deposed leader may be missing the
+                // revocation the asker needs.
+                if !self.handle.confirm_leadership().await {
+                    return Err(NotLeader);
+                }
+                Ok(self
+                    .machine
+                    .store()
+                    .principal_revoked_at(&tenant_id, &principal_id)
+                    .await
+                    .map(|revoked_at| MetaResponse::RevokedAt { revoked_at })
+                    .map_err(Into::into))
+            }
         }
     }
 

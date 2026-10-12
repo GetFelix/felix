@@ -67,3 +67,97 @@ fn a_failing_feed_is_warned_about_once_a_minute() {
     outage.ended();
     assert!(outage.should_warn(start + WARN_EVERY + Duration::from_secs(1)));
 }
+
+/// Records the last value each gauge was set to.
+#[derive(Clone, Default)]
+struct Gauges(Arc<std::sync::Mutex<HashMap<String, f64>>>);
+
+struct GaugeHandle {
+    name: String,
+    values: Arc<std::sync::Mutex<HashMap<String, f64>>>,
+}
+
+impl metrics::GaugeFn for GaugeHandle {
+    fn increment(&self, _: f64) {}
+    fn decrement(&self, _: f64) {}
+    fn set(&self, value: f64) {
+        self.values
+            .lock()
+            .expect("gauges")
+            .insert(self.name.clone(), value);
+    }
+}
+
+impl metrics::Recorder for Gauges {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        metrics::Counter::noop()
+    }
+    fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::from_arc(Arc::new(GaugeHandle {
+            name: key.name().to_string(),
+            values: Arc::clone(&self.0),
+        }))
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// A feed that is down from the start still exports the last-success
+/// gauge, starting at the process's first poll, so its age can be alerted on.
+#[test]
+fn the_last_success_gauge_exists_while_the_feed_is_down_from_the_start() {
+    let gauges = Gauges::default();
+    metrics::with_local_recorder(&gauges, || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let shutdown = CancellationToken::new();
+                let follower = tokio::spawn(follow_revocations(
+                    Arc::new(Revocations::default()),
+                    // Nothing listens on port 9 of the loopback.
+                    "http://127.0.0.1:9".to_string(),
+                    Duration::from_millis(10),
+                    None,
+                    shutdown.clone(),
+                ));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                shutdown.cancel();
+                follower.await.expect("follower");
+            });
+    });
+    let set = gauges
+        .0
+        .lock()
+        .expect("gauges")
+        .get(LAST_SUCCESS_GAUGE)
+        .copied();
+    assert!(set.is_some_and(|at| at > 0.0), "{set:?}");
+}

@@ -1057,14 +1057,29 @@ impl AuthStore for RaftStore {
         self.local().principal_revocations(since).await
     }
 
+    /// Read on the leader, so the answer includes every revocation already
+    /// acknowledged, not only those this member has applied. Falls back to
+    /// the local state while the leader predates the request.
     async fn principal_revoked_at(
         &self,
         tenant_id: &str,
         principal_id: &str,
     ) -> StoreResult<Option<i64>> {
-        self.local()
-            .principal_revoked_at(tenant_id, principal_id)
-            .await
+        match self
+            .ask_leader(LeaderRequest::PrincipalRevokedAt {
+                tenant_id: tenant_id.to_string(),
+                principal_id: principal_id.to_string(),
+            })
+            .await?
+        {
+            Some(MetaResponse::RevokedAt { revoked_at }) => Ok(revoked_at),
+            Some(_) => Err(unexpected_shape("revoked at")),
+            None => {
+                self.local()
+                    .principal_revoked_at(tenant_id, principal_id)
+                    .await
+            }
+        }
     }
 }
 

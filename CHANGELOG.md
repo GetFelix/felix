@@ -16,15 +16,29 @@ for what the current release guarantees.
   it got before the revocation (#1205). `/token/delegate` checked the
   revocation cutoffs against the user's token only, and trusted
   `token.delegate` from the caller's token, which stays valid for its TTL. Now
-  `/token/delegate`, `actor_token` on `/token/exchange`, and a refresh of a
-  chain bound to a gateway refuse a gateway revoked since its token (or the
-  chain's last link) was issued, or one that current RBAC no longer grants
-  `token.delegate`. A refused refresh ends the chain.
+  `/token/delegate` and `actor_token` on `/token/exchange` refuse, with
+  `actor_refused`, a gateway whose token predates a revocation of it or that
+  current RBAC no longer grants `token.delegate`. A refresh of a user chain
+  bound to a gateway is refused, and the chain ended, once RBAC no longer
+  grants the gateway `token.delegate`.
+- Revocation cutoffs are read on the Raft leader when minting or delegating,
+  so a member that has not applied a revocation yet no longer mints past it.
+- Deleting an IdP issuer, or changing how its tokens are read, revokes the
+  tenant's sessions, as removing a rule that reached an IdP group does.
+
+### Changed
+- An RBAC removal whose revocation cannot be recorded is retried, then
+  answered with `500`, instead of succeeding with only a log line. A Raft
+  control plane part-way through an upgrade still succeeds with a warning.
+- `/token/refresh` does its store reads before spending the refresh token, so
+  a failed read no longer turns the client's retry into a replay that ends
+  the chain.
 
 ### Added
-- Brokers export `felix_revocation_feed_last_success_seconds` and
-  `felix_revocation_feed_poll_errors_total`, and log a warning (repeated every
-  minute) while they cannot poll the revocation feed. `docs/auth.md` now states
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
   how revocation fails open meanwhile, and the clock-skew bound on revocation
   cutoffs across control-plane members.
 

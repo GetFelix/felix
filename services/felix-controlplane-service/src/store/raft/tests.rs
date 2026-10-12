@@ -735,3 +735,30 @@ async fn a_may_act_record_waits_for_every_member() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// Revocation cutoffs are read on the leader, so a member that has not
+/// applied a revocation yet still sees it. Modelled with a second store over
+/// the same group whose own state is empty, as a lagging follower's would be.
+#[tokio::test]
+async fn revocation_cutoffs_are_read_on_the_leader() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leader = single_node_store(dir.path()).await;
+    leader
+        .revoke_principals("t1", vec!["p:gateway".to_string()], 1_000)
+        .await
+        .expect("revoke");
+    let empty = Arc::new(MetadataStateMachine::new(Arc::new(InMemoryStore::new(
+        StoreConfig {
+            changes_limit: 100,
+            change_retention_max_rows: Some(1_000),
+        },
+    ))));
+    let behind = RaftStore::new(leader.handle.clone(), empty);
+    assert_eq!(
+        behind
+            .principal_revoked_at("t1", "p:gateway")
+            .await
+            .expect("read"),
+        Some(1_000)
+    );
+}

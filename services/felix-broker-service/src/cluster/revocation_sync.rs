@@ -56,6 +56,9 @@ pub(crate) async fn follow_revocations(
             return;
         }
     };
+    // Started at now, so a feed that is down from the start still shows an
+    // age that grows, rather than no series to alert on.
+    mark_polled();
     let mut since = 0;
     let mut outage = Outage::default();
     loop {
@@ -127,12 +130,16 @@ impl Outage {
         if self.last_warned.take().is_some() {
             tracing::info!("the principal revocation feed is reachable again");
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        metrics::gauge!(LAST_SUCCESS_GAUGE).set(now);
+        mark_polled();
     }
+}
+
+fn mark_polled() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    metrics::gauge!(LAST_SUCCESS_GAUGE).set(now);
 }
 
 async fn fetch(

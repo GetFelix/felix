@@ -28,12 +28,13 @@ use crate::auth::felix_token::{
     BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, FelixClaims, TenantSigningKeys, mint_delegated_token,
     verify_token_for,
 };
+use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::authorize::{
     ACTION_TOKEN_DELEGATE, ParsedObject, object_within_scope, parse_permission,
 };
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
-use crate::auth::rbac::policy_store::GroupingRule;
+use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::auth::refresh_token::Narrowing;
 
 /// RFC 8693's `grant_type` for a token exchange.
@@ -172,7 +173,7 @@ pub async fn delegate_token(
     // The caller's own token proves nothing about now: one issued before its
     // principal was revoked stays valid here until it expires.
     if let Some(reason) = actor_cut_off(&state, &tenant_id, &actor.sub, actor.iat).await? {
-        return Err(refused(Refusal::Forbidden, reason));
+        return Err(refused(Refusal::ActorRefused, reason));
     }
     // A revoked token stays revoked: delegating it would mint one newer than
     // the revocation.
@@ -261,10 +262,9 @@ pub(crate) async fn verified_actor(
     Ok(claims.sub)
 }
 
-/// Why `actor` may no longer delegate on the strength of something issued
-/// at `issued_at` (its token, or the refresh token naming it), if it may not:
-/// its principal was revoked since, or current RBAC no longer grants it
-/// `token.delegate`.
+/// Why `actor` may no longer delegate on the strength of a token issued at
+/// `issued_at`, if it may not: its principal was revoked since, or current
+/// RBAC no longer grants it `token.delegate`.
 pub(crate) async fn actor_cut_off(
     state: &AppState,
     tenant_id: &str,
@@ -279,59 +279,87 @@ pub(crate) async fn actor_cut_off(
     if revoked_at.is_some_and(|revoked_at| issued_at <= revoked_at) {
         return Ok(Some("the actor was revoked"));
     }
-    if !grants_token_delegate_now(state, tenant_id, actor).await? {
-        return Ok(Some(
-            "the actor no longer holds token.delegate on the tenant",
-        ));
+    let rules = DelegateRules::load(state, tenant_id).await?;
+    if !rules.grant(tenant_id, actor).await? {
+        return Ok(Some(NO_LONGER_GRANTED));
     }
     Ok(None)
 }
 
-/// Whether the tenant's rules grant `principal` `token.delegate` now.
-///
-/// The principal's IdP groups are not known here, only to the IdP, so it is
-/// counted as a member of every group the rules name. A removed group grant
-/// still shows up: removing a rule that reaches a group revokes the tenant.
-async fn grants_token_delegate_now(
-    state: &AppState,
-    tenant_id: &str,
-    principal: &str,
-) -> Result<bool, ApiError> {
-    let policies = state
-        .store
-        .list_rbac_policies(tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load policies", &err))?;
-    let mut groupings = state
-        .store
-        .list_rbac_groupings(tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load groupings", &err))?;
-    let mut groups: Vec<String> = policies
-        .iter()
-        .map(|policy| &policy.subject)
-        .chain(groupings.iter().flat_map(|rule| [&rule.user, &rule.role]))
-        .filter(|subject| subject.starts_with("group:"))
-        .cloned()
-        .collect();
-    groups.sort();
-    groups.dedup();
-    for role in groups {
-        groupings.push(GroupingRule {
-            user: principal.to_string(),
-            role,
-        });
+/// The refusal for an actor current RBAC no longer grants `token.delegate`.
+pub(crate) const NO_LONGER_GRANTED: &str = "the actor no longer holds token.delegate on the tenant";
+
+/// The tenant's RBAC rules and trusted issuers, loaded up front so a caller
+/// can do its reads before it commits to anything.
+pub(crate) struct DelegateRules {
+    pub(crate) policies: Vec<PolicyRule>,
+    pub(crate) groupings: Vec<GroupingRule>,
+    pub(crate) issuers: Vec<IdpIssuerConfig>,
+}
+
+impl DelegateRules {
+    pub(crate) async fn load(state: &AppState, tenant_id: &str) -> Result<Self, ApiError> {
+        Ok(Self {
+            policies: state
+                .store
+                .list_rbac_policies(tenant_id)
+                .await
+                .map_err(|err| api_internal("failed to load policies", &err))?,
+            groupings: state
+                .store
+                .list_rbac_groupings(tenant_id)
+                .await
+                .map_err(|err| api_internal("failed to load groupings", &err))?,
+            issuers: state
+                .store
+                .list_idp_issuers(tenant_id)
+                .await
+                .map_err(|err| api_internal("failed to load issuers", &err))?,
+        })
     }
-    let enforcer = build_enforcer(&policies, &groupings, tenant_id)
-        .await
-        .map_err(|err| {
-            tracing::error!(error = ?err, "failed to build rbac enforcer");
-            api_internal_message("failed to build enforcer")
-        })?;
-    Ok(holds_token_delegate(
-        &effective_permissions(&enforcer, principal, tenant_id),
-        tenant_id,
-    ))
+
+    /// Whether these rules grant `principal` `token.delegate` on the tenant.
+    ///
+    /// The principal's IdP groups are not known here, so it counts as a
+    /// member of every group the rules name from an issuer the tenant still
+    /// trusts, and of bare legacy names only while those are honoured.
+    /// Removing a rule that reaches a group, or an issuer, revokes the whole
+    /// tenant, which the cutoff check catches.
+    pub(crate) async fn grant(&self, tenant_id: &str, principal: &str) -> Result<bool, ApiError> {
+        let legacy = crate::auth::exchange::legacy_unscoped_groups();
+        let trusted = |group: &str| match group.split_once('#') {
+            Some((issuer, _)) => self.issuers.iter().any(|item| item.issuer == issuer),
+            None => legacy,
+        };
+        let mut groups: Vec<&String> = self
+            .policies
+            .iter()
+            .map(|policy| &policy.subject)
+            .chain(
+                self.groupings
+                    .iter()
+                    .flat_map(|rule| [&rule.user, &rule.role]),
+            )
+            .filter(|subject| subject.strip_prefix("group:").is_some_and(trusted))
+            .collect();
+        groups.sort();
+        groups.dedup();
+        let mut groupings = self.groupings.clone();
+        groupings.extend(groups.into_iter().map(|role| GroupingRule {
+            user: principal.to_string(),
+            role: role.clone(),
+        }));
+        let enforcer = build_enforcer(&self.policies, &groupings, tenant_id)
+            .await
+            .map_err(|err| {
+                tracing::error!(error = ?err, "failed to build rbac enforcer");
+                api_internal_message("failed to build enforcer")
+            })?;
+        Ok(holds_token_delegate(
+            &effective_permissions(&enforcer, principal, tenant_id),
+            tenant_id,
+        ))
+    }
 }
 
 /// Whether `claims` hold `token.delegate` over `tenant_id` in their own

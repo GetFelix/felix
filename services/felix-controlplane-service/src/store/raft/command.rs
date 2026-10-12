@@ -485,6 +485,11 @@ pub enum MetaResponse {
     NotLeaderReport,
     /// The placement lease is held by someone else and has not expired.
     NoPlacementLease,
+    /// A principal's revocation cutoff, as the leader holds it. Only ever an
+    /// answer to a leader request, never written to the log.
+    RevokedAt {
+        revoked_at: Option<i64>,
+    },
 }
 
 /// `StoreError`, flattened into something that serializes and compares.

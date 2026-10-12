@@ -195,7 +195,7 @@ felix_broker_lease_refusals_total           # writes and reads refused after a l
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
 felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
-felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations
+felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations (start time until one succeeds)
 felix_revocation_feed_poll_errors_total     # failed polls of that feed
 ```
 

@@ -50,7 +50,8 @@ verify or lacks `token.delegate` makes the exchange a `403` with code
 Both endpoints check the gateway against current RBAC and its revocations, not
 only its token. Once a gateway loses `token.delegate` or is revoked, its
 unexpired `felix-controlplane` token can no longer bind or delegate user
-tokens, and a user chain bound to it stops refreshing.
+tokens. A user chain bound to it stops refreshing once current RBAC no longer
+grants it `token.delegate`.
 So a gateway can delegate the
 tokens minted for it, and not a token taken from a browser, a log or another
 gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for

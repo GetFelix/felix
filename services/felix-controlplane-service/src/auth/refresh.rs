@@ -25,6 +25,7 @@ use crate::auth::felix_token::mint_token_may_act;
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::refresh_token::{self, RefreshToken, RefreshTokenTake};
+use crate::store::StoreError;
 
 /// How long a refresh token is good for.
 ///
@@ -188,6 +189,18 @@ pub async fn refresh_token_handler(
         return Err(unusable());
     };
 
+    // Every store read happens before the token is spent. A read that fails
+    // after it would make the client's retry look like a replay and end the
+    // whole chain.
+    let rules = crate::auth::delegate::DelegateRules::load(&state, &tenant_id).await?;
+    let keys = match state.store.get_tenant_signing_keys(&tenant_id).await {
+        Ok(keys) => keys,
+        // A tenant without keys holds no refresh token worth spending, and
+        // answering otherwise would say which tenants exist.
+        Err(StoreError::NotFound(_)) => return Err(unusable()),
+        Err(err) => return Err(api_internal("failed to load signing keys", &err)),
+    };
+
     let now = now_secs();
     let take = state
         .store
@@ -246,32 +259,18 @@ pub async fn refresh_token_handler(
 
     // Re-evaluated, never carried over: a grant removed since the last exchange
     // has to stop working at the next refresh.
-    let policies = state
-        .store
-        .list_rbac_policies(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load policies", &err))?;
-    let mut groupings = state
-        .store
-        .list_rbac_groupings(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load groupings", &err))?;
-    let issuers = state
-        .store
-        .list_idp_issuers(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load issuers", &err))?;
+    let mut groupings = rules.groupings.clone();
     crate::auth::exchange::add_group_claim_groupings(
         &mut groupings,
         &record.principal_id,
         &refreshable_groups(
             &record.groups,
-            &issuers,
+            &rules.issuers,
             crate::auth::exchange::legacy_unscoped_groups(),
         ),
     );
 
-    let enforcer = build_enforcer(&policies, &groupings, &tenant_id)
+    let enforcer = build_enforcer(&rules.policies, &groupings, &tenant_id)
         .await
         .map_err(|err| {
             tracing::error!(error = ?err, "failed to build rbac enforcer");
@@ -300,31 +299,40 @@ pub async fn refresh_token_handler(
             .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }
-    // A chain minted for a gateway to delegate ends with that gateway's right
-    // to delegate, or the refreshed token would outlive its revocation.
+    // A chain minted for a gateway to delegate ends once the gateway may no
+    // longer delegate. Revocations of the gateway are not checked here: they
+    // follow every RBAC edit that reaches it, or the whole tenant, and ending
+    // the users' chains for those would be a logout. `/token/delegate` checks
+    // them against the gateway's own token instead.
     if let Some(actor) = record
         .narrowing
         .as_ref()
         .and_then(|narrowing| narrowing.may_act.as_deref())
-        && let Some(reason) =
-            crate::auth::delegate::actor_cut_off(&state, &tenant_id, actor, record.issued_at_secs)
-                .await?
+        && !rules.grant(&tenant_id, actor).await?
     {
         state
             .store
             .revoke_refresh_family(&tenant_id, &record.family_id)
             .await
             .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
-        return Err(refused(Refusal::Forbidden, reason));
+        return Err(refused(
+            Refusal::Forbidden,
+            crate::auth::delegate::NO_LONGER_GRANTED,
+        ));
     }
 
-    let keys = state
-        .store
-        .get_tenant_signing_keys(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to load signing keys", &err))?;
-
-    crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &record.principal_id).await?;
+    // The token is spent, so a failed read here must not fail the refresh.
+    // Without the wait, a token minted in a revocation's second is refused by
+    // brokers and the client refreshes again.
+    if let Err(err) =
+        crate::auth::revocation::wait_out_revocation(&state, &tenant_id, &record.principal_id).await
+    {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            status = %err.status,
+            "could not read revocations for a refresh; minting without waiting",
+        );
+    }
     let access_ttl = crate::auth::exchange::access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,

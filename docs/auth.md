@@ -385,20 +385,26 @@ too, and ends its chain.
 A revocation is a cutoff time recorded for one principal of a tenant. Every
 broker token of that principal issued at or before it is refused, and every
 stream such a token opened is ended. A delegated token is also revoked when its
-actor is. Three things record one:
+actor is. These record one:
 
 - `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`, for the principal named.
 - Removing a policy (`DELETE /v1/tenants/{t}/rbac/policies`), for the policy's
   subject and everyone who reaches it through role assignments.
 - Removing a role assignment (`DELETE /v1/tenants/{t}/rbac/groupings`), for
   the assignment's user and everyone who reaches it.
+- Deleting an IdP issuer, or changing how its tokens are read (keys,
+  audiences, subject or groups claim), for every principal of the tenant.
 
 When the subjects a removal reaches include an IdP group (`group:...`), the
 control plane cannot tell who its members are, so the revocation covers every
 principal of the tenant (`principal_id` `*`). Every broker session in the
-tenant then has to authenticate again. An RBAC removal whose revocation cannot
-be recorded, as during an upgrade, still succeeds and is logged as a warning;
-the sessions it reached keep their rights until their tokens expire.
+tenant then has to authenticate again. The change is made first and the
+revocation recorded after it, retried a few times. If it still cannot be
+recorded, the request answers `500` saying so, and the sessions keep their
+rights until their tokens expire or until `refresh-tokens/revoke` is called for
+them. The one exception is a Raft control plane part-way through an upgrade,
+which cannot record revocations at all: the change succeeds and the skipped
+revocation is logged as a warning.
 
 Brokers poll `GET /v1/principal-revocations/changes?since=<n>` on the catalog
 sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), with the same
@@ -425,8 +431,11 @@ its principal until that second has passed (at most two seconds, for clock
 skew between members). `/token/delegate` refuses a subject token issued at or
 before a revocation of its subject or of the caller, and a caller whose own
 token was issued at or before a revocation of it. `actor_token` on
-`/token/exchange` is checked the same way, and so is the gateway a refresh
-chain names (see [Delegated tokens](#delegated-tokens)).
+`/token/exchange` is checked the same way (see
+[Delegated tokens](#delegated-tokens)). A revocation of a gateway does not end
+the refresh chains of the users behind it, since RBAC edits that merely reach
+the gateway, or the whole tenant, record one; the gateway needs a
+`felix-controlplane` token minted after it to delegate again.
 
 #### While a broker cannot reach the feed
 
@@ -445,7 +454,9 @@ The broker logs a warning when a poll fails, again every minute while polls
 keep failing, and an info line when the feed is back.
 `felix_revocation_feed_poll_errors_total` counts failed polls, and
 `felix_revocation_feed_last_success_seconds` is the Unix time of the last good
-one. Alert on `time() - felix_revocation_feed_last_success_seconds` growing
+one, or of when the broker started following the feed if no poll has
+succeeded yet, so a feed that is down from the start still shows a growing
+age. Alert on `time() - felix_revocation_feed_last_success_seconds` growing
 past a few sync intervals.
 
 A broker does not refuse new streams while the feed is down. It verifies
@@ -459,14 +470,18 @@ end the open streams, which are the larger exposure.
 A cutoff and a token's `iat` are both wall-clock seconds, taken by whichever
 control-plane member served the request: the cutoff by the member that took
 the revoke call or the RBAC removal, `iat` by the member that minted the token.
-Under the Raft store (and with several replicas over one Postgres) these can be
-different machines, and under Raft each reads cutoffs from its own applied
-state. A token minted just before the revocation by a member whose clock runs
-ahead, or that had not applied the revocation yet, can carry an `iat` after
-the cutoff and survive it. The window is how far past the cutoff that member's
-own clock read when it applied the revocation: clock skew plus apply lag,
-normally milliseconds. A member whose clock is behind fails the other way,
-minting tokens the cutoff refuses once the two-second wait runs out.
+Under the Raft store, and with several replicas over one Postgres, these can be
+different machines. Every check of a cutoff when minting or delegating reads
+it on the Raft leader after a read-index, so it sees every revocation already
+acknowledged, whatever the asking member has applied. (While the leader
+predates that read, a member reads its own state, and its apply lag adds to the
+window below.)
+
+That leaves clock skew. A token minted just before a revocation, on a member
+whose clock runs `d` seconds ahead of the member that took the revocation, can
+carry an `iat` up to `d` seconds after the cutoff and survive it. A member
+whose clock is behind fails the other way: once the two-second mint wait runs
+out, it mints tokens the cutoff refuses.
 
 Keep the members' clocks synchronized; token expiry checks already rely on
 that, with 5 s of leeway. A monotonic revocation number in place of a time
@@ -598,10 +613,12 @@ not enough, since a gateway's `felix-controlplane` token stays valid for its
 whole TTL after the gateway is revoked. The code is `actor_refused`,
 never `forbidden`, so the gateway can tell a problem with its own credential
 from a user without permissions. Every token refreshed from that exchange's refresh
-token carries the same claim, and the refresh checks the gateway again. If the
-gateway has been revoked since the chain's last link was issued, or no longer
-holds `token.delegate`, the refresh is refused with `403` and the chain ends;
-the user exchanges again through a gateway that can still delegate. `/token/delegate` refuses a subject token whose
+token carries the same claim, and the refresh checks that current RBAC still
+grants the gateway `token.delegate`. If it does not, the refresh is refused
+with `403` and the chain ends; the user exchanges again through a gateway that
+can still delegate. A revocation of the gateway alone does not end the chain:
+`/token/delegate` checks it against the gateway's own token instead.
+`/token/delegate` refuses a subject token whose
 `may_act.sub` is not the caller, so a broker token taken from a browser, a log
 or another gateway cannot be bound to a different gateway's certificate.
 
@@ -655,9 +672,12 @@ Content-Type: application/json
   the same tenant carrying `token.delegate:tenant:{tenant_id}`, issued after
   any revocation of the caller, and current RBAC must still grant the caller
   `token.delegate`. The caller's IdP groups are not known here, so a grant
-  through an IdP group counts for any caller whose token carries the
-  permission. Removing such a grant revokes the whole tenant, which the
-  revocation check catches.
+  to an IdP group counts for a caller whose token carries the permission when
+  the group's issuer is one the tenant trusts (a bare legacy group name only
+  while `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` is on). Removing such a
+  grant, or the issuer, revokes the whole tenant, which the revocation check
+  catches. A caller refused for either reason gets `403` with code
+  `actor_refused`; mint a new `felix-controlplane` token and try again.
 - `subject_token` must be a `felix-broker` token of that tenant that is not
   itself delegated (one hop only), and its `may_act` must name the caller.
 - The result is never wider than the subject token: the same tenant and

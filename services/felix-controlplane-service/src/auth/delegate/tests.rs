@@ -16,6 +16,7 @@ const ALICE_READ: &str = "stream.subscribe:stream:t1/ns/alice-feed";
 
 struct Fixture {
     state: AppState,
+    memory: std::sync::Arc<crate::store::memory::InMemoryStore>,
     keys: TenantSigningKeys,
     other_keys: TenantSigningKeys,
 }
@@ -43,7 +44,8 @@ async fn fixture() -> Fixture {
             .expect("policy");
     }
     Fixture {
-        state: crate::test_support::app_state_ready(store),
+        state: crate::test_support::app_state_ready(store.clone()),
+        memory: store,
         keys,
         other_keys,
     }
@@ -632,9 +634,12 @@ async fn a_revoked_gateways_token_cannot_bind_or_delegate_a_newer_user_token() {
     );
     // Alice's token is newer than the revocation; the gateway's is not.
     let fresh_alice = alice_token(&fixture.keys, "t1", Duration::from_secs(120));
+    let err = delegate(&fixture, "t1", bearer(&stale), request(fresh_alice))
+        .await
+        .expect_err("a revoked caller");
     assert_eq!(
-        status(delegate(&fixture, "t1", bearer(&stale), request(fresh_alice.clone())).await),
-        StatusCode::FORBIDDEN
+        (err.status, err.body.code.as_str()),
+        (StatusCode::FORBIDDEN, "actor_refused")
     );
 
     // Revocation ends sessions, not the right: a token issued since works.
@@ -695,34 +700,132 @@ async fn a_gateway_whose_grant_is_gone_cannot_bind_or_delegate() {
     assert_eq!(err.status, StatusCode::FORBIDDEN);
 }
 
-/// A user's chain bound to a gateway stops refreshing once the gateway is
-/// revoked, and is ended, so it cannot carry `may_act` past the revocation.
+/// Revocations reaching a gateway follow routine RBAC edits, or cover the
+/// whole tenant, so they must not log out the users behind it: a chain bound
+/// to the gateway keeps refreshing. The gateway's token from before the
+/// revocation still cannot delegate.
 #[tokio::test]
-async fn a_chain_bound_to_a_revoked_gateway_does_not_refresh() {
+async fn a_revocation_reaching_the_gateway_does_not_end_the_users_chains() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway.clone())
+        .await
+        .expect("bound");
+    // As an RBAC removal that reached the gateway, and one that reached an
+    // IdP group, record.
+    fixture
+        .state
+        .store
+        .revoke_principals(
+            "t1",
+            vec![
+                "p:test".to_string(),
+                crate::auth::revocation::ALL_PRINCIPALS.to_string(),
+            ],
+            now_secs(),
+        )
+        .await
+        .expect("revoke");
+    let Json(refreshed) = refresh(&fixture, bound.refresh_token)
+        .await
+        .expect("still refreshes");
+    let err = delegate(
+        &fixture,
+        "t1",
+        bearer(&gateway),
+        request(refreshed.felix_token),
+    )
+    .await
+    .expect_err("the gateway's token predates its revocation");
+    assert_eq!(
+        (err.status, err.body.code.as_str()),
+        (StatusCode::FORBIDDEN, "actor_refused")
+    );
+}
+
+fn refresh(
+    fixture: &Fixture,
+    refresh_token: String,
+) -> impl std::future::Future<Output = Result<Json<crate::auth::refresh::TokenRefreshResponse>, ApiError>>
+{
+    refresh_token_handler(
+        Path("t1".to_string()),
+        State(fixture.state.clone()),
+        Json(TokenRefreshRequest {
+            refresh_token,
+            audience: None,
+        }),
+    )
+}
+
+/// A store read that fails during a refresh must leave the refresh token
+/// usable: a retry that looked like a replay would end the whole chain.
+#[tokio::test]
+async fn a_failed_read_does_not_spend_the_refresh_token() {
     let fixture = fixture().await;
     grant_alice(&fixture).await;
     let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
     let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
     fixture
+        .memory
+        .faults
+        .rbac_reads
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let err = refresh(&fixture, bound.refresh_token.clone())
+        .await
+        .expect_err("the read failed");
+    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let Json(_) = refresh(&fixture, bound.refresh_token)
+        .await
+        .expect("the retry is not a replay");
+}
+
+/// A grant of `token.delegate` through an IdP group counts only for a group
+/// of an issuer the tenant trusts, and a bare group name only in legacy mode.
+#[tokio::test]
+async fn only_a_trusted_issuers_group_can_grant_token_delegate() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    fixture
         .state
         .store
-        .revoke_principals("t1", vec!["p:test".to_string()], now_secs())
+        .remove_rbac_policy("t1", delegate_grant("p:test"))
         .await
-        .expect("revoke");
-    let refresh = |token: String| {
-        refresh_token_handler(
-            Path("t1".to_string()),
-            State(fixture.state.clone()),
-            Json(TokenRefreshRequest {
-                refresh_token: token,
-                audience: None,
-            }),
-        )
-    };
-    let err = refresh(bound.refresh_token)
+        .expect("remove direct grant");
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    for group in ["group:https://idp.example#gateways", "group:gateways"] {
+        fixture
+            .state
+            .store
+            .add_rbac_policy("t1", delegate_grant(group))
+            .await
+            .expect("group grant");
+    }
+    let err = exchange_for_alice(&fixture, gateway.clone())
         .await
-        .expect_err("the actor was revoked");
-    assert_eq!(err.status, StatusCode::FORBIDDEN);
+        .expect_err("no trusted issuer names the group");
+    assert_eq!(err.body.code, "actor_refused");
+
+    fixture
+        .state
+        .store
+        .upsert_idp_issuer("t1", issuer("https://idp.example"))
+        .await
+        .expect("issuer");
+    exchange_for_alice(&fixture, gateway)
+        .await
+        .expect("a trusted issuer's group");
+}
+
+fn issuer(issuer: &str) -> crate::auth::idp_registry::IdpIssuerConfig {
+    serde_json::from_value(serde_json::json!({
+        "issuer": issuer,
+        "audiences": ["felix"],
+        "jwks_url": format!("{issuer}/jwks"),
+        "claim_mappings": {"subject_claim": "sub", "groups_claim": "groups"},
+    }))
+    .expect("issuer config")
 }
 
 /// A gateway's own connection-only chain is not bound to an actor, so the
