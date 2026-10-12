@@ -126,6 +126,13 @@ async fn a_change_and_its_revocation_commit_together(store: &dyn ControlPlaneAut
             revoked_at: 300,
         })
     };
+    // Postgres holds rules only for a tenant that exists.
+    let _ = store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: CHANGE_TENANT.to_string(),
+            display_name: "Revocation change".to_string(),
+        })
+        .await;
     store
         .add_rbac_policy(CHANGE_TENANT, policy.clone())
         .await
