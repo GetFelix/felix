@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791817432066,
+  "lastUpdate": 1791827582157,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36762,6 +36762,72 @@ window.BENCHMARK_DATA = {
             "range": "64.30",
             "unit": "us",
             "extra": "trials: 5\nmedian: 624.00\nmean: 661.00\nstdev: 64.30\ncv: 9.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "50c9760186628dc1c248ea836ff36124178e301d",
+          "message": "fix(replication): ship dead letters before cursors and fence group logs at promotion (#1202) (#1207)\n\n* fix(replication): ship dead letters before cursors and fence group logs at promotion (#1202)\n\nA follower could store a group's cursor past a record before the dead\nletter for it: the leader shipped cursors first, in every path. A leader\ndying between the two left a promoted follower that neither redelivered\nthe record nor listed it as dead.\n\nDead letters now go first, in the exchange ride-along, at the end of a\npass and on a drain. The cursor log's tail is read before the dead\nletters ship, and cursors go only up to it and only to a follower that\nthen holds every dead letter written before it, so a cursor written in\nbetween waits for the next pass.\n\nA promoted stream leader also fences the dead-letter and cursor logs\nafter its records and takes the furthest-ahead copy of each from a\nmajority, on replicas offering the new GROUP_FENCE capability (1 << 8).\nWith too few such replicas to make a majority the shard opens on its\nfenced records as before. On a Quorum stream the report leaves out a\nfollower short of what a majority holds of either group log, as for a\nQuorum cache's counters. Cutting a group log back now drops its index.\n\nSpec-Unaffected: FelixShard.tla has no separate group log; cursors and dead letters are folded into the shard's one log, where a follower holds a prefix (so a cursor without the earlier dead letter is unrepresentable) and AnswerFence/OpenForWrites already fence and take the furthest copy. This change makes the implementation match that abstraction; docs/formal/README.md now states the two assumptions it rests on.\n\n* fix(replication): fence and take a stream's group logs as one pair (#1202)\n\nReview of the first cut found the dead-letter guarantee could still break\nat promotion and in a few other places:\n\n- The two group logs were fenced on independent majorities and each taken\n  from its own furthest copy, so a leader could take one replica's cursors\n  beside another's dead letters. Both are now fenced in one round beside\n  the records' fence, a replica counting only once it took both, and the\n  pair is taken whole from the one replica furthest ahead, ranked by dead\n  letters then cursors.\n- The group logs carried no generation of their own on a leader, so a\n  longer older copy could outrank a newer one. A leader now records where\n  its generation begins on both, at open and when its fence opens it, and\n  ships them labelled to followers offering GROUP_FENCE.\n- Any copy dropping dead letters (a follower's divergent suffix, a\n  rebuild, a promoted leader's superseded tail) first drops the cursors of\n  that generation or later, so a crash between leaves cursors short.\n- The caught-up limit intersected two per-log sets, which could be empty\n  under steady writes. Followers are now ranked by the pair.\n- A dead-letter log that fails to open ships no cursor.\n- A replica without consumer groups answers the group fence as empty logs,\n  and too few answers serve the leader's own consistent pair, so no group\n  log keeps a shard closed except a newer leader.\n\nSpec-Unaffected: FelixShard.tla's one log stands for the (dead letters, cursors) pair: both are fenced in the same round with a replica counted only once it took both, labelled with the same generations, and taken whole from the one copy furthest ahead, so the pair behaves as a single log does; docs/formal/README.md states this.\n\n* fix(groups): a cursor records the dead letters it needs, and is checked before it is served (#1202)\n\nEvery cut of the cursor log was inferred from epochs and orderings, because\na cursor record did not say which dead letters it depended on. That\nover-dropped whole generations, could drop a group outright (which a seek\nif_new then recreated at the tail), missed the case where the two logs\nflush independently and a crash keeps one tail and not the other, and\nunder-cut when labels were asymmetric.\n\nA cursor value now carries what it needs of the dead-letter log beneath it:\nthe log's end when the commit was made and the generation that wrote the\nentry at that end, plus the group's origin (where it was last placed\nneeding no dead letter). An 8-byte value from before is read as needing\nnothing. Dead letters are synced before a cursor that needs them, so one\ngeneration never writes two different entries at an offset a cursor\nrelies on.\n\nOne rule replaces every cut: before a broker serves a shard's groups, after\nit starts, begins a term, or has either group log rewritten by\nreplication, each group whose latest cursor does not stand on the\ndead-letter log it holds is put back, by appending, to its latest record\nthat does or to its origin. A group is never removed. A promoted leader\ntakes the dead-letter log of the replica furthest ahead and merges that\nreplica's cursors into its own, each group going to the further position;\nits own further cursors survive if they still stand.\n\nThe value is written once the fleet finalizes group_cursor_dependencies;\na lone broker writes it from the start.\n\nFelixGroups.tla models the two logs per replica, independent flushes,\ncrashes, the dependency check, the fence and selection, and the fallback,\nwith NoSkip; its twins drop the check, the generation, or the group.\n\nSpec-Unaffected: FelixShard.tla is unchanged; the group logs are now modelled on their own in FelixGroups.tla, registered in scripts/check_tla.sh.\n\n* fix(groups): sync dead letters before shipping them (#1202)\n\nTLC found the hole in FelixGroups.tla as first written: a leader shipped\nan unsynced dead letter, crashed and lost it, and at the same generation\nwrote another group's dead letter at that offset, then a cursor needing\nit. A follower holding the first took that cursor on promotion, and its\ndead-letter log had the length and generation the cursor named but the\nwrong entry. The leader now syncs its dead letters before it ships them,\nso one generation never puts two entries at one offset where both can be\nseen. FelixGroupsShipUnsynced.cfg is the twin.\n\nAlso: the group-state docs as built (storage format, replication design,\ninternal protocol, upgrades, the formal README) and the CHANGELOG.\n\nSpec-Unaffected: FelixShard.tla is unchanged; FelixGroups.tla models the group logs and is changed here.\n\n* docs(formal): check FelixGroups up to replica symmetry (#1202)\n\nSpec-Unaffected: FelixShard.tla is unchanged; only FelixGroups.tla and its configurations.\n\n* docs(formal): let a crash keep any synced-or-later prefix of each group log (#1202)\n\nSeparate flush actions multiplied interleavings without adding behaviour:\na crash now keeps, of each log, what was synced and any part of the rest.\n\nSpec-Unaffected: FelixShard.tla is unchanged; only FelixGroups.tla.\n\n* ci(formal): weigh the FelixGroups configurations by their measured time (#1202)\n\nSpec-Unaffected: no spec change; shard weights and the README's measured state counts.\n\n* docs(formal): make FelixGroups smaller without losing behaviour (#1202)\n\nA finish and the cursor passing it are one step (a finish never passed only\nredelivers), and a promotion fences the smallest majorities (the replica a\nlarger one takes from is in one of them).\n\nSpec-Unaffected: FelixShard.tla is unchanged; only FelixGroups.tla.\n\n* ci(formal): weigh FelixGroups by its measured time (#1202)\n\nSpec-Unaffected: no spec change; shard weights and measured state counts.",
+          "timestamp": "2026-10-12T10:46:47-07:00",
+          "tree_id": "f23b0e3ac4ce548f88259391e7ed6edd9175d154",
+          "url": "https://github.com/GetFelix/felix/commit/50c9760186628dc1c248ea836ff36124178e301d"
+        },
+        "date": 1791827577083,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "5.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 105.00\nstdev: 5.10\ncv: 4.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 148,
+            "range": "11.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 147.60\nstdev: 11.52\ncv: 7.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "552.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 426.00\nstdev: 552.34\ncv: 129.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 130.60\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 289,
+            "range": "10.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 289.00\nmean: 290.40\nstdev: 10.45\ncv: 3.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 484,
+            "range": "787.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 484.00\nmean: 877.40\nstdev: 787.66\ncv: 89.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
