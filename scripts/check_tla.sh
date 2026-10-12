@@ -178,7 +178,7 @@ expectations=(
   "FelixShardElect pass"
   "FelixShardElectNoBallot violates OneLeaderPerGeneration"
   "FelixShardElectStaleSet violates AckedHeldByLeader"
-  "FelixShardElectAdoptLeaders pass"
+  "FelixShardElectAdoptPromote pass"
   "FelixShardElectAdoptNoSetCheck violates AdoptedMatchesOpened"
   "FelixShardElectStepDown pass"
   "FelixShardElectHandoffLeaders pass"
@@ -258,7 +258,7 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardElectHandoffLeaders 3"
   "FelixShardElectStepDown 10"
-  "FelixShardElectAdoptLeaders 5"
+  "FelixShardElectAdoptPromote 5"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
 )
