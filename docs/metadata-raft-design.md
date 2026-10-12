@@ -517,6 +517,13 @@ restore, so until every member is at level 8 reports are recorded without it,
 and a restore copying only counters can be dropped by the stall window as
 before.
 
+Level 9 is two combined entries. `ChangeAuthAndRevoke` makes an auth change
+(a rule removed, an issuer changed or deleted) together with the revocation it
+calls for, and `RotateRefreshToken` spends a refresh token and stores its
+replacement. Until every member is at level 9, the proposer writes each as the
+two older entries it combines, so a failure between them can leave the first
+without the second, as before.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the

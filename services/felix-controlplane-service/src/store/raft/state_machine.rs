@@ -315,6 +315,25 @@ impl MetadataStateMachine {
                 .await
                 .map(|count| MetaResponse::Count { count })
                 .map_err(Into::into),
+            MetaCommand::ChangeAuthAndRevoke {
+                tenant_id,
+                change,
+                revocation,
+            } => store
+                .change_auth(&tenant_id, change, Some(revocation))
+                .await
+                .map(|()| MetaResponse::Unit)
+                .map_err(Into::into),
+            MetaCommand::RotateRefreshToken {
+                tenant_id,
+                token_id,
+                now_secs,
+                next,
+            } => store
+                .rotate_refresh_token(&tenant_id, &token_id, now_secs, next)
+                .await
+                .map(|take| MetaResponse::RefreshTokenTake { take })
+                .map_err(Into::into),
             MetaCommand::RevokePrincipals {
                 tenant_id,
                 principal_ids,

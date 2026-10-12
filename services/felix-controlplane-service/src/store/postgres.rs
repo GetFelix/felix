@@ -575,6 +575,15 @@ impl AuthStore for PostgresStore {
         auth::remove_rbac_policy(self, tenant_id, &policy).await
     }
 
+    async fn change_auth(
+        &self,
+        tenant_id: &str,
+        change: crate::store::AuthChange,
+        revocation: Option<crate::store::Revocation>,
+    ) -> StoreResult<()> {
+        auth::change_auth(self, tenant_id, change, revocation).await
+    }
+
     async fn remove_rbac_grouping(
         &self,
         tenant_id: &str,
@@ -663,6 +672,24 @@ impl AuthStore for PostgresStore {
         now_secs: i64,
     ) -> StoreResult<RefreshTokenTake> {
         refresh_tokens::take_refresh_token(self, tenant_id, token_id, now_secs).await
+    }
+
+    async fn peek_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+    ) -> StoreResult<Option<RefreshToken>> {
+        refresh_tokens::peek_refresh_token(self, tenant_id, token_id).await
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+        now_secs: i64,
+        next: RefreshToken,
+    ) -> StoreResult<RefreshTokenTake> {
+        refresh_tokens::rotate_refresh_token(self, tenant_id, token_id, now_secs, next).await
     }
 
     async fn revoke_refresh_family(&self, tenant_id: &str, family_id: &str) -> StoreResult<u64> {

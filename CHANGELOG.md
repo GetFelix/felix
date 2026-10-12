@@ -11,6 +11,56 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Security
+- A revoked gateway can no longer delegate with a `felix-controlplane` token
+  it got before the revocation (#1205). `/token/delegate` checked the
+  revocation cutoffs against the user's token only, and trusted
+  `token.delegate` from the caller's token, which stays valid for its TTL. Now
+  `/token/delegate` and `actor_token` on `/token/exchange` refuse, with
+  `actor_refused`, a gateway whose token predates a revocation of it or that
+  current RBAC no longer grants `token.delegate`. A refresh of a user chain
+  bound to a gateway is refused, and the chain ended, once RBAC no longer
+  grants the gateway `token.delegate`.
+- Revocation cutoffs are read on the Raft leader when minting or delegating,
+  so a member that has not applied a revocation yet no longer mints past it.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts (an
+  audience dropped, the subject or groups claim changed, or `jwks_url` or
+  `discovery_url` changed), revokes the tenant's sessions, as removing a rule
+  that reached an IdP group does. Adding an audience revokes nobody.
+
+### Changed
+- An auth change that takes rights back (an RBAC rule removed, an issuer
+  deleted or narrowed) and its revocation are one store write: one Raft entry
+  (metadata level 9) or one Postgres transaction. A failed request changed
+  nothing and is safe to retry. Below level 9 the Raft proposer writes them
+  separately, as before.
+- `/token/refresh` does its store reads before spending the refresh token, and
+  spends it in the same write that stores the replacement (Raft level 9), so a
+  failed refresh no longer turns the client's retry into a replay that ends
+  the chain.
+- `/token/delegate` reads the subject's and the caller's revocation cutoffs in
+  one leader read.
+- A spent refresh token presented again with the right secret within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default; 0 turns it off) of its
+  rotation, while its replacement is unused, gets a working token instead of
+  revoking the chain. This covers a refresh whose answer was lost and two
+  concurrent refreshes. Replay detection is blind for that window. Postgres
+  migration `0027_refresh_token_rotation`; under Raft, metadata level 9.
+- Deleting an IdP issuer the tenant does not have answers `404` and revokes
+  nobody.
+
+**Upgrade note.** A Raft control plane needs every member at metadata level 9
+before auth changes and their revocations, and refresh rotations, are single
+entries.
+
+### Added
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+
 ### Fixed
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width

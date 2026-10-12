@@ -233,10 +233,19 @@ pub(super) async fn delete_idp_issuer(
     tenant_id: &str,
     issuer: &str,
 ) -> StoreResult<()> {
+    let mut conn = store.pool.acquire().await?;
+    delete_idp_issuer_on(&mut conn, tenant_id, issuer).await
+}
+
+async fn delete_idp_issuer_on(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    issuer: &str,
+) -> StoreResult<()> {
     sqlx::query("DELETE FROM idp_issuers WHERE tenant_id = $1 AND issuer = $2")
         .bind(tenant_id)
         .bind(issuer)
-        .execute(&store.pool)
+        .execute(conn)
         .await?;
     Ok(())
 }
@@ -372,6 +381,15 @@ pub(super) async fn remove_rbac_policy(
     tenant_id: &str,
     policy: &PolicyRule,
 ) -> StoreResult<()> {
+    let mut conn = store.pool.acquire().await?;
+    remove_rbac_policy_on(&mut conn, tenant_id, policy).await
+}
+
+async fn remove_rbac_policy_on(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    policy: &PolicyRule,
+) -> StoreResult<()> {
     let result = sqlx::query(
         "DELETE FROM rbac_policies \
          WHERE tenant_id = $1 AND subject = $2 AND object = $3 AND action = $4",
@@ -380,7 +398,7 @@ pub(super) async fn remove_rbac_policy(
     .bind(&policy.subject)
     .bind(&policy.object)
     .bind(&policy.action)
-    .execute(&store.pool)
+    .execute(conn)
     .await?;
     if result.rows_affected() == 0 {
         return Err(StoreError::NotFound("policy".into()));
@@ -393,13 +411,22 @@ pub(super) async fn remove_rbac_grouping(
     tenant_id: &str,
     grouping: &GroupingRule,
 ) -> StoreResult<()> {
+    let mut conn = store.pool.acquire().await?;
+    remove_rbac_grouping_on(&mut conn, tenant_id, grouping).await
+}
+
+async fn remove_rbac_grouping_on(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    grouping: &GroupingRule,
+) -> StoreResult<()> {
     let result = sqlx::query(
         "DELETE FROM rbac_groupings WHERE tenant_id = $1 AND user_id = $2 AND role = $3",
     )
     .bind(tenant_id)
     .bind(&grouping.user)
     .bind(&grouping.role)
-    .execute(&store.pool)
+    .execute(conn)
     .await?;
     if result.rows_affected() == 0 {
         return Err(StoreError::NotFound("grouping".into()));
@@ -717,4 +744,41 @@ pub(super) fn decode_key(value: &[u8], label: &str) -> StoreResult<[u8; 32]> {
     value
         .try_into()
         .map_err(|_| StoreError::Unexpected(anyhow!("invalid {label} length")))
+}
+
+/// [`crate::store::AuthStore::change_auth`]: the change and the revocation in
+/// one transaction.
+pub(super) async fn change_auth(
+    store: &PostgresStore,
+    tenant_id: &str,
+    change: crate::store::AuthChange,
+    revocation: Option<crate::store::Revocation>,
+) -> StoreResult<()> {
+    use crate::store::AuthChange;
+    let mut tx = store.pool.begin().await?;
+    match &change {
+        AuthChange::RemovePolicy(policy) => {
+            remove_rbac_policy_on(&mut tx, tenant_id, policy).await?
+        }
+        AuthChange::RemoveGrouping(grouping) => {
+            remove_rbac_grouping_on(&mut tx, tenant_id, grouping).await?
+        }
+        AuthChange::UpsertIssuer(issuer) => {
+            PostgresStore::upsert_idp_issuer_on(&mut tx, tenant_id, issuer).await?
+        }
+        AuthChange::DeleteIssuer(issuer) => {
+            delete_idp_issuer_on(&mut tx, tenant_id, issuer).await?
+        }
+    }
+    if let Some(revocation) = revocation {
+        super::revocations::revoke_principals_on(
+            &mut tx,
+            tenant_id,
+            revocation.principal_ids,
+            revocation.revoked_at,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }

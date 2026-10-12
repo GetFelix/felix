@@ -16,6 +16,19 @@ pub(super) async fn revoke_principals(
     revoked_at: i64,
 ) -> StoreResult<()> {
     let mut tx = store.pool.begin().await?;
+    revoke_principals_on(&mut tx, tenant_id, principal_ids, revoked_at).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The writes of [`revoke_principals`] inside the caller's transaction, which
+/// holds the write lock until it ends.
+pub(super) async fn revoke_principals_on(
+    tx: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    principal_ids: Vec<String>,
+    revoked_at: i64,
+) -> StoreResult<()> {
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(WRITE_LOCK)
         .execute(&mut *tx)
@@ -40,7 +53,6 @@ pub(super) async fn revoke_principals(
         .await?;
         seq += 1;
     }
-    tx.commit().await?;
     Ok(())
 }
 
