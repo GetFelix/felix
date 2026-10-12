@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791789032246,
+  "lastUpdate": 1791792763200,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36564,6 +36564,72 @@ window.BENCHMARK_DATA = {
             "range": "884.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 604.00\nmean: 1002.20\nstdev: 884.33\ncv: 88.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a69d7e9160e43359698a01e53ec26951fe62ad4",
+          "message": "fix(broker): honour subscriber byte budgets above 4 GiB; document memory bounds (#1203)\n\n* fix(broker): honour subscriber byte budgets above 4 GiB; document memory bounds\n\nA semaphore acquire takes at most u32::MAX permits, so ByteBudget\nsaturated the configured size to 4 GiB. Budgets above that now count in\npower-of-two units, each batch rounded up to a whole unit.\n\nDocs: worst-case queued memory without the total cap, Block holding\npublishers with no timeout, entry-count-only bounds on the replay ring\nand cache watch queues, and the drain-time wording in the replication\ndesign.\n\nCloses #1200\n\n* docs(broker): state the full per-subscriber memory bound and the unit sizes\n\nAn oversize batch still enters an empty queue, so a subscriber holds up to\nthe larger of its byte bound and its largest batch; with the bound at 0\nonly queue capacity times batch size limits it. Note the 32-bit semaphore\nlimit and gate the multi-GiB budget tests to 64-bit.",
+          "timestamp": "2026-10-12T00:22:36-07:00",
+          "tree_id": "79355720142ba0a648c1dbcf16fd066658660207",
+          "url": "https://github.com/GetFelix/felix/commit/2a69d7e9160e43359698a01e53ec26951fe62ad4"
+        },
+        "date": 1791792759382,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 72.80\nstdev: 0.45\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 97.20\nstdev: 1.92\ncv: 1.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 129,
+            "range": "11.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 131.20\nstdev: 11.19\ncv: 8.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 89.80\nstdev: 0.84\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "33.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 250.00\nstdev: 33.44\ncv: 13.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 923,
+            "range": "1100.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 923.00\nmean: 1280.00\nstdev: 1100.35\ncv: 85.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
