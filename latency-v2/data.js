@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791802621408,
+  "lastUpdate": 1791817432066,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -36696,6 +36696,72 @@ window.BENCHMARK_DATA = {
             "range": "815.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 387.00\nmean: 929.40\nstdev: 815.65\ncv: 87.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8844af0eace87c2e1f44e79bc1ead74f082b254e",
+          "message": "deps: read config YAML with serde-saphyr instead of serde_yaml_ng (#1212)\n\n* deps: read config YAML with serde-saphyr instead of serde_yaml_ng (#1211)\n\nserde_yaml_ng pulled in unsafe-libyaml, which RUSTSEC-2024-0449 marks\nunmaintained, and cargo deny fails on it. serde-saphyr is pure Rust and\nforbids unsafe in its own code.\n\nThe parser options are pinned in felix_common::yaml (and mirrored in\nfelix-client, which cannot depend on it) so config files keep the meaning\nthey had: only true/false are booleans, << is an ordinary key, duplicate\nkeys are refused, and errors do not quote the file.\n\n* deps: refuse unknown YAML tags, pin serde-saphyr to ~1.3 (#1211)\n\nUnknown tags such as `!custom` are refused. `!!binary` on a string is\nkept as written, because the old parser did that and decoding it would\nsilently change the value. The client's copy of the options is tested\nagainst the documented set, and felix-common's yaml tests now run without\nthe feature. The CHANGELOG is now exact about which errors still quote\nthe value and about cert_path.\n\n* deps: drop serde_yaml_ng from the Node and Python binding lockfiles (#1211)",
+          "timestamp": "2026-10-12T07:57:07-07:00",
+          "tree_id": "b37d6f00d42b8d59ec017187738e643b8f7afad6",
+          "url": "https://github.com/GetFelix/felix/commit/8844af0eace87c2e1f44e79bc1ead74f082b254e"
+        },
+        "date": 1791817428010,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.40\nstdev: 0.89\ncv: 0.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "7.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 244.40\nstdev: 7.09\ncv: 2.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "15.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 305.60\nstdev: 15.49\ncv: 5.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 218.60\nstdev: 2.19\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 447,
+            "range": "8.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 447.00\nmean: 445.00\nstdev: 8.15\ncv: 1.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 624,
+            "range": "64.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 624.00\nmean: 661.00\nstdev: 64.30\ncv: 9.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
