@@ -66,6 +66,8 @@ jobs:
             configs: FelixShardWalkHandoff FelixShardWalkHandoffNoWait
           - family: election
             configs: FelixShardWalkElect FelixShardWalkElectStaleSet
+          - family: swap
+            configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -111,7 +113,7 @@ jobs:
       matrix:
         config:
           - FelixShardElectHandoff
-          - FelixShardElectSet
+          - FelixShardElectAdoptTwoWrites
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove

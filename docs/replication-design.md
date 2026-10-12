@@ -559,60 +559,97 @@ elected leader waits for the lease until the control plane is back (issue
 1. *Detecting.* A follower uses the detector it already runs: a leader that
    has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
    default) is gone as far as that follower is concerned.
-2. *Standing in log order.* Each follower that suspects the leader waits a
-   short delay for its place in the set's order by (last generation,
-   length), the order a fence answer is ranked by, then stands. The replica
-   furthest ahead usually stands alone, and one behind it stands only if
-   that one did not.
-3. *The ballot.* A candidate takes the generation after the one it promised,
+2. *Pre-vote.* Before it persists anything, a follower that suspects the
+   leader asks its set whether it would get the next generation. A replica
+   says yes only if it has not heard its own leader within S, the asker's
+   log is at least as far ahead as its own by (last generation, length), and
+   the asker's set is no older than the one it knows. Nobody persists
+   anything for a pre-vote. The follower stands only on a majority of yeses,
+   its own included.
+3. *Standing in order.* A follower that won its pre-vote waits for its place
+   in the set's order by (last generation, length), ties broken by node id,
+   lower first: 300 ms per place, so in a set of three the second waits
+   300 ms and the third 600 ms. The replica furthest ahead usually stands
+   alone. A candidate whose round fails (refused, or split with another)
+   backs off for a random 200 to 800 ms before it tries again, doubling the
+   upper end on each failure up to 3 s.
+4. *The ballot.* A candidate takes the generation after the one it promised,
    persists the ballot `(generation, itself)`, and fences its set. The fence
    carries the generation of the assignment that wrote the set and the set
    itself. A replica answers only a ballot it may still promise, as today,
-   and only a set no older than the one it knows, and then persists that
+   only a set no older than the one it knows, and, if the fence is from a
+   candidate rather than a leader the control plane named, only if it has
+   not heard its own leader within S (stickiness). It then persists the
    set. A replica that knows a newer set refuses and names it. The candidate
    learns it and stops standing. It may stand again at a later generation,
    on that set from the start, if it is still a member, so each generation
-   is fenced on one set. A leader or candidate that answers another's fence
-   at a newer generation has given its own up and stops leading at once,
-   rather than counting acknowledgements against a set it learned from
-   someone else. Only a member of the
-   set it knows stands at all.
-4. *Opening.* As a promotion does: it takes the answer furthest ahead,
+   is fenced on one set. Only a member of the set it knows stands at all.
+5. *Stepping down.* A broker leading, or standing, at a generation that gets
+   a fence or a batch at a newer one stops leading before it applies it. It
+   has promised its own generation away, and must not count
+   acknowledgements against a set it learned from someone else.
+6. *Opening.* As a promotion does: it takes the answer furthest ahead,
    writes its generation-start record and opens.
-5. *Set changes.* A replacement's join, a seat and a grow fence like any
-   change of leader, carrying the new set to a majority of it before the
-   leader serves at the new generation. They need no majority of the old
-   set as well: a set changes one replica at a time, so any majority of it
-   and of the set before it share a replica (decision 2 below).
-6. *Redirects.* A follower answers `NotLeader` with the leader it promised,
+7. *Set changes fence jointly.* Any leadership that changes the set fences a
+   majority of the new set and a majority of the old one before it serves,
+   carrying the new set's generation to both. That covers a replacement's
+   join and seat, a grow, and a move's cut-over, which can change several
+   members at once: `replicas_after_cut_over` (placement/moves.rs) keeps
+   some of the staying replicas and tops the set up from brokers outside it,
+   so {X, b, c} can become {Y, X, Z}, and a majority of the new set need
+   share no replica with a majority of the old. A staged copy is not part of
+   the persisted set: it does not stand, answer a fence or count until a set
+   change writes it in, and that change fences jointly like any other.
+8. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
-7. *Adoption.* The elected leader reports its generation and set's
+9. *Adoption.* The elected leader reports its generation and its set's
    generation. If the generation is above the control plane's and the set
    is the one the control plane records, the control plane makes it the
    shard's leader at that generation, with the same conditional write as any
-   assignment. Otherwise it records the generation only, and issues every
-   later one above it. It never reissues a generation at or below one it was
-   told was elected.
+   assignment, so a planner acting on an older read loses. Otherwise it
+   records the generation only, and issues every later one above it. It
+   never reissues a generation at or below one it was told was elected.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
-is fenced on one set, two majorities of one set share a replica, and that
-replica promised the generation to one leader only. That is why a refused
-candidate does not fence on at the same generation with the set it learned:
-the model's first version did, and TLC found two leaders at one generation,
-each with a majority of a different set. It is also why a leader that
-answers a newer fence stops: leading on, it counted a majority of the set it
-learned there and acknowledged a record the new set held on one replica. A record acknowledged at generation `g` sits on a majority of
-the set the leader counted. A later leader fences a majority of its own set,
-and if that is the same set the two majorities share a replica, which either
-held the record when it answered or refused the old leader after, so the
-catch-up brings it. If the candidate's set is older, a majority of it took
-the fence of the set change that came after, learned the newer set and
-refuses the candidate. If the candidate's set is newer, the change that made
-it fenced a majority of the new set, and since a set changes one replica at a
-time that majority shares a replica with every majority of the old one. The generation-start record covers Raft's Figure 8 as it does for
+is fenced on one set, any two majorities of one set share a replica, and
+that replica promised the generation to one leader only. That is why a
+refused candidate does not fence on at the same generation with the set it
+learned: the model's first version did, and TLC found two leaders at one
+generation, each with a majority of a different set.
+
+A record acknowledged at generation `g` sits on a majority of the set the
+leader at `g` counted. A later leader fences a majority of its own set. If
+that is the same set, the two majorities share a replica, which either held
+the record when it answered or refused the old leader after, so the
+catch-up brings it. If the later leader's set is newer, every change between
+the two sets fenced a majority of the set before it and of the set after it,
+so each step shares a replica with the step before, and the record, or the
+refusal of the old leader, is carried across. If the later leader's set is
+older, a majority of it took the fence of the change that came after it,
+learned the newer set, and refuses the candidate. Overlap comes from the
+joint fence, not from the size of a change: without it, the cut-over above
+lets the old leader acknowledge on a majority of the old set the new leader
+never reached (`FelixShardElectSwapNoJoint.cfg`). A leader that answers a
+newer fence or batch stops, which keeps it from acknowledging against a set
+it learned from someone else (`FelixShardElectAdopt.cfg` found one doing so).
+The generation-start record covers Raft's Figure 8 as it does for
 promotions. Adoption cannot name a second leader: the control plane only
 names the leader that opened at that generation, and its own next generation
 is above it.
+
+None of this rests on the detector, pre-vote or stickiness: the model checks
+the ballots and fences with candidates standing at any time
+(`FelixShardElect.cfg`, `FelixShardElectSwap.cfg`), and with the guards on
+(`FelixShardElectPreVote.cfg`).
+
+**Liveness.** Pre-vote and stickiness keep a follower that is cut off, or
+whose detector is wrong, from deposing a leader the rest of the set still
+hears. Its pre-vote fails, it persists nothing, and the generation does not
+move, so a flapping link does not churn leaders. A leader that a majority of
+its set cannot reach loses stickiness at those replicas after S, and they can
+elect. Order by log and node id makes one candidate usual; randomised backoff
+breaks the remaining ties within a round or two. With no majority able to
+talk, nobody is elected, by design.
 
 **Decisions** (from the discussion on issue #1009):
 
@@ -620,11 +657,11 @@ is above it.
    control plane adopts. Its promotion on the followers' word stays as a
    fallback, held back for 2×S so that it does not race an election, and
    promotion on a lapsed lease stays as the backstop.
-2. A set change uses the joint fence, a majority of the old set and of the
-   new, if the model shows it is needed. It does not: with the set change
-   fencing the new set alone, `FelixShardElectSet.cfg` passes (235.7M
-   distinct states, 3 h 27 min on a four-core CI runner), so there is no
-   joint fence. With it the same configuration passes too (146.6M states).
+2. Every set change under `replica_election` fences jointly, a majority of
+   the old set and of the new. The product changes sets by more than one
+   member at once at a move's cut-over, and without the joint fence TLC
+   finds an acknowledged record lost there
+   (`FelixShardElectSwapNoJoint.cfg`).
 3. "One leader serving" means `OneLeaderPerGeneration` and the
    acknowledged-record invariants (`AckedHeldByLeader`, `AckedAgree`,
    `AckedOnMajority`, `NoTruncationBelowHwm`). `AtMostOneServing` stays
@@ -637,11 +674,22 @@ is above it.
 6. Consumer groups on an elected leader still wait for the lease (issue
    #1197).
 
-**Failover time.** The target is S + 1 s from the leader's last answer to
-the shard serving again: S for the detector, and a second for the rank delay,
-the fence round trip and the fsync of the ballot and the set. That is about
-6 s with the defaults, with or without the control plane, against 13 to 26 s
-for a lapsed lease.
+**Failover time.** From the leader's last answer to the shard serving
+again, with the defaults:
+
+- *Typical:* S for the detector, the pre-vote and fence round trips and the
+  fsync of the ballot and the set, with the replica furthest ahead standing
+  first: S + 0.2 s, about 5.2 s.
+- *One place down the order, or one refused round:* add 300 ms per place and
+  up to 800 ms of backoff: S + 1.5 s.
+- *A split round as well:* two candidates at one generation, neither with a
+  majority, both backing off: up to S + 3 s, about 8 s.
+- *Worst case:* each further split adds up to 3 s of backoff, and the
+  control plane's fallback promotes after 2×S if it can be reached. With no
+  majority of the set able to talk, the shard stays unavailable.
+
+That compares with 13 to 26 s for a lapsed lease, and does not need the
+control plane.
 
 **Across versions.** Each piece goes behind a negotiation, as ballots did:
 
@@ -649,32 +697,40 @@ for a lapsed lease.
   assignment's generation and the members, fsynced before it answers at that
   set. A build without it still opens the shard.
 - *Wire.* A broker that checks sets offers the `ELECTION` internal capability
-  (bit `1 << 9`). The fence and the batch carry the set's generation only to a peer that
-  offered it, and a missing one means what it means today: no check.
+  (bit `1 << 9`). The fence, the pre-vote and the batch carry the set's
+  generation only to a peer that offered it, and a missing one means what it
+  means today: no check.
 - *Control plane.* Adoption is a new store write, so under Raft it needs
-  the next free metadata level on every member, and a Postgres control plane gets a
-  migration. Below that the control plane ignores election reports and goes
-  on promoting on suspicion.
+  the next free metadata level on every member, and a Postgres control plane
+  gets a migration. Below that the control plane ignores election reports
+  and goes on promoting on suspicion.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
-  serving broker lacks `ELECTION` or the control plane is below that level. Only
-  after it do followers stand.
+  serving broker lacks `ELECTION`, the control plane is below that level, or
+  the fleet does not fence every change of leader and every change of set:
+  cut-overs and hand-backs fenced (the fence on every change, which ships
+  today), and set changes, including the next generation a leader opens for
+  a replacement, fenced jointly (which does not yet). Only after it do
+  followers stand.
 
-The work lands in that order: the set file in storage, the `ELECTION`
-capability, the replica's checks, adoption in the control plane, the
-election driver, then cluster and history tests
+The work lands in this order: the set file in storage, the `ELECTION`
+capability, the replica's checks, joint fences on every set change and the
+fence on the next-generation open, adoption in the control plane, then the
+election driver with pre-vote and stickiness, then cluster and history tests
 (`failures/replica_election.rs`, and a nemesis holding the control plane
-down across a leader kill) and the docs that describe it as shipped.
+down across a leader kill) and the docs that describe it as shipped. The
+fenced changes land before the driver, since the driver is unsafe without
+them.
 
-**The model.** `SetCheck`, `JointFence` and `Adopt` in
-`docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set check:
-electing on the current set"). `FelixShardElectSet.cfg` passes with the set
-check and a set change fencing the new set; `FelixShardElectStaleSet.cfg` without the set
-check finds a replica that left opening on the old set without an
-acknowledged record. `FelixShardElectAdopt.cfg` adds adoption and passes;
-`FelixShardElectAdoptNoSetCheck.cfg` finds the control plane adopting a
-leader of a set it does not record. `FelixShardElectHandoff.cfg` runs moves
-and cancels with the set check on, nightly, and `FelixShardWalkElect.cfg`
-walks elections, replacements and suspicion failovers together.
+**The model.** `SetCheck`, `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and
+`PreVote` in `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set
+check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
+set at a cut-over by more than one member with the joint fence and passes;
+`FelixShardElectSwapNoJoint.cfg` without it loses a record.
+`FelixShardElectStaleSet.cfg` without the set check finds a replica that left
+opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under
+adopted leaders and passes. `FelixShardElectPreVote.cfg` runs with pre-vote
+and stickiness. `FelixShardWalkElect.cfg` and `FelixShardWalkElectSwap.cfg`
+walk elections, replacements, cut-overs and promotions together.
 
 ### The generation-start record
 

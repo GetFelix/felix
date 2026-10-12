@@ -128,14 +128,18 @@ entries.
 
 - Design for replicas electing a leader while the control plane is down
   (#1009), not built yet: "Electing without the control plane" in
-  `docs/replication-design.md`. The TLA+ model gains `SetCheck`, `JointFence`,
-  `Adopt`, the persisted `setGen`, `RefuseStaleSet`, `CpAdopt` and the
-  `AdoptedMatchesOpened` invariant, with `FelixShardElectSet.cfg`,
-  `FelixShardElectStepDown.cfg`, `FelixShardElectAdopt.cfg`,
-  `FelixShardElectAdoptPromote.cfg`,
-  `FelixShardElectAdoptNoSetCheck.cfg` and the `FelixShardWalkElect.cfg` walk
-  and its stale-set twin. `FelixShardElectHandoff.cfg` now runs with the set
-  check on.
+  `docs/replication-design.md`, with pre-vote, stickiness, a joint fence on
+  every set change and the failover bound. The TLA+ model gains `SetCheck`,
+  `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and `PreVote`, the persisted
+  `setGen`, `RefuseStaleSet`, `CpAdopt`, the `Swap` cut-over and the
+  `AdoptedMatchesOpened` and `SetChangesJoint` invariants, and
+  `AckedHeldByLeader` is checked per generation where replicas elect. New
+  configurations: `FelixShardElectSwap.cfg` and its no-joint twin,
+  `FelixShardElectAdopt.cfg` (two writes nightly), `FelixShardElectAdoptPromote.cfg`,
+  `FelixShardElectPreVote.cfg`, `FelixShardElectStepDown.cfg`,
+  `FelixShardElectNoBallotAcks.cfg`, and the `FelixShardWalkElect.cfg` and
+  `FelixShardWalkElectSwap.cfg` walks with their twins.
+  `FelixShardElectHandoff.cfg` now runs with the set check on.
 
 ## [0.6.0-preview.7] - 2026-10-11
 

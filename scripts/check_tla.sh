@@ -180,7 +180,10 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectAdoptPromote pass"
-  "FelixShardElectAdoptNoSetCheck violates AdoptedMatchesOpened"
+  "FelixShardElectSwap pass"
+  "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
+  "FelixShardElectPreVote pass"
+  "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
   "FelixShardElectHandoffLeaders pass"
   "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
@@ -200,6 +203,8 @@ walks=(
   "FelixShardWalkHandoffNoWait violates AtMostOneServing"
   "FelixShardWalkElect pass"
   "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
+  "FelixShardWalkElectSwap pass"
+  "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
@@ -259,6 +264,8 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardElectHandoffLeaders 6"
   "FelixShardElectAdopt 11"
+  "FelixShardElectSwap 20"
+  "FelixShardElectPreVote 5"
   "FelixShardElectAdoptPromote 3"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
