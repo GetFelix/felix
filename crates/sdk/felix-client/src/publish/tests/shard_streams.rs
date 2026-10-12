@@ -57,6 +57,7 @@ async fn route(publisher: &Publisher, stream: &str, shard: u32) -> Own {
         .route("t", "ns", stream, Some(b"k".as_slice()), Some(shard))
         .await
         .expect("route")
+        .worker
     {
         Selected::Shard(worker) => Own::Shard(worker),
         Selected::Pooled(worker) => Own::Pooled(worker as *const PublishWorker),

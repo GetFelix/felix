@@ -40,7 +40,15 @@ pub async fn publish(
 1. **Worker selection.** Every publisher works out the shard of each
    publish: 0 without a key, the caller's shard for a `ClusterClient`, and for
    a keyed publish through a plain `Client` the shard the key maps to, from
-   the stream's width asked of the broker once (`publish/widths.rs`). `route()`
+   the stream's width asked of the broker (`publish/widths.rs`). Against a
+   broker with `FEATURE_PUBLISH_WIDTH` the width also comes back as a framed
+   `publish_width`, which the writer sends ahead of a keyed batch whenever it
+   differs from the last one that stream carried; the broker refuses a batch
+   whose declared width is not the stream's (`resolve_declared_shard` in
+   `handlers/publish/route.rs`), and the client asks the width again every
+   5 s (over one shared control stream, `rechecking_with`) and on a
+   `stale_width` refusal. A writer whose own `auth` did not negotiate the bit
+   (`PublishWorker::takes_width`) is never sent one. `route()`
    then asks `ShardStreams` (`publish/shard_streams.rs`) for the shard's own
    stream, opening it on the shard's first publish on the least-loaded
    connection. A pipelining stream is answered in request order, so a shard

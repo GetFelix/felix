@@ -64,8 +64,8 @@ use crate::observability::timings;
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::quic::client_error::{ClientError, ErrorCodeSupport};
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, StreamHandleCache,
-    handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
+    AckOrder, AckTimeoutState, CommitAcks, DeclaredWidth, Outgoing, PublishContext,
+    StreamHandleCache, handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
     handle_binary_publish_batch_control, send_outgoing_critical,
 };
 use crate::serving::quic::telemetry::{t_histogram, t_now_if, t_should_sample};
@@ -120,6 +120,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         error_codes,
         ack_order,
         publish_window: None,
+        publish_width: None,
         stream_cache,
         stream_cache_key,
     };
@@ -242,6 +243,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &publish_ctx,
                     &frame,
                     session.auth_ctx.as_ref(),
+                    session.publish_width.as_ref(),
                     throttled,
                     session.commit_ack,
                     sample,
@@ -263,6 +265,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &publish_ctx,
                     &frame,
                     session.auth_ctx.as_ref(),
+                    session.publish_width.as_ref(),
                     sample,
                     &cancel_tx,
                 )
@@ -412,6 +415,26 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     request_id,
                     producer_id,
                     sequence,
+                )
+                .await?
+            }
+            Message::PublishWidth {
+                tenant_id,
+                namespace,
+                stream,
+                shards,
+                routing,
+            } => {
+                publish::publish_width(
+                    &cx,
+                    &mut session,
+                    DeclaredWidth {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shards,
+                        routing: routing.unwrap_or_default(),
+                    },
                 )
                 .await?
             }
@@ -1194,6 +1217,9 @@ struct Session {
     ack_order: Arc<AckOrder>,
     /// This stream's publish window, once `Auth` grants one.
     publish_window: Option<Arc<Semaphore>>,
+    /// The width the client said its keyed publishes to one stream follow,
+    /// from its last `publish_width`.
+    publish_width: Option<DeclaredWidth>,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
 }
