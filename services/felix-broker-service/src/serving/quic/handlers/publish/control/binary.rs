@@ -21,7 +21,7 @@ use crate::serving::quic::handlers::publish::ack::{
 };
 use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
-    publish_target, resolve_route, resolve_shard,
+    DeclaredWidth, publish_target, resolve_declared_shard, resolve_route,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishContext, PublishJob, StreamHandleCache,
@@ -38,6 +38,8 @@ pub(crate) async fn handle_binary_publish_batch_control(
     publish_ctx: &PublishContext,
     frame: &Frame,
     auth_ctx: Option<&AuthContext>,
+    // The client's last `publish_width`, if it sent one.
+    declared: Option<&DeclaredWidth>,
     sample: bool,
     // Bounds the unacked backpressure wait: without a timer, teardown is what
     // ends it.
@@ -88,13 +90,18 @@ pub(crate) async fn handle_binary_publish_batch_control(
     }
     // An unkeyed frame still resolves to shard 0, so this is the same routing
     // decision the JSON path makes -- the key just arrives in a cheaper frame.
-    let shard = resolve_shard(
+    // Unacknowledged, so a batch routed by a stale width is dropped like one
+    // to a stream that does not resolve.
+    let Ok(shard) = resolve_declared_shard(
         publish_ctx,
+        declared,
         &batch.tenant_id,
         &batch.namespace,
         &batch.stream,
         batch.key.as_deref(),
-    );
+    ) else {
+        return Ok(());
+    };
     let Ok(target) = publish_target(
         resolve_route(
             broker,
@@ -191,6 +198,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
     publish_ctx: &PublishContext,
     frame: &Frame,
     auth_ctx: Option<&AuthContext>,
+    declared: Option<&DeclaredWidth>,
     throttled: bool,
     ack_on_commit: bool,
     sample: bool,
@@ -286,6 +294,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         peer_flags,
         broker,
         publish_ctx,
+        declared,
         stream_cache,
         stream_cache_key,
         throttled,

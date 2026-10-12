@@ -82,6 +82,7 @@ impl Client {
             &credentials,
             &auth_tenant_id,
             server_features,
+            server_features_hi,
             &cache_request_counter,
             self.runtime_config.max_frame_bytes,
         );

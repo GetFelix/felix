@@ -156,7 +156,7 @@ async fn a_forwarded_publish_is_stamped_with_the_shard_it_was_routed_for() {
     }
 }
 
-fn ingress_with_routing(
+pub(super) fn ingress_with_routing(
     shards: u32,
     routing: felix_wire::routing::ShardRouting,
 ) -> crate::shards::routing::IngressRouter {

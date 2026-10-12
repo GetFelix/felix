@@ -128,6 +128,7 @@ async fn publish_batch(h: &Harness, io: &Io) {
         0,
         &h.leader.broker,
         &h.queued,
+        None,
         &mut HashMap::new(),
         &mut String::new(),
         false,

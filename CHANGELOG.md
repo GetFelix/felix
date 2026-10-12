@@ -11,6 +11,31 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+- A client can no longer split one shard across two writers by routing with
+  the width of a stream that was deleted and created again at another width
+  (#1067). The client declares the width it routed each keyed batch by in a
+  new `publish_width` message, sent once per width per publish stream, and a
+  broker advertising the new extended feature `FEATURE_PUBLISH_WIDTH` refuses
+  a keyed batch routed by a width the stream does not have: acknowledged
+  publishes fail with the new error code `stale_width` (`retry`, 17), and the
+  client drops the width so the retry asks for the current one;
+  fire-and-forget publishes are dropped. Against such a broker the Rust
+  client also asks a stream's width again every 5 seconds while it publishes
+  to it, so a fire-and-forget or idle client catches up. A `ClusterClient`'s
+  widths and an idempotent producer's numbering follow the same rules, and
+  their batches are declared by the width that routed or numbered them. Under
+  a new width a producer starts the stream's sequences again under a fresh
+  producer id for that stream, except while a batch on it is in doubt: that
+  batch keeps the width and id it was numbered by until it settles, and a
+  re-send under a width that has since gone is refused with an error saying
+  so. The new `IdempotentProducer::abandon_in_doubt(tenant, namespace, stream)`
+  gives such batches up and numbers the stream afresh under a new id; an
+  abandoned batch may land twice. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
+  id a stream's batches go out under. Older brokers and
+  clients exchange the frames they always did.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded

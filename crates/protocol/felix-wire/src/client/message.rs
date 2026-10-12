@@ -278,6 +278,29 @@ pub enum Message {
     },
 
     // Publishing, including idempotent producers.
+    /// The width the keyed publishes that follow on this stream, to `stream`,
+    /// were routed by: the answer to `stream_shards` the client holds.
+    ///
+    /// A client puts each shard of a stream on a publish stream of its own,
+    /// picked from that width. A stream deleted and created again at another
+    /// width leaves the client holding a stale one, and keys now sharing a
+    /// shard can go out on two writers. The broker compares each keyed batch
+    /// (`publish_batch`, `publish_idempotent` and the binary batch frames) to
+    /// the stream named here against its own width for it, and refuses one
+    /// that disagrees: `stale_width` when acknowledged, dropped when not.
+    ///
+    /// Holds until the next one; a batch to any other stream is not checked.
+    /// No answer. Only sent to a broker that advertised
+    /// `FEATURE_PUBLISH_WIDTH`.
+    PublishWidth {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shards: u32,
+        /// Absent is `modulo`, as on `stream_shards_view`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing: Option<crate::routing::ShardRouting>,
+    },
     /// Publish a single payload to a stream.
     Publish {
         tenant_id: String,

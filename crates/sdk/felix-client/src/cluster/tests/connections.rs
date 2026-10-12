@@ -100,6 +100,7 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
                 addr: Some(b.addr.to_string()),
                 generation: 1,
             },
+            None,
         )
         .await;
     cluster

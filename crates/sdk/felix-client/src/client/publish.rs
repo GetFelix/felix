@@ -23,6 +23,11 @@ impl Client {
         Ok(self.publisher_handle())
     }
 
+    /// The widths this client's publishers route keyed publishes by.
+    pub(crate) fn publish_widths(&self) -> &Arc<crate::publish::StreamWidths> {
+        &self.publish_widths
+    }
+
     pub(crate) fn publisher_handle(&self) -> Publisher {
         Publisher {
             inner: Arc::new(PublisherInner::with_runtime_config(

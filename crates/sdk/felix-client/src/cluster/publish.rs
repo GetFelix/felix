@@ -7,11 +7,9 @@ use std::time::Duration;
 use anyhow::Result;
 use felix_wire::AckMode;
 
-use super::{
-    Attempt, ClusterClient, Next, Retrying, ShardKey, StreamKey, next_step, wants_reconnect,
-};
+use super::{Attempt, ClusterClient, Next, Retrying, ShardKey, next_step, wants_reconnect};
 use crate::client::Client;
-use crate::publish::{AckOutcome, IdempotentProducer};
+use crate::publish::{AckOutcome, IdempotentProducer, Width};
 
 impl ClusterClient {
     /// Publish, reconnecting if the broker in use has gone.
@@ -53,7 +51,7 @@ impl ClusterClient {
             stream.to_string(),
             0,
         );
-        self.publish_to_shard(shard, payload, None, ack).await
+        self.publish_to_shard(shard, payload, None, ack, None).await
     }
 
     /// Publish with a routing key, which decides the shard.
@@ -74,17 +72,26 @@ impl ClusterClient {
         key: bytes::Bytes,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        let stream_key: StreamKey = (
+        // The key decides the shard, and the shard decides the owner. Computed
+        // with the same function the broker routes with, so the cache is
+        // bounded by shard count rather than by distinct keys. The width goes
+        // with the batch, so the broker that takes it checks the width that
+        // chose it.
+        let (shard, width) = self
+            .widths
+            .shard_of(tenant_id, namespace, stream, key.as_ref())
+            .await;
+        let shard: ShardKey = (
             tenant_id.to_string(),
             namespace.to_string(),
             stream.to_string(),
+            shard,
         );
-        // The key decides the shard, and the shard decides the owner. Computed
-        // with the same function the broker routes with, so the cache is
-        // bounded by shard count rather than by distinct keys.
-        let shard = self.shard_of(&stream_key, Some(key.as_ref())).await;
-        let shard: ShardKey = (stream_key.0, stream_key.1, stream_key.2, shard);
-        self.publish_to_shard(shard, payload, Some(key), ack).await
+        let outcome = self
+            .publish_to_shard(shard, payload, Some(key), ack, Some(width))
+            .await;
+        self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
+        outcome
     }
 
     /// Publish, reconnecting *and sending the record again* if the broker in
@@ -209,27 +216,45 @@ impl ClusterClient {
         payload: Vec<u8>,
         key: Option<bytes::Bytes>,
         ack: AckMode,
+        width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
-        let routed = self
-            .owners
-            .read()
-            .await
-            .get(&shard)
-            .map(|owner| (Arc::clone(&owner.client), owner.node_id.clone()));
+        let routed = self.owners.read().await.get(&shard).map(|owner| {
+            (
+                Arc::clone(&owner.client),
+                owner.node_id.clone(),
+                owner.width,
+            )
+        });
+        // An owner learned under another width owns a shard of the stream as
+        // it was, not as it is: dropped, and the batch goes through the entry
+        // broker.
+        let routed = match (routed, &width) {
+            (Some((_, _, Some(learned))), Some(width))
+                if learned != (width.shards, width.routing) =>
+            {
+                self.owners.write().await.remove(&shard);
+                None
+            }
+            (routed, _) => routed.map(|(client, node_id, _)| (client, node_id)),
+        };
+        let learned = width.as_ref().map(|width| (width.shards, width.routing));
         let payload = match routed {
             None => payload,
             Some((owner, node_id)) => {
                 // Kept only so a refusal that applied nothing can be sent on.
                 let retained = payload.clone();
-                let err = match publish_once_to(&owner, &shard, payload, key.clone(), ack).await {
-                    Ok(acked) => {
-                        if let Some(owner) = acked.forwarded_to {
-                            self.remember_owner(shard, owner).await;
+                let err =
+                    match publish_once_to(&owner, &shard, payload, key.clone(), ack, width.clone())
+                        .await
+                    {
+                        Ok(acked) => {
+                            if let Some(owner) = acked.forwarded_to {
+                                self.remember_owner(shard, owner, learned).await;
+                            }
+                            return Ok(acked.offset);
                         }
-                        return Ok(acked.offset);
-                    }
-                    Err(err) => err,
-                };
+                        Err(err) => err,
+                    };
                 let attempt = Attempt {
                     routed: true,
                     ..Attempt::default()
@@ -248,10 +273,10 @@ impl ClusterClient {
         };
 
         let client = self.client().await;
-        match publish_once_to(&client, &shard, payload, key, ack).await {
+        match publish_once_to(&client, &shard, payload, key, ack, width).await {
             Ok(acked) => {
                 if let Some(owner) = acked.forwarded_to {
-                    self.remember_owner(shard, owner).await;
+                    self.remember_owner(shard, owner, learned).await;
                 }
                 Ok(acked.offset)
             }
@@ -292,6 +317,7 @@ async fn publish_once_to(
     payload: Vec<u8>,
     key: Option<bytes::Bytes>,
     ack: AckMode,
+    width: Option<Arc<Width>>,
 ) -> AckOutcome {
     let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
     let publisher = client.publisher_handle();
@@ -299,7 +325,7 @@ async fn publish_once_to(
         Some(key) => {
             publisher
                 .publish_keyed_reporting_owner(
-                    tenant_id, namespace, stream, key, shard, payload, ack,
+                    tenant_id, namespace, stream, key, shard, width, payload, ack,
                 )
                 .await
         }

@@ -1,6 +1,8 @@
 //! The owner cache: which broker to send a shard's publishes to, learned
 //! from acks that say the publish was forwarded.
 
+use anyhow::Result;
+
 use super::{ClusterClient, Owner, ShardKey, StreamKey};
 
 impl ClusterClient {
@@ -8,35 +10,34 @@ impl ClusterClient {
     /// broker routes with (`felix_wire::routing::shard_for_routing`) and the
     /// stream's own mapping.
     ///
-    /// The width and mapping are asked once per stream and cached. A broker
-    /// that cannot answer -- one predating `FEATURE_STREAM_SHARDS` -- yields
-    /// shard 0, which is the safe answer: everything shares one cache entry
-    /// and the worst case is the forwarding this exists to avoid.
+    /// The width and mapping come from `widths`. A broker that cannot answer
+    /// -- one predating `FEATURE_STREAM_SHARDS` -- yields shard 0, which is
+    /// the safe answer: everything shares one cache entry and the worst case
+    /// is the forwarding this exists to avoid.
     pub(super) async fn shard_of(&self, key: &StreamKey, routing_key: Option<&[u8]>) -> u32 {
-        if let Some((shards, routing)) = self.shards.read().await.get(key) {
-            return felix_wire::routing::shard_for_routing(*routing, *shards, routing_key);
-        }
-        let (shards, routing) = match self
-            .client()
-            .await
-            .stream_routing(&key.0, &key.1, &key.2)
-            .await
-        {
-            Ok((shards, routing)) => (shards.max(1), routing),
-            Err(err) => {
-                tracing::debug!(
-                    stream = %key.2,
-                    error = %err,
-                    "could not learn the stream's width; routing keyed publishes as shard 0",
-                );
-                (1, Default::default())
-            }
+        let Some(routing_key) = routing_key else {
+            return 0;
         };
-        self.shards
-            .write()
+        self.widths
+            .shard_of(&key.0, &key.1, &key.2, routing_key)
             .await
-            .insert(key.clone(), (shards, routing));
-        felix_wire::routing::shard_for_routing(routing, shards, routing_key)
+            .0
+    }
+
+    /// Drop the stream's width when a publish to it says the width may be
+    /// stale, so the next keyed publish asks again.
+    pub(super) fn forget_width_if_stale<T>(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        outcome: &Result<T>,
+    ) {
+        if let Err(err) = outcome
+            && crate::publish::width_went_stale(err)
+        {
+            self.widths.forget(tenant_id, namespace, stream);
+        }
     }
 
     /// Record where a shard's publishes should go next time.
@@ -52,6 +53,8 @@ impl ClusterClient {
         &self,
         key: ShardKey,
         owner: felix_wire::binary::PublishOwner,
+        // The width the shard number was worked out by, if keyed.
+        width: Option<(u32, felix_wire::routing::ShardRouting)>,
     ) {
         // Nowhere to route to. The cluster has not been told where clients
         // reach this broker, the same gap `NotLeader` has.
@@ -65,7 +68,7 @@ impl ClusterClient {
         // A stale answer must not replace a fresher one. Checked before
         // connecting, so a late report does not even pay for the connection.
         if let Some(existing) = self.owners.read().await.get(&key)
-            && existing.generation >= owner.generation
+            && !replaces(existing, &owner, width)
         {
             return;
         }
@@ -77,7 +80,7 @@ impl ClusterClient {
                 // learned a newer owner while this one was connecting.
                 if owners
                     .get(&key)
-                    .is_some_and(|existing| existing.generation >= owner.generation)
+                    .is_some_and(|existing| !replaces(existing, &owner, width))
                 {
                     return;
                 }
@@ -93,6 +96,7 @@ impl ClusterClient {
                         node_id: owner.node_id,
                         generation: owner.generation,
                         client,
+                        width,
                     },
                 );
             }
@@ -128,4 +132,19 @@ impl ClusterClient {
             key.3
         ))
     }
+}
+
+/// Whether an owner learned now should take the place of `existing`.
+///
+/// Generations order answers about one shard. Under another width the shard
+/// number names another shard, so the generations say nothing about each
+/// other and the newer report wins: an entry from a stale width must not
+/// keep out the fresh owner. A late answer from the old width can still land
+/// here, and is dropped on its first use under the current width.
+fn replaces(
+    existing: &super::Owner,
+    owner: &felix_wire::binary::PublishOwner,
+    width: Option<(u32, felix_wire::routing::ShardRouting)>,
+) -> bool {
+    existing.width != width || existing.generation < owner.generation
 }

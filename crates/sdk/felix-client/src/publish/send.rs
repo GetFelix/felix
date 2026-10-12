@@ -5,10 +5,13 @@
 
 use std::sync::atomic::Ordering;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use felix_wire::{AckMode, FrameHeader, Message};
 use tokio::sync::oneshot;
 
+use super::widths::Width;
 use super::writer::{PublishRequest, PublishWorker};
 use super::{AckOutcome, Publisher};
 #[cfg(feature = "telemetry")]
@@ -58,16 +61,20 @@ impl Publisher {
         self.supports_binary_idempotent() && (key.is_none() || self.supports_binary_keyed())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn publish_batch_binary_inner(
         &self,
         key: Option<&[u8]>,
         shard: Option<u32>,
+        width: Option<Arc<Width>>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> AckOutcome {
-        let worker = self.route(tenant_id, namespace, stream, key, shard).await?;
+        let worker = self
+            .route_by(tenant_id, namespace, stream, key, shard, width)
+            .await?;
         let payloads_with_ts;
         let payloads = if self.inner.bench_embed_ts {
             payloads_with_ts = payloads
@@ -115,6 +122,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::None,
                 request_id: None,
                 _permit: permit,
@@ -139,6 +147,7 @@ impl Publisher {
         &self,
         key: Option<&[u8]>,
         shard: Option<u32>,
+        width: Option<Arc<Width>>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -147,10 +156,14 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(key, shard, tenant_id, namespace, stream, &payloads)
+                .publish_batch_binary_inner(
+                    key, shard, width, tenant_id, namespace, stream, &payloads,
+                )
                 .await;
         }
-        let worker = self.route(tenant_id, namespace, stream, key, shard).await?;
+        let worker = self
+            .route_by(tenant_id, namespace, stream, key, shard, width)
+            .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "telemetry")]
@@ -181,6 +194,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack,
                 request_id: Some(request_id),
                 _permit: permit,
