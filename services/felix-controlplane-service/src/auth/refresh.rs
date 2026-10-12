@@ -45,6 +45,19 @@ pub fn refresh_ttl() -> Duration {
     )
 }
 
+/// How long after a refresh token is rotated a retry with it still gets a
+/// working token rather than ending the chain. 0 turns it off.
+pub(crate) const REUSE_GRACE_ENV: &str = "FELIX_REFRESH_REUSE_GRACE_SECONDS";
+const DEFAULT_REUSE_GRACE_SECONDS: i64 = 30;
+
+fn reuse_grace_secs() -> i64 {
+    std::env::var(REUSE_GRACE_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|&value| value >= 0)
+        .unwrap_or(DEFAULT_REUSE_GRACE_SECONDS)
+}
+
 #[derive(Deserialize, ToSchema, Clone)]
 pub struct TokenRefreshRequest {
     /// The refresh token handed out by exchange or by a previous refresh.
@@ -112,6 +125,7 @@ pub fn issue(
         used: false,
         revoked: false,
         narrowing: None,
+        rotated: None,
     };
     (record, refresh_token::join(&token_id, &secret))
 }
@@ -263,99 +277,88 @@ pub async fn refresh_token_handler(
         ttl,
     );
     next.narrowing = found.narrowing.clone();
-    let take = state
-        .store
-        .rotate_refresh_token(&tenant_id, token_id, now, next)
-        .await
-        .map_err(|err| api_internal("failed to rotate refresh token", &err))?;
-    let record = match take {
-        RefreshTokenTake::Taken(record) => *record,
-        RefreshTokenTake::Replayed(record) => {
-            return Err(replayed(&state, &tenant_id, &record).await?);
-        }
-        RefreshTokenTake::Unusable => return Err(unusable()),
-    };
-    metrics::counter!("felix_refresh_tokens_issued_total", "via" => "refresh").increment(1);
 
-    // Re-evaluated, never carried over: a grant removed since the last exchange
-    // has to stop working at the next refresh.
+    // Everything that can fail runs before the spend, so an error here costs
+    // the caller nothing. Re-evaluated, never carried over: a grant removed
+    // since the last exchange has to stop working at the next refresh.
     let mut groupings = rules.groupings.clone();
     crate::auth::exchange::add_group_claim_groupings(
         &mut groupings,
-        &record.principal_id,
+        &found.principal_id,
         &refreshable_groups(
-            &record.groups,
+            &found.groups,
             &rules.issuers,
             crate::auth::exchange::legacy_unscoped_groups(),
         ),
     );
-
     let enforcer = build_enforcer(&rules.policies, &groupings, &tenant_id)
         .await
         .map_err(|err| {
             tracing::error!(error = ?err, "failed to build rbac enforcer");
             api_internal_message("failed to build enforcer")
         })?;
-    let granted = effective_permissions(&enforcer, &record.principal_id, &tenant_id);
+    let granted = effective_permissions(&enforcer, &found.principal_id, &tenant_id);
     // Current RBAC, narrowed the way the exchange narrowed it, so a refresh
     // never hands back more than the exchange did.
     let mut perms = granted.clone();
-    if let Some(narrowing) = &record.narrowing {
+    if let Some(narrowing) = &found.narrowing {
         perms = crate::auth::exchange::narrow_permissions(perms, narrowing, &tenant_id);
     }
     let perms = crate::auth::exchange::for_audience(perms, audience);
-    let connect_only = record.narrowing.as_ref().is_some_and(|narrowing| {
+    let connect_only = found.narrowing.as_ref().is_some_and(|narrowing| {
         crate::auth::exchange::may_connect_only(&granted, narrowing, &tenant_id)
     });
-    if perms.is_empty() && !connect_only {
-        // Every grant is gone since the token was issued, or for a
-        // connection-only chain, `token.delegate` is. Refusing here is the
-        // point of re-evaluating: the chain also ends, so a principal whose
-        // access was removed cannot keep rotating.
-        state
-            .store
-            .revoke_refresh_family(&tenant_id, &record.family_id)
-            .await
-            .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
-        return Err(refused(Refusal::Forbidden, "no permissions"));
-    }
-    // A chain minted for a gateway to delegate ends once the gateway may no
-    // longer delegate. Revocations of the gateway are not checked here: they
-    // follow every RBAC edit that reaches it, or the whole tenant, and ending
-    // the users' chains for those would be a logout. `/token/delegate` checks
-    // them against the gateway's own token instead.
-    if let Some(actor) = record
+    let may_act = found
         .narrowing
         .as_ref()
-        .and_then(|narrowing| narrowing.may_act.as_deref())
+        .and_then(|narrowing| narrowing.may_act.as_deref());
+    let refusal = if perms.is_empty() && !connect_only {
+        // Every grant is gone since the token was issued, or for a
+        // connection-only chain, `token.delegate` is.
+        Some("no permissions")
+    } else if let Some(actor) = may_act
         && !rules.grant(&tenant_id, actor).await?
     {
-        state
-            .store
-            .revoke_refresh_family(&tenant_id, &record.family_id)
-            .await
-            .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
-        return Err(refused(
-            Refusal::Forbidden,
-            crate::auth::delegate::NO_LONGER_GRANTED,
-        ));
-    }
-
+        // A chain minted for a gateway to delegate ends once the gateway may
+        // no longer delegate. Revocations of the gateway are not checked
+        // here: they follow every RBAC edit that reaches it, or the whole
+        // tenant, and ending the users' chains for those would be a logout.
+        // `/token/delegate` checks them against the gateway's own token.
+        Some(crate::auth::delegate::NO_LONGER_GRANTED)
+    } else {
+        None
+    };
     crate::auth::revocation::wait_past(cutoff).await;
     let access_ttl = crate::auth::exchange::access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,
         &tenant_id,
-        &record.principal_id,
+        &found.principal_id,
         perms,
         access_ttl,
         audience,
-        record
-            .narrowing
-            .as_ref()
-            .and_then(|narrowing| narrowing.may_act.as_deref()),
+        may_act,
     )
     .map_err(|_| api_internal_message("failed to mint token"))?;
+
+    let record = match rotate(&state, &tenant_id, token_id, now, next).await? {
+        RefreshTokenTake::Taken(record) => *record,
+        RefreshTokenTake::Replayed(record) => {
+            return Err(replayed(&state, &tenant_id, &record).await?);
+        }
+        RefreshTokenTake::Unusable => return Err(unusable()),
+    };
+    if let Some(reason) = refusal {
+        // Refusing is the point of re-evaluating, and the chain ends too, so
+        // a principal whose access was removed cannot keep rotating.
+        state
+            .store
+            .revoke_refresh_family(&tenant_id, &record.family_id)
+            .await
+            .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
+        return Err(refused(Refusal::Forbidden, reason));
+    }
+    metrics::counter!("felix_refresh_tokens_issued_total", "via" => "refresh").increment(1);
 
     Ok(Json(TokenRefreshResponse {
         felix_token,
@@ -364,6 +367,49 @@ pub async fn refresh_token_handler(
         refresh_token: next_secret,
         refresh_expires_in: ttl.as_secs(),
     }))
+}
+
+/// Spend `token_id` for `next`. A token rotated within the reuse grace
+/// window, whose replacement is still unspent, is a retry of a refresh whose
+/// answer was lost (or a concurrent refresh), not a replay: its replacement
+/// is spent for `next` instead, so the caller ends up with a working token.
+async fn rotate(
+    state: &AppState,
+    tenant_id: &str,
+    token_id: &str,
+    now: i64,
+    next: RefreshToken,
+) -> Result<RefreshTokenTake, ApiError> {
+    let failed = |err: StoreError| api_internal("failed to rotate refresh token", &err);
+    let take = state
+        .store
+        .rotate_refresh_token(tenant_id, token_id, now, next.clone())
+        .await
+        .map_err(failed)?;
+    let RefreshTokenTake::Replayed(spent) = &take else {
+        return Ok(take);
+    };
+    let grace = reuse_grace_secs();
+    let Some(rotation) = spent
+        .rotated
+        .as_ref()
+        .filter(|rotation| grace > 0 && now.saturating_sub(rotation.at_secs) <= grace)
+    else {
+        return Ok(take);
+    };
+    match state
+        .store
+        .rotate_refresh_token(tenant_id, &rotation.successor_id, now, next)
+        .await
+        .map_err(failed)?
+    {
+        RefreshTokenTake::Taken(successor) => {
+            metrics::counter!("felix_refresh_token_grace_reuses_total").increment(1);
+            Ok(RefreshTokenTake::Taken(successor))
+        }
+        // The replacement was used already: two holders, so a replay after all.
+        _ => Ok(take),
+    }
 }
 
 /// Answer a spent refresh token presented again. Nobody legitimately does

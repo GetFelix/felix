@@ -40,6 +40,14 @@ for what the current release guarantees.
   the chain.
 - `/token/delegate` reads the subject's and the caller's revocation cutoffs in
   one leader read.
+- A spent refresh token presented again with the right secret within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default; 0 turns it off) of its
+  rotation, while its replacement is unused, gets a working token instead of
+  revoking the chain. This covers a refresh whose answer was lost and two
+  concurrent refreshes. Replay detection is blind for that window. Postgres
+  migration `0027_refresh_token_rotation`; under Raft, metadata level 9.
+- Deleting an IdP issuer the tenant does not have answers `404` and revokes
+  nobody.
 
 **Upgrade note.** A Raft control plane needs every member at metadata level 9
 before auth changes and their revocations, and refresh rotations, are single

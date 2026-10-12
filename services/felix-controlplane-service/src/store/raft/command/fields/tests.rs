@@ -260,6 +260,10 @@ fn refresh_token() -> RefreshToken {
             audience: s("felix-broker"),
             may_act: Some(s("p:g")),
         }),
+        rotated: Some(crate::auth::refresh_token::Rotation {
+            at_secs: 1,
+            successor_id: s("n"),
+        }),
     }
 }
 
@@ -719,6 +723,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
 
     let mut token = refresh_token();
     token.narrowing = None;
+    token.rotated = None;
     assert_eq!(MetaCommand::InsertRefreshToken { token }.version(), 0);
 }
 

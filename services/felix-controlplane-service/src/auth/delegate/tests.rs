@@ -905,3 +905,118 @@ async fn a_delegation_reads_revocations_once() {
     .expect("delegated");
     assert_eq!(reads() - before, 1);
 }
+
+/// A refresh whose write committed although its answer was lost (a Raft
+/// proposal that timed out, say) is retried with the same token. Within the
+/// reuse grace window the retry gets a working token, not a logout.
+#[tokio::test]
+async fn a_retry_after_a_lost_answer_gets_a_token() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
+    lost_rotation(&fixture, &bound.refresh_token, now_secs()).await;
+    let Json(retried) = refresh(&fixture, bound.refresh_token)
+        .await
+        .expect("a retry within the window");
+    let Json(_) = refresh(&fixture, retried.refresh_token)
+        .await
+        .expect("and the chain goes on");
+}
+
+/// Past the window, the same retry is a replay and ends the chain.
+#[tokio::test]
+async fn a_replay_after_the_grace_window_ends_the_chain() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
+    lost_rotation(&fixture, &bound.refresh_token, now_secs() - 120).await;
+    refresh(&fixture, bound.refresh_token)
+        .await
+        .expect_err("a replay");
+}
+
+/// Two refreshes of one token at once both get a token, and each of those
+/// refreshes again.
+#[tokio::test]
+async fn concurrent_refreshes_of_one_token_both_get_a_working_token() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
+    let (first, second) = tokio::join!(
+        refresh(&fixture, bound.refresh_token.clone()),
+        refresh(&fixture, bound.refresh_token.clone())
+    );
+    let (Json(first), Json(second)) = (first.expect("first"), second.expect("second"));
+    let Json(_) = refresh(&fixture, first.refresh_token)
+        .await
+        .expect("the first goes on");
+    let Json(_) = refresh(&fixture, second.refresh_token)
+        .await
+        .expect("so does the second");
+}
+
+/// Spend `refresh_token` at `at` as a refresh would, without its answer
+/// reaching the caller.
+async fn lost_rotation(fixture: &Fixture, refresh_token: &str, at: i64) {
+    let (token_id, _) = crate::auth::refresh_token::split(refresh_token).expect("token");
+    let found = fixture
+        .state
+        .store
+        .peek_refresh_token("t1", token_id)
+        .await
+        .expect("peek")
+        .expect("stored");
+    let (mut next, _) = crate::auth::refresh::issue(
+        "t1",
+        &found.principal_id,
+        found.groups.clone(),
+        Some(found.family_id.clone()),
+        at,
+        Duration::from_secs(3_600),
+    );
+    next.narrowing = found.narrowing.clone();
+    let take = fixture
+        .state
+        .store
+        .rotate_refresh_token("t1", token_id, at, next)
+        .await
+        .expect("rotate");
+    assert!(matches!(
+        take,
+        crate::auth::refresh_token::RefreshTokenTake::Taken(_)
+    ));
+}
+
+/// A refresh that fails before its answer is ready, here because the
+/// tenant's signing key is broken, leaves the token presented unspent.
+#[tokio::test]
+async fn a_refresh_that_cannot_mint_does_not_spend_the_token() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let bound = exchange_for_alice(&fixture, gateway).await.expect("bound");
+    let mut broken = fixture.keys.clone();
+    broken.current.public_key[0] ^= 1;
+    fixture
+        .state
+        .store
+        .set_tenant_signing_keys("t1", broken)
+        .await
+        .expect("keys");
+    let err = refresh(&fixture, bound.refresh_token.clone())
+        .await
+        .expect_err("cannot mint");
+    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (token_id, _) = crate::auth::refresh_token::split(&bound.refresh_token).expect("token");
+    let stored = fixture
+        .state
+        .store
+        .peek_refresh_token("t1", token_id)
+        .await
+        .expect("peek")
+        .expect("stored");
+    assert!(!stored.used, "spent by a refresh that answered 500");
+}

@@ -28,6 +28,7 @@ fn token(token_id: &str, family_id: &str) -> RefreshToken {
         used: false,
         revoked: false,
         narrowing: Some(narrowing()),
+        rotated: None,
     }
 }
 
@@ -91,6 +92,19 @@ async fn a_rotation_spends_and_stores_together(store: &dyn crate::store::Control
         .await
         .expect("rotate");
     assert!(matches!(first, RefreshTokenTake::Taken(_)), "{first:?}");
+    let spent = store
+        .peek_refresh_token(TENANT, "rotated")
+        .await
+        .expect("peek")
+        .expect("stored");
+    assert_eq!(
+        spent.rotated,
+        Some(crate::auth::refresh_token::Rotation {
+            at_secs: NOW,
+            successor_id: "rotated-next".to_string(),
+        }),
+        "a rotation records when and by what"
+    );
     assert!(
         store
             .peek_refresh_token(TENANT, "rotated-next")

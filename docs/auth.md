@@ -329,14 +329,27 @@ Three properties make that safe:
   database read yields nothing presentable.
 - **Every refresh token is single-use.** Refreshing spends the one presented and
   hands back its replacement. A stolen copy is worth one use, not a month of
-  them. The spend and the replacement are one store write, so a refresh that
-  fails leaves the token presented unspent and the retry is not a replay.
-  (Under Raft, until every member is at metadata version 9 they are two
-  writes, as before.)
+  them. Every check that can fail runs before the spend, and the spend and the
+  replacement are one store write, so a refresh that fails with an error leaves
+  the token presented unspent. (Under Raft, until every member is at metadata
+  version 9 the spend and the replacement are two writes.) A refresh refused
+  for lost permissions ends the chain instead, below.
 - **A replay revokes the whole chain.** Nobody legitimately presents a spent
   token, so seeing one means two parties hold the chain. Both lose it, and the
   genuine holder re-exchanges. This is what makes single use *detect* theft
   rather than merely limit it.
+- **Except a retry within the reuse grace window.** A refresh can commit and
+  still lose its answer, as when a Raft write times out and commits later.
+  The client's retry presents a spent token with the right secret. Within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default) of that spend, and while
+  the token that replaced it is still unused, the retry spends that
+  replacement and gets a new one instead of ending the chain. Two concurrent
+  refreshes of one token take the same path, so both get a working token.
+  Outside the window, or once the replacement was used, it is a replay. The
+  cost is that replay detection is blind for the window: a thief who presents
+  a stolen token within it, before the genuine holder uses the replacement,
+  gets a working chain, and the genuine holder's next refresh is the one
+  treated as a replay. Set it to `0` to turn the window off.
 
 Permissions are re-evaluated against current RBAC on every refresh, never
 carried over from the previous token. A grant removed after a token was issued
@@ -516,7 +529,10 @@ time a stream authenticates.
 (normally the `/token/refresh` call above). It fetches a new one when two
 thirds of the current token's lifetime has passed, based on `exp`. If a fetch
 fails it keeps using the current token until that expires. If the broker
-refuses a token, the client asks for a new one and retries once.
+refuses a token, the client asks for a new one and retries once. Keep one
+refresh in flight per chain, and keep the newest refresh token: two concurrent
+refreshes both succeed within the reuse grace window, but each spends the
+other's result, so the older one is a replay once the window ends.
 
 ```rust,ignore
 config.token_provider = Some(Arc::new(RefreshingToken::with_initial(

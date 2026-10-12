@@ -151,6 +151,11 @@ let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
 let bob = gateway.with_identity_token("t1", bob_token).await?;
 ```
 
+Refresh each chain from one place at a time and keep the newest refresh token.
+Two concurrent refreshes of one token both succeed within the control plane's
+reuse grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`), but the older result
+is a replay once the window ends.
+
 A handle opens one publish stream and one cache stream and no connections, so
 the gateway's connection count stays the same however many users it serves.
 One user's token expiring stops only that user's new streams, and revoking the

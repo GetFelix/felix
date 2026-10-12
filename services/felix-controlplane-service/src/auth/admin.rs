@@ -200,6 +200,18 @@ pub async fn delete_idp_issuer(
     // `upsert_idp_issuer` makes, so deletion takes the same cluster rights.
     require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
+    // Answered before anything is written: revoking the whole tenant for an
+    // issuer it never trusted would end every session for nothing.
+    let known = state
+        .store
+        .list_idp_issuers(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to load issuers", &err))?
+        .iter()
+        .any(|item| item.issuer == issuer);
+    if !known {
+        return Err(api_not_found("issuer not found"));
+    }
     // Every grant through the issuer's groups, and to its principals, is gone.
     change_auth(
         &state,

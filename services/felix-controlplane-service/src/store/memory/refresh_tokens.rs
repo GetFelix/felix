@@ -1,6 +1,6 @@
 //! Refresh tokens, spent and revoked under one lock.
 use super::InMemoryStore;
-use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake};
+use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake, Rotation};
 use crate::store::StoreResult;
 
 pub(super) async fn insert_refresh_token(
@@ -73,6 +73,10 @@ pub(super) async fn rotate_refresh_token(
         return Ok(RefreshTokenTake::Unusable);
     }
     token.used = true;
+    token.rotated = Some(Rotation {
+        at_secs: now_secs,
+        successor_id: next.token_id.clone(),
+    });
     let taken = token.clone();
     tokens.insert((next.tenant_id.clone(), next.token_id.clone()), next);
     Ok(RefreshTokenTake::Taken(Box::new(taken)))

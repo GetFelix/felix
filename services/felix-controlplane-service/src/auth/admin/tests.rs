@@ -181,3 +181,25 @@ async fn only_a_narrowed_issuer_revokes_the_tenant() {
         "a dropped audience revokes the tenant"
     );
 }
+
+/// Deleting an issuer the tenant does not have is a 404 and revokes nobody.
+#[tokio::test]
+async fn deleting_an_unknown_issuer_revokes_nobody() {
+    let (state, store) = fixture().await;
+    let headers = operator(&store).await;
+    let err = delete_idp_issuer(
+        Path(("t1".to_string(), "https://nobody.example".to_string())),
+        State(state),
+        headers,
+    )
+    .await
+    .expect_err("unknown");
+    assert_eq!(err.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "anyone")
+            .await
+            .expect("read"),
+        None
+    );
+}

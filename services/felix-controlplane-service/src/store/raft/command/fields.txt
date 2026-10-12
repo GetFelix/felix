@@ -308,6 +308,9 @@
 1 import_state.state.refresh_tokens[].narrowing.resources
 1 import_state.state.refresh_tokens[].principal_id
 1 import_state.state.refresh_tokens[].revoked
+9 import_state.state.refresh_tokens[].rotated
+9 import_state.state.refresh_tokens[].rotated.at_secs
+9 import_state.state.refresh_tokens[].rotated.successor_id
 1 import_state.state.refresh_tokens[].secret_hash
 1 import_state.state.refresh_tokens[].tenant_id
 1 import_state.state.refresh_tokens[].token_id
@@ -449,6 +452,9 @@
 1 insert_refresh_token.token.narrowing.resources
 0 insert_refresh_token.token.principal_id
 0 insert_refresh_token.token.revoked
+9 insert_refresh_token.token.rotated
+9 insert_refresh_token.token.rotated.at_secs
+9 insert_refresh_token.token.rotated.successor_id
 0 insert_refresh_token.token.secret_hash
 0 insert_refresh_token.token.tenant_id
 0 insert_refresh_token.token.token_id
@@ -637,6 +643,9 @@
 9 rotate_refresh_token.next.narrowing.resources
 9 rotate_refresh_token.next.principal_id
 9 rotate_refresh_token.next.revoked
+9 rotate_refresh_token.next.rotated
+9 rotate_refresh_token.next.rotated.at_secs
+9 rotate_refresh_token.next.rotated.successor_id
 9 rotate_refresh_token.next.secret_hash
 9 rotate_refresh_token.next.tenant_id
 9 rotate_refresh_token.next.token_id
@@ -802,6 +811,9 @@
 1 snapshot.state.refresh_tokens[].narrowing.resources
 1 snapshot.state.refresh_tokens[].principal_id
 1 snapshot.state.refresh_tokens[].revoked
+9 snapshot.state.refresh_tokens[].rotated
+9 snapshot.state.refresh_tokens[].rotated.at_secs
+9 snapshot.state.refresh_tokens[].rotated.successor_id
 1 snapshot.state.refresh_tokens[].secret_hash
 1 snapshot.state.refresh_tokens[].tenant_id
 1 snapshot.state.refresh_tokens[].token_id
