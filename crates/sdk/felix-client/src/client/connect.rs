@@ -279,6 +279,7 @@ impl Client {
             &credentials,
             &auth_tenant_id,
             server_features,
+            server_features_hi,
             &cache_request_counter,
             runtime_config.max_frame_bytes,
         );
@@ -468,9 +469,11 @@ pub(super) fn stream_widths(
     credentials: &Arc<Credentials>,
     auth_tenant_id: &str,
     server_features: u32,
+    server_features_hi: u32,
     requests: &Arc<AtomicU64>,
     max_frame_bytes: usize,
 ) -> Arc<StreamWidths> {
+    let (recheck_credentials, recheck_requests) = (Arc::clone(credentials), Arc::clone(requests));
     let node = Arc::clone(event_node);
     let credentials = Arc::clone(credentials);
     let requests = Arc::clone(requests);
@@ -499,7 +502,33 @@ pub(super) fn stream_widths(
             .await
         })
     });
-    Arc::new(StreamWidths::new(learn))
+    // Re-asks run every few seconds for every stream published to, so they
+    // are pipelined on one shared stream; see `rechecks`.
+    let rechecks = Arc::new(super::rechecks::WidthRechecks::new(
+        Arc::clone(event_node),
+        recheck_credentials,
+        max_frame_bytes,
+    ));
+    let requests = recheck_requests;
+    let tenant = auth_tenant_id.to_string();
+    let recheck: LearnWidth = Arc::new(move |tenant_id, namespace, stream| {
+        let rechecks = Arc::clone(&rechecks);
+        let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tenant = tenant.clone();
+        Box::pin(async move {
+            anyhow::ensure!(tenant_id == tenant, "tenant mismatch");
+            rechecks
+                .ask(request_id, &tenant_id, &namespace, &stream)
+                .await
+        })
+    });
+    Arc::new(
+        StreamWidths::new(
+            learn,
+            felix_wire::supports_feature(server_features_hi, felix_wire::FEATURE_PUBLISH_WIDTH),
+        )
+        .rechecking_with(recheck),
+    )
 }
 
 /// Open one cache stream as `credentials` and start the worker that owns it.
@@ -568,6 +597,10 @@ pub(super) fn spawn_publish_worker(
         request_counter: AtomicU64::new(1),
         server_flags: negotiated.server_flags,
         publish_window: negotiated.publish_window,
+        takes_width: felix_wire::supports_feature(
+            negotiated.server_features_hi,
+            felix_wire::FEATURE_PUBLISH_WIDTH,
+        ),
     }
 }
 

@@ -10,7 +10,7 @@ use super::responder::send_control_error;
 use super::{Ctx, Session, Step};
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
-    AckEncoding, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
+    AckEncoding, DeclaredWidth, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
     handle_publish_message, send_outgoing_critical, sequence_reuse,
 };
 
@@ -128,6 +128,7 @@ pub(super) async fn publish_batch(
         session.peer_flags,
         broker,
         publish_ctx,
+        session.publish_width.as_ref(),
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
@@ -202,6 +203,7 @@ pub(super) async fn publish_idempotent(
         session.peer_flags,
         broker,
         publish_ctx,
+        session.publish_width.as_ref(),
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
@@ -279,5 +281,35 @@ pub(super) async fn producer_init(
         cancel_tx,
     )
     .await?;
+    Ok(Step::Next)
+}
+
+/// Hold the width the client routes a stream's keyed publishes by, for the
+/// publishes that follow on this stream. See `resolve_declared_shard`.
+pub(super) async fn publish_width(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    declared: DeclaredWidth,
+) -> Result<Step> {
+    let refusal = match session.auth_ctx.as_ref() {
+        None => Some(ClientError::unauthenticated("not authenticated")),
+        Some(ctx) if ctx.tenant_id != declared.tenant_id => {
+            Some(ClientError::forbidden("tenant mismatch"))
+        }
+        Some(_) => None,
+    };
+    if let Some(refusal) = refusal {
+        send_control_error(
+            cx.out_ack_tx,
+            cx.out_ack_depth,
+            cx.ack_throttle_tx,
+            cx.ack_timeout_state,
+            cx.cancel_tx,
+            refusal,
+        )
+        .await?;
+        return Ok(Step::Close(false));
+    }
+    session.publish_width = Some(declared);
     Ok(Step::Next)
 }

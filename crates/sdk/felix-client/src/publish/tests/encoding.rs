@@ -31,6 +31,7 @@ async fn an_acked_batch_falls_back_to_keyless_json_without_the_binary_flag() {
                 // What a broker predating capability negotiation resolves to.
                 server_flags: felix_wire::ORIGINAL_V1_FLAGS,
                 publish_window: 0,
+                takes_width: false,
             }]),
             PublishSharding::RoundRobin,
         )),
@@ -83,6 +84,7 @@ async fn an_idempotent_batch_is_binary_only_when_advertised() {
                     request_counter: AtomicU64::new(1),
                     server_flags,
                     publish_window: 0,
+                    takes_width: false,
                 }]),
                 PublishSharding::RoundRobin,
             )),
@@ -146,6 +148,7 @@ async fn unacked_publish_defaults_to_binary_and_json_is_explicit() {
                 request_counter: AtomicU64::new(1),
                 server_flags: felix_wire::KNOWN_FLAGS,
                 publish_window: 0,
+                takes_width: false,
             }]),
             PublishSharding::RoundRobin,
         )),
@@ -237,6 +240,7 @@ async fn publish_batch_binary_appends_bench_ts_when_enabled() -> Result<()> {
                     request_counter: AtomicU64::new(1),
                     server_flags: felix_wire::KNOWN_FLAGS,
                     publish_window: 0,
+                    takes_width: false,
                 }]),
                 PublishSharding::RoundRobin,
                 Arc::new(PublishAdmission::new(

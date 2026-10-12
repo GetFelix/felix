@@ -254,6 +254,7 @@ async fn finish_skips_finish_request_when_channel_closed() {
                 request_counter: AtomicU64::new(1),
                 server_flags: felix_wire::KNOWN_FLAGS,
                 publish_window: 0,
+                takes_width: false,
             }]),
             PublishSharding::RoundRobin,
         )),
@@ -354,6 +355,7 @@ async fn run_publisher_writer_binary_bytes_success() -> Result<()> {
         bytes,
         item_count: payloads.len(),
         sample: false,
+        declaration: None,
         ack: AckMode::None,
         request_id: None,
         _permit: test_publish_permit(),
@@ -452,6 +454,7 @@ async fn drain_publish_queue_returns_errors() {
         bytes: Bytes::from_static(b"bin"),
         item_count: 1,
         sample: false,
+        declaration: None,
         ack: AckMode::None,
         request_id: None,
         _permit: test_publish_permit(),
@@ -472,4 +475,91 @@ async fn drain_publish_queue_returns_errors() {
     assert!(err1.to_string().contains("closed"));
     assert!(err2.to_string().contains("closed"));
     assert!(err3.to_string().contains("closed"));
+}
+
+/// A batch's `publish_width` goes ahead of it once, and again only when the
+/// width changes, so the broker always holds the width of the batch it reads.
+#[tokio::test]
+async fn a_width_is_declared_once_ahead_of_its_batches() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    // Held open until the writer is done, so the writer's own close is not
+    // raced by the connection going away.
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let mut bytes = Bytes::from(recv.read_to_end(1024 * 1024).await?);
+        send.finish()?;
+        let _ = shutdown_rx.await;
+        let mut seen = Vec::new();
+        while !bytes.is_empty() {
+            let frame = felix_wire::Frame::decode(bytes.clone())?;
+            bytes = bytes.slice(felix_wire::FrameHeader::LEN + frame.payload.len()..);
+            seen.push(match frame.header.flags {
+                0 => match Message::decode(frame)? {
+                    Message::PublishWidth { shards, .. } => format!("width {shards}"),
+                    other => format!("{other:?}"),
+                },
+                _ => "batch".to_string(),
+            });
+        }
+        Ok::<_, anyhow::Error>(seen)
+    });
+
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, quinn_client_config(cert)?, transport)?;
+    let connection = client.connect(addr, "localhost").await?;
+    let (client_send, client_recv) = connection.open_bi().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let writer_task = tokio::spawn(run_publisher_writer(client_send, client_recv, rx, 1024));
+
+    let declaration = |shards: u32| {
+        Message::PublishWidth {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "s".to_string(),
+            shards,
+            routing: None,
+        }
+        .encode()
+        .map(|frame| frame.encode())
+    };
+    let four = declaration(4)?;
+    let two = declaration(2)?;
+    let (batch, _) = felix_wire::binary::encode_publish_batch_bytes_with_stats_keyed(
+        Some(b"k"),
+        "t1",
+        "ns",
+        "s",
+        &[b"p".to_vec()],
+    )?;
+    for declared in [Some(&four), Some(&four), None, Some(&two), Some(&two)] {
+        let (response_tx, response_rx) = oneshot::channel();
+        tx.send(PublishRequest::BinaryBytes {
+            bytes: batch.clone(),
+            item_count: 1,
+            sample: false,
+            declaration: declared.cloned(),
+            ack: AckMode::None,
+            request_id: None,
+            _permit: test_publish_permit(),
+            response: response_tx,
+        })
+        .await
+        .context("send binary request")?;
+        response_rx.await.context("response dropped")??;
+    }
+    drop(tx);
+    writer_task.await.context("writer join")??;
+    let _ = shutdown_tx.send(());
+    let seen = server_task.await.context("server join")??;
+    assert_eq!(
+        seen,
+        [
+            "width 4", "batch", "batch", "batch", "width 2", "batch", "batch"
+        ]
+    );
+    Ok(())
 }

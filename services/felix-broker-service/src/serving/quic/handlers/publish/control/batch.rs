@@ -22,8 +22,8 @@ use crate::serving::quic::handlers::publish::ack::{
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
-    PublishRoute, internal_ack, local_shard_key, needs_quorum, publish_target, resolve_route,
-    resolve_shard,
+    DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
+    publish_target, resolve_declared_shard, resolve_route,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
@@ -41,6 +41,8 @@ pub(crate) async fn handle_publish_batch_message(
     peer_flags: u16,
     broker: &Broker,
     publish_ctx: &PublishContext,
+    // The client's last `publish_width` on this stream, if it sent one.
+    declared: Option<&DeclaredWidth>,
     stream_cache: &mut StreamHandleCache,
     stream_cache_key: &mut String,
     throttled: bool,
@@ -173,18 +175,30 @@ pub(crate) async fn handle_publish_batch_message(
         // Resolved once and then carried: the route and the batch must name the
         // same shard, or the owner appends to a different log than the one this
         // broker dispatched on.
-        let shard = resolve_shard(publish_ctx, &tenant_id, &namespace, &stream, key.as_deref());
-        let route = resolve_route(
-            broker,
-            publish_ctx.authority(),
-            stream_cache,
-            stream_cache_key,
+        let (shard, route) = match resolve_declared_shard(
+            publish_ctx,
+            declared,
             &tenant_id,
             &namespace,
             &stream,
-            shard,
-        )
-        .await;
+            key.as_deref(),
+        ) {
+            Ok(shard) => (
+                shard,
+                resolve_route(
+                    broker,
+                    publish_ctx.authority(),
+                    stream_cache,
+                    stream_cache_key,
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                )
+                .await,
+            ),
+            Err(refusal) => (UNKEYED_SHARD, PublishRoute::Refused(refusal)),
+        };
         let target = match producer {
             None => publish_target(
                 route,
