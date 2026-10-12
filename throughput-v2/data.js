@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791792766278,
+  "lastUpdate": 1791802624120,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -28860,6 +28860,58 @@ window.BENCHMARK_DATA = {
             "range": "44543.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1517454.34\nmean: 1514716.14\nstdev: 44543.87\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "271c2cc609e0e477be94019a88fea07d1a0d4366",
+          "message": "fix(controlplane): check a delegating gateway against its revocations and current RBAC (#1205) (#1206)\n\n* fix(controlplane): check a delegating gateway against its revocations and current RBAC (#1205)\n\n/token/delegate compared both principals' revocation cutoffs with the\nsubject token's iat and trusted token.delegate from the caller's token,\nso a revoked gateway could keep binding and delegating fresh user tokens\nwith its unexpired control-plane token. The gateway's own iat is now\nchecked against its cutoff, and token.delegate against current RBAC, on\n/token/delegate, actor_token on /token/exchange, and refresh of a chain\nbound to a gateway.\n\nBrokers also warn and export feed-health metrics while the revocation\nfeed is unreachable, and the docs state the fail-open and clock bounds.\n\n* fix(controlplane): address review of the delegating-gateway fix (#1205)\n\n- Refresh no longer ends a gateway-bound chain on a revocation that merely\n  reached the gateway; only a live loss of token.delegate ends it.\n- The live token.delegate check counts IdP groups only from trusted issuers,\n  and bare names only in legacy mode. Deleting or re-trusting an issuer\n  revokes the tenant. A revocation that cannot be recorded after a removal\n  is retried, then answered as an error.\n- The revocation feed gauge is set when a broker starts following the feed.\n- /token/delegate answers actor_refused for a revoked or de-granted caller.\n- /token/refresh reads before spending the refresh token.\n- Raft reads revocation cutoffs on the leader after a read-index.\n\n* fix(controlplane): make auth changes and refresh rotation single writes (#1205)\n\n- An auth change that takes rights back and its revocation are one store\n  write (Raft level 9 entry, one Postgres transaction), so a failure leaves\n  neither and a retry does both. Below level 9 Raft writes them separately.\n- An issuer change revokes the tenant only when it narrows or replaces trust.\n- Leader reads use the bounded read-index.\n- /token/delegate reads both cutoffs in one leader request.\n- /token/refresh peeks, then spends and stores the replacement in one write.\n- Docs state exactly which reads go through the leader.\n\n* fix(controlplane): reuse grace window for refresh retries; checks before the spend (#1205)\n\n- A rotation records when the token was spent and what replaced it. A\n  spent token presented with the right secret within\n  FELIX_REFRESH_REUSE_GRACE_SECONDS (default 30, 0 off), while its\n  replacement is unused, spends that replacement for a new token instead\n  of revoking the chain. Covers a lost answer and concurrent refreshes.\n  Postgres migration 0027; Raft level 9.\n- RBAC evaluation, the gateway check and the mint run before the spend.\n- Deleting an unknown issuer is a 404 and revokes nobody.\n\n* docs(auth): state the concurrent-refresh and pre-level-9 limits of the grace window (#1205)\n\n* test(controlplane): create the tenant before the change-and-revoke contract adds a rule (#1205)\n\nPostgres keeps RBAC rules only for an existing tenant.",
+          "timestamp": "2026-10-12T03:53:45-07:00",
+          "tree_id": "20c48ae71e067f0301be14187ccab246294993c1",
+          "url": "https://github.com/GetFelix/felix/commit/271c2cc609e0e477be94019a88fea07d1a0d4366"
+        },
+        "date": 1791802623313,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 624837.8,
+            "range": "36265.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624837.80\nmean: 635555.12\nstdev: 36265.10\ncv: 5.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 624837.8,
+            "range": "36265.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624837.80\nmean: 635555.12\nstdev: 36265.10\ncv: 5.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 155148.45,
+            "range": "3502.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 155148.45\nmean: 154987.46\nstdev: 3502.66\ncv: 2.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1551484.51,
+            "range": "35026.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1551484.51\nmean: 1549874.58\nstdev: 35026.62\ncv: 2.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
