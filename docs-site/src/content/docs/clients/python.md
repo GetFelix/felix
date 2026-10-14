@@ -77,7 +77,8 @@ down.
 
 Give a name rather than an IP where you can. The client resolves a name again
 whenever no broker it knows answers, which is how it gets back in after a
-rollout has moved every broker at once.
+rollout has moved every broker at once. A name that does not resolve when
+you connect raises `ValueError`.
 
 TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `ca_file` for a self-signed

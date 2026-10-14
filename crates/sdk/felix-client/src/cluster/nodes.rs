@@ -10,6 +10,7 @@
 //! clients are derived from the parent's, so it shares their connections.
 
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +20,7 @@ use crate::auth::TokenProvider;
 use crate::client::Client;
 use crate::config::ClientConfig;
 
-use super::seeds::Lookup;
+use super::seeds::{LOOKUP_TIMEOUT, Lookup};
 
 /// The client for each broker a cluster client has reached.
 pub(super) struct Nodes {
@@ -91,16 +92,28 @@ impl Nodes {
     /// Looked up every time it is asked, since a broker's name outlives its
     /// address: a rescheduled pod keeps its name and gets a new IP.
     pub(super) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
-        // The dialling set connects, so it is the one that needs the name.
-        if let Source::Identity { base, .. } = &self.source {
-            return Box::pin(base.resolve(advertised)).await;
-        }
         if let Ok(addr) = advertised.parse::<SocketAddr>() {
             return Some(addr);
         }
+        let found = self.lookup(advertised).await;
+        self.adopt(advertised, found)
+    }
+
+    /// The address a broker that advertised `advertised` is dialled at, given
+    /// what the name resolved to, and the name its certificate is checked
+    /// against from now on.
+    pub(super) fn adopt(
+        &self,
+        advertised: &str,
+        found: io::Result<Vec<SocketAddr>>,
+    ) -> Option<SocketAddr> {
+        // The dialling set connects, so it is the one that needs the name.
+        if let Source::Identity { base, .. } = &self.source {
+            return base.adopt(advertised, found);
+        }
         // IPv4 when the name has both: a name like `localhost` resolves to
         // both families, and a broker is far more often listening on v4.
-        let resolved = match self.lookup(advertised).await {
+        let resolved = match found {
             Ok(addrs) => addrs
                 .iter()
                 .find(|addr| addr.is_ipv4())
@@ -127,11 +140,60 @@ impl Nodes {
         Some(addr)
     }
 
-    /// Every address `host_port` resolves to now.
-    pub(super) async fn lookup(&self, host_port: &str) -> std::io::Result<Vec<SocketAddr>> {
+    /// Every address `host_port` resolves to now, or an error after
+    /// [`LOOKUP_TIMEOUT`].
+    pub(super) async fn lookup(&self, host_port: &str) -> io::Result<Vec<SocketAddr>> {
+        let mut found = self.lookup_all(vec![host_port.to_string()]).await;
+        found
+            .pop()
+            .map(|(_, result)| result)
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// Look every name up at once, each bounded by [`LOOKUP_TIMEOUT`], and
+    /// return the answers in the order the names were given.
+    ///
+    /// Concurrent and bounded because a resolver that stops answering, rather
+    /// than saying a name does not exist, otherwise holds a reconnect for
+    /// every retry the system resolver makes, name after name.
+    pub(super) async fn lookup_all(
+        &self,
+        names: Vec<String>,
+    ) -> Vec<(String, io::Result<Vec<SocketAddr>>)> {
+        let lookup = self.lookup_source();
+        let mut lookups = tokio::task::JoinSet::new();
+        for (index, name) in names.into_iter().enumerate() {
+            let lookup = Arc::clone(&lookup);
+            lookups.spawn(async move {
+                let found = tokio::time::timeout(LOOKUP_TIMEOUT, lookup.lookup(&name))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!("no answer within {LOOKUP_TIMEOUT:?}"),
+                        ))
+                    });
+                (index, name, found)
+            });
+        }
+        let mut answers = Vec::new();
+        while let Some(answer) = lookups.join_next().await {
+            match answer {
+                Ok(answer) => answers.push(answer),
+                Err(err) => tracing::warn!(error = %err, "a name lookup task failed"),
+            }
+        }
+        answers.sort_by_key(|(index, _, _)| *index);
+        answers
+            .into_iter()
+            .map(|(_, name, found)| (name, found))
+            .collect()
+    }
+
+    fn lookup_source(&self) -> Arc<dyn Lookup> {
         match &self.source {
-            Source::Dial { lookup, .. } => lookup.lookup(host_port).await,
-            Source::Identity { base, .. } => Box::pin(base.lookup(host_port)).await,
+            Source::Dial { lookup, .. } => Arc::clone(lookup),
+            Source::Identity { base, .. } => base.lookup_source(),
         }
     }
 

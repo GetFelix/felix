@@ -6,6 +6,7 @@
 //! client holds answers any more, the names it was given, and the names the
 //! brokers advertised, are the only way back in.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -23,6 +24,13 @@ use super::nodes::Nodes;
 /// this a client with many callers would ask DNS once per failed operation.
 /// The reconnect backoff paces each caller; this bounds them all together.
 pub(super) const RESOLVE_AGAIN_AFTER: Duration = Duration::from_secs(1);
+
+/// How long one name lookup may take before it counts as unresolved.
+///
+/// A resolver that has stopped answering, as opposed to one saying a name
+/// does not exist, would otherwise hold a reconnect for as long as the system
+/// resolver keeps retrying.
+pub(super) const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A broker address a cluster client is configured with.
 ///
@@ -113,17 +121,14 @@ pub(super) struct Seeds {
     /// seeds because a broker's own name is often the more durable one: a
     /// StatefulSet pod's DNS name survives every restart.
     advertised: Mutex<Vec<String>>,
-    /// The last resolution and when it ran.
-    resolved: Mutex<Resolved>,
-}
-
-#[derive(Default)]
-struct Resolved {
-    at: Option<Instant>,
-    /// Every name's addresses, seeds and advertised alike.
-    addrs: Vec<SocketAddr>,
-    /// The seed names' share of `addrs`.
-    seeds: Vec<SocketAddr>,
+    /// Each seed name's last answer that named an address. Kept per name so
+    /// a name that stops resolving keeps its last addresses as a seed while
+    /// the others move on.
+    by_name: Mutex<HashMap<String, Vec<SocketAddr>>>,
+    /// The last resolution and when it ran. Held across the lookups, so one
+    /// resolution runs at a time for this client and every identity sharing
+    /// it, and a caller that waited gets the answer it waited for.
+    last: tokio::sync::Mutex<Option<(Instant, Vec<SocketAddr>)>>,
 }
 
 impl Seeds {
@@ -131,18 +136,25 @@ impl Seeds {
         Self {
             configured,
             advertised: Mutex::new(Vec::new()),
-            resolved: Mutex::new(Resolved::default()),
+            by_name: Mutex::new(HashMap::new()),
+            last: tokio::sync::Mutex::new(None),
         }
     }
 
     /// The configured seeds' addresses: the literal ones, and what each name
     /// last resolved to. Never trimmed by discovery.
     pub(super) fn addrs(&self) -> Vec<SocketAddr> {
-        let mut addrs = self.literal();
-        let resolved = self.resolved.lock().expect("resolved seeds");
-        for addr in &resolved.seeds {
-            if !addrs.contains(addr) {
-                addrs.push(*addr);
+        let by_name = self.by_name.lock().expect("resolved seeds");
+        let mut addrs = Vec::new();
+        for seed in &self.configured {
+            let found = match seed {
+                Seed::Addr(addr) => std::slice::from_ref(addr),
+                Seed::Name(name) => by_name.get(name).map_or(&[][..], Vec::as_slice),
+            };
+            for addr in found {
+                if !addrs.contains(addr) {
+                    addrs.push(*addr);
+                }
             }
         }
         addrs
@@ -161,89 +173,68 @@ impl Seeds {
     /// What the seed names and advertised names resolve to now, or what they
     /// resolved to within the last [`RESOLVE_AGAIN_AFTER`].
     ///
-    /// Literal seeds are not included.
+    /// Every name is looked up at once, each bounded by [`LOOKUP_TIMEOUT`].
+    /// A name that does not resolve is logged and skipped: one broken name
+    /// must not hide the others. Literal seeds are not included.
     pub(super) async fn resolve(&self, nodes: &Nodes) -> Vec<SocketAddr> {
+        let mut last = self.last.lock().await;
+        if let Some((at, addrs)) = last.as_ref()
+            && at.elapsed() < RESOLVE_AGAIN_AFTER
         {
-            let resolved = self.resolved.lock().expect("resolved seeds");
-            if let Some(at) = resolved.at
-                && at.elapsed() < RESOLVE_AGAIN_AFTER
-            {
-                return resolved.addrs.clone();
-            }
+            return addrs.clone();
         }
-        let seed_names: Vec<&str> = self
+        let seed_names: Vec<String> = self
             .configured
             .iter()
             .filter_map(|seed| match seed {
-                Seed::Name(name) => Some(name.as_str()),
+                Seed::Name(name) => Some(name.clone()),
                 Seed::Addr(_) => None,
             })
             .collect();
-        let advertised = self.advertised.lock().expect("advertised names").clone();
-        let seeds = resolve_all(nodes, seed_names.iter().copied()).await;
-        let mut addrs = seeds.clone();
-        // Through `Nodes::resolve`, as discovery does, so a broker reached by
-        // its advertised name is checked against that name.
-        for name in advertised
-            .iter()
-            .filter(|name| !seed_names.contains(&name.as_str()))
-        {
-            if let Some(addr) = nodes.resolve(name).await
-                && !addrs.contains(&addr)
-            {
-                addrs.push(addr);
+        let mut names = seed_names.clone();
+        for name in self.advertised.lock().expect("advertised names").iter() {
+            if !names.contains(name) {
+                names.push(name.clone());
             }
         }
 
-        // Concurrent callers may both have looked up; the last one wins, and
-        // both answers are equally fresh.
-        let mut resolved = self.resolved.lock().expect("resolved seeds");
-        resolved.at = Some(Instant::now());
-        resolved.addrs.clone_from(&addrs);
-        // A DNS outage must not strip the seeds: no answer at all keeps the
-        // last one.
-        if !seeds.is_empty() {
-            resolved.seeds = seeds;
-        }
-        addrs
-    }
-
-    fn literal(&self) -> Vec<SocketAddr> {
         let mut addrs = Vec::new();
-        for seed in &self.configured {
-            if let Seed::Addr(addr) = seed
-                && !addrs.contains(addr)
-            {
-                addrs.push(*addr);
+        for (name, found) in nodes.lookup_all(names).await {
+            if !seed_names.contains(&name) {
+                // Through `Nodes::adopt`, as discovery does, so a broker
+                // reached by its advertised name is checked against that name.
+                if let Some(addr) = nodes.adopt(&name, found)
+                    && !addrs.contains(&addr)
+                {
+                    addrs.push(addr);
+                }
+                continue;
             }
+            let mut found = match found {
+                Ok(found) if !found.is_empty() => found,
+                Ok(_) => {
+                    tracing::warn!(name, "a broker name resolved to no address");
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(name, error = %err, "a broker name did not resolve");
+                    continue;
+                }
+            };
+            // `localhost` and dual-stack names resolve to both families, and
+            // a broker is far more often listening on v4.
+            found.sort_by_key(|addr| !addr.is_ipv4());
+            for addr in &found {
+                if !addrs.contains(addr) {
+                    addrs.push(*addr);
+                }
+            }
+            self.by_name
+                .lock()
+                .expect("resolved seeds")
+                .insert(name, found);
         }
+        *last = Some((Instant::now(), addrs.clone()));
         addrs
     }
-}
-
-/// Every address `names` resolve to, IPv4 first.
-///
-/// A name that does not resolve is logged and skipped: one broken name must
-/// not hide the others.
-async fn resolve_all<'a>(nodes: &Nodes, names: impl Iterator<Item = &'a str>) -> Vec<SocketAddr> {
-    let mut addrs = Vec::new();
-    for name in names {
-        match nodes.lookup(name).await {
-            Ok(found) => {
-                if found.is_empty() {
-                    tracing::warn!(name, "a broker name resolved to no address");
-                }
-                for addr in found {
-                    if !addrs.contains(&addr) {
-                        addrs.push(addr);
-                    }
-                }
-            }
-            Err(err) => tracing::warn!(name, error = %err, "a broker name did not resolve"),
-        }
-    }
-    // `localhost` and dual-stack names resolve to both families, and a broker
-    // is far more often listening on v4.
-    addrs.sort_by_key(|addr| !addr.is_ipv4());
-    addrs
 }

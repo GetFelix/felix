@@ -1573,8 +1573,9 @@ let client =
     ClusterClient::connect_seeds(&seeds, "localhost", config, ReconnectPolicy::default()).await?;
 ```
 
-One lookup serves every reconnect for a second, so a client whose cluster is
-down asks DNS about once a second. See `docs/multi-node-client.md`.
+Names are resolved at most once a second for a client and its identities,
+concurrently, each bounded to 2 s, and outside the lock operations read the
+client through. See `docs/multi-node-client.md`.
 
 ## Telemetry
 

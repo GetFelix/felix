@@ -1,6 +1,7 @@
 //! Connecting, publishing, and the runtime a client owns.
 
 use std::ffi::c_char;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,7 +75,8 @@ impl Drop for Shared {
 ///
 /// `addrs` is one `host:port`, or several separated by commas; any reachable
 /// one is enough and the rest are discovered. A name is resolved again whenever
-/// no broker the client knows answers. `tenant_id` and `token` are the
+/// no broker the client knows answers; one that does not resolve now is
+/// `FELIX_STATUS_INVALID_ARGUMENT`. `tenant_id` and `token` are the
 /// credentials. `server_name` is the name the broker certificate must carry,
 /// `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 /// trust; when null the operating system's trust store is used.
@@ -254,6 +256,14 @@ fn parse_addrs(addrs: &str) -> Result<Vec<Seed>, Failure> {
         let seed = item
             .parse::<Seed>()
             .map_err(|err| Failure::invalid(format!("{err:#}")))?;
+        // Resolved here as well as by the client, so a name that does not
+        // resolve now is still an invalid argument.
+        if let Seed::Name(name) = &seed {
+            name.to_socket_addrs()
+                .map_err(|err| Failure::invalid(format!("could not resolve {item:?}: {err}")))?
+                .next()
+                .ok_or_else(|| Failure::invalid(format!("{item:?} resolved to no addresses")))?;
+        }
         seeds.push(seed);
     }
     if seeds.is_empty() {
@@ -265,3 +275,6 @@ fn parse_addrs(addrs: &str) -> Result<Vec<Seed>, Failure> {
 fn invalid(err: anyhow::Error) -> Failure {
     Failure::invalid(format!("{err:#}"))
 }
+
+#[cfg(test)]
+mod tests;

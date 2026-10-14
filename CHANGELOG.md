@@ -94,10 +94,13 @@ entries.
   it already held, and discovery needs one of them to answer, so the client
   failed every operation until it was rebuilt. When none of them answers, it
   now resolves its seed names, and the names brokers last advertised, again
-  and dials the new addresses, reusing one lookup for a second. felixctl and
-  the Python, TypeScript and C clients pass the configured `host:port` through
-  as a name instead of resolving it once at startup, so a name that does not
-  resolve is now reported by the connect rather than by argument parsing.
+  and dials the new addresses. The names are looked up concurrently, each
+  bounded to 2 s, outside the lock every operation reads the client through,
+  and at most once a second for a client and the identities derived from it.
+  A seed name that stops resolving keeps its last addresses. felixctl and the
+  Python, TypeScript and C clients pass the configured `host:port` through as
+  a name instead of resolving it once at startup; a name that does not
+  resolve at connect is still refused as an invalid argument.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

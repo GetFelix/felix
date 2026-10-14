@@ -77,7 +77,8 @@ and will use brokers it was never told about. Passing several only helps the
 
 Give a name rather than an IP where you can. The client resolves a name again
 whenever no broker it knows answers, which is how it gets back in after a
-rollout has moved every broker at once.
+rollout has moved every broker at once. A name that does not resolve when
+you connect is an `InvalidArg` error.
 
 TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `caFile` for a self-signed

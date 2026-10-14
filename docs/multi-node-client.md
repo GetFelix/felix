@@ -133,9 +133,19 @@ The addresses that just failed are dropped and the new ones kept, beside any
 seed given as an IP. Discovery then runs against the broker that answered, as
 after any reconnect.
 
-One resolution serves every reconnect for a second, so a client whose cluster
-is down asks DNS about once a second however many operations are failing. The
-reconnect policy's backoff paces each operation as usual.
+Resolution runs at most once a second for a client and every identity derived
+from it with `with_identity`; a reconnect that needs one while another is
+running waits for that answer. So a client whose cluster is down asks DNS at
+most once a second however many operations are failing. The reconnect
+policy's backoff paces each operation as usual.
+
+The names are looked up concurrently, each given 2 s before it counts as not
+resolving, and without holding the lock every operation takes to read the
+client in use. A resolver that has stopped answering therefore delays a
+reconnect by at most those 2 s and does not stall other operations meanwhile.
+
+A seed name that stops resolving keeps the addresses it last resolved to, as
+seeds, while the other names move on.
 
 A client given only IP seeds, against brokers that advertise only IPs, has
 nothing to resolve and stays stranded until it is rebuilt. Give it a name.

@@ -357,7 +357,7 @@ impl ClusterClient {
     /// racing to build several replacements for the same failure.
     pub(crate) async fn reconnect(&self) -> Result<()> {
         let mut endpoints = self.endpoints.read().await.clone();
-        {
+        let stranded = {
             let mut slot = self.client.write().await;
             // The broker in use just failed, so it is dialled afresh rather
             // than handed back from the shared clients. It goes last because
@@ -366,10 +366,20 @@ impl ClusterClient {
             self.nodes.forget(&slot).await;
             let failed = slot.dialled();
             endpoints.sort_by_key(|addr| *addr == failed);
-            *slot = match self.nodes.connect_any(&endpoints).await {
-                Ok(client) => client,
-                Err(err) => self.reconnect_by_name(&endpoints, err).await?,
-            };
+            match self.nodes.connect_any(&endpoints).await {
+                Ok(client) => {
+                    *slot = client;
+                    None
+                }
+                Err(err) => Some((Arc::clone(&*slot), err)),
+            }
+        };
+        if let Some((failed, err)) = stranded
+            && !self.reconnect_by_name(&endpoints, &failed, err).await?
+        {
+            // Another caller replaced the client while this one was
+            // resolving, and has run discovery for it.
+            return Ok(());
         }
         // After the swap, and outside the write lock: the broker that answered
         // is the one that knows what the cluster looks like now, and a failover
@@ -381,11 +391,16 @@ impl ClusterClient {
     /// Every address in hand failed. Without this the client could only get
     /// back in through one of them, and after a rollout that moved every
     /// broker none will ever answer again.
+    ///
+    /// Resolves outside the client lock, since lookups can take seconds and
+    /// every operation reads the client. `false` when someone else replaced
+    /// `failed` meanwhile, which leaves theirs in place.
     async fn reconnect_by_name(
         &self,
         tried: &[SocketAddr],
+        failed: &Arc<Client>,
         err: anyhow::Error,
-    ) -> Result<Arc<Client>> {
+    ) -> Result<bool> {
         let fresh: Vec<SocketAddr> = self
             .seeds
             .resolve(&self.nodes)
@@ -393,10 +408,14 @@ impl ClusterClient {
             .into_iter()
             .filter(|addr| !tried.contains(addr))
             .collect();
+        let mut slot = self.client.write().await;
+        if !Arc::ptr_eq(&slot, failed) {
+            return Ok(false);
+        }
         if fresh.is_empty() {
             return Err(err);
         }
-        let client = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
+        *slot = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
             anyhow::anyhow!("{err:#}; nor did the names resolved again ({by_name:#})")
         })?;
         // Every address tried just failed, so only the new ones and the
@@ -408,7 +427,7 @@ impl ClusterClient {
             }
         }
         *self.endpoints.write().await = next;
-        Ok(client)
+        Ok(true)
     }
 
     /// Refresh if the broker supports it, and carry on if it does not.

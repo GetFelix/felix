@@ -33,7 +33,8 @@ impl Client {
     ///
     /// `addrs` is one `"host:port"` or a list of them; any reachable one is
     /// enough, and the client discovers the rest. A name is resolved again
-    /// whenever no broker the client knows answers, so prefer one to an IP.
+    /// whenever no broker the client knows answers, so prefer one to an IP. A
+    /// name that does not resolve now raises `ValueError`.
     /// `server_name` is the name the broker's certificate is expected to
     /// carry.
     ///
