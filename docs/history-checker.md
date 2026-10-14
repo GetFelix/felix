@@ -260,7 +260,10 @@ happen behind one.
   re-sends it itself if that answer is in doubt.
 - **All clients** read 20% of the time, from a random broker. They follow one
   `not_leader` hop. A client reconnects from a fresh address book after three
-  failures in a row, because a restarted broker listens on new ports.
+  failures in a row over its connection, or after one once a broker has
+  restarted, because a restarted broker listens on new ports. Reads and
+  cache ops open their own connection, so they neither count toward that nor
+  reset it.
 - **All clients** also put or get a cache key 20% of the time, half each,
   through a random broker, which forwards the operation to the key's leader.
 

@@ -86,6 +86,14 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A history campaign client no longer keeps publishing over a connection to
+  brokers that restarted on new ports (#1223). A successful read or cache op,
+  which opens its own connection, reset the client's count of failures in a
+  row, so a client could spend most of the outage campaign waiting out 10 s
+  publish timeouts, and the campaign fell short of its floor of cache puts.
+  A failed op over the connection now reconnects at once when the address
+  book changed since the client connected, and only ops over the connection
+  count toward reconnecting.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
