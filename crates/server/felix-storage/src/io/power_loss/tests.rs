@@ -162,11 +162,7 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     let root = tempfile::tempdir().expect("dir");
     let observer = PowerLoss::install(root.path()).expect("install");
     let captured = |file: &File| {
-        let meta = file.metadata().expect("stat");
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&file.metadata().expect("stat"));
         observer
             .state
             .lock()
@@ -214,6 +210,73 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     rewrite_first_byte("index", 9);
     crate::io::sync_data(&small).expect("sync");
     assert_eq!(captured(&small)[0], 9);
+}
+
+/// A file that gets the inode number of one deleted before it is a new
+/// file: its first capture is read whole, not spliced onto the old file's
+/// bytes, and a crash that brings the old name back gives it the old bytes.
+#[test]
+fn a_reused_inode_number_is_a_new_file() {
+    let root = tempfile::tempdir().expect("dir");
+    let observer = PowerLoss::install(root.path()).expect("install");
+    let old_bytes = bytes(WHOLE_FILE_UP_TO as usize + PAGE, 1);
+    let old = File::create(root.path().join("old")).expect("create");
+    std::io::Write::write_all(&mut &old, &old_bytes).expect("write");
+    crate::io::sync_data(&old).expect("sync");
+    crate::io::sync_dir(root.path()).expect("sync dir");
+    let old_ino = old.metadata().expect("stat").ino();
+    if old.metadata().expect("stat").created().is_err() {
+        eprintln!("skipped: this filesystem records no birth time");
+        return;
+    }
+    drop(old);
+    std::fs::remove_file(root.path().join("old")).expect("unlink");
+
+    // The filesystem picks the number; ext4 hands a freed one straight back.
+    let mut new = None;
+    for attempt in 0..256 {
+        let path = root.path().join(format!("new-{attempt}"));
+        let file = File::create(&path).expect("create");
+        if file.metadata().expect("stat").ino() == old_ino {
+            new = Some((path, file));
+            break;
+        }
+        drop(file);
+        std::fs::remove_file(&path).expect("unlink");
+    }
+    let Some((new_path, new)) = new else {
+        eprintln!("skipped: the filesystem never reused the inode number");
+        return;
+    };
+    let new_bytes = bytes(WHOLE_FILE_UP_TO as usize + 3 * PAGE, 2);
+    std::io::Write::write_all(&mut &new, &new_bytes).expect("write");
+    crate::io::sync_data(&new).expect("sync");
+
+    let captured = observer
+        .state
+        .lock()
+        .files
+        .get(&Inode::of(&new.metadata().expect("stat")))
+        .cloned()
+        .expect("captured");
+    assert_eq!(captured, new_bytes, "spliced onto the old file's bytes");
+
+    let new_name = new_path.file_name().expect("name").to_owned();
+    for seed in 0..32 {
+        let image = tempfile::tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        if let Ok(after) = std::fs::read(image.path().join("old")) {
+            assert_eq!(
+                after, old_bytes,
+                "seed {seed}: the old name came back with other bytes"
+            );
+        }
+        if let Ok(after) = std::fs::read(image.path().join(&new_name)) {
+            assert_eq!(after, new_bytes, "seed {seed}");
+        }
+    }
 }
 
 #[test]

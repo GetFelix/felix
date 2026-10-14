@@ -111,10 +111,26 @@ impl Durable {
     }
 }
 
+/// One file, for as long as it exists. The inode number alone is not enough:
+/// a filesystem hands a freed number to the next file it creates, and the
+/// model still needs the old file's bytes for a name whose unlink was not
+/// flushed. The birth time tells the two apart wherever the filesystem
+/// records one (ext4, xfs, btrfs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Inode {
     dev: u64,
     ino: u64,
+    born: Option<std::time::SystemTime>,
+}
+
+impl Inode {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            born: meta.created().ok(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,10 +218,7 @@ impl PowerLoss {
 
     fn capture_file(&self, file: &File, kind: SyncKind) {
         let Ok(meta) = file.metadata() else { return };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&meta);
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
         let path = format!("/proc/self/fd/{}", file.as_raw_fd());
@@ -382,10 +395,7 @@ fn list(dir: &Path) -> std::io::Result<BTreeMap<OsString, Entry>> {
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&meta);
         if meta.is_dir() {
             listing.insert(entry.file_name(), Entry::Dir(inode));
         } else if meta.is_file() {

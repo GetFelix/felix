@@ -86,6 +86,12 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The power-loss test model no longer mixes up a file with an earlier one that
+  had the same inode number (#1221). A file created after another was deleted
+  could get its inode number, and the model then spliced the new file's bytes
+  onto the old one's, or gave a deleted name whose unlink was not flushed the
+  new file's bytes after a crash. Files are now told apart by birth time as
+  well.
 - The power-loss test model no longer loses a sync it saw (#1218). When two
   flushes of one file overlapped, the one that read the file first could
   record its read last, so the model held less than the device would. A flush
