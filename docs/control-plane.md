@@ -605,7 +605,7 @@ changes with `seq >= N`, oldest first, and the `next_seq` to ask from next. A
 consumer that applies the snapshot and then follows the feed from its
 `next_seq` sees every committed change exactly once.
 
-Three properties make that hold on every backend:
+Four properties make that hold on every backend:
 
 1. The snapshot's items and its `next_seq` are read at one point: one
    `REPEATABLE READ` transaction on Postgres, and the resource's lock held
@@ -623,6 +623,13 @@ Three properties make that hold on every backend:
    shorter page's is the feed's tail. A consumer further behind than one page
    asks again from `next_seq` until a page comes back empty; the broker
    follows up to 64 pages per feed in each sync pass.
+
+4. A consumer's cursor never moves backwards. On Raft each member answers
+   from its own applied state, so a broker that reaches a lagging member can
+   get a `next_seq` below its cursor, or a snapshot older than what it has
+   applied. The broker ignores such an answer and asks again. A feed that
+   answers only from behind for 60 s is taken as reset: the catalog sync
+   follows it from its new `next_seq`, and the shard watch re-snapshots.
 
 The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
@@ -1256,7 +1263,7 @@ on from a checkpoint the control plane can no longer honour:
 | --- | --- | --- |
 | first returned `seq` > `since` | changes between were evicted from the window | re-snapshot |
 | empty page but `next_seq` > `since` | the whole span was evicted, not empty | re-snapshot |
-| `next_seq` < `since` | the sequence reset under us: a control plane restarted onto a store that does not persist it | re-snapshot |
+| `next_seq` < `since` | a Raft member behind the one asked before, or the sequence reset under us (a control plane restarted onto a store that does not persist it) | ignore it and ask again; re-snapshot once it has stayed behind for 60 s |
 
 The second is the subtle one: an empty page is only safe when the log has not
 moved. Treating it as "nothing new" whenever it is empty silently skips

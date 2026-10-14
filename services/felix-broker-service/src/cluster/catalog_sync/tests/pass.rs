@@ -509,3 +509,88 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
     .await
     .expect("test timeout")
 }
+
+/// A page from behind the cursor, as a lagging Raft member answers, is not
+/// applied and does not move the cursor back. Taking it would replay a delete
+/// the broker already applied before the stream was created again.
+#[tokio::test]
+async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+        broker.register_tenant("t1".to_string()).await?;
+        let router = Router::new()
+            .route(
+                "/v1/tenants/changes",
+                get(|| async {
+                    Json(TenantChangesResponse {
+                        items: vec![TenantChange {
+                            op: TenantChangeOp::Deleted,
+                            tenant_id: "t1".to_string(),
+                            tenant: None,
+                        }],
+                        next_seq: 2,
+                    })
+                }),
+            )
+            .route(
+                "/v1/namespaces/changes",
+                get(|| async {
+                    Json(NamespaceChangesResponse {
+                        items: vec![],
+                        next_seq: 3,
+                    })
+                }),
+            )
+            .route(
+                "/v1/caches/changes",
+                get(|| async {
+                    Json(CacheChangesResponse {
+                        items: vec![],
+                        next_seq: 3,
+                    })
+                }),
+            )
+            .route(
+                "/v1/streams/changes",
+                get(|| async {
+                    Json(StreamChangesResponse {
+                        items: vec![],
+                        next_seq: 3,
+                    })
+                }),
+            );
+        let (addr, shutdown_tx, handle) = serve_router(router).await?;
+        let base_url = format!("http://{}", addr);
+        let client = build_test_client()?;
+
+        let mut state = SyncState::new();
+        state.seeded = SeededSnapshots {
+            tenants: true,
+            namespaces: true,
+            caches: true,
+            streams: true,
+        };
+        state.next_tenant_seq = 5;
+        state.next_namespace_seq = 5;
+        state.next_cache_seq = 5;
+        state.next_stream_seq = 5;
+
+        let state = sync_once(&broker, &client, &base_url, None, state).await?;
+        assert!(
+            broker.tenant_exists("t1").await,
+            "a delete from behind the cursor was applied",
+        );
+        assert_eq!(state.next_tenant_seq, 5);
+        assert_eq!(state.next_namespace_seq, 5);
+        assert_eq!(state.next_cache_seq, 5);
+        assert_eq!(state.next_stream_seq, 5);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("server shutdown");
+        Ok(())
+    })
+    .await
+    .expect("test timeout")
+}

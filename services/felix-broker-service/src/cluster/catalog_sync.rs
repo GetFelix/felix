@@ -37,6 +37,7 @@ use anyhow::Result;
 use felix_broker::Broker;
 
 use crate::cluster::credential::NodeCredential;
+use crate::cluster::feed_cursor::BehindCursor;
 use pass::sync_once;
 
 /// Polls the control plane forever, applying changes as they arrive.
@@ -155,6 +156,11 @@ struct SyncState {
     /// applied. Only an explicit flag set where the snapshot is applied says
     /// what actually happened.
     seeded: SeededSnapshots,
+    /// Per feed, how long it has answered from behind the cursor. A cursor
+    /// never moves backwards on a single answer: see [`feed_cursor`].
+    ///
+    /// [`feed_cursor`]: crate::cluster::feed_cursor
+    behind: BehindFeeds,
 }
 
 impl SyncState {
@@ -176,6 +182,7 @@ impl SyncState {
             next_cache_seq: 0,
             next_stream_seq: 0,
             seeded: SeededSnapshots::default(),
+            behind: BehindFeeds::default(),
         }
     }
 }
@@ -187,6 +194,15 @@ struct SeededSnapshots {
     namespaces: bool,
     caches: bool,
     streams: bool,
+}
+
+/// Per-resource [`BehindCursor`].
+#[derive(Debug, Clone, Copy, Default)]
+struct BehindFeeds {
+    tenants: BehindCursor,
+    namespaces: BehindCursor,
+    caches: BehindCursor,
+    streams: BehindCursor,
 }
 
 impl SeededSnapshots {

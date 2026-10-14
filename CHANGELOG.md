@@ -99,6 +99,14 @@ entries.
   follow each feed page by page within a sync pass, up to 64 pages. The wire
   format is unchanged; an older broker against a fixed control plane catches
   up one page per sync interval.
+- A broker no longer moves a change-feed cursor backwards (#1224). On Raft a
+  control-plane member answers from its own applied state, so a broker whose
+  request reached a lagging member could replay changes it had already applied
+  (a stale delete removing a stream created again since) or, for shard
+  assignments, re-snapshot onto the member's older view. The catalog sync and
+  the shard watch now ignore an answer from behind what they applied and ask
+  again, and take it as a reset only once the feed has answered from behind
+  for 60 s.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

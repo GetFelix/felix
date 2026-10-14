@@ -12,6 +12,7 @@ use super::apply::{
 };
 use super::fetch::*;
 use super::wire::*;
+use crate::cluster::feed_cursor::{BehindCursor, Verdict};
 
 /// Pages of one change feed applied per pass, so a broker far behind catches
 /// up in one pass without a single feed starving the others forever.
@@ -150,6 +151,14 @@ pub(super) async fn sync_once(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_tenant_changes(client, base_url, bearer, state.next_tenant_seq).await {
             Ok(changes) => {
+                if !accept(
+                    &mut state.behind.tenants,
+                    state.next_tenant_seq,
+                    changes.next_seq,
+                    "tenant",
+                ) {
+                    break;
+                }
                 // Follow until a page comes back empty: a full page stops short of the tail.
                 let more = !changes.items.is_empty() && changes.next_seq > state.next_tenant_seq;
                 for change in changes.items {
@@ -184,6 +193,14 @@ pub(super) async fn sync_once(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_namespace_changes(client, base_url, bearer, state.next_namespace_seq).await {
             Ok(changes) => {
+                if !accept(
+                    &mut state.behind.namespaces,
+                    state.next_namespace_seq,
+                    changes.next_seq,
+                    "namespace",
+                ) {
+                    break;
+                }
                 // Follow until a page comes back empty: a full page stops short of the tail.
                 let more = !changes.items.is_empty() && changes.next_seq > state.next_namespace_seq;
                 for change in changes.items {
@@ -231,6 +248,14 @@ pub(super) async fn sync_once(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_cache_changes(client, base_url, bearer, state.next_cache_seq).await {
             Ok(changes) => {
+                if !accept(
+                    &mut state.behind.caches,
+                    state.next_cache_seq,
+                    changes.next_seq,
+                    "cache",
+                ) {
+                    break;
+                }
                 // Follow until a page comes back empty: a full page stops short of the tail.
                 let more = !changes.items.is_empty() && changes.next_seq > state.next_cache_seq;
                 for change in changes.items {
@@ -287,6 +312,14 @@ pub(super) async fn sync_once(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
             Ok(changes) => {
+                if !accept(
+                    &mut state.behind.streams,
+                    state.next_stream_seq,
+                    changes.next_seq,
+                    "stream",
+                ) {
+                    break;
+                }
                 // Follow until a page comes back empty: a full page stops short of the tail.
                 let more = !changes.items.is_empty() && changes.next_seq > state.next_stream_seq;
                 for change in changes.items {
@@ -337,4 +370,32 @@ pub(super) async fn sync_once(
         }
     }
     Ok(state)
+}
+
+/// Whether to apply a page whose `next_seq` is `next_seq`, for a feed at
+/// `cursor`. A page from behind the cursor came from a lagging control-plane
+/// member: applying it would replay changes already applied, so it is skipped
+/// until the feed has answered only from behind for long enough to be a reset.
+fn accept(behind: &mut BehindCursor, cursor: u64, next_seq: u64, feed: &str) -> bool {
+    match behind.judge(next_seq < cursor, tokio::time::Instant::now()) {
+        Verdict::Fresh => true,
+        Verdict::Stale => {
+            tracing::debug!(
+                feed,
+                cursor,
+                next_seq,
+                "control plane answered from behind the cursor; ignored"
+            );
+            false
+        }
+        Verdict::Reset => {
+            tracing::warn!(
+                feed,
+                cursor,
+                next_seq,
+                "control plane change feed stayed behind the cursor; taking it as a reset",
+            );
+            true
+        }
+    }
 }
