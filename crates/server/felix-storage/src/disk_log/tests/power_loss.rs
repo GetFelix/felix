@@ -478,11 +478,11 @@ async fn a_segment_overshoots_rather_than_rolls_while_a_seal_is_parked() {
     parked.finish().await;
 }
 
-/// The nightly failure on workload seed 1333428443, made deterministic. A
-/// flush reads the active segment, then a background roll retires that
-/// segment and its seal syncs it whole before the flush records its read.
-/// The seal's sync is the newer one, so the model must keep what it read; a
-/// later flush of the new segment then moves the durable mark past the
+/// The race behind the nightly failure on workload seed 1333428443 (#1218),
+/// made deterministic. A flush reads the active segment, then a background
+/// roll retires that segment and its seal syncs it whole before the flush
+/// records its read. The seal's sync is the newer one, so the model must keep
+/// what it read; a later flush of the new segment then moves the durable mark past the
 /// retired one, and a model left holding the flush's shorter read builds
 /// crashes that cut a sealed segment short, which recovery rightly refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
