@@ -1574,8 +1574,10 @@ let client =
 ```
 
 Names are resolved at most once a second for a client and its identities,
-concurrently, each bounded to 2 s, and outside the lock operations read the
-client through. See `docs/multi-node-client.md`.
+all at once, each bounded to 2 s, and without holding the lock operations
+read the client through. A reconnect tries addresses in order but dials the
+next one beside it after 250 ms, so an address that drops packets does not
+cost the 6 s QUIC idle timeout. See `docs/multi-node-client.md`.
 
 ## Telemetry
 

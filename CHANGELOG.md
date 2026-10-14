@@ -94,13 +94,22 @@ entries.
   it already held, and discovery needs one of them to answer, so the client
   failed every operation until it was rebuilt. When none of them answers, it
   now resolves its seed names, and the names brokers last advertised, again
-  and dials the new addresses. The names are looked up concurrently, each
-  bounded to 2 s, outside the lock every operation reads the client through,
-  and at most once a second for a client and the identities derived from it.
-  A seed name that stops resolving keeps its last addresses. felixctl and the
+  and dials the new addresses. The names are looked up at the same time, each
+  bounded to 2 s, without holding the lock every operation reads the client
+  through, and at most once a second for a client and the identities derived
+  from it, including when callers give up waiting. Discovery's names are
+  looked up the same way. A seed name that stops resolving keeps its last
+  addresses. felixctl and the
   Python, TypeScript and C clients pass the configured `host:port` through as
   a name instead of resolving it once at startup; a name that does not
   resolve at connect is still refused as an invalid argument.
+- A `ClusterClient` reconnect replaces the client only if it is still the one
+  the failing operation used. Every operation that failed on the same broker
+  used to throw away whatever client was in place, including a fresh
+  replacement, and dial again with the endpoint list it had read before
+  waiting for the lock. A reconnect also no longer dials addresses one after
+  another: each gets 250 ms before the next is dialled beside it, so an
+  address that drops packets no longer costs the 6 s QUIC idle timeout.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

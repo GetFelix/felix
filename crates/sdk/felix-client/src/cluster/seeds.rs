@@ -11,10 +11,13 @@ use std::fmt;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use tokio::sync::{Semaphore, watch};
 
 use super::nodes::Nodes;
 
@@ -31,6 +34,9 @@ pub(super) const RESOLVE_AGAIN_AFTER: Duration = Duration::from_secs(1);
 /// does not exist, would otherwise hold a reconnect for as long as the system
 /// resolver keeps retrying.
 pub(super) const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Most system lookups one client has running at once. See [`Dns`].
+const MAX_OUTSTANDING_LOOKUPS: usize = 8;
 
 /// A broker address a cluster client is configured with.
 ///
@@ -103,14 +109,42 @@ pub(crate) trait Lookup: Send + Sync {
 }
 
 /// The system resolver.
-pub(crate) struct Dns;
+///
+/// A system lookup runs on a blocking thread that cannot be cancelled, so one
+/// a caller gave up on keeps its thread until the resolver answers. Each
+/// holds a permit until then, which bounds how many threads a client can tie
+/// up against a resolver that has stopped answering.
+pub(crate) struct Dns {
+    outstanding: Arc<Semaphore>,
+}
+
+impl Dns {
+    pub(crate) fn new() -> Self {
+        Self {
+            outstanding: Arc::new(Semaphore::new(MAX_OUTSTANDING_LOOKUPS)),
+        }
+    }
+}
 
 impl Lookup for Dns {
     fn lookup<'a>(
         &'a self,
         host_port: &'a str,
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'a>> {
-        Box::pin(async move { Ok(tokio::net::lookup_host(host_port).await?.collect()) })
+        let outstanding = Arc::clone(&self.outstanding);
+        let host_port = host_port.to_string();
+        Box::pin(async move {
+            let permit = outstanding
+                .acquire_owned()
+                .await
+                .map_err(io::Error::other)?;
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                host_port.to_socket_addrs().map(Iterator::collect)
+            })
+            .await
+            .map_err(io::Error::other)?
+        })
     }
 }
 
@@ -125,10 +159,18 @@ pub(super) struct Seeds {
     /// a name that stops resolving keeps its last addresses as a seed while
     /// the others move on.
     by_name: Mutex<HashMap<String, Vec<SocketAddr>>>,
-    /// The last resolution and when it ran. Held across the lookups, so one
-    /// resolution runs at a time for this client and every identity sharing
-    /// it, and a caller that waited gets the answer it waited for.
-    last: tokio::sync::Mutex<Option<(Instant, Vec<SocketAddr>)>>,
+    /// The last resolution and when it finished, and the one running now.
+    rounds: Mutex<Rounds>,
+}
+
+#[derive(Default)]
+struct Rounds {
+    last: Option<(Instant, Vec<SocketAddr>)>,
+    /// Where the running resolution's answer arrives. It runs in a task of
+    /// its own, so a caller that gives up does not cancel it: a cancelled
+    /// round would leave no answer behind, and the next caller would start
+    /// another at once.
+    running: Option<watch::Receiver<Option<Vec<SocketAddr>>>>,
 }
 
 impl Seeds {
@@ -137,7 +179,7 @@ impl Seeds {
             configured,
             advertised: Mutex::new(Vec::new()),
             by_name: Mutex::new(HashMap::new()),
-            last: tokio::sync::Mutex::new(None),
+            rounds: Mutex::new(Rounds::default()),
         }
     }
 
@@ -173,16 +215,57 @@ impl Seeds {
     /// What the seed names and advertised names resolve to now, or what they
     /// resolved to within the last [`RESOLVE_AGAIN_AFTER`].
     ///
-    /// Every name is looked up at once, each bounded by [`LOOKUP_TIMEOUT`].
-    /// A name that does not resolve is logged and skipped: one broken name
-    /// must not hide the others. Literal seeds are not included.
-    pub(super) async fn resolve(&self, nodes: &Nodes) -> Vec<SocketAddr> {
-        let mut last = self.last.lock().await;
-        if let Some((at, addrs)) = last.as_ref()
-            && at.elapsed() < RESOLVE_AGAIN_AFTER
-        {
-            return addrs.clone();
+    /// One resolution runs at a time for this client and every identity
+    /// sharing its seeds; a caller that arrives while one runs waits for its
+    /// answer. Every name is looked up at once, each bounded by
+    /// [`LOOKUP_TIMEOUT`]. A name that does not resolve is logged and skipped:
+    /// one broken name must not hide the others. Literal seeds are not
+    /// included.
+    pub(super) async fn resolve(self: &Arc<Self>, nodes: &Arc<Nodes>) -> Vec<SocketAddr> {
+        let mut answer = {
+            let mut rounds = self.rounds.lock().expect("resolution rounds");
+            if let Some((at, addrs)) = &rounds.last
+                && at.elapsed() < RESOLVE_AGAIN_AFTER
+            {
+                return addrs.clone();
+            }
+            match &rounds.running {
+                Some(running) => running.clone(),
+                None => {
+                    let (sender, running) = watch::channel(None);
+                    rounds.running = Some(running.clone());
+                    let seeds = Arc::clone(self);
+                    let nodes = Arc::clone(nodes);
+                    tokio::spawn(async move {
+                        let addrs = seeds.resolve_now(&nodes).await;
+                        let mut rounds = seeds.rounds.lock().expect("resolution rounds");
+                        rounds.last = Some((Instant::now(), addrs.clone()));
+                        rounds.running = None;
+                        sender.send_replace(Some(addrs));
+                    });
+                    running
+                }
+            }
+        };
+        match answer.wait_for(Option::is_some).await {
+            Ok(addrs) => addrs.clone().unwrap_or_default(),
+            Err(_) => {
+                // The round's task ended without an answer (the runtime is
+                // shutting down); let the next caller start another.
+                let mut rounds = self.rounds.lock().expect("resolution rounds");
+                if rounds
+                    .running
+                    .as_ref()
+                    .is_some_and(|running| running.has_changed().is_err())
+                {
+                    rounds.running = None;
+                }
+                Vec::new()
+            }
         }
+    }
+
+    async fn resolve_now(&self, nodes: &Nodes) -> Vec<SocketAddr> {
         let seed_names: Vec<String> = self
             .configured
             .iter()
@@ -234,7 +317,6 @@ impl Seeds {
                 .expect("resolved seeds")
                 .insert(name, found);
         }
-        *last = Some((Instant::now(), addrs.clone()));
         addrs
     }
 }

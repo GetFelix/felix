@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
 use crate::cluster::nodes::Nodes;
-use crate::cluster::seeds::{Lookup, RESOLVE_AGAIN_AFTER, Seeds};
+use crate::cluster::seeds::{LOOKUP_TIMEOUT, Lookup, RESOLVE_AGAIN_AFTER, Seeds};
 use crate::cluster::{ClusterClient, Seed};
 use crate::test_support::build_server_config;
 
@@ -180,12 +180,12 @@ async fn advertised_names_are_resolved_beside_the_seeds() -> Result<()> {
     let pod_addr: SocketAddr = "10.0.0.2:5000".parse()?;
     dns.point(NAME, vec![seed_addr]);
     dns.point("felix-1.felix:5000", vec![pod_addr]);
-    let nodes = Nodes::new(
+    let nodes = Arc::new(Nodes::new(
         "localhost",
         default_config(cert)?,
         Arc::clone(&dns) as Arc<dyn Lookup>,
-    );
-    let seeds = Seeds::new(vec![NAME.parse()?, "10.0.0.9:5000".parse()?]);
+    ));
+    let seeds = Arc::new(Seeds::new(vec![NAME.parse()?, "10.0.0.9:5000".parse()?]));
     seeds.set_advertised([
         "felix-1.felix:5000".to_string(),
         "10.0.0.3:5000".to_string(),
@@ -204,13 +204,13 @@ async fn advertised_names_are_resolved_beside_the_seeds() -> Result<()> {
     Ok(())
 }
 
-fn nodes(dns: &Arc<FakeDns>) -> Result<Nodes> {
+fn nodes(dns: &Arc<FakeDns>) -> Result<Arc<Nodes>> {
     let (_, cert) = build_server_config()?;
-    Ok(Nodes::new(
+    Ok(Arc::new(Nodes::new(
         "localhost",
         default_config(cert)?,
         Arc::clone(dns) as Arc<dyn Lookup>,
-    ))
+    )))
 }
 
 /// **A seed name that stops resolving keeps its last addresses** while
@@ -225,7 +225,10 @@ async fn a_seed_name_that_stops_resolving_keeps_its_last_addresses() -> Result<(
     dns.point("a.svc:5000", vec![a1]);
     dns.point("b.svc:5000", vec![b1]);
     let nodes = nodes(&dns)?;
-    let seeds = Seeds::new(vec!["a.svc:5000".parse()?, "b.svc:5000".parse()?]);
+    let seeds = Arc::new(Seeds::new(vec![
+        "a.svc:5000".parse()?,
+        "b.svc:5000".parse()?,
+    ]));
     seeds.resolve(&nodes).await;
     assert_eq!(seeds.addrs(), vec![a1, b1]);
 
@@ -246,7 +249,7 @@ async fn concurrent_resolutions_share_one_lookup() -> Result<()> {
     dns.point(NAME, vec!["10.0.0.1:5000".parse()?]);
     *dns.delay.lock().unwrap() = Duration::from_millis(100);
     let nodes = nodes(&dns)?;
-    let seeds = Seeds::new(vec![NAME.parse()?]);
+    let seeds = Arc::new(Seeds::new(vec![NAME.parse()?]));
     let (one, two) = tokio::join!(seeds.resolve(&nodes), seeds.resolve(&nodes));
     assert_eq!(one, two);
     assert_eq!(dns.lookups(), 1);
@@ -296,6 +299,55 @@ async fn a_hanging_lookup_neither_holds_the_client_nor_hides_other_names() -> Re
         .await
         .map_err(|_| anyhow::anyhow!("the hanging lookup was not bounded"))???;
     assert_eq!(new.publishes(), 1);
+    Ok(())
+}
+
+/// **A caller that gives up does not cancel the resolution.** The round
+/// carries on, and the next caller gets its answer instead of starting
+/// another one while the first one's lookups are still running.
+#[tokio::test]
+async fn a_cancelled_caller_does_not_cancel_the_resolution() -> Result<()> {
+    let dns = Arc::new(FakeDns::default());
+    let addr: SocketAddr = "10.0.0.1:5000".parse()?;
+    dns.point(NAME, vec![addr]);
+    *dns.delay.lock().unwrap() = Duration::from_millis(300);
+    let nodes = nodes(&dns)?;
+    let seeds = Arc::new(Seeds::new(vec![NAME.parse()?]));
+
+    let gave_up = tokio::time::timeout(Duration::from_millis(50), seeds.resolve(&nodes)).await;
+    assert!(gave_up.is_err(), "the first caller gave up mid-round");
+    assert_eq!(seeds.resolve(&nodes).await, vec![addr]);
+    assert_eq!(
+        dns.lookups(),
+        1,
+        "the second caller waited for the first round"
+    );
+    Ok(())
+}
+
+/// **Discovery's names are looked up at once, not one after another.** Each
+/// lookup is bounded, so with every one hanging, resolving a topology answer
+/// costs one timeout rather than one per broker.
+#[tokio::test]
+async fn hanging_advertised_names_cost_one_lookup_timeout() -> Result<()> {
+    let dns = Arc::new(FakeDns::default());
+    let names: Vec<String> = (0..5).map(|i| format!("felix-{i}.felix:5000")).collect();
+    for name in &names {
+        dns.hang(name);
+    }
+    let nodes = nodes(&dns)?;
+    let started = Instant::now();
+    let mut advertised = names.clone();
+    advertised.push("10.0.0.7:5000".to_string());
+    assert_eq!(
+        nodes.resolve_all(&advertised).await,
+        vec!["10.0.0.7:5000".parse::<SocketAddr>()?]
+    );
+    let took = started.elapsed();
+    assert!(
+        took < LOOKUP_TIMEOUT * 2,
+        "five hanging names took {took:?}, more than one lookup timeout"
+    );
     Ok(())
 }
 

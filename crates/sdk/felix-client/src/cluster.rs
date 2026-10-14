@@ -224,7 +224,14 @@ impl ClusterClient {
         config: ClientConfig,
         policy: ReconnectPolicy,
     ) -> Result<Self> {
-        Self::connect_resolving(seeds, server_name, config, policy, Arc::new(seeds::Dns)).await
+        Self::connect_resolving(
+            seeds,
+            server_name,
+            config,
+            policy,
+            Arc::new(seeds::Dns::new()),
+        )
+        .await
     }
 
     /// [`ClusterClient::connect_seeds`] resolving names through `lookup`.
@@ -307,12 +314,8 @@ impl ClusterClient {
         let reported = client.topology().await?;
         self.seeds
             .set_advertised(reported.iter().map(|broker| broker.addr.clone()));
-        let mut discovered = Vec::with_capacity(reported.len());
-        for broker in &reported {
-            if let Some(addr) = self.nodes.resolve(&broker.addr).await {
-                discovered.push(addr);
-            }
-        }
+        let advertised: Vec<String> = reported.iter().map(|broker| broker.addr.clone()).collect();
+        let discovered = self.nodes.resolve_all(&advertised).await;
 
         let mut endpoints = self.endpoints.write().await;
         // Rebuilt rather than appended to, so a broker that has left the
@@ -349,33 +352,41 @@ impl ClusterClient {
         self.nodes.connections_per_node().await
     }
 
-    /// Replace the client with one connected to a broker that answers,
-    /// trying the broker in use last, and resolving names again when no
-    /// address in hand answers.
+    /// Replace `failed`, the client an operation just saw fail, with one
+    /// connected to a broker that answers, trying `failed`'s broker last, and
+    /// resolving names again when no address in hand answers.
     ///
-    /// Held exclusively while it runs, so publishes queue behind it rather than
-    /// racing to build several replacements for the same failure.
-    pub(crate) async fn reconnect(&self) -> Result<()> {
-        let mut endpoints = self.endpoints.read().await.clone();
-        let stranded = {
+    /// Does nothing when the client in use is no longer `failed`: someone
+    /// else has already replaced it, and every operation that failed on the
+    /// same broker must not each throw away the replacement and dial again.
+    /// Held exclusively while dialling, so publishes queue behind it rather
+    /// than racing to build several replacements for the same failure.
+    pub(crate) async fn reconnect(&self, failed: &Arc<Client>) -> Result<()> {
+        let (endpoints, stranded) = {
             let mut slot = self.client.write().await;
+            if !Arc::ptr_eq(&slot, failed) {
+                return Ok(());
+            }
+            // Read under the lock, so a reconnect that queued behind another
+            // one dials what that one left, not what was there before it.
+            let mut endpoints = self.endpoints.read().await.clone();
             // The broker in use just failed, so it is dialled afresh rather
             // than handed back from the shared clients. It goes last because
             // a draining broker still completes handshakes and would be
             // picked again until it exits.
             self.nodes.forget(&slot).await;
-            let failed = slot.dialled();
-            endpoints.sort_by_key(|addr| *addr == failed);
+            let failed_addr = slot.dialled();
+            endpoints.sort_by_key(|addr| *addr == failed_addr);
             match self.nodes.connect_any(&endpoints).await {
                 Ok(client) => {
                     *slot = client;
-                    None
+                    (endpoints, None)
                 }
-                Err(err) => Some((Arc::clone(&*slot), err)),
+                Err(err) => (endpoints, Some(err)),
             }
         };
-        if let Some((failed, err)) = stranded
-            && !self.reconnect_by_name(&endpoints, &failed, err).await?
+        if let Some(err) = stranded
+            && !self.reconnect_by_name(&endpoints, failed, err).await?
         {
             // Another caller replaced the client while this one was
             // resolving, and has run discovery for it.

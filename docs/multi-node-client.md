@@ -134,18 +134,36 @@ seed given as an IP. Discovery then runs against the broker that answered, as
 after any reconnect.
 
 Resolution runs at most once a second for a client and every identity derived
-from it with `with_identity`; a reconnect that needs one while another is
-running waits for that answer. So a client whose cluster is down asks DNS at
-most once a second however many operations are failing. The reconnect
+from it with `with_identity`. A reconnect that needs one while another is
+running waits for that answer, and a caller that gives up waiting does not
+cancel it. So a client whose cluster is down asks DNS at most once a second
+however many operations are failing or being cancelled. The reconnect
 policy's backoff paces each operation as usual.
 
-The names are looked up concurrently, each given 2 s before it counts as not
-resolving, and without holding the lock every operation takes to read the
-client in use. A resolver that has stopped answering therefore delays a
-reconnect by at most those 2 s and does not stall other operations meanwhile.
+Every name is looked up at the same time, and each gets 2 s before it counts
+as not resolving. The lookups run without holding the lock every operation
+takes to read the client in use, so other operations are not stalled
+meanwhile. A resolver that has stopped answering costs a reconnect at most 2 s
+for this resolution and 2 s more for resolving the names in the discovery
+answer that follows, which are also looked up at the same time. A system
+lookup that has timed out keeps its thread until the resolver answers; a
+client keeps at most 8 of those running and waits for one to finish before
+starting more.
 
 A seed name that stops resolving keeps the addresses it last resolved to, as
 seeds, while the other names move on.
+
+### Dialling
+
+A reconnect replaces the client only if it is still the one the failing
+operation used. When several operations fail on the same broker at once, the
+first replaces it and the rest find the replacement and use it.
+
+The addresses are tried in order, with the broker that just failed last. Each
+gets 250 ms to answer before the next one is dialled beside it, and a refusal
+moves on at once. The first to answer is used and the other dials are
+abandoned. An address that drops packets therefore costs 250 ms, not the
+6 s QUIC idle timeout it would take to give up on it.
 
 A client given only IP seeds, against brokers that advertise only IPs, has
 nothing to resolve and stays stranded until it is rebuilt. Give it a name.
