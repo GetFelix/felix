@@ -385,3 +385,127 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
     .await
     .expect("test timeout")
 }
+
+/// A feed more than one page behind is followed to its tail in one pass, not
+/// one page per sync interval.
+#[tokio::test]
+async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
+    use std::collections::HashMap;
+
+    use axum::extract::Query;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+        // One change per page, the way a control plane answers when it is
+        // capped at one change per page.
+        let tenants = ["t0", "t1", "t2"];
+        let router = Router::new()
+            .route(
+                "/v1/tenants/snapshot",
+                get(|| async {
+                    Json(TenantSnapshotResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/namespaces/snapshot",
+                get(|| async {
+                    Json(NamespaceSnapshotResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/caches/snapshot",
+                get(|| async {
+                    Json(CacheSnapshotResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/streams/snapshot",
+                get(|| async {
+                    Json(StreamSnapshotResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/tenants/changes",
+                get(
+                    move |Query(query): Query<HashMap<String, u64>>| async move {
+                        let since = query.get("since").copied().unwrap_or(0);
+                        let page: Vec<TenantChange> = tenants
+                            .get(since as usize)
+                            .map(|tenant_id| TenantChange {
+                                op: TenantChangeOp::Created,
+                                tenant_id: tenant_id.to_string(),
+                                tenant: Some(Tenant {
+                                    tenant_id: tenant_id.to_string(),
+                                }),
+                            })
+                            .into_iter()
+                            .collect();
+                        let next_seq = since + page.len() as u64;
+                        Json(TenantChangesResponse {
+                            items: page,
+                            next_seq,
+                        })
+                    },
+                ),
+            )
+            .route(
+                "/v1/namespaces/changes",
+                get(|| async {
+                    Json(NamespaceChangesResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/caches/changes",
+                get(|| async {
+                    Json(CacheChangesResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            )
+            .route(
+                "/v1/streams/changes",
+                get(|| async {
+                    Json(StreamChangesResponse {
+                        items: vec![],
+                        next_seq: 0,
+                    })
+                }),
+            );
+        let (addr, shutdown_tx, handle) = serve_router(router).await?;
+        let base_url = format!("http://{}", addr);
+        let client = build_test_client()?;
+
+        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        for tenant_id in tenants {
+            assert!(
+                broker.tenant_exists(tenant_id).await,
+                "{tenant_id} was past the first page and was not applied",
+            );
+        }
+        assert_eq!(state.next_tenant_seq, tenants.len() as u64);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("server shutdown");
+        Ok(())
+    })
+    .await
+    .expect("test timeout")
+}

@@ -596,6 +596,38 @@ collation, so the order of names differing only in punctuation can differ
 between backends; within one backend it is stable, which is all a cursor
 needs.
 
+### Snapshot and change feeds
+
+The control plane serves a snapshot and a change feed for each of tenants,
+namespaces, streams, caches, nodes and shard assignments. The snapshot
+returns every current item plus a `next_seq`; `changes?since=N` returns the
+changes with `seq >= N`, oldest first, and the `next_seq` to ask from next. A
+consumer that applies the snapshot and then follows the feed from its
+`next_seq` sees every committed change exactly once.
+
+Three properties make that hold on every backend:
+
+1. The snapshot's items and its `next_seq` are read at one point: one
+   `REPEATABLE READ` transaction on Postgres, and the resource's lock held
+   across both reads in memory and on Raft. Read separately, a delete landing
+   between them leaves the item in the snapshot while `next_seq` is already
+   past the delete.
+2. A `seq` is handed out in commit order. On Postgres each change table's
+   writers take that feed's advisory lock before anything else and hold it
+   until they commit, so a writer cannot take seq 11 and commit while seq 10
+   is still in flight. Without that, a reader could pass 10 and never see it.
+   Nodes and shard assignments get the same property from a locked counter
+   row.
+3. A page holds at most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by
+   default). A full page's `next_seq` is the seq after its last change, and a
+   shorter page's is the feed's tail. A consumer further behind than one page
+   asks again from `next_seq` until a page comes back empty; the broker
+   follows up to 64 pages per feed in each sync pass.
+
+The tenant, namespace, stream and cache feeds keep only their most recent
+`FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
+falls further behind than that has to take a new snapshot.
+
 ### Shard ownership
 
 `GET /v1/shard-assignments` lists which broker leads each shard, and

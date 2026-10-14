@@ -682,8 +682,12 @@ Authorization: Bearer <FELIX_NODE_TOKEN>
   "next_seq": 43 }
 ```
 
-A broker loads each snapshot once, then asks for changes since the last `seq`
-it applied. It polls the tenant, namespace, stream and cache feeds every
+A broker loads each snapshot once, then asks for changes from the snapshot's
+`next_seq`. The snapshot's items and `next_seq` are read at one point, so the
+two together describe every committed change exactly once. A page holds at
+most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by default); a full
+page's `next_seq` is the seq after its last change, and the broker keeps
+asking from `next_seq` until a page comes back empty. It polls the tenant, namespace, stream and cache feeds every
 `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` (2 s by default), so a new stream can take
 that long to reach every broker. The shard-assignment feed is a long poll:
 `wait_ms` (at most 25000) holds the request open until a change lands, so a

@@ -6,14 +6,15 @@ use super::codec::{
     DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_routing,
     parse_stream_kind,
 };
-use super::{PostgresStore, is_unique_violation, page_fetch};
+use super::{
+    CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
+    is_unique_violation, page_fetch,
+};
 use crate::model::{
     Cache, CacheKey, Namespace, NamespaceKey, RetentionPolicy, Stream, StreamKey, Tenant,
     TenantChange, TenantChangeOp,
 };
-use crate::store::{
-    ChangeSet, ControlPlaneStore, Page, PageRequest, Snapshot, StoreError, StoreResult,
-};
+use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
 /// Row shape for `tenants` table (minimal mapping needed by the API).
 #[derive(Debug, Clone, FromRow)]
@@ -85,7 +86,7 @@ pub(super) async fn list_tenants_page(
 }
 
 pub(super) async fn create_tenant(store: &PostgresStore, tenant: Tenant) -> StoreResult<Tenant> {
-    let mut tx = store.pool.begin().await?;
+    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Tenants]).await?;
     let insert = sqlx::query(r#"INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $2)"#)
         .bind(&tenant.tenant_id)
         .bind(&tenant.display_name)
@@ -116,7 +117,16 @@ pub(super) async fn create_tenant(store: &PostgresStore, tenant: Tenant) -> Stor
 /// change events with the prior payload. This is useful for caches/watchers that want tombstones
 /// with context (not just keys).
 pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> StoreResult<()> {
-    let mut tx = store.pool.begin().await?;
+    let mut tx = begin_feed_write(
+        &store.pool,
+        &[
+            CatalogFeed::Tenants,
+            CatalogFeed::Namespaces,
+            CatalogFeed::Streams,
+            CatalogFeed::Caches,
+        ],
+    )
+    .await?;
 
     // Validate tenant exists to return a proper 404 semantics.
     let tenant_exists =
@@ -261,11 +271,23 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
 }
 
 pub(super) async fn tenant_snapshot(store: &PostgresStore) -> StoreResult<Snapshot<Tenant>> {
-    let items = store.list_tenants().await?;
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM tenant_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
+    // One REPEATABLE READ snapshot for the rows and `next_seq`, or a change
+    // committed between the two reads is counted but missing.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
+    let items = sqlx::query_as::<_, DbTenant>(
+        "SELECT tenant_id, display_name FROM tenants ORDER BY tenant_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|row| Tenant {
+        tenant_id: row.tenant_id,
+        display_name: row.display_name,
+    })
+    .collect();
+    let next_seq = feed_head(&mut tx, CatalogFeed::Tenants).await?;
+    tx.commit().await?;
     Ok(Snapshot { items, next_seq })
 }
 
@@ -273,12 +295,16 @@ pub(super) async fn tenant_changes(
     store: &PostgresStore,
     since: u64,
 ) -> StoreResult<ChangeSet<TenantChange>> {
+    // The page and `head` from one snapshot, so a short page means the feed
+    // really had nothing more.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, TenantChangeRow>(
         r#"SELECT seq, op, tenant_id, payload FROM tenant_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
 
@@ -300,12 +326,15 @@ pub(super) async fn tenant_changes(
         });
     }
 
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM tenant_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
+    let head = feed_head(&mut tx, CatalogFeed::Tenants).await?;
+    tx.commit().await?;
 
-    Ok(ChangeSet { items, next_seq })
+    Ok(ChangeSet::page(
+        items,
+        store.changes_limit(),
+        head,
+        |change| change.seq,
+    ))
 }
 
 pub(super) async fn tenant_exists(store: &PostgresStore, tenant_id: &str) -> StoreResult<bool> {

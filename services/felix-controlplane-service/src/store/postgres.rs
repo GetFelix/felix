@@ -13,7 +13,13 @@
 //! Three things about `seq` that are easy to get wrong:
 //! - it is monotonic *per change table*, not global across entity types;
 //! - `since` is inclusive (`seq >= since`);
-//! - `next_seq` is `MAX(seq) + 1`, i.e. the first sequence not yet observed.
+//! - `next_seq` is `MAX(seq) + 1`, i.e. the first sequence not yet observed,
+//!   except after a full page of changes, where it is the seq after the page's
+//!   last change.
+//!
+//! Rows and `next_seq` are read in one `REPEATABLE READ` transaction, and
+//! writers append to a change table one at a time (see `CatalogFeed`), so
+//! snapshot-then-poll neither skips nor invents a change.
 //!
 //! The optional retention task bounds each change table to the most recent N
 //! rows. That caps growth at the cost of the catch-up window: a client that
@@ -148,6 +154,11 @@ impl PostgresStore {
     /// This bounds response size, memory usage, and tail latency for callers polling changes.
     fn limit(&self) -> i64 {
         self.config.changes_limit as i64
+    }
+
+    /// [`Self::limit`] as a count, for [`ChangeSet::page`].
+    fn changes_limit(&self) -> usize {
+        self.config.changes_limit as usize
     }
 
     async fn refresh_counts(&self) -> StoreResult<()> {
@@ -800,6 +811,75 @@ async fn begin_consistent_read(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+/// One of the catalog change tables.
+///
+/// Their `seq` is a `BIGSERIAL`, and a sequence hands out numbers in request
+/// order, not commit order: a reader could see seq 11 committed while 10 is
+/// still in flight, resume at 12, and never see 10. So every writer appends
+/// under the feed's advisory lock, held until it commits or rolls back. Seq
+/// order is then commit order, and `MAX(seq) + 1` read in one snapshot never
+/// passes a change that is still to come. `node_change_seq` gets the same
+/// property from a locked counter row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CatalogFeed {
+    Tenants,
+    Namespaces,
+    Streams,
+    Caches,
+}
+
+impl CatalogFeed {
+    fn lock_key(self) -> i64 {
+        // "fxfeed_t", "fxfeed_n", "fxfeed_s", "fxfeed_c" in ASCII.
+        match self {
+            Self::Tenants => 0x6678_6665_6564_5f74,
+            Self::Namespaces => 0x6678_6665_6564_5f6e,
+            Self::Streams => 0x6678_6665_6564_5f73,
+            Self::Caches => 0x6678_6665_6564_5f63,
+        }
+    }
+
+    fn head_query(self) -> &'static str {
+        match self {
+            Self::Tenants => "SELECT COALESCE(MAX(seq) + 1, 0) FROM tenant_changes",
+            Self::Namespaces => "SELECT COALESCE(MAX(seq) + 1, 0) FROM namespace_changes",
+            Self::Streams => "SELECT COALESCE(MAX(seq) + 1, 0) FROM stream_changes",
+            Self::Caches => "SELECT COALESCE(MAX(seq) + 1, 0) FROM cache_changes",
+        }
+    }
+}
+
+/// Begin a transaction that appends to `feeds`, holding each feed's lock
+/// until it ends.
+///
+/// The locks come first, before any row lock: a writer holding a feed lock
+/// while it waits on another writer's row, which in turn waits on that feed,
+/// would deadlock. They are taken in one fixed order for the same reason.
+async fn begin_feed_write(
+    pool: &PgPool,
+    feeds: &[CatalogFeed],
+) -> StoreResult<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut feeds = feeds.to_vec();
+    feeds.sort_unstable();
+    feeds.dedup();
+    let mut tx = pool.begin().await?;
+    for feed in feeds {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(feed.lock_key())
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(tx)
+}
+
+/// The first seq `feed` has not handed out, as of this transaction's snapshot.
+async fn feed_head(tx: &mut sqlx::PgConnection, feed: CatalogFeed) -> StoreResult<u64> {
+    let head = sqlx::query_scalar::<_, i64>(feed.head_query())
+        .fetch_one(&mut *tx)
+        .await?;
+    Ok(head as u64)
 }
 
 /// `NotFound` unless the namespace exists, checked inside the caller's

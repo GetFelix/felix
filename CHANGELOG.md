@@ -86,6 +86,19 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A broker following the control plane's catalog no longer misses tenant,
+  namespace, stream or cache changes (#1224). Three ways to lose one are
+  closed, on Postgres and in memory: a snapshot now reads its items and its
+  `next_seq` at one point, so a delete landing between the two reads is no
+  longer counted but unseen; Postgres hands out each change table's `seq` in
+  commit order, so a reader can no longer pass a change that is still
+  committing; and a full page of changes (`FELIX_CONTROLPLANE_CHANGES_LIMIT`,
+  1000 by default) answers with the seq after its last change instead of the
+  feed's tail, which skipped everything past the first page. The node and
+  shard-assignment feeds had the same page bug and are fixed too. Brokers now
+  follow each feed page by page within a sync pass, up to 64 pages. The wire
+  format is unchanged; an older broker against a fixed control plane catches
+  up one page per sync interval.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

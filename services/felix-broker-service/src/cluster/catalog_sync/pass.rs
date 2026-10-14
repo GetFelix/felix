@@ -13,6 +13,10 @@ use super::apply::{
 use super::fetch::*;
 use super::wire::*;
 
+/// Pages of one change feed applied per pass, so a broker far behind catches
+/// up in one pass without a single feed starving the others forever.
+const MAX_PAGES_PER_FEED: usize = 64;
+
 /// Performs a single sync iteration: fetches and applies any new control-plane state.
 ///
 /// Algorithm:
@@ -25,6 +29,8 @@ use super::wire::*;
 ///      are satisfied before applying more granular resources.
 ///
 /// - After seeding, fetch incremental change feeds in the same order.
+///   - Each feed is followed page by page until a page comes back empty, up to
+///     `MAX_PAGES_PER_FEED` pages a pass.
 ///   - Each fetch is best-effort: errors are logged and the corresponding cursor is not advanced.
 ///   - On success, the cursor is advanced to the new `next_seq`.
 ///   - Deletion events use `remove_*` and ignore missing entries.
@@ -141,160 +147,192 @@ pub(super) async fn sync_once(
 
     // === Incremental change feed application ===
     // 1. Apply tenant changes first (ensures proper revocation/creation).
-    match fetch_tenant_changes(client, base_url, bearer, state.next_tenant_seq).await {
-        Ok(changes) => {
-            for change in changes.items {
-                match change.op {
-                    TenantChangeOp::Created => {
-                        if let Some(tenant) = change.tenant {
-                            broker.register_tenant(tenant.tenant_id).await?;
+    for _ in 0..MAX_PAGES_PER_FEED {
+        match fetch_tenant_changes(client, base_url, bearer, state.next_tenant_seq).await {
+            Ok(changes) => {
+                // Follow until a page comes back empty: a full page stops short of the tail.
+                let more = !changes.items.is_empty() && changes.next_seq > state.next_tenant_seq;
+                for change in changes.items {
+                    match change.op {
+                        TenantChangeOp::Created => {
+                            if let Some(tenant) = change.tenant {
+                                broker.register_tenant(tenant.tenant_id).await?;
+                            }
+                        }
+                        TenantChangeOp::Deleted => {
+                            let _ = broker.remove_tenant(&change.tenant_id).await?;
                         }
                     }
-                    TenantChangeOp::Deleted => {
-                        let _ = broker.remove_tenant(&change.tenant_id).await?;
-                    }
+                }
+                state.next_tenant_seq = changes.next_seq;
+                if !more {
+                    break;
                 }
             }
-            state.next_tenant_seq = changes.next_seq;
-        }
-        Err(err) => {
-            if log_as_debug {
-                tracing::debug!(error = %err, "control plane tenant change poll failed");
-            } else {
-                tracing::warn!(error = %err, "control plane tenant change poll failed");
+            Err(err) => {
+                if log_as_debug {
+                    tracing::debug!(error = %err, "control plane tenant change poll failed");
+                } else {
+                    tracing::warn!(error = %err, "control plane tenant change poll failed");
+                }
+                break;
             }
         }
     }
 
     // 2. Apply namespace changes after tenants.
-    match fetch_namespace_changes(client, base_url, bearer, state.next_namespace_seq).await {
-        Ok(changes) => {
-            for change in changes.items {
-                match change.op {
-                    NamespaceChangeOp::Created => {
-                        if let Some(namespace) = change.namespace {
-                            apply_namespace_create(
-                                broker,
-                                namespace.tenant_id,
-                                namespace.namespace,
-                            )
-                            .await?;
+    for _ in 0..MAX_PAGES_PER_FEED {
+        match fetch_namespace_changes(client, base_url, bearer, state.next_namespace_seq).await {
+            Ok(changes) => {
+                // Follow until a page comes back empty: a full page stops short of the tail.
+                let more = !changes.items.is_empty() && changes.next_seq > state.next_namespace_seq;
+                for change in changes.items {
+                    match change.op {
+                        NamespaceChangeOp::Created => {
+                            if let Some(namespace) = change.namespace {
+                                apply_namespace_create(
+                                    broker,
+                                    namespace.tenant_id,
+                                    namespace.namespace,
+                                )
+                                .await?;
+                            }
                         }
-                    }
-                    NamespaceChangeOp::Deleted => {
-                        match broker
-                            .remove_namespace(&change.key.tenant_id, &change.key.namespace)
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(BrokerError::TenantNotFound(_)) => {}
-                            Err(err) => return Err(err.into()),
+                        NamespaceChangeOp::Deleted => {
+                            match broker
+                                .remove_namespace(&change.key.tenant_id, &change.key.namespace)
+                                .await
+                            {
+                                Ok(_) => {}
+                                Err(BrokerError::TenantNotFound(_)) => {}
+                                Err(err) => return Err(err.into()),
+                            }
                         }
                     }
                 }
+                state.next_namespace_seq = changes.next_seq;
+                if !more {
+                    break;
+                }
             }
-            state.next_namespace_seq = changes.next_seq;
-        }
-        Err(err) => {
-            if log_as_debug {
-                tracing::debug!(error = %err, "control plane namespace change poll failed");
-            } else {
-                tracing::warn!(error = %err, "control plane namespace change poll failed");
+            Err(err) => {
+                if log_as_debug {
+                    tracing::debug!(error = %err, "control plane namespace change poll failed");
+                } else {
+                    tracing::warn!(error = %err, "control plane namespace change poll failed");
+                }
+                break;
             }
         }
     }
 
     // 3. Apply cache changes after namespaces.
     //    (Caches depend on tenant/namespace existence.)
-    match fetch_cache_changes(client, base_url, bearer, state.next_cache_seq).await {
-        Ok(changes) => {
-            for change in changes.items {
-                match change.op {
-                    CacheChangeOp::Created | CacheChangeOp::Updated => {
-                        if let Some(cache) = change.cache {
-                            let metadata = CacheMetadata {
-                                consistency: read_consistency(cache.consistency.as_deref())?,
-                            };
-                            apply_cache_upsert(
-                                broker,
-                                cache.tenant_id,
-                                cache.namespace,
-                                cache.cache,
-                                metadata,
-                            )
-                            .await?;
+    for _ in 0..MAX_PAGES_PER_FEED {
+        match fetch_cache_changes(client, base_url, bearer, state.next_cache_seq).await {
+            Ok(changes) => {
+                // Follow until a page comes back empty: a full page stops short of the tail.
+                let more = !changes.items.is_empty() && changes.next_seq > state.next_cache_seq;
+                for change in changes.items {
+                    match change.op {
+                        CacheChangeOp::Created | CacheChangeOp::Updated => {
+                            if let Some(cache) = change.cache {
+                                let metadata = CacheMetadata {
+                                    consistency: read_consistency(cache.consistency.as_deref())?,
+                                };
+                                apply_cache_upsert(
+                                    broker,
+                                    cache.tenant_id,
+                                    cache.namespace,
+                                    cache.cache,
+                                    metadata,
+                                )
+                                .await?;
+                            }
                         }
-                    }
-                    CacheChangeOp::Deleted => {
-                        match broker
-                            .remove_cache(
-                                &change.key.tenant_id,
-                                &change.key.namespace,
-                                &change.key.cache,
-                            )
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(BrokerError::TenantNotFound(_)) => {}
-                            Err(BrokerError::NamespaceNotFound { .. }) => {}
-                            Err(err) => return Err(err.into()),
+                        CacheChangeOp::Deleted => {
+                            match broker
+                                .remove_cache(
+                                    &change.key.tenant_id,
+                                    &change.key.namespace,
+                                    &change.key.cache,
+                                )
+                                .await
+                            {
+                                Ok(_) => {}
+                                Err(BrokerError::TenantNotFound(_)) => {}
+                                Err(BrokerError::NamespaceNotFound { .. }) => {}
+                                Err(err) => return Err(err.into()),
+                            }
                         }
                     }
                 }
+                state.next_cache_seq = changes.next_seq;
+                if !more {
+                    break;
+                }
             }
-            state.next_cache_seq = changes.next_seq;
-        }
-        Err(err) => {
-            if log_as_debug {
-                tracing::debug!(error = %err, "control plane cache change poll failed");
-            } else {
-                tracing::warn!(error = %err, "control plane cache change poll failed");
+            Err(err) => {
+                if log_as_debug {
+                    tracing::debug!(error = %err, "control plane cache change poll failed");
+                } else {
+                    tracing::warn!(error = %err, "control plane cache change poll failed");
+                }
+                break;
             }
         }
     }
 
     // 4. Apply stream changes last so existence checks have up-to-date scopes.
-    match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
-        Ok(changes) => {
-            for change in changes.items {
-                match change.op {
-                    StreamChangeOp::Created | StreamChangeOp::Updated => {
-                        if let Some(stream) = change.stream {
-                            let metadata = stream.metadata()?;
-                            apply_stream_upsert(
-                                broker,
-                                stream.tenant_id,
-                                stream.namespace,
-                                stream.stream,
-                                metadata,
-                            )
-                            .await?;
+    for _ in 0..MAX_PAGES_PER_FEED {
+        match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
+            Ok(changes) => {
+                // Follow until a page comes back empty: a full page stops short of the tail.
+                let more = !changes.items.is_empty() && changes.next_seq > state.next_stream_seq;
+                for change in changes.items {
+                    match change.op {
+                        StreamChangeOp::Created | StreamChangeOp::Updated => {
+                            if let Some(stream) = change.stream {
+                                let metadata = stream.metadata()?;
+                                apply_stream_upsert(
+                                    broker,
+                                    stream.tenant_id,
+                                    stream.namespace,
+                                    stream.stream,
+                                    metadata,
+                                )
+                                .await?;
+                            }
                         }
-                    }
-                    StreamChangeOp::Deleted => {
-                        match broker
-                            .remove_stream(
-                                &change.key.tenant_id,
-                                &change.key.namespace,
-                                &change.key.stream,
-                            )
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(BrokerError::TenantNotFound(_)) => {}
-                            Err(BrokerError::NamespaceNotFound { .. }) => {}
-                            Err(err) => return Err(err.into()),
+                        StreamChangeOp::Deleted => {
+                            match broker
+                                .remove_stream(
+                                    &change.key.tenant_id,
+                                    &change.key.namespace,
+                                    &change.key.stream,
+                                )
+                                .await
+                            {
+                                Ok(_) => {}
+                                Err(BrokerError::TenantNotFound(_)) => {}
+                                Err(BrokerError::NamespaceNotFound { .. }) => {}
+                                Err(err) => return Err(err.into()),
+                            }
                         }
                     }
                 }
+                state.next_stream_seq = changes.next_seq;
+                if !more {
+                    break;
+                }
             }
-            state.next_stream_seq = changes.next_seq;
-        }
-        Err(err) => {
-            if log_as_debug {
-                tracing::debug!(error = %err, "control plane change poll failed");
-            } else {
-                tracing::warn!(error = %err, "control plane change poll failed");
+            Err(err) => {
+                if log_as_debug {
+                    tracing::debug!(error = %err, "control plane change poll failed");
+                } else {
+                    tracing::warn!(error = %err, "control plane change poll failed");
+                }
+                break;
             }
         }
     }
