@@ -599,7 +599,13 @@ elected leader waits for the lease until the control plane is back (issue
    so {X, b, c} can become {Y, X, Z}, and a majority of the new set need
    share no replica with a majority of the old. A staged copy is not part of
    the persisted set: it does not stand, answer a fence or count until a set
-   change writes it in, and that change fences jointly like any other.
+   change writes it in, and that change fences jointly like any other. Until
+   a leader opens on the new set the change is pending, and the replica
+   persists the old set beside the new one: a fence carries both, and
+   whoever stands next fences both, so a leader deposed mid-change does not
+   leave the old set electable. A cut-over that changes the set waits for
+   the drain, so the old leader has stopped and the joining copies hold its
+   log.
 8. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 9. *Adoption.* The elected leader reports its generation and its set's

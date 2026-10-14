@@ -536,7 +536,14 @@ the drain, as a move's does, so the old leader has stopped and the copies
 joining hold its log; without that wait the old leader would go on
 acknowledging on the old set after the control plane moved on. `SetChangesJoint` states it
 over consecutive sets: once a change opened, a majority of the new set and
-of the old one know the new set.
+of the old one know the new set. Until then the change is pending, and it
+travels with the set: a replica that learns the new set from a fence also
+learns the old one, and fences both if it stands, as Raft's joint
+configuration does. `FelixShardWalkElectSwap.cfg` found the gap when only the
+leader that started the change remembered it: the destination was deposed
+mid-fence, a replica that had learned the new set from it stood and opened on
+a majority of the new set alone, and a replica of the old set opened beside
+it at the same generation (OneLeaderPerGeneration).
 
 Three rules come from TLC. The first version let a refused candidate fence on
 at the same generation with the set it had just learned, and let a leader or

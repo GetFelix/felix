@@ -373,7 +373,7 @@ VARIABLES
     ballot,     \* under `Ballots`, whom each broker's promise was made to: {} or {leader}
     opened,     \* history, under `Elections` or `Suspicions`: each <<generation, broker>> that opened for writes
     setGen,     \* under `SetCheck`, the generation of the assignment that wrote each broker's `mine`
-    oldSet,     \* under `SetCheck`, the set a leader changing sets is leaving: {} when it changes none
+    oldSet,     \* under `SetCheck`, the set a pending set change is leaving, kept with `mine`: {} when none is pending
     ackGen,     \* history, where opens are tracked: each <<write, generation>> it was acknowledged at
     installed   \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened
 
@@ -453,13 +453,17 @@ FenceMembers(b) == Members(b) \cup (IF JointFence THEN oldSet[b] ELSE {})
 CpSet == ReplicaSet \cup joining
 
 \* Under `SetCheck`, `f` takes a fence or a batch from `b` only if it knows no
-\* newer set than the one `b` carries, and then learns `b`'s.
+\* newer set than the one `b` carries, and then learns `b`'s. A set change
+\* still pending travels with it, so whoever stands next on the new set
+\* fences the old one too, as Raft's joint configuration does; a batch comes
+\* only from a leader that opened, which ends it.
 SetCurrent(f, b) == SetCheck => setGen[f] <= setGen[b]
 LearnSet(f, b) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
-    ELSE UNCHANGED << setGen, mine >>
+         /\ oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
+    ELSE UNCHANGED << setGen, mine, oldSet >>
 
 \* Whether a broker is a candidate rather than the leader the control plane
 \* named at its generation.
@@ -656,12 +660,11 @@ StepDown(b) ==
     /\ pending' = [pending EXCEPT ![b] = 0]
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
-    /\ oldSet' = [oldSet EXCEPT ![b] = {}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged, promised, answered,
-                    confirmed, out, mine, joining, leaving, joinedAt, ballot, opened, setGen,
-                    installed, ackGen >>
+                    confirmed, out, mine, joining, leaving, joinedAt, ballot, opened, setVars,
+                    ackGen >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -790,8 +793,7 @@ Ship(b, f) ==
             /\ fencing' = [fencing EXCEPT ![f] = FALSE]
             /\ queued' = [queued EXCEPT ![f] = 0]
             /\ pending' = [pending EXCEPT ![f] = 0]
-            /\ oldSet' = [oldSet EXCEPT ![f] = {}]
-       ELSE UNCHANGED << bgen, fencing, queued, pending, oldSet >>
+       ELSE UNCHANGED << bgen, fencing, queued, pending >>
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
     /\ Promises => MayPromise(f, b, bgen[b])
@@ -1087,7 +1089,11 @@ Promote(v, f, views) ==
             /\ out' = out \cup (joining \ (Counted \cup {f}))
     \* The assignment writes the set at the new generation; its fence carries it.
     /\ setGen' = IF SetCheck THEN [setGen EXCEPT ![f] = gen + 1] ELSE setGen
-    /\ oldSet' = [oldSet EXCEPT ![f] = {}]
+    \* A change still pending at `f` stays pending, and a set `f` did not know
+    \* is a change from the one it did.
+    /\ oldSet' = IF SetCheck /\ mine'[f] /= mine[f]
+                 THEN [oldSet EXCEPT ![f] = mine[f]]
+                 ELSE oldSet
     /\ UNCHANGED << installed, ackGen >>
     /\ joining' = {}
     /\ leaving' = {}
@@ -1164,8 +1170,7 @@ AnswerFence(b, f) ==
             /\ fencing' = [fencing EXCEPT ![f] = FALSE]
             /\ queued' = [queued EXCEPT ![f] = 0]
             /\ pending' = [pending EXCEPT ![f] = 0]
-            /\ oldSet' = [oldSet EXCEPT ![f] = {}]
-       ELSE UNCHANGED << bgen, fencing, queued, pending, oldSet >>
+       ELSE UNCHANGED << bgen, fencing, queued, pending >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, hwm, halted, acked, writes, staleCommit,
                     confirmed, opened, installed, ackGen >>
@@ -1185,7 +1190,7 @@ RefuseStaleSet(b, f) ==
     /\ setGen' = [setGen EXCEPT ![b] = setGen[f]]
     /\ mine' = [mine EXCEPT ![b] = mine[f]]
     /\ answered' = [answered EXCEPT ![b] = {}]
-    /\ oldSet' = [oldSet EXCEPT ![b] = {}]
+    /\ oldSet' = [oldSet EXCEPT ![b] = oldSet[f]]
     /\ bgen' = [bgen EXCEPT ![b] = 0]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ queued' = [queued EXCEPT ![b] = 0]
@@ -1244,7 +1249,7 @@ Elect(f) ==
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
-    \* A leader standing again mid set change keeps fencing the old set too.
+    \* A replica standing while a set change is pending fences the old set too.
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, setVars, ackGen >>
     /\ UNCHANGED handoffVars
