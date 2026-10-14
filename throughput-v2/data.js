@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791827584865,
+  "lastUpdate": 1791951000664,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29016,6 +29016,58 @@ window.BENCHMARK_DATA = {
             "range": "58646.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 998693.59\nmean: 976588.33\nstdev: 58646.72\ncv: 6.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c66bcaa628b6c1f469f4d5e1e86a54cb70a7315",
+          "message": "build(deps): bump the cargo-minor-and-patch group with 4 updates (#1213)\n\nBumps the cargo-minor-and-patch group with 4 updates: [uuid](https://github.com/uuid-rs/uuid), [tokio](https://github.com/tokio-rs/tokio), [libc](https://github.com/rust-lang/libc) and [quinn-proto](https://github.com/quinn-rs/quinn).\n\n\nUpdates `uuid` from 1.26.1 to 1.27.0\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.26.1...v1.27.0)\n\nUpdates `tokio` from 1.53.1 to 1.53.2\n- [Release notes](https://github.com/tokio-rs/tokio/releases)\n- [Commits](https://github.com/tokio-rs/tokio/compare/tokio-1.53.1...tokio-1.53.2)\n\nUpdates `libc` from 0.2.189 to 0.2.190\n- [Release notes](https://github.com/rust-lang/libc/releases)\n- [Changelog](https://github.com/rust-lang/libc/blob/0.2.190/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/libc/compare/0.2.189...0.2.190)\n\nUpdates `quinn-proto` from 0.11.18 to 0.11.19\n- [Release notes](https://github.com/quinn-rs/quinn/releases)\n- [Commits](https://github.com/quinn-rs/quinn/compare/quinn-proto-0.11.18...quinn-proto-0.11.19)\n\n---\nupdated-dependencies:\n- dependency-name: uuid\n  dependency-version: 1.27.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: cargo-minor-and-patch\n- dependency-name: tokio\n  dependency-version: 1.53.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: libc\n  dependency-version: 0.2.190\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: quinn-proto\n  dependency-version: 0.11.19\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-13T21:03:42-07:00",
+          "tree_id": "96b5187662576a235936efc9f7de054f288de648",
+          "url": "https://github.com/GetFelix/felix/commit/4c66bcaa628b6c1f469f4d5e1e86a54cb70a7315"
+        },
+        "date": 1791950999298,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344353.71,
+            "range": "6698.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344353.71\nmean: 344156.91\nstdev: 6698.24\ncv: 1.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344353.71,
+            "range": "6698.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344353.71\nmean: 344156.91\nstdev: 6698.24\ncv: 1.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80716.93,
+            "range": "807.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80716.93\nmean: 80784.95\nstdev: 807.86\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807169.28,
+            "range": "8078.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807169.28\nmean: 807849.53\nstdev: 8078.65\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
