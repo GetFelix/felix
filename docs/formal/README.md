@@ -533,7 +533,7 @@ replica left on the old set standing at the new leader's generation, opening
 on a majority of the old set that the new leader never fenced, and
 acknowledging a record the new leader does not hold. The cut-over waits for
 the drain, as a move's does, so the old leader has stopped and the copies
-joining hold its log; without that wait the old leader would go on
+joining hold the destination's log, which holds the old leader's; without that wait the old leader would go on
 acknowledging on the old set after the control plane moved on. `SetChangesJoint` states it
 over consecutive sets: once a change opened, a majority of the new set and
 of the old one know the new set. Until then the change is pending, and it

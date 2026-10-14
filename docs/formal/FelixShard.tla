@@ -1601,10 +1601,13 @@ CpAdopt(v, b, views) ==
 \* generation, and with `JointFence` it also needs a majority of the old set.
 \* A copy outside the set joins it here and not before: a staged copy is not
 \* part of the persisted set. The cut-over waits for the drain, as CutOver
-\* does: the old leader has stopped with nothing in flight, and the
-\* destination and every copy joining hold its whole log. Without the drain
-\* the old leader goes on acknowledging on the old set after the control
-\* plane has moved to the new one (AckedOnMajority).
+\* does: the old leader has stopped with nothing in flight, the destination
+\* holds its whole log, and every copy joining holds the destination's.
+\* Without the drain the old leader goes on acknowledging on the old set
+\* after the control plane has moved to the new one (AckedOnMajority). The
+\* destination can hold more than the old leader when it was elected past
+\* it, and a copy that held only the old leader's log then missed what the
+\* destination had acknowledged (FelixShardElectSwap.cfg, AckedOnMajority).
 Swap(v, f, views) ==
     /\ Swaps > 0 /\ moves < Swaps
     /\ v.leader = leader /\ ~v.lapsed
@@ -1619,7 +1622,7 @@ Swap(v, f, views) ==
          /\ f \in S /\ Cardinality(S) = Cardinality(CpSet) /\ S /= CpSet
          /\ mine' = [mine EXCEPT ![f] = S]
          /\ out' = (out \cup CpSet) \ S
-         /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[leader] ELSE log[m]]
+         /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[f] ELSE log[m]]
     /\ setGen' = [setGen EXCEPT ![f] = gen + 1]
     /\ oldSet' = [oldSet EXCEPT ![f] = CpSet]
     /\ ver' = ver + 1

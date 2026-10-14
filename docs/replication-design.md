@@ -604,8 +604,8 @@ elected leader waits for the lease until the control plane is back (issue
    persists the old set beside the new one: a fence carries both, and
    whoever stands next fences both, so a leader deposed mid-change does not
    leave the old set electable. A cut-over that changes the set waits for
-   the drain, so the old leader has stopped and the joining copies hold its
-   log.
+   the drain, so the old leader has stopped and the joining copies hold the
+   destination's log, which holds the old leader's.
 8. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 9. *Adoption.* The elected leader reports its generation and its set's
