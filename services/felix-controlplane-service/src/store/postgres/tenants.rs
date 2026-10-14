@@ -86,7 +86,7 @@ pub(super) async fn list_tenants_page(
 }
 
 pub(super) async fn create_tenant(store: &PostgresStore, tenant: Tenant) -> StoreResult<Tenant> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Tenants]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Tenants]).await?;
     let insert = sqlx::query(r#"INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $2)"#)
         .bind(&tenant.tenant_id)
         .bind(&tenant.display_name)
@@ -117,8 +117,8 @@ pub(super) async fn create_tenant(store: &PostgresStore, tenant: Tenant) -> Stor
 /// change events with the prior payload. This is useful for caches/watchers that want tombstones
 /// with context (not just keys).
 pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> StoreResult<()> {
-    let mut tx = begin_feed_write(
-        &store.pool,
+    let (_gates, mut tx) = begin_feed_write(
+        store,
         &[
             CatalogFeed::Tenants,
             CatalogFeed::Namespaces,

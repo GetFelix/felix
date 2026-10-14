@@ -12,8 +12,8 @@ pub(super) async fn create_resources(
     streams: Vec<Stream>,
     caches: Vec<Cache>,
 ) -> StoreResult<()> {
-    let mut tx =
-        begin_feed_write(&store.pool, &[CatalogFeed::Streams, CatalogFeed::Caches]).await?;
+    let (_gates, mut tx) =
+        begin_feed_write(store, &[CatalogFeed::Streams, CatalogFeed::Caches]).await?;
     let mut parents: Vec<(&str, &str)> = streams
         .iter()
         .map(|s| (s.tenant_id.as_str(), s.namespace.as_str()))

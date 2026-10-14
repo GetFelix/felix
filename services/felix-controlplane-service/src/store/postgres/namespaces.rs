@@ -86,7 +86,7 @@ pub(super) async fn create_namespace(
     store: &PostgresStore,
     namespace: Namespace,
 ) -> StoreResult<Namespace> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Namespaces]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Namespaces]).await?;
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id = $1)")
             .bind(&namespace.tenant_id)
@@ -127,8 +127,8 @@ pub(super) async fn create_namespace(
 }
 
 pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) -> StoreResult<()> {
-    let mut tx = begin_feed_write(
-        &store.pool,
+    let (_gates, mut tx) = begin_feed_write(
+        store,
         &[
             CatalogFeed::Namespaces,
             CatalogFeed::Streams,

@@ -594,3 +594,106 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
     .await
     .expect("test timeout")
 }
+
+/// A feed that has answered only from behind the cursor for long enough is
+/// taken as reset, and the broker takes a new snapshot rather than adopting
+/// the new `next_seq`: the changes before it are a history this broker has
+/// never seen, such as a tenant created again after a control plane restart.
+#[tokio::test]
+async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
+    use std::collections::HashMap;
+
+    use axum::extract::Query;
+
+    use crate::cluster::feed_cursor::{BehindCursor, RESET_AFTER};
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+        let router = Router::new()
+            .route(
+                "/v1/tenants/snapshot",
+                get(|| async {
+                    Json(TenantSnapshotResponse {
+                        items: vec![Tenant {
+                            tenant_id: "t2".to_string(),
+                        }],
+                        next_seq: 1,
+                    })
+                }),
+            )
+            .route(
+                "/v1/tenants/changes",
+                get(|Query(_): Query<HashMap<String, u64>>| async {
+                    // The restarted control plane's whole history is the
+                    // one create, which only the snapshot shows.
+                    Json(TenantChangesResponse {
+                        items: vec![],
+                        next_seq: 1,
+                    })
+                }),
+            )
+            .route(
+                "/v1/namespaces/changes",
+                get(|| async {
+                    Json(NamespaceChangesResponse {
+                        items: vec![],
+                        next_seq: 50,
+                    })
+                }),
+            )
+            .route(
+                "/v1/caches/changes",
+                get(|| async {
+                    Json(CacheChangesResponse {
+                        items: vec![],
+                        next_seq: 50,
+                    })
+                }),
+            )
+            .route(
+                "/v1/streams/changes",
+                get(|| async {
+                    Json(StreamChangesResponse {
+                        items: vec![],
+                        next_seq: 50,
+                    })
+                }),
+            );
+        let (addr, shutdown_tx, handle) = serve_router(router).await?;
+        let base_url = format!("http://{}", addr);
+        let client = build_test_client()?;
+
+        let mut state = SyncState::new();
+        state.seeded = SeededSnapshots {
+            tenants: true,
+            namespaces: true,
+            caches: true,
+            streams: true,
+        };
+        state.next_tenant_seq = 50;
+        state.next_namespace_seq = 50;
+        state.next_cache_seq = 50;
+        state.next_stream_seq = 50;
+        let behind_since = tokio::time::Instant::now()
+            .checked_sub(RESET_AFTER)
+            .expect("clock far enough along");
+        state.behind.tenants = BehindCursor::behind_since(behind_since);
+
+        let state = sync_once(&broker, &client, &base_url, None, state).await?;
+        let state = sync_once(&broker, &client, &base_url, None, state).await?;
+        assert!(
+            broker.tenant_exists("t2").await,
+            "the reset feed's history before its next_seq was never applied",
+        );
+        assert!(state.seeded.tenants);
+        assert_eq!(state.next_tenant_seq, 1);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("server shutdown");
+        Ok(())
+    })
+    .await
+    .expect("test timeout")
+}

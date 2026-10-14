@@ -38,7 +38,7 @@ use crate::model::{
     Cache, CacheKey, CachePatchRequest, ConsistencyLevel, DeliveryGuarantee, Namespace,
     NamespaceKey, RetentionPolicy, Stream, StreamKey, StreamKind, StreamPatchRequest, Tenant,
 };
-use crate::store::postgres::{CatalogFeed, PostgresStore, begin_feed_write};
+use crate::store::postgres::{Busy, CatalogFeed, PostgresStore};
 use crate::store::{AuthStore, ControlPlaneStore, StoreConfig};
 
 struct PgContainer {
@@ -660,6 +660,120 @@ async fn snapshot_holds_seeded_row(
     })
 }
 
+/// A transaction holding `feed`'s lock, as a writer on another control-plane
+/// instance would.
+async fn hold_feed(
+    pool: &sqlx::PgPool,
+    feed: CatalogFeed,
+) -> anyhow::Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(feed.lock_key())
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// A writer that cannot get its feed gives up with a retryable error rather
+/// than holding a connection for as long as the other writer takes.
+#[tokio::test]
+#[serial]
+async fn a_writer_waiting_on_its_feed_gives_up_busy() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let schema = ensure_schema(&url).await?;
+    let url = url_with_schema(&url, &schema);
+    run_migrations_once(&url).await?;
+    reset_db(&url, &schema).await?;
+
+    let store = feed_store(&url, config::DEFAULT_CHANGES_LIMIT)
+        .await?
+        .with_feed_wait(Duration::from_millis(300));
+    seed_catalog(&store).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&url)
+        .await?;
+    let holder = hold_feed(&pool, CatalogFeed::Streams).await?;
+
+    let created = tokio::time::timeout(
+        Duration::from_secs(5),
+        store.create_stream(feed_stream("s2")),
+    )
+    .await
+    .expect("the write should give up after its feed wait, not block");
+    let err = created.expect_err("the feed was held throughout");
+    assert!(
+        matches!(&err, crate::store::StoreError::Unexpected(inner) if inner.is::<Busy>()),
+        "expected Busy, got {err:?}",
+    );
+
+    holder.rollback().await?;
+    store.create_stream(feed_stream("s2")).await?;
+    pool.close().await;
+    Ok(())
+}
+
+/// Writers queued behind a held feed do not take the pool's connections, so
+/// reads sharing the pool still get one.
+#[tokio::test]
+#[serial]
+async fn writers_waiting_on_a_feed_leave_connections_for_reads() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let schema = ensure_schema(&url).await?;
+    let url = url_with_schema(&url, &schema);
+    run_migrations_once(&url).await?;
+    reset_db(&url, &schema).await?;
+
+    let store = std::sync::Arc::new(
+        PostgresStore::connect_without_migrations(
+            &config::PostgresConfig {
+                url: url.clone(),
+                max_connections: 2,
+                connect_timeout_ms: 10_000,
+                acquire_timeout_ms: 10_000,
+            },
+            StoreConfig {
+                changes_limit: config::DEFAULT_CHANGES_LIMIT,
+                change_retention_max_rows: None,
+            },
+        )
+        .await?,
+    );
+    seed_catalog(&store).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&url)
+        .await?;
+    let holder = hold_feed(&pool, CatalogFeed::Streams).await?;
+
+    let writers: Vec<_> = (0..6)
+        .map(|i| {
+            let store = std::sync::Arc::clone(&store);
+            tokio::spawn(async move { store.create_stream(feed_stream(&format!("w{i}"))).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let read = tokio::time::timeout(Duration::from_secs(2), store.tenant_snapshot()).await;
+    assert!(
+        matches!(read, Ok(Ok(_))),
+        "a read waited behind writers parked on a feed lock: {read:?}",
+    );
+
+    holder.rollback().await?;
+    for writer in writers {
+        writer.await??;
+    }
+    pool.close().await;
+    Ok(())
+}
+
 /// A snapshot reads its rows and its `next_seq` at one instant.
 ///
 /// Read separately, a delete committing between the two reads leaves the row
@@ -763,8 +877,9 @@ async fn a_catalog_change_seq_is_not_handed_out_until_the_holder_commits() -> an
             .connect(&url)
             .await?;
 
-        // A writer that has taken its seq and not yet committed.
-        let mut holder = begin_feed_write(&pool, &[feed]).await?;
+        // A writer on another instance that has taken its seq and not yet
+        // committed.
+        let mut holder = hold_feed(&pool, feed).await?;
         let held = delete_seeded_row(&mut holder, feed).await?;
 
         // Spawned rather than timed out in place: dropping a sqlx future does

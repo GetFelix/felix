@@ -107,7 +107,7 @@ pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreRes
 }
 
 pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreResult<Cache> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Caches]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     super::ensure_namespace(&mut tx, &cache.tenant_id, &cache.namespace).await?;
     insert_cache(&mut tx, &cache).await?;
     tx.commit().await?;
@@ -164,7 +164,7 @@ pub(super) async fn patch_cache(
     key: &CacheKey,
     patch: CachePatchRequest,
 ) -> StoreResult<Cache> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Caches]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     let current = sqlx::query_as::<_, DbCache>(
         r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR UPDATE"#,
     )
@@ -220,7 +220,7 @@ pub(super) async fn patch_cache(
 }
 
 pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<()> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Caches]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     let removed =
         sqlx::query(r#"DELETE FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3"#)
             .bind(&key.tenant_id)

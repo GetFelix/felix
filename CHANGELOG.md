@@ -105,8 +105,14 @@ entries.
   (a stale delete removing a stream created again since) or, for shard
   assignments, re-snapshot onto the member's older view. The catalog sync and
   the shard watch now ignore an answer from behind what they applied and ask
-  again, and take it as a reset only once the feed has answered from behind
-  for 60 s.
+  again. Once a feed has answered from behind for 60 s it is taken as reset,
+  and the broker takes a new snapshot of it.
+- A Postgres catalog write that waits more than 5 s for other writes to the
+  same change feed now gives up with a retryable 503 `unavailable`, and writes
+  queued in one control-plane instance no longer hold pooled connections while
+  they wait, so a long cascading delete cannot starve reads (#1224). The
+  commit-order guarantee holds once every control-plane instance runs this
+  release.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

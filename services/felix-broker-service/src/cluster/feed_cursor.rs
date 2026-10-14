@@ -34,6 +34,12 @@ pub(crate) struct BehindCursor {
 }
 
 impl BehindCursor {
+    /// A feed that has answered from behind since `at`.
+    #[cfg(test)]
+    pub(crate) fn behind_since(at: Instant) -> Self {
+        Self { since: Some(at) }
+    }
+
     /// Judge an answer that is (`behind`) or is not behind the cursor.
     pub(crate) fn judge(&mut self, behind: bool, now: Instant) -> Verdict {
         if !behind {

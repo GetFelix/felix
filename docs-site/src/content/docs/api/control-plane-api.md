@@ -687,9 +687,9 @@ A broker loads each snapshot once, then asks for changes from the snapshot's
 two together describe every committed change exactly once. A page holds at
 most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by default); a full
 page's `next_seq` is the seq after its last change, and the broker keeps
-asking from `next_seq` until a page comes back empty. It polls the tenant, namespace, stream and cache feeds every
-`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` (2 s by default), so a new stream can take
-that long to reach every broker. The shard-assignment feed is a long poll:
+asking from `next_seq` until a page comes back empty. It polls the tenant,
+namespace, stream and cache feeds every `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
+(2 s by default), so a new stream can take that long to reach every broker. The shard-assignment feed is a long poll:
 `wait_ms` (at most 25000) holds the request open until a change lands, so a
 leadership change reaches brokers without waiting for the next poll.
 

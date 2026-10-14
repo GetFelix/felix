@@ -134,7 +134,7 @@ pub(super) async fn stream_routings(
 }
 
 pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> StoreResult<Stream> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Streams]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     super::ensure_namespace(&mut tx, &stream.tenant_id, &stream.namespace).await?;
     insert_stream(&mut tx, &stream).await?;
     tx.commit().await?;
@@ -197,7 +197,7 @@ pub(super) async fn patch_stream(
     key: &StreamKey,
     patch: StreamPatchRequest,
 ) -> StoreResult<Stream> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Streams]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let current = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
@@ -264,7 +264,7 @@ pub(super) async fn patch_stream(
 }
 
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
-    let mut tx = begin_feed_write(&store.pool, &[CatalogFeed::Streams]).await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let removed = sqlx::query(
         r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
     )

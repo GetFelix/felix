@@ -62,10 +62,13 @@ pub fn api_conflict(code: &str, message: &str) -> ApiError {
 /// 500 from a store error: the error is logged here, the client gets only
 /// `message`.
 ///
-/// Except a Raft write that ran out its budget: that is 503 `unavailable`,
-/// because the group is electing or has lost quorum, and a retry once it has
-/// a leader again is the right response. A write that timed out may still
-/// have committed, so a retried create can answer 409.
+/// Except a write that could not go ahead in time, which is 503
+/// `unavailable` and worth retrying:
+/// - a Raft write that ran out its budget, because the group is electing or
+///   has lost quorum. It may still have committed, so a retried create can
+///   answer 409;
+/// - a Postgres catalog write that gave up waiting for other writes to its
+///   change feed. Nothing was written.
 pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
     if let StoreError::Unexpected(inner) = err
         && inner
@@ -77,6 +80,18 @@ pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
             "no raft leader or quorum committed the write in time; retry",
+        );
+    }
+    if let StoreError::Unexpected(inner) = err
+        && inner
+            .chain()
+            .any(|cause| cause.is::<crate::store::postgres::Busy>())
+    {
+        tracing::warn!(error = ?err, "controlplane write gave up waiting for its change feed");
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "too many concurrent catalog writes; retry",
         );
     }
     tracing::error!(error = ?err, "controlplane storage error");

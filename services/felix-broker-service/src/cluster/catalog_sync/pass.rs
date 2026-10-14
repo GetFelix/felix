@@ -153,6 +153,7 @@ pub(super) async fn sync_once(
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.tenants,
+                    &mut state.seeded.tenants,
                     state.next_tenant_seq,
                     changes.next_seq,
                     "tenant",
@@ -195,6 +196,7 @@ pub(super) async fn sync_once(
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.namespaces,
+                    &mut state.seeded.namespaces,
                     state.next_namespace_seq,
                     changes.next_seq,
                     "namespace",
@@ -250,6 +252,7 @@ pub(super) async fn sync_once(
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.caches,
+                    &mut state.seeded.caches,
                     state.next_cache_seq,
                     changes.next_seq,
                     "cache",
@@ -314,6 +317,7 @@ pub(super) async fn sync_once(
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.streams,
+                    &mut state.seeded.streams,
                     state.next_stream_seq,
                     changes.next_seq,
                     "stream",
@@ -374,9 +378,18 @@ pub(super) async fn sync_once(
 
 /// Whether to apply a page whose `next_seq` is `next_seq`, for a feed at
 /// `cursor`. A page from behind the cursor came from a lagging control-plane
-/// member: applying it would replay changes already applied, so it is skipped
-/// until the feed has answered only from behind for long enough to be a reset.
-fn accept(behind: &mut BehindCursor, cursor: u64, next_seq: u64, feed: &str) -> bool {
+/// member: applying it would replay changes already applied, so it is skipped.
+/// Once the feed has answered only from behind for long enough to be a reset,
+/// its history started over and the changes before `next_seq` are not ones
+/// this broker has seen, so the feed is marked unseeded and the next pass
+/// takes a new snapshot.
+fn accept(
+    behind: &mut BehindCursor,
+    seeded: &mut bool,
+    cursor: u64,
+    next_seq: u64,
+    feed: &str,
+) -> bool {
     match behind.judge(next_seq < cursor, tokio::time::Instant::now()) {
         Verdict::Fresh => true,
         Verdict::Stale => {
@@ -393,9 +406,10 @@ fn accept(behind: &mut BehindCursor, cursor: u64, next_seq: u64, feed: &str) -> 
                 feed,
                 cursor,
                 next_seq,
-                "control plane change feed stayed behind the cursor; taking it as a reset",
+                "control plane change feed stayed behind the cursor; taking it as a reset and resnapshotting",
             );
-            true
+            *seeded = false;
+            false
         }
     }
 }

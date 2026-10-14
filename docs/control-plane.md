@@ -617,19 +617,23 @@ Four properties make that hold on every backend:
    until they commit, so a writer cannot take seq 11 and commit while seq 10
    is still in flight. Without that, a reader could pass 10 and never see it.
    Nodes and shard assignments get the same property from a locked counter
-   row.
+   row. Writers in one instance queue in memory before they take a pooled
+   connection, so a long cascade does not starve reads of connections, and a
+   writer that waits more than 5 s for its feed gives up with a 503
+   `unavailable` that is safe to retry.
 3. A page holds at most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by
    default). A full page's `next_seq` is the seq after its last change, and a
    shorter page's is the feed's tail. A consumer further behind than one page
    asks again from `next_seq` until a page comes back empty; the broker
    follows up to 64 pages per feed in each sync pass.
-
 4. A consumer's cursor never moves backwards. On Raft each member answers
    from its own applied state, so a broker that reaches a lagging member can
    get a `next_seq` below its cursor, or a snapshot older than what it has
    applied. The broker ignores such an answer and asks again. A feed that
-   answers only from behind for 60 s is taken as reset: the catalog sync
-   follows it from its new `next_seq`, and the shard watch re-snapshots.
+   answers only from behind for 60 s is taken as reset, and the broker takes
+   a new snapshot of it: the changes before the new `next_seq` are a history
+   it has never seen. A snapshot only adds and updates, so anything deleted
+   across the reset stays on the broker until it restarts.
 
 The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
