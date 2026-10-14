@@ -1595,21 +1595,26 @@ CpAdopt(v, b, views) ==
 \* the next generation on the new set, fenced, carrying the new set's
 \* generation, and with `JointFence` it also needs a majority of the old set.
 \* A copy outside the set joins it here and not before: a staged copy is not
-\* part of the persisted set. The drained wait is left out: under follower
-\* acks and the fence it decides when the cut-over happens, not whether
-\* anything acknowledged survives it.
+\* part of the persisted set. The cut-over waits for the drain, as CutOver
+\* does: the old leader has stopped with nothing in flight, and the
+\* destination and every copy joining hold its whole log. Without the drain
+\* the old leader goes on acknowledging on the old set after the control
+\* plane has moved to the new one (AckedOnMajority).
 Swap(v, f, views) ==
     /\ Swaps > 0 /\ moves < Swaps
     /\ v.leader = leader /\ ~v.lapsed
     /\ bgen[leader] = gen /\ ~fencing[leader]
     /\ joining = {}
     /\ f \in CpSet \ {leader} /\ f \notin halted
+    /\ queued[leader] = 0 /\ pending[leader] = 0
+    /\ HoldsPrefix(f, leader, Len(log[leader]))
     /\ Elections > 0 => MayPromise(f, f, gen + 1)
     /\ Cas(v)
     /\ \E S \in SUBSET (CpSet \cup out) :
          /\ f \in S /\ Cardinality(S) = Cardinality(CpSet) /\ S /= CpSet
          /\ mine' = [mine EXCEPT ![f] = S]
          /\ out' = (out \cup CpSet) \ S
+         /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[leader] ELSE log[m]]
     /\ setGen' = [setGen EXCEPT ![f] = gen + 1]
     /\ oldSet' = [oldSet EXCEPT ![f] = CpSet]
     /\ ver' = ver + 1
@@ -1622,13 +1627,13 @@ Swap(v, f, views) ==
     /\ queued' = [queued EXCEPT ![f] = 0]
     /\ pending' = [pending EXCEPT ![f] = 0]
     /\ report' = NoReport
-    /\ stopped' = [stopped EXCEPT ![f] = FALSE]
+    /\ stopped' = [stopped EXCEPT ![leader] = TRUE, ![f] = FALSE]
     /\ Promise(f, f, gen + 1)
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     /\ moves' = moves + 1
-    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, draining, successor, staged, joining, leaving, joinedAt,
                     opened, installed, ackGen >>
 

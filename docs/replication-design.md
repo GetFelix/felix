@@ -628,8 +628,8 @@ refusal of the old leader, is carried across. If the later leader's set is
 older, a majority of it took the fence of the change that came after it,
 learned the newer set, and refuses the candidate. Overlap comes from the
 joint fence, not from the size of a change: without it, the cut-over above
-lets the old leader acknowledge on a majority of the old set the new leader
-never reached (`FelixShardElectSwapNoJoint.cfg`). A leader that answers a
+lets a replica left on the old set stand and acknowledge on a majority of
+the old set the new leader never reached (`FelixShardElectSwapNoJoint.cfg`). A leader that answers a
 newer fence or batch stops, which keeps it from acknowledging against a set
 it learned from someone else (`FelixShardElectAdopt.cfg` found one doing so).
 The generation-start record covers Raft's Figure 8 as it does for

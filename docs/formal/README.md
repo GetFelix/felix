@@ -212,7 +212,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
 | `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants (not yet measured) |
-| `FelixShardElectSwapNoJoint.cfg` | the same with the cut-over fencing the new set alone | violate `AckedHeldByLeader`: the old leader acknowledges on a majority of the old set the new leader never fenced |
+| `FelixShardElectSwapNoJoint.cfg` | the same with the cut-over fencing the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
@@ -528,9 +528,13 @@ some of the staying replicas and tops the set up from brokers outside it, so
 {X, b, c} can become {Y, X, Z}. `Swap` models that cut-over, the destination
 leading on a set that differs from the old one by more than one member.
 `FelixShardElectSwap.cfg` passes with the joint fence, and
-`FelixShardElectSwapNoJoint.cfg`, fencing the new set alone, finds the old
-leader acknowledging on a majority of the old set that the new leader never
-fenced, a record the new leader does not hold. `SetChangesJoint` states it
+`FelixShardElectSwapNoJoint.cfg`, fencing the new set alone, finds a
+replica left on the old set standing at the new leader's generation, opening
+on a majority of the old set that the new leader never fenced, and
+acknowledging a record the new leader does not hold. The cut-over waits for
+the drain, as a move's does, so the old leader has stopped and the copies
+joining hold its log; without that wait the old leader would go on
+acknowledging on the old set after the control plane moved on. `SetChangesJoint` states it
 over consecutive sets: once a change opened, a majority of the new set and
 of the old one know the new set.
 
