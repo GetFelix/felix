@@ -716,6 +716,66 @@ async fn a_writer_waiting_on_its_feed_gives_up_busy() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A writer to several feeds gives up by its deadline in total, not by the
+/// deadline once per feed: Postgres applies `lock_timeout` to each lock wait
+/// on its own.
+#[tokio::test]
+#[serial]
+async fn a_multi_feed_writer_gives_up_by_one_deadline() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let schema = ensure_schema(&url).await?;
+    let url = url_with_schema(&url, &schema);
+    run_migrations_once(&url).await?;
+    reset_db(&url, &schema).await?;
+
+    const WAIT: Duration = Duration::from_millis(1_000);
+    let store = feed_store(&url, config::DEFAULT_CHANGES_LIMIT)
+        .await?
+        .with_feed_wait(WAIT);
+    seed_catalog(&store).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&url)
+        .await?;
+    // The first feed is let go just inside the deadline; the second is held
+    // past it.
+    let namespaces = hold_feed(&pool, CatalogFeed::Namespaces).await?;
+    let streams = hold_feed(&pool, CatalogFeed::Streams).await?;
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        namespaces.rollback().await
+    });
+
+    let started = tokio::time::Instant::now();
+    let deleted = tokio::time::timeout(
+        Duration::from_secs(10),
+        store.delete_namespace(&NamespaceKey {
+            tenant_id: "t".to_string(),
+            namespace: "ns".to_string(),
+        }),
+    )
+    .await
+    .expect("the write should give up, not block");
+    let took = started.elapsed();
+    let err = deleted.expect_err("the streams feed was held throughout");
+    assert!(
+        matches!(&err, crate::store::StoreError::Unexpected(inner) if inner.is::<Busy>()),
+        "expected Busy, got {err:?}",
+    );
+    assert!(
+        took < WAIT + Duration::from_millis(400),
+        "gave up after {took:?}, past the {WAIT:?} deadline",
+    );
+
+    release.await??;
+    streams.rollback().await?;
+    pool.close().await;
+    Ok(())
+}
+
 /// Writers queued behind a held feed do not take the pool's connections, so
 /// reads sharing the pool still get one.
 #[tokio::test]

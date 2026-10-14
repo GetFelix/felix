@@ -20,6 +20,16 @@ use crate::output::{Output, cell, fields, table};
 /// Page size asked for when listing; the CLI follows `next_cursor` either way.
 const PAGE_LIMIT: &str = "1000";
 
+/// Waits before each retry of a 503 `unavailable`: the control plane could not
+/// take the request in time (a Raft group without a leader, or a catalog feed
+/// busy with other writes) and asks to be retried. Short and bounded, so a
+/// control plane that stays unavailable fails the command in a few seconds.
+const UNAVAILABLE_RETRIES: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+];
+
 /// A column of a listing: its header and where its value is.
 pub(crate) type Column = (&'static str, &'static str);
 
@@ -60,6 +70,7 @@ pub(crate) const SHARD_COLUMNS: &[Column] = &[
 ];
 
 /// A successful answer.
+#[derive(Debug)]
 pub(crate) struct Answer {
     /// 201: the request made something new, rather than finding it there.
     pub(crate) created: bool,
@@ -130,7 +141,11 @@ impl Api {
     }
 
     /// Send one request. A non-2xx answer is an error: 404 is
-    /// [`Exit::NotFound`], anything else [`Exit::Server`].
+    /// [`Exit::NotFound`], anything else [`Exit::Server`]. A 503 `unavailable`
+    /// is retried a few times first.
+    ///
+    /// On Raft, a write answered 503 may still have committed, so a retried
+    /// create can answer 409 and a retried delete 404.
     pub(crate) async fn send(
         &self,
         method: reqwest::Method,
@@ -139,22 +154,33 @@ impl Api {
         body: Option<&Value>,
     ) -> anyhow::Result<Answer> {
         let url = format!("{}{path}", self.base);
-        let mut request = self.http.request(method.clone(), &url).query(query);
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        let response = request.send().await.mark(
-            Exit::Connection,
-            format!("reach the control plane at {}", self.base),
-        )?;
-        let status = response.status();
-        let text = response.text().await.mark(
-            Exit::Connection,
-            format!("read the answer to {method} {path}"),
-        )?;
+        let mut retries = UNAVAILABLE_RETRIES.iter();
+        let (status, text) = loop {
+            let mut request = self.http.request(method.clone(), &url).query(query);
+            if let Some(token) = &self.token {
+                request = request.bearer_auth(token);
+            }
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+            let response = request.send().await.mark(
+                Exit::Connection,
+                format!("reach the control plane at {}", self.base),
+            )?;
+            let status = response.status();
+            let text = response.text().await.mark(
+                Exit::Connection,
+                format!("read the answer to {method} {path}"),
+            )?;
+            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                && error_code(&text).as_deref() == Some("unavailable")
+                && let Some(wait) = retries.next()
+            {
+                tokio::time::sleep(*wait).await;
+                continue;
+            }
+            break (status, text);
+        };
         if !status.is_success() {
             let exit = if status == reqwest::StatusCode::NOT_FOUND {
                 Exit::NotFound
@@ -462,6 +488,15 @@ pub(crate) fn segment(value: &str) -> String {
 }
 
 /// The `message` of an error answer, or the body itself.
+/// The `code` of an error body, if it has one.
+fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get("code")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
         .ok()

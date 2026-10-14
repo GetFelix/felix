@@ -632,8 +632,11 @@ Four properties make that hold on every backend:
    applied. The broker ignores such an answer and asks again. A feed that
    answers only from behind for 60 s is taken as reset, and the broker takes
    a new snapshot of it: the changes before the new `next_seq` are a history
-   it has never seen. A snapshot only adds and updates, so anything deleted
-   across the reset stays on the broker until it restarts.
+   it has never seen. A snapshot only adds and updates, so a tenant,
+   namespace, stream or cache deleted across the reset stays registered on
+   the broker. A broker registers only what the catalog holds when it starts,
+   so restarting it drops them. Its data stays on disk either way, as a
+   deleted stream's always does.
 
 The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that

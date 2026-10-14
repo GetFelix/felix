@@ -89,7 +89,8 @@ pub(crate) async fn list_namespaces(
     responses(
         (status = 201, description = "Namespace created", body = Namespace),
         (status = 404, description = "Tenant not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Namespace already exists", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Namespace already exists", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "Unavailable; retry. On Postgres, other writes to the same catalog feed held it for more than 5 s and nothing was written. On Raft, no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_namespace(
@@ -126,7 +127,8 @@ pub(crate) async fn create_namespace(
     ),
     responses(
         (status = 204, description = "Namespace deleted"),
-        (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse)
+        (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "Unavailable; retry. On Postgres, other writes to the same catalog feed held it for more than 5 s and nothing was written. On Raft, no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn delete_namespace(

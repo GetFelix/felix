@@ -408,14 +408,25 @@ async fn post(
     token: &str,
     body: serde_json::Value,
 ) -> Result<()> {
-    let response = http
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
-    let status = response.status();
+    // A 503 asks for a retry: a Raft group still electing, or a catalog feed
+    // busy with other writes.
+    let mut waits = [250u64, 500, 1_000].into_iter();
+    let (status, response) = loop {
+        let response = http
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = response.status();
+        match waits.next() {
+            Some(wait) if status == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+            }
+            _ => break (status, response),
+        }
+    };
     // Idempotent by design: a harness restarted against a warm control plane
     // should not fail because the tenant already exists.
     if status.is_success() || status == reqwest::StatusCode::CONFLICT {

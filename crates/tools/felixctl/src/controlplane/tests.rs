@@ -75,3 +75,93 @@ fn an_error_body_yields_its_message() {
     );
     assert_eq!(error_message("plain text\n"), "plain text");
 }
+
+/// A control plane that answers each connection with the next of `answers`,
+/// as `(status line, JSON body)`, and counts the requests it saw.
+async fn scripted(
+    answers: Vec<(&'static str, &'static str)>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&seen);
+    tokio::spawn(async move {
+        for (status, body) in answers {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0u8; 8192];
+            let _ = socket.read(&mut request).await;
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.expect("write");
+            let _ = socket.shutdown().await;
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+fn api(base: String) -> Api {
+    Api {
+        http: reqwest::Client::new(),
+        base,
+        token: None,
+    }
+}
+
+const UNAVAILABLE: (&str, &str) = (
+    "503 Service Unavailable",
+    r#"{"code":"unavailable","message":"too many concurrent catalog writes; retry"}"#,
+);
+
+#[tokio::test]
+async fn a_503_unavailable_is_retried() {
+    let (base, seen) = scripted(vec![
+        UNAVAILABLE,
+        UNAVAILABLE,
+        ("201 Created", r#"{"tenant_id":"t1"}"#),
+    ])
+    .await;
+    let answer = api(base)
+        .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
+        .await
+        .expect("the third attempt succeeds");
+    assert!(answer.created);
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn retries_of_a_503_unavailable_are_bounded() {
+    let (base, seen) = scripted(vec![UNAVAILABLE; 10]).await;
+    let err = api(base)
+        .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
+        .await
+        .expect_err("the control plane stays unavailable");
+    assert_eq!(exit_for(&err), Exit::Server);
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        UNAVAILABLE_RETRIES.len() + 1
+    );
+}
+
+#[tokio::test]
+async fn another_503_is_not_retried() {
+    let (base, seen) = scripted(vec![
+        (
+            "503 Service Unavailable",
+            r#"{"code":"upgrade_in_progress","message":"upgrade first"}"#,
+        ),
+        ("201 Created", "{}"),
+    ])
+    .await;
+    api(base)
+        .post("/v1/resources", &[], Some(&json!({})))
+        .await
+        .expect_err("not a retryable 503");
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

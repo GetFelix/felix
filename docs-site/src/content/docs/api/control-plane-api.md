@@ -512,6 +512,13 @@ credential (`FELIX_NODE_TOKEN`), the same one that reads the shard-assignment
 watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
 
+A create, update or delete of a tenant, namespace, stream or cache can answer
+`503` with code `unavailable`. On Postgres it means other writes to the same
+catalog feed held it for more than 5 s, for example a large tenant delete, and
+nothing was written, so retry it. On Raft it means no quorum committed the
+write in time; it may still land, so a retried create can answer `409`.
+`felixctl` retries an `unavailable` answer a few times before failing.
+
 #### Creating several at once
 
 `POST /v1/tenants/{t}/namespaces/{ns}/resources` creates up to 256 streams and
@@ -538,6 +545,7 @@ Content-Type: application/json
 | `404` | the tenant or namespace does not exist | nothing |
 | `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
+| `503` | `unavailable`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; retry | nothing |
 
 A success lists every item in request order with `"status": "created"` or
 `"unchanged"`, so a caller that failed part-way sends the same batch again.

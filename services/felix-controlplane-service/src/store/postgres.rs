@@ -910,12 +910,17 @@ async fn begin_feed_write<'s>(
         gates.push(gate);
     }
     let mut tx = store.pool.begin().await?;
-    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
-        .bind(format!("{}ms", left.as_millis().max(1)))
-        .execute(&mut *tx)
-        .await?;
     for &feed in &feeds {
+        // lock_timeout bounds each wait on its own, so it is set to what is
+        // left of the deadline before every lock, not once for all of them.
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(busy(feed));
+        }
+        sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+            .bind(format!("{}ms", left.as_millis().max(1)))
+            .execute(&mut *tx)
+            .await?;
         let locked = sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(feed.lock_key())
             .execute(&mut *tx)
