@@ -100,8 +100,7 @@ jobs:
           retention-days: 14
 
   # Exhaustive checks of the configurations the per-push job cannot fit, each
-  # in its own job: the longest measured is three and a half hours on a
-  # four-core runner (FelixShardElectSet).
+  # in its own job: the longest take hours on a four-core runner.
   # Not on pull requests: hours of runner time for a change to the walks.
   exhaustive:
     name: Check ${{ matrix.config }}
