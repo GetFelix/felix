@@ -86,6 +86,13 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
 - The power-loss test model no longer loses a sync it saw (#1218). When two
   flushes of one file overlapped, the one that read the file first could
   record its read last, so the model held less than the device would. A flush

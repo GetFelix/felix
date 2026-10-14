@@ -299,7 +299,7 @@ impl LogInner {
             let plan = { inner.segments.read().roll_plan() };
             let prepared = plan.build()?;
 
-            let (retired, snapshot, active) = {
+            let (retired, snapshot, active, rewinds) = {
                 let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 match segments.commit_roll(prepared)? {
@@ -311,7 +311,10 @@ impl LogInner {
                         // As of the new segment's base: everything it covers
                         // is in segments that are sealed once this roll is.
                         let active = segments.active().id();
-                        (retired, inner.producer_snapshot(&segments), active)
+                        // Read under the lock a rewind holds, so a truncation
+                        // after this point is one the seal will see.
+                        let rewinds = inner.mark.rewinds();
+                        (retired, inner.producer_snapshot(&segments), active, rewinds)
                     }
                     // The tail moved past the offset this segment was built
                     // for. Delete it here — leaving it for recovery to clean up
@@ -336,7 +339,7 @@ impl LogInner {
                     // Only now: these records are on the device, so a flush no
                     // longer has to cover them.
                     *inner.pending_seal.lock() = None;
-                    inner.note_sealed_before(active);
+                    inner.note_sealed_before_since(active, rewinds);
                     // Saved only once they are, so the snapshot never vouches
                     // for a batch a crash could still take away.
                     inner.store_producer_snapshot(snapshot);
