@@ -146,24 +146,21 @@ takes to read the client in use, so other operations are not stalled
 meanwhile. A resolver that has stopped answering costs a reconnect at most 2 s
 for this resolution and 2 s more for resolving the names in the discovery
 answer that follows, which are also looked up at the same time. A system
-lookup that has timed out keeps its thread until the resolver answers; a
-client keeps at most 8 of those running and waits for one to finish before
-starting more.
+lookup that has timed out keeps its thread until the resolver answers. Each
+name has at most one system lookup running: a later caller for the same name
+waits on it instead of starting another, and a name whose lookup hangs never
+stops another name resolving.
 
 A seed name that stops resolving keeps the addresses it last resolved to, as
 seeds, while the other names move on.
-
-### Dialling
 
 A reconnect replaces the client only if it is still the one the failing
 operation used. When several operations fail on the same broker at once, the
 first replaces it and the rest find the replacement and use it.
 
-The addresses are tried in order, with the broker that just failed last. Each
-gets 250 ms to answer before the next one is dialled beside it, and a refusal
-moves on at once. The first to answer is used and the other dials are
-abandoned. An address that drops packets therefore costs 250 ms, not the
-6 s QUIC idle timeout it would take to give up on it.
+The addresses are tried in order, one after another, with the broker that just
+failed last. A refusal moves on at once; an address that drops packets costs
+the QUIC idle timeout (6 s by default) before the next is tried.
 
 A client given only IP seeds, against brokers that advertise only IPs, has
 nothing to resolve and stays stranded until it is rebuilt. Give it a name.

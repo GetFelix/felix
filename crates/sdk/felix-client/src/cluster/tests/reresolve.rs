@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
 use crate::cluster::nodes::Nodes;
-use crate::cluster::seeds::{LOOKUP_TIMEOUT, Lookup, RESOLVE_AGAIN_AFTER, Seeds};
+use crate::cluster::seeds::{Dns, LOOKUP_TIMEOUT, Lookup, RESOLVE_AGAIN_AFTER, Seeds};
 use crate::cluster::{ClusterClient, Seed};
 use crate::test_support::build_server_config;
 
@@ -368,4 +368,47 @@ fn a_seed_parses_as_an_address_or_a_name() {
     assert!("felix.svc".parse::<Seed>().is_err());
     assert!("felix.svc:http".parse::<Seed>().is_err());
     assert!(":5000".parse::<Seed>().is_err());
+}
+
+/// **A name whose system lookup never returns starts one lookup, not one per
+/// round, and does not stop other names resolving.**
+#[tokio::test]
+async fn a_hung_system_lookup_is_shared_and_blocks_no_other_name() {
+    const HUNG: &str = "hung.test:5000";
+    const FINE: &str = "fine.test:5000";
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let hung_calls = Arc::new(AtomicUsize::new(0));
+    let fine_calls = Arc::new(AtomicUsize::new(0));
+    let fine_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+    let dns = Dns::with_system({
+        let (hung_calls, fine_calls) = (Arc::clone(&hung_calls), Arc::clone(&fine_calls));
+        let gate = Mutex::new(gate);
+        Arc::new(move |name: &str| {
+            if name == HUNG {
+                hung_calls.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.lock().unwrap().recv();
+                return Err(io::Error::other("released"));
+            }
+            fine_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![fine_addr])
+        })
+    });
+
+    const ROUNDS: usize = 30;
+    for _ in 0..ROUNDS {
+        let hung = tokio::time::timeout(Duration::from_millis(20), dns.lookup(HUNG)).await;
+        assert!(hung.is_err(), "the hung lookup finished");
+        let fine = tokio::time::timeout(Duration::from_secs(5), dns.lookup(FINE)).await;
+        assert_eq!(fine.unwrap().unwrap(), vec![fine_addr]);
+    }
+    assert_eq!(
+        hung_calls.load(Ordering::SeqCst),
+        1,
+        "one thread for the hung name"
+    );
+    assert_eq!(fine_calls.load(Ordering::SeqCst), ROUNDS);
+
+    // Let the blocked thread finish so the runtime can shut down.
+    drop(release);
+    assert!(dns.lookup(HUNG).await.is_err());
 }

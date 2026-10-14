@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
 
 use super::nodes::Nodes;
 
@@ -34,9 +34,6 @@ pub(super) const RESOLVE_AGAIN_AFTER: Duration = Duration::from_secs(1);
 /// does not exist, would otherwise hold a reconnect for as long as the system
 /// resolver keeps retrying.
 pub(super) const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Most system lookups one client has running at once. See [`Dns`].
-const MAX_OUTSTANDING_LOOKUPS: usize = 8;
 
 /// A broker address a cluster client is configured with.
 ///
@@ -108,20 +105,34 @@ pub(crate) trait Lookup: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'a>>;
 }
 
+/// A blocking system lookup. Swapped in tests.
+pub(super) type System = Arc<dyn Fn(&str) -> io::Result<Vec<SocketAddr>> + Send + Sync>;
+
+type Answer = Result<Vec<SocketAddr>, (io::ErrorKind, String)>;
+
 /// The system resolver.
 ///
 /// A system lookup runs on a blocking thread that cannot be cancelled, so one
-/// a caller gave up on keeps its thread until the resolver answers. Each
-/// holds a permit until then, which bounds how many threads a client can tie
-/// up against a resolver that has stopped answering.
+/// a caller gave up on keeps its thread until the resolver answers. Each name
+/// has at most one running: a later caller for the same name waits on it
+/// instead of starting another, so a name whose lookup hangs ties up one
+/// thread, however many rounds ask, and never holds back another name.
 pub(crate) struct Dns {
-    outstanding: Arc<Semaphore>,
+    system: System,
+    running: Arc<Mutex<HashMap<String, watch::Receiver<Option<Answer>>>>>,
 }
 
 impl Dns {
     pub(crate) fn new() -> Self {
+        Self::with_system(Arc::new(|host_port: &str| {
+            host_port.to_socket_addrs().map(Iterator::collect)
+        }))
+    }
+
+    pub(super) fn with_system(system: System) -> Self {
         Self {
-            outstanding: Arc::new(Semaphore::new(MAX_OUTSTANDING_LOOKUPS)),
+            system,
+            running: Arc::default(),
         }
     }
 }
@@ -131,19 +142,41 @@ impl Lookup for Dns {
         &'a self,
         host_port: &'a str,
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'a>> {
-        let outstanding = Arc::clone(&self.outstanding);
-        let host_port = host_port.to_string();
+        let mut answer = {
+            let mut running = self.running.lock().expect("running lookups");
+            match running.get(host_port) {
+                Some(answer) => answer.clone(),
+                None => {
+                    let (send, answer) = watch::channel(None);
+                    running.insert(host_port.to_string(), answer.clone());
+                    let system = Arc::clone(&self.system);
+                    let registry = Arc::clone(&self.running);
+                    let name = host_port.to_string();
+                    tokio::spawn(async move {
+                        let looked = {
+                            let name = name.clone();
+                            tokio::task::spawn_blocking(move || system(&name)).await
+                        };
+                        registry.lock().expect("running lookups").remove(&name);
+                        let _ = send.send(Some(match looked {
+                            Ok(found) => found.map_err(|err| (err.kind(), err.to_string())),
+                            Err(err) => Err((io::ErrorKind::Other, err.to_string())),
+                        }));
+                    });
+                    answer
+                }
+            }
+        };
         Box::pin(async move {
-            let permit = outstanding
-                .acquire_owned()
+            let done = answer
+                .wait_for(Option::is_some)
                 .await
-                .map_err(io::Error::other)?;
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                host_port.to_socket_addrs().map(Iterator::collect)
-            })
-            .await
-            .map_err(io::Error::other)?
+                .map_err(io::Error::other)?
+                .clone();
+            match done.expect("waited for an answer") {
+                Ok(found) => Ok(found),
+                Err((kind, message)) => Err(io::Error::new(kind, message)),
+            }
         })
     }
 }

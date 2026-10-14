@@ -107,9 +107,7 @@ entries.
   the failing operation used. Every operation that failed on the same broker
   used to throw away whatever client was in place, including a fresh
   replacement, and dial again with the endpoint list it had read before
-  waiting for the lock. A reconnect also no longer dials addresses one after
-  another: each gets 250 ms before the next is dialled beside it, so an
-  address that drops packets no longer costs the 6 s QUIC idle timeout.
+  waiting for the lock.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a

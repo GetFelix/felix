@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::Result;
 
@@ -295,53 +294,19 @@ impl Nodes {
         Ok(client)
     }
 
-    /// The client for whichever of `addrs` answers first, preferring them in
-    /// order.
-    ///
-    /// Each address gets [`DIAL_STAGGER`] to answer before the next one is
-    /// dialled beside it, and a refusal moves on at once. Dialled one after
-    /// another, an address that drops packets costs the whole QUIC idle
-    /// timeout before the next is tried, and a list of them costs that many
-    /// times over. The dials still running when one succeeds are cancelled.
-    pub(super) async fn connect_any(self: &Arc<Self>, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
+    /// The client for whichever of `addrs` answers first, in order, with the
+    /// same contract as [`Client::connect_any`].
+    pub(super) async fn connect_any(&self, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
         if addrs.is_empty() {
             return Err(anyhow::anyhow!(
                 "no broker addresses were given to connect to"
             ));
         }
-        let mut waiting = addrs.iter().copied();
-        let mut dials = tokio::task::JoinSet::new();
         let mut refusals = Vec::with_capacity(addrs.len());
-        let dial = |dials: &mut tokio::task::JoinSet<_>, addr: SocketAddr| {
-            let nodes = Arc::clone(self);
-            dials.spawn(async move { (addr, nodes.connect_to(addr).await) });
-        };
-        if let Some(addr) = waiting.next() {
-            dial(&mut dials, addr);
-        }
-        let mut more = waiting.len() > 0;
-        loop {
-            tokio::select! {
-                Some(done) = dials.join_next() => {
-                    match done {
-                        Ok((_, Ok(client))) => return Ok(client),
-                        Ok((addr, Err(err))) => refusals.push(format!("{addr}: {err:#}")),
-                        Err(err) => refusals.push(format!("a dial failed: {err}")),
-                    }
-                    if dials.is_empty() {
-                        match waiting.next() {
-                            Some(addr) => dial(&mut dials, addr),
-                            None => break,
-                        }
-                        more = waiting.len() > 0;
-                    }
-                }
-                () = tokio::time::sleep(DIAL_STAGGER), if more => {
-                    if let Some(addr) = waiting.next() {
-                        dial(&mut dials, addr);
-                    }
-                    more = waiting.len() > 0;
-                }
+        for addr in addrs {
+            match self.connect_to(*addr).await {
+                Ok(client) => return Ok(client),
+                Err(err) => refusals.push(format!("{addr}: {err:#}")),
             }
         }
         Err(anyhow::anyhow!(
@@ -382,11 +347,6 @@ impl Nodes {
         )
     }
 }
-
-/// How long an address being dialled has before the next one is dialled
-/// beside it. A handshake on a working network takes far less, so a healthy
-/// first choice is almost always the only dial.
-const DIAL_STAGGER: Duration = Duration::from_millis(250);
 
 /// The client for one broker.
 #[derive(Default)]
