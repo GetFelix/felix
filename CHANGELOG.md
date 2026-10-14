@@ -86,6 +86,14 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The power-loss test model no longer loses a sync it saw (#1218). When two
+  flushes of one file overlapped, the one that read the file first could
+  record its read last, so the model held less than the device would. A flush
+  that read the active segment just before a background roll retired it could
+  undo the seal's sync of that segment, and the nightly sweep then built
+  crashes that cut a sealed segment short and failed when recovery refused
+  them. Each capture now takes a ticket before it reads, and an older read
+  never replaces a newer one. Storage itself is unchanged.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
