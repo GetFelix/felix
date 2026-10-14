@@ -1,23 +1,24 @@
 //! Turning JavaScript arguments into the Rust client's types, with an
 //! invalid-argument error when they do not fit.
 
+use felix_client::Seed;
 use std::collections::{BTreeMap, HashMap};
-use std::net::{SocketAddr, ToSocketAddrs};
 
 use felix_wire::{AckMode, StartPosition};
 use napi::bindgen_prelude::*;
 
 use crate::errors::invalid;
 
-pub(crate) fn resolve(addrs: Vec<String>) -> Result<Vec<SocketAddr>> {
-    let mut out = Vec::new();
-    for addr in addrs {
-        let resolved = addr
-            .to_socket_addrs()
-            .map_err(|err| invalid(format!("could not resolve {addr:?}: {err}")))?;
-        out.extend(resolved);
-    }
-    Ok(out)
+pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
+    // Names are kept rather than resolved here: the client resolves them
+    // again when every address it holds stops answering.
+    addrs
+        .iter()
+        .map(|addr| {
+            addr.parse::<Seed>()
+                .map_err(|err| invalid(format!("{err:#}")))
+        })
+        .collect()
 }
 
 /// How much the broker must have done before a publish resolves.

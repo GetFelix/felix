@@ -1,13 +1,13 @@
 //! Turning Python arguments into the Rust client's types, with a
 //! `ValueError` that names the argument when they do not fit.
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use felix_client::Seed;
 
 use felix_wire::{AckMode, StartPosition};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<SocketAddr>> {
+pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<Seed>> {
     let bound = addrs.bind(py);
     let items: Vec<String> = if let Ok(single) = bound.extract::<String>() {
         vec![single]
@@ -17,23 +17,16 @@ pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<Soc
         })?
     };
 
-    let mut resolved = Vec::with_capacity(items.len());
-    for item in items {
-        // Resolve names, not just literal addresses: a Kubernetes service name
-        // is the normal way to reach a broker.
-        let mut iter = item
-            .to_socket_addrs()
-            .map_err(|err| PyValueError::new_err(format!("could not resolve {item:?}: {err}")))?;
-        match iter.next() {
-            Some(addr) => resolved.push(addr),
-            None => {
-                return Err(PyValueError::new_err(format!(
-                    "{item:?} resolved to no addresses"
-                )));
-            }
-        }
-    }
-    Ok(resolved)
+    // Names are kept rather than resolved here: the client resolves them
+    // again when every address it holds stops answering, which is how it
+    // survives a rollout that moves every broker.
+    items
+        .iter()
+        .map(|item| {
+            item.parse::<Seed>()
+                .map_err(|err| PyValueError::new_err(format!("{err:#}")))
+        })
+        .collect()
 }
 
 pub(crate) fn parse_ack(ack: &str) -> PyResult<AckMode> {

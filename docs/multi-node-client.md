@@ -32,10 +32,10 @@ config.auth_token = Some(std::env::var("FELIX_TOKEN")?);
 // For a long-running client, set `config.token_provider` so reconnects get a
 // fresh token. See docs/auth.md.
 
-// Every broker you know of. One is enough; see "Discovery" below.
-let seeds = ["10.0.0.4:5000".parse()?, "10.0.0.5:5000".parse()?];
+// A name, or every broker you know of. One is enough; see "Discovery" below.
+let seeds = ["felix.prod.svc.cluster.local:5000".parse()?];
 
-let client = ClusterClient::connect_with_policy(
+let client = ClusterClient::connect_seeds(
     &seeds,
     "broker.internal",
     config,
@@ -56,8 +56,10 @@ client
 # }
 ```
 
-`ClusterClient::connect` uses the default policy, which is the same thing
-without the `deadline`.
+A seed is a `Seed`: an address, or a `host:port` name, which `"...".parse()`
+tells apart. `ClusterClient::connect` and `connect_with_policy` take plain
+`SocketAddr`s and the default policy, which is the same thing without the
+`deadline`. Prefer names: see "When every broker moves" below.
 
 ## Connections
 
@@ -102,9 +104,10 @@ them to what it will try.
 - An empty answer is normal on a single-node deployment. It is not an error.
 - A broker may advertise a DNS name. The client resolves it when it is
   handed it, at discovery, in a redirect, or as a shard or cache owner, so a
-  reconnect picks up a broker that moved to a new IP. It checks that broker's
-  certificate against the name rather than the seeds' server name. A name
-  that does not resolve is logged and left out.
+  broker that moved to a new IP is found at its new one the next time any
+  broker that still answers names it. It checks that broker's certificate
+  against the name rather than the seeds' server name. A name that does not
+  resolve is logged and left out.
 
 `ClusterClient::endpoints()` returns everywhere the client would try, seeds
 included. `refresh_topology()` asks again on demand; you do not normally need
@@ -112,6 +115,30 @@ it, because reconnecting already does.
 
 Still configure more than one seed if you can. Discovery needs *some* broker to
 answer before it can tell you about the others.
+
+### When every broker moves
+
+Discovery only helps while some broker the client knows still answers. A
+rollout that restarts every pod at once gives every broker a new IP, and then
+no address the client holds will answer again.
+
+So when a reconnect has tried every address in hand and none answered, the
+client resolves names again and dials whatever is new:
+
+- every seed given as a `host:port` name, keeping every address it resolves to,
+  so a headless service name stands for all of its pods;
+- every name brokers advertised in the last discovery answer.
+
+The addresses that just failed are dropped and the new ones kept, beside any
+seed given as an IP. Discovery then runs against the broker that answered, as
+after any reconnect.
+
+One resolution serves every reconnect for a second, so a client whose cluster
+is down asks DNS about once a second however many operations are failing. The
+reconnect policy's backoff paces each operation as usual.
+
+A client given only IP seeds, against brokers that advertise only IPs, has
+nothing to resolve and stays stranded until it is rebuilt. Give it a name.
 
 ## Failover
 

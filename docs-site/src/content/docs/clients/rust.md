@@ -1559,6 +1559,23 @@ let policy = ReconnectPolicy {
 let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
 ```
 
+When every address the client holds has stopped answering, it resolves names
+again and dials what is new: seeds given as `host:port` names, and the names
+brokers advertised. That is what gets it back in after a rollout gives every
+broker a new IP. `connect_with_policy` takes `SocketAddr`s, which have no name
+to resolve; `connect_seeds` takes `Seed`s, which can be either:
+
+```rust
+use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+
+let seeds: Vec<Seed> = vec!["felix.prod.svc.cluster.local:5000".parse()?];
+let client =
+    ClusterClient::connect_seeds(&seeds, "localhost", config, ReconnectPolicy::default()).await?;
+```
+
+One lookup serves every reconnect for a second, so a client whose cluster is
+down asks DNS about once a second. See `docs/multi-node-client.md`.
+
 ## Telemetry
 
 ### Enabling Telemetry

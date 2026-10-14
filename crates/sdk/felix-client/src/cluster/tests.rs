@@ -6,6 +6,7 @@ mod error_codes;
 mod identity;
 mod keyed_producer;
 mod offsets;
+mod reresolve;
 mod sharded_deleted;
 mod sharded_lag;
 mod stale_width;

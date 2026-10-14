@@ -75,6 +75,10 @@ and will use brokers it was never told about. Passing several only helps the
 *first* connection, for the case where the one you named is the one that is
 down.
 
+Give a name rather than an IP where you can. The client resolves a name again
+whenever no broker it knows answers, which is how it gets back in after a
+rollout has moved every broker at once.
+
 TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `ca_file` for a self-signed
 development broker. There is no "skip verification" switch. It would silently

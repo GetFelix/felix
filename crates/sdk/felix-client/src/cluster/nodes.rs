@@ -19,6 +19,8 @@ use crate::auth::TokenProvider;
 use crate::client::Client;
 use crate::config::ClientConfig;
 
+use super::seeds::Lookup;
+
 /// The client for each broker a cluster client has reached.
 pub(super) struct Nodes {
     source: Source,
@@ -34,6 +36,7 @@ enum Source {
     Dial {
         server_name: String,
         config: Box<ClientConfig>,
+        lookup: Arc<dyn Lookup>,
     },
     /// [`Client::with_identity`] over the client `base` holds for the same
     /// broker.
@@ -45,10 +48,11 @@ enum Source {
 }
 
 impl Nodes {
-    pub(super) fn new(server_name: &str, config: ClientConfig) -> Self {
+    pub(super) fn new(server_name: &str, config: ClientConfig, lookup: Arc<dyn Lookup>) -> Self {
         Self::with_source(Source::Dial {
             server_name: server_name.to_string(),
             config: Box::new(config),
+            lookup,
         })
     }
 
@@ -96,15 +100,12 @@ impl Nodes {
         }
         // IPv4 when the name has both: a name like `localhost` resolves to
         // both families, and a broker is far more often listening on v4.
-        let resolved = match tokio::net::lookup_host(advertised).await {
-            Ok(addrs) => {
-                let addrs: Vec<SocketAddr> = addrs.collect();
-                addrs
-                    .iter()
-                    .find(|addr| addr.is_ipv4())
-                    .or(addrs.first())
-                    .copied()
-            }
+        let resolved = match self.lookup(advertised).await {
+            Ok(addrs) => addrs
+                .iter()
+                .find(|addr| addr.is_ipv4())
+                .or(addrs.first())
+                .copied(),
             Err(err) => {
                 tracing::warn!(advertised, error = %err, "a broker's advertised name did not resolve");
                 return None;
@@ -124,6 +125,14 @@ impl Nodes {
                 .insert(addr, host.to_string());
         }
         Some(addr)
+    }
+
+    /// Every address `host_port` resolves to now.
+    pub(super) async fn lookup(&self, host_port: &str) -> std::io::Result<Vec<SocketAddr>> {
+        match &self.source {
+            Source::Dial { lookup, .. } => lookup.lookup(host_port).await,
+            Source::Identity { base, .. } => Box::pin(base.lookup(host_port)).await,
+        }
     }
 
     /// Live connections to each broker a client is held for.
@@ -174,6 +183,7 @@ impl Nodes {
             Source::Dial {
                 server_name,
                 config,
+                ..
             } => {
                 // A broker that advertised a name is checked against that
                 // name, as a client dialling the name directly would check it.

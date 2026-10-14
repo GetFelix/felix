@@ -1,12 +1,11 @@
 //! Connecting, publishing, and the runtime a client owns.
 
 use std::ffi::c_char;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, Seed};
 use tokio::runtime::Runtime;
 
 use crate::boundary::{Failure, guard, guard_void, optional_str, required_str, write_optional};
@@ -74,7 +73,8 @@ impl Drop for Shared {
 /// Connect to a Felix cluster.
 ///
 /// `addrs` is one `host:port`, or several separated by commas; any reachable
-/// one is enough and the rest are discovered. `tenant_id` and `token` are the
+/// one is enough and the rest are discovered. A name is resolved again whenever
+/// no broker the client knows answers. `tenant_id` and `token` are the
 /// credentials. `server_name` is the name the broker certificate must carry,
 /// `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 /// trust; when null the operating system's trust store is used.
@@ -128,7 +128,12 @@ pub unsafe extern "C" fn felix_client_connect(
             .enable_all()
             .build()
             .context("could not start the Felix runtime")?;
-        let client = runtime.block_on(ClusterClient::connect(&seeds, server_name, config))?;
+        let client = runtime.block_on(ClusterClient::connect_seeds(
+            &seeds,
+            server_name,
+            config,
+            ReconnectPolicy::default(),
+        ))?;
 
         let handle = Box::new(FelixClient {
             shared: Arc::new(Shared {
@@ -237,21 +242,19 @@ pub unsafe extern "C" fn felix_client_publish(
     })
 }
 
-/// Resolve each comma-separated `host:port`. Names are resolved, not only
-/// literal addresses, since a service name is the usual way to reach a broker.
-fn parse_addrs(addrs: &str) -> Result<Vec<SocketAddr>, Failure> {
+/// Each comma-separated `host:port`. Names are kept for the client to resolve,
+/// on connect and again whenever every address it holds stops answering.
+fn parse_addrs(addrs: &str) -> Result<Vec<Seed>, Failure> {
     let mut seeds = Vec::new();
     for item in addrs
         .split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
     {
-        let addr = item
-            .to_socket_addrs()
-            .map_err(|err| Failure::invalid(format!("could not resolve {item:?}: {err}")))?
-            .next()
-            .ok_or_else(|| Failure::invalid(format!("{item:?} resolved to no addresses")))?;
-        seeds.push(addr);
+        let seed = item
+            .parse::<Seed>()
+            .map_err(|err| Failure::invalid(format!("{err:#}")))?;
+        seeds.push(seed);
     }
     if seeds.is_empty() {
         return Err(Failure::invalid("addrs holds no broker address"));

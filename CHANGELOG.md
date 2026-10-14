@@ -78,6 +78,9 @@ before auth changes and their revocations, and refresh rotations, are single
 entries.
 
 ### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
 - Brokers export `felix_revocation_feed_last_success_seconds` (set when they
   start following the feed, then at each good poll) and
   `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
@@ -86,6 +89,15 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A `ClusterClient` recovers when every broker changes IP at once, as in a
+  rollout that restarts every pod (#1227). Reconnect dialled only the addresses
+  it already held, and discovery needs one of them to answer, so the client
+  failed every operation until it was rebuilt. When none of them answers, it
+  now resolves its seed names, and the names brokers last advertised, again
+  and dials the new addresses, reusing one lookup for a second. felixctl and
+  the Python, TypeScript and C clients pass the configured `host:port` through
+  as a name instead of resolving it once at startup, so a name that does not
+  resolve is now reported by the connect rather than by argument parsing.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
