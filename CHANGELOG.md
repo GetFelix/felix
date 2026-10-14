@@ -129,8 +129,9 @@ entries.
 - Design for replicas electing a leader while the control plane is down
   (#1009), not built yet: "Electing without the control plane" in
   `docs/replication-design.md`, with pre-vote, stickiness, a joint fence on
-  every set change (kept with the set until a leader opens on it), cut-overs
-  that wait for the drain, and the failover bound. The TLA+ model gains `SetCheck`,
+  every set change, kept with the set and acknowledged on jointly until the
+  control plane flips to the new set, which it does only after the joint
+  fence; cut-overs that wait for the drain; and the failover bound. The TLA+ model gains `SetCheck`,
   `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and `PreVote`, the persisted
   `setGen`, `RefuseStaleSet`, `CpAdopt`, the `Swap` cut-over and the
   `AdoptedMatchesOpened` and `SetChangesJoint` invariants, and

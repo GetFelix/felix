@@ -599,14 +599,23 @@ elected leader waits for the lease until the control plane is back (issue
    so {X, b, c} can become {Y, X, Z}, and a majority of the new set need
    share no replica with a majority of the old. A staged copy is not part of
    the persisted set: it does not stand, answer a fence or count until a set
-   change writes it in, and that change fences jointly like any other. Until
-   a leader opens on the new set the change is pending, and the replica
-   persists the old set beside the new one: a fence carries both, and
-   whoever stands next fences both, so a leader deposed mid-change does not
-   leave the old set electable. A cut-over that changes the set waits for
-   the drain, so the old leader has stopped and the joining copies hold the
-   destination's log, which holds the old leader's.
-8. *Redirects.* A follower answers `NotLeader` with the leader it promised,
+   change writes it in, and that change fences jointly like any other.
+8. *The control plane flips only after the joint fence.* A cut-over that
+   changes the set records the new set as pending; the old set stays the
+   control plane's set until a leader on the new set reports its
+   generation's start record acknowledged on a majority of both sets. Only
+   then does the control plane take the new set, and only once the leader
+   hears that does it acknowledge on a majority of the new set alone. Until
+   then the change is pending everywhere it went: a replica persists the
+   old set beside the new one, a fence and a batch carry both, a leader
+   acknowledges on a majority of both, and whoever stands next fences both,
+   so a leader deposed mid-change leaves the change to the next one rather
+   than leaving the old set electable. A failover, or adopting a leader that
+   opened on the old set, abandons the pending change. A cut-over that
+   changes the set also waits for the drain, so the old leader has stopped
+   and the joining copies hold the destination's log, which holds the old
+   leader's.
+9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 9. *Adoption.* The elected leader reports its generation and its set's
    generation. If the generation is above the control plane's and the set
@@ -679,6 +688,13 @@ talk, nobody is elected, by design.
    features.
 6. Consumer groups on an elected leader still wait for the lease (issue
    #1197).
+7. The control plane keeps the old set as its own until the joint fence
+   completes, Raft's joint consensus (rule 8 above). A cut-over that flipped
+   the set at once left a window where a replica that never heard of the
+   change acknowledged on a majority of the old set that was no longer a
+   majority of the control plane's (`FelixShardWalkElectSwap.cfg`,
+   `AckedOnMajority`). Chosen by the maintainer over keeping the flip and
+   counting the outgoing set in the invariant.
 
 **Failover time.** From the leader's last answer to the shard serving
 again, with the defaults:

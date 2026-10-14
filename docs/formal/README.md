@@ -179,7 +179,7 @@ a majority already held (see "Retention and the quorum mark" in
 | `StagedCopyNeverDelaysAck` | A `Quorum` write the stream's own replicas would acknowledge is never held back by a destination's copy. A latency property, checked only where a destination is staged. |
 | `NoDuplicate` | No log holds one write twice. Checked where writes are re-sent. |
 | `OneLeaderPerGeneration` | No two brokers open for writes at one generation. Checked where replicas elect themselves and where placement promotes on suspicion. |
-| `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation, leads the set the control plane records, an adopted leader included. Checked where the control plane adopts. |
+| `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 
@@ -212,7 +212,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
 | `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants (not yet measured) |
-| `FelixShardElectSwapNoJoint.cfg` | the same with the cut-over fencing the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
+| `FelixShardElectSwapNoJoint.cfg` | the same without the joint configuration: the cut-over fences, ships and acknowledges on the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
@@ -544,6 +544,22 @@ leader that started the change remembered it: the destination was deposed
 mid-fence, a replica that had learned the new set from it stood and opened on
 a majority of the new set alone, and a replica of the old set opened beside
 it at the same generation (OneLeaderPerGeneration).
+
+The control plane flips only after the joint fence. `Swap` records the new
+set as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
+control plane's (`CpSet`), so `AckedOnMajority` keeps measuring records
+against it. While its change is pending a leader acknowledges on a majority
+of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
+a leader on it has its generation's start record acknowledged, which then
+sits on a majority of both, and `FinishChange` lets a leader drop the old set
+once the control plane holds its set. A failover (`Promote`), or adopting a
+leader on the old set (`CpAdopt`), abandons the pending change.
+`AdoptedMatchesOpened` compares the control plane's leader with the pending
+set while there is one, since that is the set the control plane named it
+for. The swap walk found the window this closes: a replica removed by a
+cut-over that never heard of it stood, fenced the stopped old leader, and
+acknowledged on a majority of the old set, which the control plane had
+already dropped (`AckedOnMajority`).
 
 Three rules come from TLC. The first version let a refused candidate fence on
 at the same generation with the set it had just learned, and let a leader or
@@ -987,7 +1003,7 @@ per family:
 | `FelixShardWalkElect.cfg` | `FelixShardWalkSpares.cfg` with replicas electing themselves up to two generations past the control plane's, the set check with the joint fence, the control plane adopting elected leaders up to generation 10, and a planner acting on a held read | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` |
 | `FelixShardWalkElectStaleSet.cfg` | the same without the set check | violate `AckedHeldByLeader` |
 | `FelixShardWalkElectSwap.cfg` | `FelixShardElectSwap.cfg` lifted: up to six cut-overs that change the set by more than one member, promotion on suspicion up to generation 10, elections two generations past the control plane's, adoption to generation 10 and a planner acting on a held read, six writes, time to 40, drifting clocks | pass the same invariants and `SetChangesJoint` |
-| `FelixShardWalkElectSwapNoJoint.cfg` | the same with a cut-over fencing the new set alone, and without promotion on suspicion or adoption so the walks reach the trace within their budget | violate `AckedHeldByLeader` |
+| `FelixShardWalkElectSwapNoJoint.cfg` | the same without the joint configuration, and without promotion on suspicion or adoption so the walks reach the trace within their budget | violate `AckedHeldByLeader` |
 
 Every walk runs with ballots and every change of leader fenced
 (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
