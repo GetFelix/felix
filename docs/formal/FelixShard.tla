@@ -375,7 +375,7 @@ VARIABLES
     setGen,     \* under `SetCheck`, the generation of the assignment that wrote each broker's `mine`
     oldSet,     \* under `SetCheck`, the set a leader changing sets is leaving: {} when it changes none
     ackGen,     \* history, where opens are tracked: each <<write, generation>> it was acknowledged at
-    installed   \* history, under `SetCheck`: each <<generation, set, previous set>> a set change opened
+    installed   \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -1200,7 +1200,8 @@ RefuseStaleSet(b, f) ==
 \* the answer furthest ahead by `Ahead`, taken before this.
 \*
 \* A set change under `JointFence` also needs a majority of the old set.
-\* Under `SetCheck` it is recorded, for SetChangesJoint.
+\* Under `SetCheck` it is recorded, for SetChangesJoint, by the set's
+\* generation: a leader standing again mid change fences higher on it.
 OpenForWrites(b) ==
     /\ fencing[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
@@ -1208,7 +1209,7 @@ OpenForWrites(b) ==
     /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ oldSet' = [oldSet EXCEPT ![b] = {}]
-    /\ installed' = IF oldSet[b] /= {} THEN installed \cup {<<bgen[b], mine[b], oldSet[b]>>} ELSE installed
+    /\ installed' = IF oldSet[b] /= {} THEN installed \cup {<<setGen[b], mine[b], oldSet[b]>>} ELSE installed
     /\ Opens(b, bgen[b])
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ clog' = IF Counters THEN [clog EXCEPT ![b] = COpened(b, bgen[b])] ELSE clog
