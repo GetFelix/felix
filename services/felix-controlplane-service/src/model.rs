@@ -20,11 +20,13 @@ pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, NodeSuspicion, NodeValidationError,
 };
+pub(crate) use shard::first_generation;
 pub use shard::{
     HaltedCopy, MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange,
     ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;
+pub(crate) use stream::deleted_stream_payload;
 pub use stream::{
     ConsistencyLevel, DeliveryGuarantee, RetentionPolicy, Stream, StreamChange, StreamChangeOp,
     StreamKey, StreamKind, StreamPatchRequest, StreamRouting,

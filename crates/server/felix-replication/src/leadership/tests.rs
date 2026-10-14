@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use felix_router::{NodeRef, RegionRouter, RoutingTable};
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
-use felix_wire::internal::PeerCapabilities;
+use felix_wire::internal::{PeerCapabilities, ShardRef};
 use tempfile::TempDir;
 
 use super::*;
@@ -148,6 +148,7 @@ fn shard_at(generation: u64) -> ShardRef {
         stream: STREAM.to_string(),
         shard: 0,
         generation,
+        incarnation: None,
     }
 }
 

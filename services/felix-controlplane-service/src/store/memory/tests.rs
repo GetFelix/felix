@@ -198,6 +198,7 @@ async fn namespace_stream_cache_errors_and_cascades() {
             durable: false,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");

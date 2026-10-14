@@ -45,6 +45,7 @@ impl RoutingTable {
                     draining: false,
                     successor: None,
                     routing: ShardRouting::Modulo,
+                    incarnation: 0,
                 }),
             nodes,
         )
@@ -65,6 +66,7 @@ impl RoutingTable {
             draining,
             successor,
             routing,
+            incarnation,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -106,6 +108,7 @@ impl RoutingTable {
                     generation,
                     draining,
                     successor,
+                    incarnation,
                 },
             );
         }
@@ -231,6 +234,9 @@ pub struct Route {
     /// The node a move in progress is handing the shard to, when the control
     /// plane has named one. Always one of `replicas`.
     pub successor: Option<String>,
+    /// Which incarnation of the stream the assignment is for; 0 for a cache,
+    /// and for a stream from before incarnations.
+    pub incarnation: u64,
 }
 
 /// One assignment as the table takes it.
@@ -244,6 +250,8 @@ pub struct Placed {
     pub successor: Option<String>,
     /// How the stream maps keys to shards. Always modulo for a cache.
     pub routing: ShardRouting,
+    /// See [`Route::incarnation`].
+    pub incarnation: u64,
 }
 
 /// How a stream was placed: how many shards it has and how keys map onto them.

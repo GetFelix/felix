@@ -18,6 +18,7 @@ fn assignment() -> ShardAssignment {
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }
 

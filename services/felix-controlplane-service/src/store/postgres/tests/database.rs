@@ -619,6 +619,7 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
             durable: false,
             region: Some("eu-west-1".to_string()),
             routing: Default::default(),
+            incarnation: 0,
         })
         .await?;
     store

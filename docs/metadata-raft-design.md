@@ -543,6 +543,7 @@ the field itself, on every member alike, or refuses the command:
 | node `features`, snapshot `fleet_enabled` | 2 | as above |
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
+| stream `incarnation` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0, which leaves the field out |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

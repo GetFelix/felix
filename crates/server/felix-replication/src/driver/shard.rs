@@ -241,13 +241,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         felix_router::ShardKind::Cache => felix_broker::LogKind::Cache,
         felix_router::ShardKind::Stream => felix_broker::LogKind::Stream,
     };
+    // Named before the log opens, and the log opened at the incarnation it
+    // names, so what this pass ships is what it tells the followers it is.
+    let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let Some(log) = broker
-        .shard_log(
+        .shard_log_for(
             log_kind,
             &key.tenant_id,
             &key.namespace,
             &key.stream,
             key.shard,
+            None,
+            crate::incarnation::expected(broker, key.kind, &shard),
         )
         .await
     else {
@@ -293,13 +298,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .then(|| own_start(&log, route.generation, &mut entry.own_start));
     let counted = |majority: u64| crate::quorum::counted_offset(majority, own_start);
 
-    let shard = ShardRef {
-        tenant_id: key.tenant_id.clone(),
-        namespace: key.namespace.clone(),
-        stream: key.stream.clone(),
-        shard: key.shard,
-        generation: route.generation,
-    };
     // Followers are shipped to concurrently.
     //
     // Sequentially, one follower that is gone holds up every follower
@@ -422,6 +420,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 route,
                 felix_broker::LogKind::GroupCursors,
                 &mut aux.group,
+                &shard,
             )
             .await,
             aux_cursors(
@@ -430,6 +429,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 route,
                 felix_broker::LogKind::GroupDeadLetters,
                 &mut aux.dead_letters,
+                &shard,
             )
             .await,
             None,
@@ -443,6 +443,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 route,
                 felix_broker::LogKind::Counters,
                 &mut aux.counters,
+                &shard,
             )
             .await,
         ),
@@ -1154,14 +1155,17 @@ async fn aux_cursors(
     route: &Route,
     log_kind: felix_broker::LogKind,
     entry: &mut ShardCursors,
+    shard: &ShardRef,
 ) -> Option<felix_broker::StreamLog> {
     let log = broker
-        .shard_log(
+        .shard_log_for(
             log_kind,
             &key.tenant_id,
             &key.namespace,
             &key.stream,
             key.shard,
+            None,
+            crate::incarnation::expected(broker, key.kind, shard),
         )
         .await?;
     if entry.generation != route.generation {
@@ -1271,12 +1275,14 @@ pub(super) async fn ship_aux_logs<R: PeerRequester>(
         .map(|node| (log_kind, node))
         .collect();
     }
+    let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let group_log = aux_cursors(
         broker,
         key,
         route,
         felix_broker::LogKind::GroupCursors,
         &mut aux.group,
+        &shard,
     )
     .await;
     let dead_letter_log = aux_cursors(
@@ -1285,9 +1291,9 @@ pub(super) async fn ship_aux_logs<R: PeerRequester>(
         route,
         felix_broker::LogKind::GroupDeadLetters,
         &mut aux.dead_letters,
+        &shard,
     )
     .await;
-    let shard = shard_ref(key, route);
     // Each follower's two cursors go to one exchange, which keeps the order.
     let mut dead_letters: HashMap<String, &mut FollowerCursor> = dead_letter_log
         .as_ref()
@@ -1484,13 +1490,16 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
     rebuilds: &Rebuilds,
     skip: &HashSet<String>,
 ) -> Vec<String> {
+    let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let Some(log) = broker
-        .shard_log(
+        .shard_log_for(
             log_kind,
             &key.tenant_id,
             &key.namespace,
             &key.stream,
             key.shard,
+            None,
+            crate::incarnation::expected(broker, key.kind, &shard),
         )
         .await
     else {
@@ -1505,7 +1514,6 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
     // changes, so comparing from the start costs almost nothing.
     reconcile_followers(entry, route);
 
-    let shard = shard_ref(key, route);
     let shipping = entry
         .followers
         .iter_mut()
@@ -1536,16 +1544,6 @@ async fn behind_on(
         .filter(|cursor| !level.contains(&cursor.node_id))
         .map(|cursor| cursor.node_id.clone())
         .collect()
-}
-
-fn shard_ref(key: &ShardKey, route: &Route) -> ShardRef {
-    ShardRef {
-        tenant_id: key.tenant_id.clone(),
-        namespace: key.namespace.clone(),
-        stream: key.stream.clone(),
-        shard: key.shard,
-        generation: route.generation,
-    }
 }
 
 /// Ship an auxiliary log to one follower until it stops taking batches.

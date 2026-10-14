@@ -263,7 +263,10 @@ which is the ordinary signal it already honours.
 **Disaster recovery** is the same mechanism: the export file is the DR
 artifact, and `migrate import … --overwrite` onto a fresh group is the
 restore. `--overwrite` discards whatever the target holds, checkpoints
-included, so it belongs in a runbook and should only be run deliberately.
+included, so it belongs in a runbook and should only be run deliberately. A
+broker kept running across it refuses stream changes from before what it had
+applied for a minute, until the feed's head has stayed behind and it forgets
+those positions (see `docs/durable-storage.md`, "Deleting a stream").
 
 Two things to know before relying on an export as a backup:
 

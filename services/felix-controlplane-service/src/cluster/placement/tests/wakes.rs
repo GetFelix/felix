@@ -23,6 +23,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("fenced move");

@@ -65,6 +65,10 @@ pub(super) struct NamespaceChangesResponse {
 /// - `tenant` is present for Created.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct TenantChange {
+    /// Where this change sits in its feed. Absent from a control plane that
+    /// predates it, which then advances only by whole pages.
+    #[serde(default)]
+    pub(super) seq: Option<u64>,
     pub(super) op: TenantChangeOp,
     pub(super) tenant_id: String,
     pub(super) tenant: Option<Tenant>,
@@ -76,6 +80,10 @@ pub(super) struct TenantChange {
 /// - `namespace` is present for Created.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct NamespaceChange {
+    /// Where this change sits in its feed. Absent from a control plane that
+    /// predates it, which then advances only by whole pages.
+    #[serde(default)]
+    pub(super) seq: Option<u64>,
     pub(super) op: NamespaceChangeOp,
     pub(super) key: NamespaceKey,
     pub(super) namespace: Option<Namespace>,
@@ -87,6 +95,10 @@ pub(super) struct NamespaceChange {
 /// - `stream` is present for Created/Updated.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct StreamChange {
+    /// Where this change sits in its feed. Absent from a control plane that
+    /// predates it, which then advances only by whole pages.
+    #[serde(default)]
+    pub(super) seq: Option<u64>,
     pub(super) op: StreamChangeOp,
     pub(super) key: StreamKey,
     pub(super) stream: Option<Stream>,
@@ -98,6 +110,10 @@ pub(super) struct StreamChange {
 /// - `cache` is present for Created/Updated.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct CacheChange {
+    /// Where this change sits in its feed. Absent from a control plane that
+    /// predates it, which then advances only by whole pages.
+    #[serde(default)]
+    pub(super) seq: Option<u64>,
     pub(super) op: CacheChangeOp,
     pub(super) key: CacheKey,
     pub(super) cache: Option<Cache>,
@@ -135,6 +151,10 @@ pub(super) struct Stream {
     /// reads as the broker's own bounds.
     #[serde(default)]
     pub(super) retention: Option<Retention>,
+    /// Which creation of this name the stream is. Absent from a control
+    /// plane that predates incarnations, which reads as 0.
+    #[serde(default)]
+    pub(super) incarnation: u64,
 }
 
 /// A stream's retention as the control plane stores it.
@@ -162,6 +182,7 @@ impl Stream {
                 age: bound(retention.and_then(|r| r.max_age_seconds))
                     .map(std::time::Duration::from_secs),
             },
+            incarnation: self.incarnation,
         })
     }
 }

@@ -64,6 +64,7 @@ fn stream(tenant_id: &str, namespace: &str, name: &str) -> Stream {
         durable: false,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -129,6 +130,7 @@ fn shard_assignment(
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }
 

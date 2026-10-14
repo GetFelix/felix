@@ -23,6 +23,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         state: "active".to_string(),
         successor: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -164,6 +165,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         state: "active".to_string(),
         successor: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 9;
+pub const METADATA_VERSION: u16 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -369,6 +369,13 @@ impl MetaCommand {
                 if feature == felix_common::fleet::JUMP_HASH_ROUTING.name() =>
             {
                 3
+            }
+            // Finalizing incarnations gives new streams one, which members
+            // before level 10 would drop.
+            Self::FinalizeFleetFeature { feature }
+                if feature == felix_common::fleet::STREAM_INCARNATIONS.name() =>
+            {
+                10
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             Self::CreateResources { .. } => 5,

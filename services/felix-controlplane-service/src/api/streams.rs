@@ -101,7 +101,8 @@ pub(crate) async fn create_stream(
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let asked = body.routing;
     let finalized = jump_hash_finalized(&state).await?;
-    let stream = new_stream(tenant_id, namespace, body, finalized)?;
+    let incarnations = incarnations_finalized(&state).await?;
+    let stream = new_stream(tenant_id, namespace, body, finalized, incarnations)?;
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
@@ -141,6 +142,7 @@ pub(crate) fn new_stream(
     namespace: String,
     body: StreamCreateRequest,
     jump_hash_finalized: bool,
+    incarnations_finalized: bool,
 ) -> Result<Stream, ApiError> {
     Ok(Stream {
         tenant_id,
@@ -155,7 +157,18 @@ pub(crate) fn new_stream(
         durable: body.durable,
         region: body.region,
         routing: creation_routing(body.routing, jump_hash_finalized)?,
+        incarnation: if incarnations_finalized {
+            new_incarnation()
+        } else {
+            0
+        },
     })
+}
+
+/// A fresh incarnation for a stream being created: random, never 0, and
+/// under 2^53 so it reads back exactly as a JSON number anywhere.
+fn new_incarnation() -> u64 {
+    (rand::random::<u64>() >> 11).max(1)
 }
 
 /// Whether creating `wanted` again would leave `existing` as it is, which
@@ -173,9 +186,12 @@ pub(crate) fn same_stream(
         Some(_) => wanted.routing,
         None => existing.routing,
     };
+    // A retry's incarnation is a fresh draw; the stream it would create is
+    // the existing one all the same.
     *existing
         == Stream {
             routing,
+            incarnation: existing.incarnation,
             ..wanted.clone()
         }
 }
@@ -195,7 +211,21 @@ pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
 /// serves; the reverse cannot happen because finalizing is one-way and, once
 /// done, refuses any broker that could not serve jump hash.
 pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiError> {
-    let feature = felix_common::fleet::JUMP_HASH_ROUTING.name();
+    fleet_finalized(state, felix_common::fleet::JUMP_HASH_ROUTING).await
+}
+
+/// Whether the fleet has finalized `stream_incarnations`. Until it has, a
+/// new stream gets incarnation 0, which an older broker also serves; read
+/// before the create for the same reason as [`jump_hash_finalized`].
+pub(crate) async fn incarnations_finalized(state: &AppState) -> Result<bool, ApiError> {
+    fleet_finalized(state, felix_common::fleet::STREAM_INCARNATIONS).await
+}
+
+async fn fleet_finalized(
+    state: &AppState,
+    feature: felix_common::fleet::FleetFeature,
+) -> Result<bool, ApiError> {
+    let feature = feature.name();
     Ok(state
         .store
         .enabled_fleet_features()

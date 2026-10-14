@@ -138,6 +138,15 @@ impl ShardRouter {
         }
     }
 
+    /// The stream incarnation `key`'s assignment names, if the table has one.
+    pub fn incarnation(&self, key: &ShardKey) -> Option<u64> {
+        self.routes
+            .load()
+            .table
+            .get(key)
+            .map(|route| route.incarnation)
+    }
+
     fn resolve_in(&self, routes: &Routes, key: &ShardKey, wanted: Option<u64>) -> Resolution {
         let Some(route) = routes.table.get(key) else {
             // A caller expecting a generation for a shard this table has never

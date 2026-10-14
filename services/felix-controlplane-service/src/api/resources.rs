@@ -18,8 +18,8 @@ use crate::api::error::{
     ApiError, api_conflict, api_error, api_internal, api_not_found, api_validation_error,
 };
 use crate::api::streams::{
-    jump_hash_finalized, new_stream, same_stream, stream_key, stream_object,
-    validate_stream_request,
+    incarnations_finalized, jump_hash_finalized, new_stream, same_stream, stream_key,
+    stream_object, validate_stream_request,
 };
 use crate::api::types::{
     BatchCache, BatchItemStatus, BatchStream, ResourceBatchRequest, ResourceBatchResponse,
@@ -98,18 +98,27 @@ pub(crate) async fn create_resources(
     }
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
 
-    let finalized = if body.streams.is_empty() {
-        false
+    let (finalized, incarnations) = if body.streams.is_empty() {
+        (false, false)
     } else {
-        jump_hash_finalized(&state).await?
+        (
+            jump_hash_finalized(&state).await?,
+            incarnations_finalized(&state).await?,
+        )
     };
     let streams = body
         .streams
         .into_iter()
         .map(|item| {
             let asked = item.routing;
-            new_stream(tenant_id.clone(), namespace.clone(), item, finalized)
-                .map(|stream| (stream, asked))
+            new_stream(
+                tenant_id.clone(),
+                namespace.clone(),
+                item,
+                finalized,
+                incarnations,
+            )
+            .map(|stream| (stream, asked))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let caches: Vec<Cache> = body

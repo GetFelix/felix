@@ -162,6 +162,7 @@ fn the_manifest_round_trips_and_leaves_out_logs_a_shard_does_not_have() {
                 group_dead_letters: None,
                 counters: Some(3),
             },
+            incarnation: 0,
         }],
     };
     let json = serde_json::to_value(&manifest).expect("json");

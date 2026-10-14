@@ -36,7 +36,7 @@ use anyhow::Result;
 use felix_broker::Broker;
 
 use crate::cluster::credential::NodeCredential;
-use pass::sync_once;
+use pass::sync_into;
 
 /// Polls the control plane forever, applying changes as they arrive.
 ///
@@ -54,6 +54,18 @@ pub async fn start_sync(
 ) -> Result<()> {
     start_sync_with_signal(broker, base_url, interval, None, credential).await
 }
+
+/// The least time between catalog polls asked for by
+/// `Broker::request_catalog_refresh`. An asked-for poll that fails or brings
+/// nothing new doubles the gap, up to the normal interval, so a fleet waiting
+/// on a slow or absent control plane does not keep polling it this often; one
+/// that brings something resets it.
+const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
+
+/// How long the stream feed's head may stay behind what this broker applied
+/// before it is taken for a control plane restored to an earlier point. A
+/// member that is behind catches up well inside it.
+const HEAD_BEHIND_RESET: Duration = Duration::from_secs(60);
 
 /// Starts the control-plane sync loop as a background task.
 ///
@@ -89,19 +101,25 @@ pub(crate) async fn start_sync_with_signal(
     let client = crate::cluster::controlplane_client::build()?;
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
+    let mut asked_gap = MIN_ASKED_GAP;
+    let mut asked = false;
     loop {
+        let before = state.position();
         let bearer = credential.as_ref().map(NodeCredential::bearer);
-        match sync_once(
+        // The loop owns the cursors and a pass moves them as it applies each
+        // change, so a pass that fails part-way keeps what it applied: the
+        // next one starts at the change that failed rather than replaying the
+        // ones before it.
+        match sync_into(
             &broker,
             &client,
             &base_url,
             bearer.as_deref().map(String::as_str),
-            state,
+            &mut state,
         )
         .await
         {
-            Ok(next_state) => {
-                state = next_state;
+            Ok(()) => {
                 // Only signal once the catalog is genuinely in place. An
                 // iteration can succeed having applied nothing at all, and
                 // reporting ready off the back of that would advertise a broker
@@ -116,8 +134,23 @@ pub(crate) async fn start_sync_with_signal(
                 tracing::warn!(error = %err, "control plane sync iteration failed; retrying")
             }
         }
-        // Polling interval between change feed reads.
-        tokio::time::sleep(interval).await;
+        // Polling interval between change feed reads, cut short when a
+        // follower or a shard is waiting on a stream this broker has not
+        // registered yet. Asked-for polls are `asked_gap` apart, which backs
+        // off while they bring nothing; see `MIN_ASKED_GAP`.
+        if state.position() != before {
+            asked_gap = MIN_ASKED_GAP;
+        } else if asked {
+            asked_gap = (asked_gap * 2).min(interval);
+        }
+        let wanted = broker.catalog_wanted();
+        asked = tokio::select! {
+            _ = tokio::time::sleep(interval) => false,
+            _ = wanted.notified() => {
+                tokio::time::sleep(asked_gap.min(interval)).await;
+                true
+            }
+        };
     }
 }
 
@@ -132,7 +165,9 @@ pub(crate) async fn start_sync_with_signal(
 ///
 /// NOTE: These cursors are **in-memory** in the broker process. On broker restart,
 /// we re-seed from snapshots (safe but more expensive than resuming from a stored cursor).
-#[derive(Debug, Clone, Copy)]
+// Not `Copy`: a copy advanced by a pass and then dropped is how progress was
+// lost before.
+#[derive(Debug)]
 struct SyncState {
     /// Next sequence cursor for the tenants change feed.
     next_tenant_seq: u64,
@@ -142,6 +177,9 @@ struct SyncState {
     next_cache_seq: u64,
     /// Next sequence cursor for the streams change feed.
     next_stream_seq: u64,
+    /// Since when the stream feed's head has been behind a catalog position
+    /// the broker recorded. See [`SyncState::watch_stream_head`].
+    stream_head_behind_since: Option<std::time::Instant>,
     /// Which cold-start snapshots have actually been fetched and applied.
     ///
     /// Deliberately separate from the cursors. A cursor cannot answer "was this
@@ -168,13 +206,52 @@ impl SyncState {
         self.seeded.all()
     }
 
+    /// Where every cursor stands, to tell whether a pass brought anything.
+    fn position(&self) -> (u64, u64, u64, u64, SeededSnapshots) {
+        (
+            self.next_tenant_seq,
+            self.next_namespace_seq,
+            self.next_cache_seq,
+            self.next_stream_seq,
+            self.seeded,
+        )
+    }
+
     fn new() -> Self {
         Self {
             next_tenant_seq: 0,
             next_namespace_seq: 0,
             next_cache_seq: 0,
             next_stream_seq: 0,
+            stream_head_behind_since: None,
             seeded: SeededSnapshots::default(),
+        }
+    }
+
+    /// Note where the stream feed's head is. A head behind what the broker
+    /// already applied is a control-plane member that is behind, which
+    /// catches up, or a control plane restored to an earlier point, which
+    /// does not. Once it has stayed behind for [`HEAD_BEHIND_RESET`] the
+    /// broker's catalog positions are reset, or it would refuse every
+    /// registration below them for good.
+    fn watch_stream_head(&mut self, broker: &Broker, head: u64) {
+        let behind = broker
+            .catalog_position()
+            .is_some_and(|applied| head < applied);
+        if !behind {
+            self.stream_head_behind_since = None;
+            return;
+        }
+        let since = *self
+            .stream_head_behind_since
+            .get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() >= HEAD_BEHIND_RESET {
+            tracing::warn!(
+                head,
+                "the control plane's stream feed stayed behind what this broker applied; forgetting its positions",
+            );
+            broker.reset_catalog_positions();
+            self.stream_head_behind_since = None;
         }
     }
 }

@@ -103,6 +103,7 @@ fn a_counter_fence_needs_the_cache_fence() {
         stream: "sessions".to_string(),
         shard: 0,
         generation: 5,
+        incarnation: None,
     };
     let fence = |log| {
         InternalMessage::Fence(Fence {

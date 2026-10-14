@@ -150,6 +150,48 @@ entries.
   bounded by entry count only (#1201).
 - The replication design no longer says a lagging non-successor follower is skipped while
   a shard drains: it is not gated on, but the drained pass still ships to it and waits.
+- A durable stream deleted and created again under the same name no longer
+  reopens the deleted stream's logs (#1208). Removing a stream on a broker now
+  deletes its records, idempotent producer state, consumer-group positions and
+  dead letters there: every directory of it is renamed into `.deleted/` under
+  each store's root and removed in the background, and a marker under
+  `.streams/` makes a delete cut short by an error or a crash finish later.
+  Once the fleet finalizes the new `stream_incarnations` feature, each created
+  stream gets an `incarnation`, carried in the catalog and the shard
+  assignments, and its directories are named with it, so a broker that missed
+  the delete opens empty directories instead of the old ones. A replayed
+  delete removes only the incarnation it names, the catalog sync moves past
+  each change it applies, a record without the incarnation keeps the one the
+  broker holds, a shard assigned before its stream registers waits without
+  holding up the others, and a follower refuses replication for an
+  incarnation it does not hold (the new internal `Incarnated` frame, kind 40).
+  Existing streams are incarnation 0 and keep their directory names. A stream
+  removed after its namespace or tenant, as a cascading delete arrives, is now
+  removed too. `felix-broker inspect segments` takes `--incarnation`, and
+  backup points and `restore-point` carry it. The first assignment of an
+  incarnated stream's shard takes the sequence number of its change as its
+  generation, above every generation the name had before, so no quorum mark,
+  follower position or replica report kept for a deleted stream counts for
+  the new one; a leader treats an assignment naming another incarnation as a
+  new, fenced term; an older incarnation's assignment delivered late is
+  stale. A broker deletes a stream's data only on evidence: the catalog's
+  delete naming that incarnation (one without a payload names 0), an
+  operator's removal, or, for incarnation 0, the name registered at an
+  incarnation. A registration of another incarnation alone stops the held
+  one serving and keeps its data until the delete naming it arrives. Per
+  stream, the broker records the catalog position it registered at, in the
+  marker as well, and refuses a registration from before it that names
+  another incarnation; the positions are forgotten once the stream feed's
+  head stays behind them for a minute, as after a control plane restored to
+  an earlier point. Until a broker in a cluster has seen a stream with an
+  incarnation it keeps a deleted stream at incarnation 0, refusing opens of
+  it and marking it kept, until its name is given an incarnation. A retiring
+  marker keeps the shard count, so a delete finished after a crash still
+  takes the per-group dead letters of the layout before 0.6.
+
+**Upgrade notes.** `stream_incarnations` needs every Raft control-plane member
+at metadata level 10 and every broker on this release before it can be
+finalized. A Postgres control plane runs migration `0028`.
 
 ## [0.6.0-preview.7] - 2026-10-11
 

@@ -447,6 +447,88 @@ impl ConsumerGroups {
         Ok(removed.is_some())
     }
 
+    /// Keep one stream's cursors at `incarnation` from here on, or none with
+    /// `None`. See `LogCache::set_incarnation`.
+    pub fn set_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        self.cursors
+            .set_incarnation(tenant_id, namespace, stream, incarnation);
+    }
+
+    /// The incarnation set for a stream's cursors, if any.
+    pub fn incarnation(&self, tenant_id: &str, namespace: &str, stream: &str) -> Option<u64> {
+        self.cursors.incarnation(tenant_id, namespace, stream)
+    }
+
+    /// Every group with a position on shards `0..shards` of a stream at
+    /// incarnation 0, as `(shard, group)`. Only shards with cursors on disk
+    /// are read, so this creates nothing.
+    ///
+    /// For finding the dead-letter logs the layout before 0.6 kept per group.
+    pub async fn legacy_groups(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shards: u32,
+    ) -> Result<Vec<(u32, String)>> {
+        let mut groups = Vec::new();
+        for shard in 0..shards {
+            let key = felix_storage::log::ShardKey {
+                tenant: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+                shard,
+            };
+            if !felix_storage::disk_log::layout::shard_dir(self.cursors.root(), &key).is_dir() {
+                continue;
+            }
+            for entry in self
+                .cursors
+                .live_entries_checked(tenant_id, namespace, stream, shard)
+                .await
+                .map_err(BrokerError::from)?
+            {
+                groups.push((shard, entry.key));
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Close one incarnation of a stream's logs, keeping them. See
+    /// `LogCache::close_incarnation`.
+    pub async fn close_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.cursors
+            .close_incarnation(tenant_id, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Delete one incarnation of a stream's cursors. See `LogCache::retire`.
+    pub async fn retire(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.cursors
+            .retire(tenant_id, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// The log a shard's cursors are written to.
     ///
     /// For replication: the cursors have to reach a replica alongside the
@@ -460,6 +542,31 @@ impl ConsumerGroups {
     ) -> Result<felix_storage::disk_log::DiskLog> {
         self.cursors
             .shard_log(tenant_id, namespace, stream, shard)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// [`ConsumerGroups::shard_log`], created at `base_offset` if absent and given,
+    /// only when `incarnation` is the one set for the stream. See
+    /// `LogCache::shard_log_for`.
+    pub async fn shard_log_for(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: u64,
+    ) -> Result<felix_storage::disk_log::DiskLog> {
+        self.cursors
+            .shard_log_for(
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                base_offset,
+                incarnation,
+            )
             .await
             .map_err(BrokerError::from)
     }

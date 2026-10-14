@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use felix_broker::LogKind;
-use felix_storage::disk_log::layout::shard_dir;
+use felix_storage::disk_log::layout::incarnation_dir;
 use serde::Deserialize;
 
 use crate::config::{BrokerConfig, DurableStorageConfig};
@@ -61,6 +61,16 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     }
     for cut in &plan {
         let shard = &cut.shard;
+        // Nothing is registered on a stopped broker; the point says which
+        // incarnation's logs it describes.
+        if shard.kind == PointKind::Stream {
+            broker.set_stream_incarnation(
+                &shard.tenant_id,
+                &shard.namespace,
+                &shard.name,
+                Some(shard.incarnation),
+            );
+        }
         let log = broker
             .shard_log(
                 cut.kind,
@@ -166,6 +176,9 @@ pub(crate) struct PointShard {
     shard: u32,
     kind: PointKind,
     leader: String,
+    /// Absent from a point taken before incarnations, which is 0.
+    #[serde(default)]
+    incarnation: u64,
     logs: PointLogs,
 }
 
@@ -234,7 +247,12 @@ fn log_dir(root: &Path, kind: LogKind, shard: &PointShard) -> PathBuf {
         LogKind::GroupDeadLetters => root.join("dead-letters"),
         LogKind::Counters => root.join("counters"),
     };
-    shard_dir(
+    // A cache's logs and a cache's counters are not a stream's, and stay at 0.
+    let incarnation = match kind {
+        LogKind::Stream | LogKind::GroupCursors | LogKind::GroupDeadLetters => shard.incarnation,
+        LogKind::Cache | LogKind::Counters => 0,
+    };
+    incarnation_dir(
         &store,
         &felix_storage::log::ShardKey {
             tenant: shard.tenant_id.clone(),
@@ -242,6 +260,7 @@ fn log_dir(root: &Path, kind: LogKind, shard: &PointShard) -> PathBuf {
             stream: shard.name.clone(),
             shard: shard.shard,
         },
+        incarnation,
     )
 }
 

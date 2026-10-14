@@ -102,6 +102,7 @@
 5 create_resources.streams[].consistency
 5 create_resources.streams[].delivery
 5 create_resources.streams[].durable
+10 create_resources.streams[].incarnation
 5 create_resources.streams[].kind
 5 create_resources.streams[].namespace
 5 create_resources.streams[].region
@@ -118,6 +119,7 @@
 0 create_stream.stream.consistency
 0 create_stream.stream.delivery
 0 create_stream.stream.durable
+10 create_stream.stream.incarnation
 0 create_stream.stream.kind
 0 create_stream.stream.namespace
 0 create_stream.stream.region
@@ -340,6 +342,7 @@
 0 import_state.state.shard_changes.items
 0 import_state.state.shard_changes.items[].assignment
 0 import_state.state.shard_changes.items[].assignment.generation
+10 import_state.state.shard_changes.items[].assignment.incarnation
 0 import_state.state.shard_changes.items[].assignment.joining
 0 import_state.state.shard_changes.items[].assignment.kind
 0 import_state.state.shard_changes.items[].assignment.leader
@@ -363,6 +366,7 @@
 0 import_state.state.shard_changes.next_seq
 0 import_state.state.shards
 0 import_state.state.shards[][].generation
+10 import_state.state.shards[][].incarnation
 0 import_state.state.shards[][].joining
 0 import_state.state.shards[][].kind
 0 import_state.state.shards[][].leader
@@ -387,6 +391,7 @@
 0 import_state.state.stream_changes.items[].stream.consistency
 0 import_state.state.stream_changes.items[].stream.delivery
 0 import_state.state.stream_changes.items[].stream.durable
+10 import_state.state.stream_changes.items[].stream.incarnation
 0 import_state.state.stream_changes.items[].stream.kind
 0 import_state.state.stream_changes.items[].stream.namespace
 0 import_state.state.stream_changes.items[].stream.region
@@ -403,6 +408,7 @@
 0 import_state.state.streams[][].consistency
 0 import_state.state.streams[][].delivery
 0 import_state.state.streams[][].durable
+10 import_state.state.streams[][].incarnation
 0 import_state.state.streams[][].kind
 0 import_state.state.streams[][].namespace
 0 import_state.state.streams[][].region
@@ -493,6 +499,7 @@
 0 put_shard_assignment
 0 put_shard_assignment.assignment
 0 put_shard_assignment.assignment.generation
+10 put_shard_assignment.assignment.incarnation
 0 put_shard_assignment.assignment.joining
 0 put_shard_assignment.assignment.kind
 0 put_shard_assignment.assignment.leader
@@ -508,6 +515,7 @@
 0 put_shard_assignment_fenced
 0 put_shard_assignment_fenced.assignment
 0 put_shard_assignment_fenced.assignment.generation
+10 put_shard_assignment_fenced.assignment.incarnation
 0 put_shard_assignment_fenced.assignment.joining
 0 put_shard_assignment_fenced.assignment.kind
 0 put_shard_assignment_fenced.assignment.leader
@@ -525,6 +533,7 @@
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
 0 put_shard_assignment_if.assignment.generation
+10 put_shard_assignment_if.assignment.incarnation
 0 put_shard_assignment_if.assignment.joining
 0 put_shard_assignment_if.assignment.kind
 0 put_shard_assignment_if.assignment.leader
@@ -843,6 +852,7 @@
 0 snapshot.state.shard_changes.items
 0 snapshot.state.shard_changes.items[].assignment
 0 snapshot.state.shard_changes.items[].assignment.generation
+10 snapshot.state.shard_changes.items[].assignment.incarnation
 0 snapshot.state.shard_changes.items[].assignment.joining
 0 snapshot.state.shard_changes.items[].assignment.kind
 0 snapshot.state.shard_changes.items[].assignment.leader
@@ -866,6 +876,7 @@
 0 snapshot.state.shard_changes.next_seq
 0 snapshot.state.shards
 0 snapshot.state.shards[][].generation
+10 snapshot.state.shards[][].incarnation
 0 snapshot.state.shards[][].joining
 0 snapshot.state.shards[][].kind
 0 snapshot.state.shards[][].leader
@@ -890,6 +901,7 @@
 0 snapshot.state.stream_changes.items[].stream.consistency
 0 snapshot.state.stream_changes.items[].stream.delivery
 0 snapshot.state.stream_changes.items[].stream.durable
+10 snapshot.state.stream_changes.items[].stream.incarnation
 0 snapshot.state.stream_changes.items[].stream.kind
 0 snapshot.state.stream_changes.items[].stream.namespace
 0 snapshot.state.stream_changes.items[].stream.region
@@ -906,6 +918,7 @@
 0 snapshot.state.streams[][].consistency
 0 snapshot.state.streams[][].delivery
 0 snapshot.state.streams[][].durable
+10 snapshot.state.streams[][].incarnation
 0 snapshot.state.streams[][].kind
 0 snapshot.state.streams[][].namespace
 0 snapshot.state.streams[][].region

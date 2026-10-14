@@ -558,6 +558,7 @@ async fn without_the_dead_letter_log_no_cursor_ships() {
             stream: STREAM.to_string(),
             shard: 0,
             generation: GENERATION,
+            incarnation: None,
         },
         Some((&cursors, &mut cursor)),
         None,

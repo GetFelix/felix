@@ -303,6 +303,41 @@ fences caches.
   lapsed lease, as a `Quorum` publish does under `majority_ack`. A promoted
   cache shard waits for a majority of its replicas rather than opening alone.
 
+#### `stream_incarnations`
+
+Once finalized, every stream the control plane creates gets an incarnation,
+and brokers keep each incarnation's logs, group positions and dead letters in
+directories of their own. A stream deleted and created again under the same
+name then starts empty on every broker, including one that was down for the
+delete. Until a broker in a cluster has seen a stream with an incarnation, it
+keeps a deleted stream's data and a stream created again under the name
+reopens it, as before: its shards restart at generation 0, where a new, empty
+log would be judged by what the brokers kept for the old one. The kept data
+goes when the name is given an incarnation. A single broker deletes it at
+once.
+
+- **Upgrade every control-plane instance first.** The incarnation is a new
+  replicated field, so under the Raft backend the finalize is refused with
+  409 until every member is at metadata version 10. With Postgres, nothing
+  checks: an older instance would start a recreated stream's shards at
+  generation 0 instead of above the deleted one's.
+- **Every broker must report it.** A broker that predates it would keep a new
+  stream's records in the directory a deleted stream of that name used.
+- **Nothing moves on disk.** Existing streams keep incarnation 0 and their
+  directory names. Downgrading a broker below the release that added it loses
+  sight of incarnated streams' data, which sits in directories it does not
+  look for.
+- **Brokers check it.** Once a broker has seen a stream with an incarnation it
+  records that on disk, and from then on, and from the start after a restart,
+  opens a stream's logs only at the incarnation the catalog registered; a
+  follower refuses records for an incarnation it does not hold until its
+  catalog catches up, which it polls for at once. Nothing changes before the
+  finalize. A catalog record without the
+  incarnation for a stream that has one is never taken as a new stream, with
+  `felix_broker_stream_incarnation_missing_total` counting it.
+- **What clients see.** Nothing. Stream answers carry `incarnation` once it
+  is not 0.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata

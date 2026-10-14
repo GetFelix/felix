@@ -29,7 +29,7 @@ pub(super) async fn list_streams(
     namespace: &str,
 ) -> StoreResult<Vec<Stream>> {
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream"#,
     )
     .bind(tenant_id)
@@ -51,14 +51,14 @@ pub(super) async fn list_streams_page(
     let fetch = page_fetch(page.limit);
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream LIMIT $3"#,
         )
         .bind(tenant_id)
         .bind(namespace)
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream > $3
                ORDER BY stream LIMIT $4"#,
         )
@@ -78,7 +78,7 @@ pub(super) async fn list_streams_page(
 
 pub(super) async fn get_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<Stream> {
     let row = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
     )
     .bind(&key.tenant_id)
@@ -147,8 +147,8 @@ pub(super) async fn insert_stream(
     stream: &Stream,
 ) -> StoreResult<()> {
     let insert = sqlx::query(
-        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
     )
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
@@ -163,6 +163,7 @@ pub(super) async fn insert_stream(
     .bind(stream.durable)
     .bind(stream.region.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
+    .bind(stream.incarnation as i64)
     .execute(&mut **tx)
     .await;
     if let Err(err) = insert {
@@ -195,7 +196,7 @@ pub(super) async fn patch_stream(
 ) -> StoreResult<Stream> {
     let mut tx = store.pool.begin().await?;
     let current = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
@@ -261,17 +262,20 @@ pub(super) async fn patch_stream(
 
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
     let mut tx = store.pool.begin().await?;
-    let removed = sqlx::query(
-        r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
+    let removed = sqlx::query_as::<_, DbStream>(
+        r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3
+               RETURNING tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.stream)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
-    if removed.rows_affected() == 0 {
+    let Some(removed) = removed else {
         return Err(StoreError::NotFound("stream".into()));
-    }
+    };
+    let payload = crate::model::deleted_stream_payload(stream_from_db(removed)?)
+        .and_then(|stream| serde_json::to_value(stream).ok());
 
     sqlx::query(
         r#"INSERT INTO stream_changes (op, tenant_id, namespace, stream, payload) VALUES ($1, $2, $3, $4, $5)"#,
@@ -280,7 +284,7 @@ pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> Sto
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.stream)
-    .bind(Option::<Value>::None)
+    .bind(payload)
     .execute(&mut *tx)
     .await
     ?;
@@ -293,7 +297,7 @@ pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> Sto
 
 pub(super) async fn stream_snapshot(store: &PostgresStore) -> StoreResult<Snapshot<Stream>> {
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing FROM streams ORDER BY tenant_id, namespace, stream"#,
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation FROM streams ORDER BY tenant_id, namespace, stream"#,
     )
     .fetch_all(&store.pool)
     .await

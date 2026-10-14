@@ -56,6 +56,11 @@ pub struct ShardAssignment {
     /// the stream. Absent is modulo, which is all an older control plane knows.
     #[serde(default)]
     pub routing: felix_wire::routing::ShardRouting,
+    /// Which incarnation of the stream the assignment is for, stamped by the
+    /// control plane from the stream. Absent is 0: a stream from before
+    /// incarnations, or a control plane that predates them.
+    #[serde(default)]
+    pub incarnation: u64,
 }
 
 impl ShardAssignment {

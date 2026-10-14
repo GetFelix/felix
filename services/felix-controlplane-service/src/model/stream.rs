@@ -42,6 +42,27 @@ pub struct Stream {
     /// choice.
     #[serde(default, skip_serializing_if = "StreamRouting::is_modulo")]
     pub routing: StreamRouting,
+    /// Which creation of this name the stream is, given when it is created.
+    /// A stream deleted and created again under the same name gets a new one,
+    /// and brokers keep each one's records apart. 0 is a stream created
+    /// before the fleet finalized `stream_incarnations`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub incarnation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// The payload of a stream's `Deleted` change: the stream, when it has an
+/// incarnation, so a broker removes only that incarnation and a replayed
+/// delete cannot remove the stream created after it.
+///
+/// None for incarnation 0, as before incarnations: every member of a Raft
+/// group that can hold an incarnated stream already writes the payload, so
+/// members on different builds never record different changes.
+pub(crate) fn deleted_stream_payload(stream: Stream) -> Option<Stream> {
+    (stream.incarnation != 0).then_some(stream)
 }
 
 /// How a stream maps routing keys to shards. The names are the ones

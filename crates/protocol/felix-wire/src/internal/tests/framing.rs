@@ -110,6 +110,7 @@ fn every_body_begins_with_its_correlation_id() {
         stream: "orders".to_string(),
         shard: 0,
         generation: 4,
+        incarnation: None,
     };
     let id = 0x0102_0304_0506_0708u64;
     let messages = vec![

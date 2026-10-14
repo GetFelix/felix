@@ -676,6 +676,33 @@ sequenceDiagram
     C-->>A: ReplicateError(FencedEpoch)
 ```
 
+### Naming the stream incarnation
+
+A leader names the stream incarnation its log belongs to, when it is not 0,
+on every replication request for a stream shard: records of any log kind,
+bootstrap, rebuild, `Fence` and `ReplicateFetch`. The request travels inside
+an `Incarnated` frame (kind 40):
+
+| Field | Type |
+| --- | --- |
+| `correlation_id` | `u64`, the inner request's |
+| `incarnation` | `u64` |
+| `kind` | `u16`, the inner request's kind |
+| body | the inner request's body, unchanged |
+
+A frame without an incarnation is the inner kind byte for byte. One envelope
+only, around a replication request whose correlation id matches; anything else
+is malformed. No capability bit announces it: a stream has a non-zero
+incarnation only once the fleet finalized `stream_incarnations`, which a
+broker reports only if it reads the kind.
+
+A follower that follows the control plane answers `StaleRoute`, and the leader
+sends again later, when it has not registered the stream yet or holds another
+incarnation than the one named (none is 0). Taking the records would put them
+in a log it never reads, or in the deleted stream's logs, which it deletes
+once its catalog catches up, after the leader counted them. See
+`docs/durable-storage.md`, "Deleting a stream".
+
 ### Pinging a leader
 
 A follower asks each broker that leads a shard it follows whether it is there:
@@ -716,8 +743,8 @@ Typed, because they need different responses:
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
 `HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
-`ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36 and
-`ReplicateTimedFetch` 37. A peer
+`ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
+`ReplicateTimedFetch` 37 and `Incarnated` 40. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -778,9 +805,11 @@ rather than followed: that is a loop, and following it would bounce the batch
 between two brokers that disagree.
 
 A redirect to a broker *not* yet tried is followed even when the generation has
-not advanced. On a freshly formed cluster every shard sits at generation 0, so a
-requester whose routing snapshot has not converged points at the wrong owner
-*there*, and the correct owner's redirect is also at generation 0. Refusing
+not advanced. On a freshly formed cluster every shard sits at its first
+generation (0, or for a stream with an incarnation the sequence number of the
+change that assigned it), so a requester whose routing snapshot has not
+converged points at the wrong owner *there*, and the correct owner's redirect
+is at that same generation. Refusing
 every same-generation redirect made that transient misroute fatal instead of
 self-correcting.
 

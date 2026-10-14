@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
 use super::{DiskLog, layout};
+use crate::incarnation::{self, Incarnations};
 use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, Retention, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
@@ -15,11 +16,18 @@ use crate::{Result, StorageError};
 /// writers over one directory would interleave offsets and corrupt the segment,
 /// so the cache is a correctness requirement, not an optimisation. Opens of
 /// different shards run in parallel; see `crate::shard_slots`.
+///
+/// Each stream opens at the incarnation set with
+/// [`Self::set_stream_incarnation`], 0 when none was set. Logs are cached per
+/// incarnation, so a handle to a deleted stream's log is never handed to the
+/// stream created after it.
 #[derive(Debug)]
 pub struct DiskLogProvider {
     root: PathBuf,
     config: LogConfig,
-    open_logs: ShardSlots<ShardKey, DiskLog>,
+    open_logs: ShardSlots<(ShardKey, u64), DiskLog>,
+    incarnations: Incarnations,
+    dirs: incarnation::DirIndex,
     /// Retention set for one stream, keyed by tenant, namespace and stream.
     /// A bound a stream leaves unset comes from `config`.
     stream_retention: parking_lot::RwLock<HashMap<(String, String, String), Retention>>,
@@ -48,10 +56,14 @@ impl DiskLogProvider {
         config.validate()?;
         let root = root.into();
         crate::io::create_dir_all_durable(&root)?;
+        // Whatever a delete left before a crash or restart.
+        incarnation::purge_in_background(root.clone());
         Ok(Self {
             root,
             config,
             open_logs: ShardSlots::new(),
+            incarnations: Incarnations::default(),
+            dirs: Default::default(),
             stream_retention: parking_lot::RwLock::new(HashMap::new()),
             stream_hold: parking_lot::RwLock::new(HashMap::new()),
             #[cfg(test)]
@@ -72,14 +84,15 @@ impl DiskLogProvider {
     /// Fails with [`StorageError::Closed`] while [`Self::close_shard`] is
     /// closing it.
     pub fn open_shard(&self, shard: &ShardKey) -> Result<DiskLog> {
-        self.open_with(shard, None)
+        self.open_with(shard, None, None)
     }
 
     /// The log for `shard` if it is open already. Unlike [`Self::open_shard`]
     /// this never creates or recovers anything, so a read-only caller can
     /// look without leaving a directory behind.
     pub fn opened_shard(&self, shard: &ShardKey) -> Option<DiskLog> {
-        self.open_logs.get_open(shard)
+        let incarnation = self.incarnation_of(shard)?;
+        self.open_logs.get_open(&(shard.clone(), incarnation))
     }
 
     /// Open or return the cached log for `shard`, creating it to begin at
@@ -89,7 +102,23 @@ impl DiskLogProvider {
     /// An existing shard keeps its own base, so this is safe to call on every
     /// contact rather than only the first.
     pub fn open_shard_at(&self, shard: &ShardKey, base_offset: Offset) -> Result<DiskLog> {
-        self.open_with(shard, Some(base_offset))
+        self.open_with(shard, Some(base_offset), None)
+    }
+
+    /// [`Self::open_shard`], or [`Self::open_shard_at`] with a base, only when
+    /// `incarnation` is the one set for the stream: refused with
+    /// [`StorageError::Closed`] otherwise, before anything is created.
+    ///
+    /// For a caller acting for a named incarnation (a replication request, an
+    /// assignment), so a delete and create landing after its own check cannot
+    /// hand it the new stream's log.
+    pub fn open_incarnation(
+        &self,
+        shard: &ShardKey,
+        base_offset: Option<Offset>,
+        incarnation: u64,
+    ) -> Result<DiskLog> {
+        self.open_with(shard, base_offset, Some(incarnation))
     }
 
     /// Close `shard`'s log and forget it, for a shard this broker no longer
@@ -99,9 +128,165 @@ impl DiskLogProvider {
     /// on. The next open recovers the shard afresh from disk. A no-op for a
     /// shard that is not open.
     pub async fn close_shard(&self, shard: &ShardKey) -> Result<()> {
-        self.open_logs
-            .close(shard, |log: DiskLog| async move { log.close().await })
-            .await
+        for ((key, incarnation), _) in self.open_logs.open_entries() {
+            if &key == shard {
+                self.open_logs
+                    .close(&(key, incarnation), |log: DiskLog| async move {
+                        log.close().await
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open `tenant/namespace/stream` at `incarnation` from here on, or open
+    /// nothing for it with `None`, for a stream being deleted.
+    ///
+    /// Logs already open at another incarnation stay open until
+    /// [`Self::retire_stream`] closes them.
+    pub fn set_stream_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        match incarnation {
+            Some(incarnation) => self
+                .incarnations
+                .set(tenant, namespace, stream, incarnation),
+            None => self.incarnations.retire(tenant, namespace, stream),
+        }
+    }
+
+    /// The incarnation set for a stream with [`Self::set_stream_incarnation`],
+    /// or `None` when none is set or it was retired.
+    pub fn stream_incarnation(&self, tenant: &str, namespace: &str, stream: &str) -> Option<u64> {
+        self.incarnations.registered(tenant, namespace, stream)
+    }
+
+    /// Open no stream's logs until [`Self::set_stream_incarnation`] names its
+    /// incarnation: for a broker that learns its streams from the control
+    /// plane, where a log opened at 0 before that would be the wrong one.
+    pub fn require_registration(&self) {
+        self.incarnations.require_registration();
+    }
+
+    /// Close every log of one incarnation of a stream and move all its shard
+    /// directories out of service. Their records are gone once this returns:
+    /// nothing opens them again, and they are deleted in the background. Safe
+    /// to repeat.
+    pub async fn retire_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        for ((key, held), _) in self.open_logs.open_entries() {
+            if held != incarnation
+                || key.tenant != tenant
+                || key.namespace != namespace
+                || key.stream != stream
+            {
+                continue;
+            }
+            self.open_logs
+                .close(
+                    &(key, held),
+                    |log: DiskLog| async move { log.close().await },
+                )
+                .await?;
+        }
+        self.dirs
+            .retire_stream(&self.root, tenant, namespace, stream, incarnation)
+    }
+
+    /// This broker's marker for a stream, if it has one. See
+    /// [`crate::StreamMarker`].
+    pub fn stream_marker(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<crate::MarkerRead> {
+        incarnation::marker::read(&self.root, tenant, namespace, stream)
+    }
+
+    /// The incarnations of a stream that have a shard directory here.
+    pub fn stream_incarnations_on_disk(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<std::collections::BTreeSet<u64>> {
+        Ok(self
+            .dirs
+            .stream_dirs(&self.root, tenant, namespace, stream)?
+            .into_iter()
+            .map(|(_, incarnation, _)| incarnation)
+            .collect())
+    }
+
+    /// Replace a stream's marker, durably.
+    pub fn write_stream_marker(&self, marker: &crate::StreamMarker) -> Result<()> {
+        incarnation::marker::write(&self.root, marker)
+    }
+
+    /// Remove a stream's marker, durably.
+    pub fn remove_stream_marker(&self, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
+        incarnation::marker::remove(&self.root, tenant, namespace, stream)
+    }
+
+    /// Whether this broker has seen a stream with an incarnation: recorded by
+    /// [`Self::record_incarnations_in_play`], or shown by a marker naming one.
+    pub fn incarnations_in_play(&self) -> Result<bool> {
+        incarnation::marker::in_play(&self.root)
+    }
+
+    /// Record, durably, that streams here carry incarnations, so a restart
+    /// knows before the catalog says so.
+    pub fn record_incarnations_in_play(&self) -> Result<()> {
+        incarnation::marker::record_in_play(&self.root)
+    }
+
+    /// Every stream whose delete started and did not finish.
+    pub fn retiring_streams(&self) -> Result<Vec<crate::StreamMarker>> {
+        incarnation::marker::retiring(&self.root)
+    }
+
+    /// Every stream marker that reads back.
+    pub fn stream_markers(&self) -> Result<Vec<crate::StreamMarker>> {
+        incarnation::marker::all(&self.root)
+    }
+
+    /// Close every open log of one incarnation of a stream, keeping its
+    /// directories: for an incarnation this broker stops serving without
+    /// evidence that it was deleted.
+    pub async fn close_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        for ((key, held), _) in self.open_logs.open_entries() {
+            if held != incarnation
+                || key.tenant != tenant
+                || key.namespace != namespace
+                || key.stream != stream
+            {
+                continue;
+            }
+            self.open_logs
+                .close(
+                    &(key, held),
+                    |log: DiskLog| async move { log.close().await },
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// Bound one stream's logs by `retention`, falling back to this
@@ -122,7 +307,7 @@ impl DiskLogProvider {
             stream.to_string(),
         );
         self.stream_retention.write().insert(scope, retention);
-        for (key, log) in self.open_logs.open_entries() {
+        for ((key, _), log) in self.open_logs.open_entries() {
             if key.tenant != tenant || key.namespace != namespace || key.stream != stream {
                 continue;
             }
@@ -157,7 +342,7 @@ impl DiskLogProvider {
             stream.to_string(),
         );
         self.stream_hold.write().insert(scope, hold);
-        for (key, log) in self.open_logs.open_entries() {
+        for ((key, _), log) in self.open_logs.open_entries() {
             if key.tenant != tenant || key.namespace != namespace || key.stream != stream {
                 continue;
             }
@@ -174,7 +359,7 @@ impl DiskLogProvider {
         self.open_logs
             .open_entries()
             .into_iter()
-            .map(|(key, _)| key)
+            .map(|((key, _), _)| key)
             .collect()
     }
 
@@ -199,9 +384,23 @@ impl DiskLogProvider {
         *self.open_hook.lock() = Some(OpenHook(std::sync::Arc::new(hook)));
     }
 
-    fn open_with(&self, shard: &ShardKey, base_offset: Option<Offset>) -> Result<DiskLog> {
+    fn incarnation_of(&self, shard: &ShardKey) -> Option<u64> {
+        self.incarnations
+            .resolve(&shard.tenant, &shard.namespace, &shard.stream)
+    }
+
+    fn open_with(
+        &self,
+        shard: &ShardKey,
+        base_offset: Option<Offset>,
+        expected: Option<u64>,
+    ) -> Result<DiskLog> {
+        let incarnation = self
+            .incarnation_of(shard)
+            .filter(|incarnation| expected.is_none_or(|expected| expected == *incarnation))
+            .ok_or_else(|| StorageError::Closed(layout::shard_label(shard)))?;
         self.open_logs.get_or_open(
-            shard,
+            &(shard.clone(), incarnation),
             || {
                 #[cfg(test)]
                 {
@@ -210,9 +409,17 @@ impl DiskLogProvider {
                         (hook.0)(shard);
                     }
                 }
-                let dir = layout::shard_dir(&self.root, shard);
+                // Again under the slot's lock: a delete that retired the stream
+                // after the lookup above closes only the slots it can see, and
+                // this one must not open behind it.
+                if self.incarnation_of(shard) != Some(incarnation) {
+                    return Err(StorageError::Closed(layout::shard_label(shard)));
+                }
+                let dir = layout::incarnation_dir(&self.root, shard, incarnation);
                 let label = layout::shard_label(shard);
                 let config = self.config_for(shard);
+                self.dirs
+                    .created(&layout::incarnation_dir_name(shard, incarnation));
                 match base_offset {
                     Some(base) => DiskLog::open_at(dir, label, config, base),
                     None => DiskLog::open(dir, label, config),

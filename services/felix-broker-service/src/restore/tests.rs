@@ -93,3 +93,38 @@ fn a_manifest_of_another_format_is_refused() {
     let err = Manifest::read(&path).expect_err("unknown format");
     assert!(err.to_string().contains("format version 2"), "{err}");
 }
+
+#[test]
+fn a_stream_with_an_incarnation_is_found_in_that_incarnations_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "format_version": 1,
+        "name": "nightly",
+        "shards": [{
+            "tenant_id": "t", "namespace": "ns", "name": "orders", "shard": 0,
+            "kind": "stream", "leader": "broker-0", "generation": 3,
+            "incarnation": 42, "logs": { "records": 10 }
+        }]
+    }))
+    .expect("manifest");
+    let key = felix_storage::log::ShardKey {
+        tenant: "t".into(),
+        namespace: "ns".into(),
+        stream: "orders".into(),
+        shard: 0,
+    };
+    // Only the deleted stream's directory: not the one the point describes.
+    std::fs::create_dir_all(felix_storage::disk_log::layout::shard_dir(
+        root.path(),
+        &key,
+    ))
+    .expect("mkdir");
+    assert!(manifest.plan(None, root.path()).expect("plan").is_empty());
+
+    std::fs::create_dir_all(incarnation_dir(root.path(), &key, 42)).expect("mkdir");
+    let plan = manifest.plan(None, root.path()).expect("plan");
+    assert_eq!(
+        cuts(&plan),
+        vec![("t/ns/orders/0".to_string(), LogKind::Stream, 10)]
+    );
+}

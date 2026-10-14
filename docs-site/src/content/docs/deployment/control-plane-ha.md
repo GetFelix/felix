@@ -53,7 +53,11 @@ suggestion.
   reference each other, and the migration ledger records which schema the data
   is in. A partial restore leaves instances refusing readiness or misreading
   rows. Point-in-time recovery is fine. Any consistent point is a state
-  Felix has actually been in.
+  Felix has actually been in. A broker kept running across a restore to an
+  earlier point refuses stream changes from before what it had applied for a
+  minute, until the feed's head has stayed behind and it forgets those
+  positions; for a backup point, stop the brokers as
+  [Backup and restore](/deployment/backup-and-restore/#restoring) says.
 
 ## Supported topologies
 

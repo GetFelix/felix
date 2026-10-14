@@ -153,6 +153,12 @@ any log. See
    starts without the directory rebuilds it from the restored leader.
 6. **Start the brokers.**
 
+Stopping every broker is also what makes generations safe across a restore.
+The restored control plane hands out change sequence numbers, and so first
+generations of new incarnated streams, it had already used before the
+restore. A broker that kept running would still hold quorum marks and
+follower positions under those generations; one that restarts holds none.
+
 ## See also
 
 - [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)

@@ -106,10 +106,9 @@ pub(super) async fn patch_stream(
 
 pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> StoreResult<()> {
     let mut streams = store.streams.write().await;
-    let removed = streams.remove(key);
-    if removed.is_none() {
+    let Some(removed) = streams.remove(key) else {
         return Err(StoreError::NotFound("stream".into()));
-    }
+    };
     store
         .drop_shard_assignments_for(
             ShardKind::Stream,
@@ -126,7 +125,7 @@ pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> Sto
             seq,
             op: StreamChangeOp::Deleted,
             key: key.clone(),
-            stream: None,
+            stream: crate::model::deleted_stream_payload(removed.clone()),
         });
     metrics::counter!("felix_stream_changes_total", "op" => "deleted").increment(1);
     metrics::gauge!("felix_streams_total").set(streams.len() as f64);

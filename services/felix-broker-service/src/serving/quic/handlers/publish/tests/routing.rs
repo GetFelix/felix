@@ -179,6 +179,7 @@ pub(super) fn ingress_with_routing(
                 state: "active".to_string(),
                 successor: None,
                 routing,
+                incarnation: 0,
             };
             (key, assignment)
         })

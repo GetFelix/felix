@@ -187,6 +187,29 @@ where
     } else if config.record_publishers {
         broker.record_publishers_when(|| true);
     }
+    // Once this broker has seen streams carry incarnations, a stream's logs
+    // open only once the catalog has registered it, at the incarnation it
+    // names. Read from its own data, before any shard task or peer can open
+    // one, not from the fleet's features, which arrive only after the catalog
+    // seeds: a restart would otherwise open unregistered streams at 0.
+    if config.membership.is_some() {
+        broker.keep_unincarnated_streams_on_delete();
+    }
+    if let Err(err) = broker.require_registration_if_in_play() {
+        tracing::error!(error = %err, "could not tell whether streams here carry incarnations; requiring registration");
+        broker.require_registered_streams();
+    }
+    // The catalog positions this broker's markers recorded, so a catalog
+    // served from an earlier point after the restart cannot replace what is
+    // registered here.
+    if let Err(err) = broker.load_catalog_positions() {
+        tracing::error!(error = %err, "could not read the catalog positions recorded here");
+    }
+    // Before the catalog registers anything: a stream deleted when the broker
+    // stopped is finished first, so its registration cannot open it again.
+    if let Err(err) = broker.finish_pending_deletes().await {
+        tracing::error!(error = %err, "could not finish deleting streams; retrying as they are named again");
+    }
     // A cursor that carries its dependency is a value an older build refuses,
     // so a cluster waits for its fleet. A lone broker writes them from the
     // start: it has no older replica to read them.

@@ -470,6 +470,15 @@ always works; `"routing": "jump_hash"` before the finalize is refused with
 move. Stream answers and shard assignments omit `routing` when it is
 `modulo`.
 
+Once the fleet has finalized `stream_incarnations`, a created stream also
+carries an `incarnation`: a number given at creation, different for every
+creation of the same name. Brokers keep each incarnation's data apart, so a
+stream deleted and created again starts empty. It is left out when 0, which is
+every stream created before the finalize, and a request cannot set it. Shard
+assignments carry the `incarnation` of the stream they were written for, and a stream's
+`Deleted` change carries the deleted stream when it had one, so a broker
+removes only that incarnation.
+
 A cache takes `consistency` the same way, `"Leader"` when omitted. Under
 `"Quorum"`, puts, deletes and counter adds are acknowledged only once a
 majority of the shard's replicas hold them. How gets confirm the leader is set

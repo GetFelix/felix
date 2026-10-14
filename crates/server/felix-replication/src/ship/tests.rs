@@ -46,6 +46,7 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
             stream: "sessions".to_string(),
             shard: 0,
             generation: 5,
+            incarnation: None,
         },
         first_offset: 3,
         checksum: batch_checksum(&payloads, &marks, &[]),

@@ -94,6 +94,7 @@ fn stream_from_db_maps_fields() {
         durable: true,
         region: None,
         routing: None,
+        incarnation: 0,
     };
     let stream = stream_from_db(row).expect("stream");
     assert_eq!(stream.tenant_id, "t1");

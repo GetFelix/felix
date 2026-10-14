@@ -512,7 +512,9 @@ defaults: a cache's `shards: 0` and an omitted `shards` both mean one. A
 stream's `routing` counts only when the request names it, because when left
 to the server it depends on whether the fleet has finalized
 `jump_hash_routing`, and a retry across a finalize would otherwise conflict
-with the stream its first attempt made. The single create endpoints use the
+with the stream its first attempt made. A stream's `incarnation` never counts:
+a retry draws a new one, and the stream it would create is the existing one.
+The single create endpoints use the
 same comparison, so creating a stream or cache that already exists as asked
 answers `200` with it, and `409` only when it differs.
 
@@ -1370,6 +1372,23 @@ finalized and `modulo` before. The create request may pin `"routing":
 a finalize landing in between only leaves the stream on modulo, which every
 broker serves. Finalizing never changes an existing stream, so no key of a
 live stream ever moves. A stream answer omits `routing` when it is `modulo`.
+
+A new stream also gets an `incarnation` once the `stream_incarnations` fleet
+feature is finalized: a random number below 2^53, never 0, drawn when the
+create is handled and stored with the stream, so a Raft group replicates the
+value rather than drawing it on each member. Each creation of a name draws a
+new one, and brokers keep each incarnation's logs apart, so a stream deleted
+and created again starts empty (see `docs/durable-storage.md`, "Deleting a
+stream"). Before the finalize it is 0 and left out of every answer. The
+catalog feeds carry it to the brokers; a request cannot set it. Each shard
+assignment stores the incarnation of its stream, read from the stream by the
+store when the assignment is written whatever the writer passed, so a change
+replayed after the stream was created anew still names the stream it was
+written for. A stream's `Deleted` change carries the deleted
+stream when its incarnation is not 0, so a broker that gets the delete again
+after the stream was created anew removes nothing. At incarnation 0 the change
+carries nothing, as before, so Raft members on different builds record the
+same change.
 
 Brokers learn the mapping from the shard assignments, not from the stream
 catalog: the snapshot, changes and list responses stamp each stream shard's

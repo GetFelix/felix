@@ -288,12 +288,25 @@ impl InternalMessage {
             return Err(Error::FrameTooLarge);
         }
 
-        let mut frame = BytesMut::with_capacity(InternalHeader::LEN + body.len());
-        InternalHeader {
-            kind: self.kind(),
-            length,
+        let incarnation = self.replication_shard().and_then(|shard| shard.incarnation);
+        let (kind, body) = match incarnation {
+            None => (self.kind(), body),
+            Some(incarnation) => {
+                let mut outer = BytesMut::with_capacity(18 + body.len());
+                outer.put_u64(self.correlation_id());
+                outer.put_u64(incarnation);
+                outer.put_u16(self.kind() as u16);
+                outer.extend_from_slice(&body);
+                (Kind::Incarnated, outer)
+            }
+        };
+        let length = u32::try_from(body.len()).map_err(|_| Error::FrameTooLarge)?;
+        if length > MAX_BODY_BYTES {
+            return Err(Error::FrameTooLarge);
         }
-        .encode(&mut frame);
+
+        let mut frame = BytesMut::with_capacity(InternalHeader::LEN + body.len());
+        InternalHeader { kind, length }.encode(&mut frame);
         frame.extend_from_slice(&body);
         Ok(frame.freeze())
     }
@@ -311,6 +324,29 @@ impl InternalMessage {
         let mut body = body;
 
         match header.kind {
+            Kind::Incarnated => {
+                let correlation_id = take_u64(&mut body)?;
+                let incarnation = take_u64(&mut body)?;
+                let kind = Kind::from_u16(take_u16(&mut body)?)?;
+                // One envelope, never two.
+                if kind == Kind::Incarnated {
+                    return Err(Error::Incomplete);
+                }
+                let mut inner = BytesMut::with_capacity(InternalHeader::LEN + body.len());
+                InternalHeader {
+                    kind,
+                    length: body.len() as u32,
+                }
+                .encode(&mut inner);
+                inner.extend_from_slice(&body);
+                let mut message = Self::decode(inner.freeze())?;
+                if message.correlation_id() != correlation_id {
+                    return Err(Error::Incomplete);
+                }
+                let shard = message.replication_shard_mut().ok_or(Error::Incomplete)?;
+                shard.incarnation = Some(incarnation);
+                Ok(message)
+            }
             kind @ (Kind::ForwardPublish | Kind::AuthorizedForwardPublish) => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
@@ -356,6 +392,7 @@ impl InternalMessage {
                         stream,
                         shard,
                         generation,
+                        incarnation: None,
                     },
                     ack,
                     payloads,
@@ -427,6 +464,7 @@ impl InternalMessage {
                         stream: take_str(&mut body)?,
                         shard: take_u32(&mut body)?,
                         generation: take_u64(&mut body)?,
+                        incarnation: None,
                     },
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                 };
@@ -442,6 +480,7 @@ impl InternalMessage {
                         stream: take_str(&mut body)?,
                         shard: take_u32(&mut body)?,
                         generation: take_u64(&mut body)?,
+                        incarnation: None,
                     },
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     from_offset: take_u64(&mut body)?,
@@ -572,6 +611,7 @@ impl InternalMessage {
                         stream,
                         shard,
                         generation,
+                        incarnation: None,
                     },
                     first_offset,
                     checksum,
@@ -640,6 +680,7 @@ impl InternalMessage {
                         stream: take_str(&mut body)?,
                         shard: take_u32(&mut body)?,
                         generation: take_u64(&mut body)?,
+                        incarnation: None,
                     },
                     base_offset: take_u64(&mut body)?,
                 };
@@ -663,6 +704,7 @@ impl InternalMessage {
                         stream: take_str(&mut body)?,
                         shard: take_u32(&mut body)?,
                         generation: take_u64(&mut body)?,
+                        incarnation: None,
                     },
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     base_offset: take_u64(&mut body)?,
@@ -680,6 +722,7 @@ impl InternalMessage {
                     stream: take_str(&mut body)?,
                     shard: take_u32(&mut body)?,
                     generation: take_u64(&mut body)?,
+                    incarnation: None,
                 };
                 let op = CacheOpKind::from_u8(take_u8(&mut body)?)?;
                 let key = take_str(&mut body)?;

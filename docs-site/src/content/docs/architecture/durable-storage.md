@@ -218,6 +218,58 @@ directory-swap compaction that stopped partway, is settled on open: a missing
 shard directory is restored from `<shard>.retired`, and leftover siblings are
 deleted.
 
+### Deleting a stream, and creating it again
+
+A stream deleted and created again under the same name starts empty: offset 0,
+no records, no producer state, no group positions, no dead letters.
+
+```mermaid
+sequenceDiagram
+    participant CP as Control plane
+    participant B as Broker
+    participant D as Data directory
+    CP->>B: stream orders deleted
+    B->>B: unregister, end readers, refuse new opens
+    B->>D: close open logs, rename shard dirs into .deleted/
+    D-->>D: removed in the background
+    CP->>B: stream orders created, incarnation 7
+    B->>D: open orders_0-…-0000000000000007 (empty)
+```
+
+Once the fleet has finalized `stream_incarnations`, each creation of a name
+gets its own incarnation, and its shard directories carry it in their names,
+so a broker that never saw the delete still opens empty directories rather
+than the deleted stream's. Streams created before keep incarnation 0 and their
+directory names. A marker under `.streams/` records which incarnation the
+broker holds, so a restart, or a catalog record without the incarnation, keeps
+pointing at the right data, and a delete is marked there before it moves
+anything, so one cut short is finished at the next start. The rename into
+`.deleted/` is atomic, so a crash leaves a directory either in place or out of
+service, never half deleted where a new stream would find it.
+
+A broker deletes a stream's data only on evidence: the catalog's delete
+naming that incarnation, an operator's removal, or, for incarnation 0, the
+name registered at an incarnation, which proves 0 gone for good. A
+registration of another incarnation alone only stops the held one serving: it
+may come from a catalog behind the one read before, so its data stays until
+the delete naming it arrives. Per-stream catalog positions, kept in the marker,
+stop a catalog served from an earlier point from replacing what is
+registered.
+
+The new stream's shards start above every generation the deleted one
+reached, so the quorum marks and follower positions brokers kept for it never
+count for the new records. Until a broker in a cluster has seen a stream with
+an incarnation, it keeps a deleted stream's data until the name is given an
+incarnation, and a stream created again at incarnation 0 reopens it, as
+before: its shards restart at generation 0, where an empty log would be judged
+by what was kept for the old one. A single broker deletes it at once.
+
+A shard assigned before its stream is registered waits, without holding up
+other shards, and a follower refuses records for an incarnation it does not
+hold, so a lagging broker never puts a new stream's records in a deleted one's
+logs. See `docs/durable-storage.md` ("Deleting a stream") for the whole
+mechanism and what it does not cover yet.
+
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/architecture/storage-format/).
 

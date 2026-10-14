@@ -34,6 +34,74 @@ pub enum LogKind {
 }
 
 impl Broker {
+    /// Open no stream's logs until the stream is registered, and have a shard
+    /// opened before then wait for it: once streams carry incarnations, a log
+    /// opened before the catalog names one would be the wrong one. One-way,
+    /// and recorded on disk, so a restart requires it from the start.
+    ///
+    /// Called the first time this broker sees a stream with an incarnation
+    /// (registering one, replication naming one, an assignment naming one),
+    /// and at start when its data shows it has before; see
+    /// [`Broker::require_registration_if_in_play`].
+    pub fn require_registered_streams(&self) {
+        if self.registration_required() {
+            return;
+        }
+        // The storage first: until it requires registration an unregistered
+        // stream still opens at 0, and nothing may see this broker's flag set
+        // before then.
+        if let Some(storage) = &self.durable_storage {
+            storage.require_registration();
+        }
+        if self
+            .registration_required
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        if let Some(storage) = &self.durable_storage
+            && let Err(err) = storage.provider().record_incarnations_in_play()
+        {
+            tracing::error!(error = %err, "could not record that streams carry incarnations");
+        }
+    }
+
+    /// [`Broker::require_registered_streams`] when this broker's data shows
+    /// it has seen a stream with an incarnation. Call at start, before
+    /// anything can open a shard. Until then a stream's logs open as they
+    /// always did, before the catalog has registered it.
+    pub fn require_registration_if_in_play(&self) -> Result<()> {
+        let Some(storage) = &self.durable_storage else {
+            return Ok(());
+        };
+        if storage
+            .provider()
+            .incarnations_in_play()
+            .map_err(crate::error::BrokerError::from)?
+        {
+            self.require_registered_streams();
+        }
+        Ok(())
+    }
+
+    /// Ask the catalog sync to poll now rather than at its next tick: a
+    /// follower refused records for a stream it has not registered yet.
+    pub fn request_catalog_refresh(&self) {
+        self.catalog_wanted.notify_one();
+    }
+
+    /// Notified by [`Broker::request_catalog_refresh`]; the catalog sync waits
+    /// on it beside its timer.
+    pub fn catalog_wanted(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.catalog_wanted)
+    }
+
+    /// Whether a stream's logs open only once it is registered.
+    pub fn registration_required(&self) -> bool {
+        self.registration_required
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Signalled after every durable append.
     ///
     /// Replication waits on it so shipping starts when a record lands rather
@@ -60,6 +128,9 @@ impl Broker {
         name: &str,
         shard: u32,
     ) -> Option<StreamLog> {
+        if !self.may_open(kind, tenant_id, namespace, name) {
+            return None;
+        }
         match kind {
             LogKind::Cache => self
                 .cache
@@ -107,6 +178,9 @@ impl Broker {
         shard: u32,
         base_offset: u64,
     ) -> Option<StreamLog> {
+        if !self.may_open(kind, tenant_id, namespace, name) {
+            return None;
+        }
         match kind {
             LogKind::Cache => self
                 .cache
@@ -140,6 +214,83 @@ impl Broker {
                 .as_ref()?
                 .open_stream_at(tenant_id, namespace, name, shard, base_offset)
                 .ok(),
+        }
+    }
+
+    /// [`Broker::shard_log`], or [`Broker::shard_log_at`] with a base, for a
+    /// caller acting for a named incarnation of the stream: a replication
+    /// request, or an assignment. With `Some`, a stream's own and group logs
+    /// open only when that incarnation is the registered one, checked by the
+    /// open itself, so a delete and create landing after the caller's own
+    /// check cannot hand it (or create) the new stream's log. A cache's logs
+    /// have no incarnation and ignore it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn shard_log_for(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: Option<u64>,
+    ) -> Option<StreamLog> {
+        let any = || async {
+            match base_offset {
+                Some(base) => {
+                    self.shard_log_at(kind, tenant_id, namespace, name, shard, base)
+                        .await
+                }
+                None => {
+                    self.shard_log(kind, tenant_id, namespace, name, shard)
+                        .await
+                }
+            }
+        };
+        let Some(incarnation) = incarnation else {
+            return any().await;
+        };
+        if !self.may_open(kind, tenant_id, namespace, name) {
+            return None;
+        }
+        match kind {
+            LogKind::Cache | LogKind::Counters => any().await,
+            LogKind::Stream => self
+                .durable_storage
+                .as_ref()?
+                .open_stream_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .ok(),
+            LogKind::GroupCursors => self
+                .consumer_groups
+                .as_ref()?
+                .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .await
+                .ok()
+                .map(StreamLog::from_log),
+            LogKind::GroupDeadLetters => self
+                .group_reader
+                .as_ref()?
+                .dead_letters()
+                .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .await
+                .ok()
+                .map(StreamLog::from_log),
+        }
+    }
+
+    /// Whether a log of `kind` for `name` may be opened here now. On a broker
+    /// that learns its streams from the control plane, a stream's logs only
+    /// once it knows which incarnation to open: before that, records shipped
+    /// to it would land in a log the registration then deletes.
+    fn may_open(&self, kind: LogKind, tenant_id: &str, namespace: &str, name: &str) -> bool {
+        if !self.registration_required() {
+            return true;
+        }
+        match kind {
+            LogKind::Cache | LogKind::Counters => true,
+            LogKind::Stream | LogKind::GroupCursors | LogKind::GroupDeadLetters => self
+                .stream_incarnation(tenant_id, namespace, name)
+                .is_some(),
         }
     }
 

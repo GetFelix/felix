@@ -415,6 +415,7 @@ fn routed_stream(name: &str, routing: crate::model::StreamRouting) -> Stream {
         durable: false,
         region: None,
         routing,
+        incarnation: 0,
     }
 }
 
@@ -476,6 +477,55 @@ async fn a_jump_hash_stream_waits_for_every_member() {
     assert_eq!(
         store.get_stream(&key).await.expect("read back").routing,
         StreamRouting::JumpHash
+    );
+}
+
+/// A member before level 10 would drop a stream's incarnation, so finalizing
+/// the feature that gives one is refused until every member has it, and an
+/// incarnated stream is refused before it reaches the log.
+#[tokio::test]
+async fn an_incarnated_stream_waits_for_every_member() {
+    use crate::model::StreamRouting;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 9).await;
+    let refused = store
+        .finalize_fleet_feature(felix_common::fleet::STREAM_INCARNATIONS.name())
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    let incarnated = Stream {
+        incarnation: 7,
+        ..routed_stream("again", StreamRouting::Modulo)
+    };
+    let refused = store.create_stream(incarnated.clone()).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 10")),
+        "{refused:?}"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let created = loop {
+        match store.create_stream(incarnated.clone()).await {
+            Ok(stream) => break stream,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(created.incarnation, 7);
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "again".to_string(),
+    };
+    assert_eq!(
+        store.get_stream(&key).await.expect("read back").incarnation,
+        7
     );
 }
 
@@ -559,6 +609,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("assign");

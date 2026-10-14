@@ -31,13 +31,18 @@ use super::wire::*;
 ///
 /// - The ordering ensures that removal of higher-level resources (e.g., tenant deletion)
 ///   occurs before dependent resources, preventing orphaned objects.
-pub(super) async fn sync_once(
+///
+/// `state` moves past each change as it is applied. A change that fails stops
+/// the pass with the cursor on it, so the next pass starts there instead of
+/// applying the changes before it again. Replaying a delete that a create
+/// already followed would remove the new stream.
+pub(super) async fn sync_into(
     broker: &Arc<Broker>,
     client: &reqwest::Client,
     base_url: &str,
     bearer: Option<&str>,
-    mut state: SyncState,
-) -> Result<SyncState> {
+    state: &mut SyncState,
+) -> Result<()> {
     let log_as_debug = cfg!(test) || std::env::var_os("RUST_TEST_THREADS").is_some();
     // === Cold start snapshot seeding ===
     // 1. Seed tenants first.
@@ -123,6 +128,7 @@ pub(super) async fn sync_once(
                         stream.namespace,
                         stream.stream,
                         metadata,
+                        Some(snapshot.next_seq),
                     )
                     .await?;
                 }
@@ -144,6 +150,7 @@ pub(super) async fn sync_once(
     match fetch_tenant_changes(client, base_url, bearer, state.next_tenant_seq).await {
         Ok(changes) => {
             for change in changes.items {
+                let applied = change.seq;
                 match change.op {
                     TenantChangeOp::Created => {
                         if let Some(tenant) = change.tenant {
@@ -153,6 +160,9 @@ pub(super) async fn sync_once(
                     TenantChangeOp::Deleted => {
                         let _ = broker.remove_tenant(&change.tenant_id).await?;
                     }
+                }
+                if let Some(seq) = applied {
+                    state.next_tenant_seq = seq + 1;
                 }
             }
             state.next_tenant_seq = changes.next_seq;
@@ -170,6 +180,7 @@ pub(super) async fn sync_once(
     match fetch_namespace_changes(client, base_url, bearer, state.next_namespace_seq).await {
         Ok(changes) => {
             for change in changes.items {
+                let applied = change.seq;
                 match change.op {
                     NamespaceChangeOp::Created => {
                         if let Some(namespace) = change.namespace {
@@ -192,6 +203,9 @@ pub(super) async fn sync_once(
                         }
                     }
                 }
+                if let Some(seq) = applied {
+                    state.next_namespace_seq = seq + 1;
+                }
             }
             state.next_namespace_seq = changes.next_seq;
         }
@@ -209,6 +223,7 @@ pub(super) async fn sync_once(
     match fetch_cache_changes(client, base_url, bearer, state.next_cache_seq).await {
         Ok(changes) => {
             for change in changes.items {
+                let applied = change.seq;
                 match change.op {
                     CacheChangeOp::Created | CacheChangeOp::Updated => {
                         if let Some(cache) = change.cache {
@@ -241,6 +256,9 @@ pub(super) async fn sync_once(
                         }
                     }
                 }
+                if let Some(seq) = applied {
+                    state.next_cache_seq = seq + 1;
+                }
             }
             state.next_cache_seq = changes.next_seq;
         }
@@ -256,7 +274,9 @@ pub(super) async fn sync_once(
     // 4. Apply stream changes last so existence checks have up-to-date scopes.
     match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
         Ok(changes) => {
+            state.watch_stream_head(broker, changes.next_seq);
             for change in changes.items {
+                let applied = change.seq;
                 match change.op {
                     StreamChangeOp::Created | StreamChangeOp::Updated => {
                         if let Some(stream) = change.stream {
@@ -267,16 +287,29 @@ pub(super) async fn sync_once(
                                 stream.namespace,
                                 stream.stream,
                                 metadata,
+                                applied.map(|seq| seq + 1),
                             )
                             .await?;
                         }
                     }
                     StreamChangeOp::Deleted => {
+                        // The incarnation deleted: a stream registered at
+                        // another one was created after this delete and stays.
+                        // A delete without one is of a stream from before
+                        // incarnations, and must not remove one that has one.
+                        let incarnation = Some(
+                            change
+                                .stream
+                                .as_ref()
+                                .map_or(0, |stream| stream.incarnation),
+                        );
                         match broker
-                            .remove_stream(
+                            .remove_stream_incarnation(
                                 &change.key.tenant_id,
                                 &change.key.namespace,
                                 &change.key.stream,
+                                incarnation,
+                                applied.map(|seq| seq + 1),
                             )
                             .await
                         {
@@ -286,6 +319,15 @@ pub(super) async fn sync_once(
                             Err(err) => return Err(err.into()),
                         }
                     }
+                }
+                if let Some(seq) = applied {
+                    broker.note_catalog_position(
+                        &change.key.tenant_id,
+                        &change.key.namespace,
+                        &change.key.stream,
+                        seq + 1,
+                    );
+                    state.next_stream_seq = seq + 1;
                 }
             }
             state.next_stream_seq = changes.next_seq;
@@ -298,5 +340,18 @@ pub(super) async fn sync_once(
             }
         }
     }
+    Ok(())
+}
+
+/// [`sync_into`] on a state of its own, for tests.
+#[cfg(test)]
+pub(super) async fn sync_once(
+    broker: &Arc<Broker>,
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    mut state: SyncState,
+) -> Result<SyncState> {
+    sync_into(broker, client, base_url, bearer, &mut state).await?;
     Ok(state)
 }

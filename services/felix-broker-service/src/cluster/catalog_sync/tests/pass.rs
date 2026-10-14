@@ -80,6 +80,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                             op: TenantChangeOp::Deleted,
                             tenant_id: "t1".to_string(),
                             tenant: None,
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -197,6 +198,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                                 namespace: "ns".to_string(),
                             },
                             namespace: None,
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -289,6 +291,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             tenant: Some(Tenant {
                                 tenant_id: "t1".to_string(),
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -308,6 +311,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 tenant_id: "t1".to_string(),
                                 namespace: "ns1".to_string(),
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -330,6 +334,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 cache: "c1".to_string(),
                                 consistency: None,
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -354,7 +359,9 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 durable: true,
                                 consistency: None,
                                 retention: None,
+                                incarnation: 0,
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })

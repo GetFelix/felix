@@ -193,6 +193,7 @@ async fn pg_stream_sequences_monotonic() {
         durable: false,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     };
     store
         .create_stream(stream.clone())
@@ -275,6 +276,7 @@ async fn pg_delete_namespace_emits_cascades() {
             durable: false,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -551,6 +553,7 @@ async fn pg_store_stream_conflict_and_not_found() {
             durable: false,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect_err("missing namespace");
@@ -572,6 +575,7 @@ async fn pg_store_stream_conflict_and_not_found() {
         durable: false,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     };
     store.create_stream(stream.clone()).await.expect("stream");
     let err = store.create_stream(stream).await.expect_err("conflict");
@@ -655,6 +659,7 @@ async fn pg_store_keeps_a_streams_replication_factor() {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -838,6 +843,7 @@ async fn pg_store_list_get_and_exists_roundtrip() {
             durable: false,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -973,6 +979,7 @@ async fn pg_delete_tenant_emits_stream_retention_max_size() {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
