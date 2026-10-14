@@ -742,12 +742,11 @@ roll's seal finishing after a flush that already covered the new segment, is
 dropped. Otherwise an idle shard, which never flushes again, would keep a mark
 pointing at the new segment's header. Only a truncation or reset moves it
 back, and a seal that started before one leaves the mark where the rewind put
-it. It is not itself
-fsynced per flush (that would double the flush cost), so after a power loss it
-can lag by the filesystem's writeback delay; it is synced at open (with its
-directory entry, so a fresh shard's first segment has a mark), at clean
-shutdown and close, and after a truncation or reset. A missing or corrupt mark
-reads as absent.
+it. It is not itself fsynced per flush (that would double the flush cost), so
+after a power loss it can lag by the filesystem's writeback delay; it is
+synced at open (with its directory entry, so a fresh shard's first segment has
+a mark), at clean shutdown and close, and after a truncation or reset. A
+missing or corrupt mark reads as absent.
 
 ## Consumer-group cursor values
 
