@@ -80,12 +80,16 @@ pub(super) enum Event<'a> {
 pub(super) struct Reported {
     key: ShardKey,
     generation: u64,
+    incarnation: u64,
     tail: u64,
 }
 
-/// The last report sent for a shard led here alone.
+/// The last report sent for a shard led here alone. The tail is a floor only
+/// for the same log, so it is kept per incarnation too: a stream recreated at
+/// the deleted one's generation starts a new log.
 struct Alone {
     generation: u64,
+    incarnation: u64,
     tail: u64,
     at: tokio::time::Instant,
 }
@@ -108,6 +112,7 @@ pub(super) struct FenceAttempt {
 pub(super) struct Answered {
     key: ShardKey,
     generation: u64,
+    incarnation: u64,
     cursor: FollowerCursor,
     /// Boxed: three more cursors make every event as large as this one.
     rode: Box<RideAlong>,
@@ -413,8 +418,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         };
         let now = tokio::time::Instant::now();
+        let incarnation = crate::incarnation::of(self.cx.broker, key);
         let floor = match self.alone.get(key) {
-            Some(last) if last.generation == generation => {
+            Some(last) if last.generation == generation && last.incarnation == incarnation => {
                 // Half, so a tick landing a moment early does not skip one.
                 if now.duration_since(last.at) < self.cx.refresh / 2 {
                     return;
@@ -427,6 +433,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             key.clone(),
             Alone {
                 generation,
+                incarnation,
                 tail: floor,
                 at: now,
             },
@@ -434,12 +441,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let broker = self.cx.broker;
         let key = key.clone();
         self.reports.push(Box::pin(async move {
-            let report = alone_report(broker, &key, generation, floor).await;
+            let report = alone_report(broker, &key, generation, floor)
+                .await
+                .at_incarnation(incarnation);
             let tail = report.tail;
             reporter.submit(report);
             Reported {
                 key,
                 generation,
+                incarnation,
                 tail,
             }
         }));
@@ -449,6 +459,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     pub(super) fn reported(&mut self, reported: Reported) {
         if let Some(last) = self.alone.get_mut(&reported.key)
             && last.generation == reported.generation
+            && last.incarnation == reported.incarnation
         {
             last.tail = last.tail.max(reported.tail);
         }
@@ -506,6 +517,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         let ShardPass {
             generation,
+            incarnation,
             exchanges,
             straggling,
             cursors,
@@ -559,8 +571,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let busy = self.busy.entry(key.clone()).or_default();
         busy.extend(straggling);
         for exchange in exchanges {
-            self.exchanges
-                .push(Box::pin(answered(key.clone(), generation, exchange)));
+            self.exchanges.push(Box::pin(answered(
+                key.clone(),
+                generation,
+                incarnation,
+                exchange,
+            )));
         }
 
         if again {
@@ -668,18 +684,20 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let Answered {
             key,
             generation,
+            incarnation,
             cursor,
             rode,
             cut,
         } = answered;
-        let mut moved = put_back(self.streams.get_mut(&key), generation, cursor);
+        let at = (generation, incarnation);
+        let mut moved = put_back(self.streams.get_mut(&key), at, cursor);
         for (entries, cursor) in [
             (&mut self.group, rode.group),
             (&mut self.dead_letters, rode.dead_letters),
             (&mut self.counters, rode.counters),
         ] {
             if let Some(cursor) = cursor {
-                moved |= put_back(entries.get_mut(&key), generation, cursor);
+                moved |= put_back(entries.get_mut(&key), at, cursor);
             }
         }
         moved || cut
@@ -704,10 +722,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
 }
 
 /// Put an ended exchange's cursor in place of its stale copy, if the cursors
-/// are still at the exchange's generation. True when the follower moved.
-fn put_back(entry: Option<&mut ShardCursors>, generation: u64, cursor: FollowerCursor) -> bool {
+/// are still at the exchange's generation and incarnation. True when the
+/// follower moved.
+fn put_back(
+    entry: Option<&mut ShardCursors>,
+    (generation, incarnation): (u64, u64),
+    cursor: FollowerCursor,
+) -> bool {
     let Some(slot) = entry
-        .filter(|entry| entry.generation == generation)
+        .filter(|entry| entry.generation == generation && entry.incarnation == incarnation)
         .and_then(|entry| {
             entry
                 .followers
@@ -725,11 +748,17 @@ fn put_back(entry: Option<&mut ShardCursors>, generation: u64, cursor: FollowerC
     moved
 }
 
-async fn answered(key: ShardKey, generation: u64, exchange: Exchange<'_>) -> Answered {
+async fn answered(
+    key: ShardKey,
+    generation: u64,
+    incarnation: u64,
+    exchange: Exchange<'_>,
+) -> Answered {
     let Shipped { cursor, rode, cut } = exchange.await;
     Answered {
         key,
         generation,
+        incarnation,
         cursor,
         rode: Box::new(rode),
         cut,

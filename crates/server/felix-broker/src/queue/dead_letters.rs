@@ -342,6 +342,31 @@ impl DeadLetters {
         })
     }
 
+    /// [`DeadLetters::shard_log`], created at `base_offset` if absent and given,
+    /// only when `incarnation` is the one set for the stream. See
+    /// `LogCache::shard_log_for`.
+    pub async fn shard_log_for(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: u64,
+    ) -> Result<felix_storage::disk_log::DiskLog> {
+        self.entries
+            .shard_log_for(
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                base_offset,
+                incarnation,
+            )
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent.
     pub async fn shard_log_at(
         &self,
@@ -446,12 +471,103 @@ impl DeadLetters {
         Arc::clone(self.locks.lock().entry(shard).or_default())
     }
 
+    /// Keep one stream's dead letters at `incarnation` from here on, or none with
+    /// `None`. See `LogCache::set_incarnation`.
+    pub fn set_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        self.entries
+            .set_incarnation(tenant_id, namespace, stream, incarnation);
+    }
+
+    /// The shard and incarnation of every directory of a stream's dead letters
+    /// here.
+    pub fn dirs_on_disk(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<Vec<(u32, u64)>> {
+        self.entries
+            .dirs_on_disk(tenant_id, namespace, stream)
+            .map_err(BrokerError::from)
+    }
+
+    /// Close one incarnation of a stream's logs, keeping them. See
+    /// `LogCache::close_incarnation`.
+    pub async fn close_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.entries
+            .close_incarnation(tenant_id, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Delete one incarnation of a stream's dead letters. See `LogCache::retire`.
+    pub async fn retire(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.entries
+            .retire(tenant_id, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Delete the logs the layout before 0.6 kept per `(stream, group)`, for
+    /// each `(shard, group)` given. Their names hold the group, so only groups
+    /// someone can name are found.
+    pub async fn retire_legacy(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        groups: &[(u32, String)],
+    ) -> Result<()> {
+        for (shard, group) in groups {
+            let key = GroupKey {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+                shard: *shard,
+                group: group.clone(),
+            };
+            self.entries
+                .retire_shard(tenant_id, namespace, &legacy_scope(&key), *shard)
+                .await
+                .map_err(BrokerError::from)?;
+        }
+        Ok(())
+    }
+
     /// The legacy per-`(stream, group)` log, if one is on disk for this key.
     ///
     /// Gated on the directory existing: [`LogCache`] creates a shard directory
     /// on open, and probing for old data must not litter the root with empty
     /// logs for every group that never had any.
     fn legacy(&self, key: &GroupKey) -> Option<&LogCache> {
+        // The earlier layout predates incarnations, so its logs can only
+        // belong to a stream at incarnation 0. A later one is a stream created
+        // after that one was deleted.
+        if self
+            .entries
+            .incarnation(&key.tenant_id, &key.namespace, &key.stream)
+            .is_some_and(|incarnation| incarnation != 0)
+        {
+            return None;
+        }
         let shard_key = felix_storage::log::ShardKey {
             tenant: key.tenant_id.clone(),
             namespace: key.namespace.clone(),

@@ -272,6 +272,40 @@ synchronised clocks. `FelixShardRealMargins.cfg`, `FelixShardAckWithoutLease.cfg
 and the fenced pair carry both, bought with one write and time to 5, or two
 writes and one promotion.
 
+### One shard is one log, across a delete and recreate
+
+The model follows one shard's log, and its invariants lean on two things about
+it: a generation never repeats, and everything a broker keeps per shard and
+generation (ballots, the accepted generation, quorum marks, follower positions,
+reports) describes that log. A stream deleted and created again under its name
+reuses the shard keys, so stream incarnations keep both true rather than adding
+anything to the model:
+
+- each incarnation has its own directories, so its ballot, replica state and
+  epochs start empty, and a follower refuses replication for an incarnation it
+  does not hold (`a_follower_refuses_an_incarnation_it_does_not_hold`,
+  `a_recreate_between_the_check_and_the_open_is_refused`);
+- an incarnated stream's first generation is the change seq that assigns it,
+  above every generation an earlier incarnation reached on one control-plane
+  timeline (`a_recreated_stream_never_repeats_a_generation`). A restore
+  rewinds the seq, so the generation alone does not separate the two runs:
+  the leader keys follower positions and quorum marks by incarnation as well,
+  so a mark or position kept for the deleted stream never counts for the new
+  one even at an equal generation
+  (`a_recreate_at_the_same_generation_does_not_inherit_the_mark`). A broker
+  compares the incarnation before the generation, so a restore that rewinds
+  the seq still opens the new stream as a new run rather than dropping it as
+  stale (`a_new_incarnation_opens_at_a_lower_generation`);
+- a stream from before incarnations, deleted before the finalize and created
+  again at incarnation 0, reopens the old logs and restarts its shards at
+  generation 0, as every release before incarnations did. The model does not
+  cover a generation going back on one log; that case is unchanged here and
+  ends once the name is deleted after the finalize.
+
+Each incarnated stream is then one run of the model from an empty log, with
+none of the last run's per-shard state. Nothing in the spec names the
+incarnation.
+
 ### What ties this to the code, and what does not
 
 A spec and an implementation are two artifacts in two languages. Nothing in the
@@ -871,10 +905,17 @@ refuses a leader older than one it accepted.
 
 ## Which configurations run where
 
-Every configuration registered in `scripts/check_tla.sh` runs on every push
-and pull request that touches the code or the spec: the `formal` job in
-`.github/workflows/ci.yml`, split across seven jobs by each configuration's
-measured time so that each stays well under its hour.
+TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
+runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
+changes. A pull request checks the registered configurations that take ten
+minutes or less (`TLA_QUICK=1`); a push to main checks every registered
+configuration. Both are split across seven jobs by each configuration's
+measured time. A slow configuration that a spec change breaks therefore shows
+up on main, not on the pull request; run it on the branch through the
+workflow's dispatch (`tla_configs`) when the change is risky.
+
+Whether a code change still matches the spec is a separate, quick check on
+every pull request that touches code (`scripts/check_spec_pairing.py`).
 
 Six configurations are too big for that hour, and run nightly instead, each in
 its own job with a two-and-a-half-hour limit (the `exhaustive` job in

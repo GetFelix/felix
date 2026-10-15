@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_router::ShardRouter;
-use felix_wire::internal::{Fence, InternalMessage, ReplicaLog, ShardRef};
+use felix_wire::internal::{Fence, InternalMessage, ReplicaLog};
 use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -211,9 +211,19 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
         // This broker counts itself only while its own log has taken no newer
         // leader's fence, as the quorum mark does (`held_at_generation`), nor
         // for a cache, its counter log, which a newer leader reaches alone.
+        let shard = crate::incarnation::shard_ref(&self.broker, &routing_key, generation);
+        let expected = crate::incarnation::expected(&self.broker, routing_key.kind, &shard);
         let accepted = |kind| async move {
             self.broker
-                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .shard_log_for(
+                    kind,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    None,
+                    expected,
+                )
                 .await
                 .map(|log| log.accepted_generation())
         };
@@ -237,13 +247,6 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
         if answered >= needed {
             return true;
         }
-        let shard = ShardRef {
-            tenant_id: key.tenant_id.clone(),
-            namespace: key.namespace.clone(),
-            stream: key.stream.clone(),
-            shard: key.shard,
-            generation,
-        };
         let mut asks: futures::stream::FuturesUnordered<_> = replicas
             .iter()
             .map(|replica| {

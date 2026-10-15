@@ -101,7 +101,7 @@ impl Broker {
         tenant_id: impl Into<String>,
         namespace: impl Into<String>,
         stream: impl Into<String>,
-        metadata: StreamMetadata,
+        mut metadata: StreamMetadata,
     ) -> Result<()> {
         // Fast-path guard: reject unknown scopes before attempting to create the stream.
         let tenant_id = tenant_id.into();
@@ -119,6 +119,30 @@ impl Broker {
             });
         }
         let key = StreamKey::new(tenant_id, namespace, stream);
+
+        // A durability change of the stream registered is refused before
+        // anything is written; another incarnation is a new stream, which may
+        // differ.
+        if let Some(existing) = self.streams.read().await.get(&key)
+            && (metadata.incarnation == existing.incarnation || metadata.incarnation == 0)
+            && existing.durable != metadata.durable
+        {
+            return Err(Self::durability_change_error(&key, existing, &metadata));
+        }
+
+        // Before anything opens: which incarnation's logs this registration
+        // means, with any other incarnation this broker holds out of service.
+        let previous = self
+            .streams
+            .read()
+            .await
+            .get(&key)
+            .map(|existing| existing.incarnation);
+        match self.settle_incarnation(&key, previous, &metadata).await? {
+            Some(incarnation) => metadata.incarnation = incarnation,
+            // Refused; the stream stays as it is.
+            None => return Ok(()),
+        }
 
         // Before any shard opens, so each opens under its stream's bounds; on
         // an update it also reaches the shards already open.
@@ -238,38 +262,71 @@ impl Broker {
     }
 
     /// Remove a stream and every shard of it this broker holds. Handles to it
-    /// stop working, and its subscriptions end, each told the stream was
-    /// deleted.
+    /// stop working, its subscriptions end, each told the stream was deleted,
+    /// and its records, group positions and dead letters on this broker are
+    /// deleted. For an operator or a tool: the caller is the evidence.
+    ///
+    /// A stream still registered is removed even when its tenant or namespace
+    /// was removed first, as a cascading delete does.
     pub async fn remove_stream(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
     ) -> Result<bool> {
-        // Fast-path guard: reject unknown scopes before attempting to remove the stream.
-        if !self.tenants.read().await.contains_key(tenant_id) {
-            return Err(BrokerError::TenantNotFound(tenant_id.to_string()));
-        }
-        // Fast-path guard: reject unknown namespace.
-        self.assert_namespace_exists(tenant_id, namespace).await?;
         let key = StreamKey::new(tenant_id, namespace, stream);
-        let removed = self.streams.write().await.remove(&key).is_some();
-        if removed {
-            let mut topics = self.topics.write().await;
-            // Every shard of the stream, not just the one registration opened:
-            // a broker may have been asked to serve several.
-            topics.retain(|topic, state| {
-                let same_stream = topic.tenant_id == key.tenant_id
-                    && topic.namespace == key.namespace
-                    && topic.stream == key.stream;
-                if same_stream {
-                    state.deactivate();
-                    state.end_subscribers(Some(crate::handoff::Ending::Deleted));
-                }
-                !same_stream
-            });
+        if !self.streams.read().await.contains_key(&key) {
+            // Fast-path guard: reject unknown scopes.
+            if !self.tenants.read().await.contains_key(tenant_id) {
+                return Err(BrokerError::TenantNotFound(tenant_id.to_string()));
+            }
+            self.assert_namespace_exists(tenant_id, namespace).await?;
         }
-        Ok(removed)
+        self.remove_registered(&key).await
+    }
+
+    /// Apply the control plane's delete of a stream. With `incarnation`, the
+    /// change names the stream it deleted, so it and every earlier
+    /// incarnation of the name are gone: see [`Broker::delete_stream_through`].
+    /// Without, it is the delete of a stream from before incarnations, which
+    /// unregisters it and keeps its data; see `Broker::close_unincarnated`.
+    pub async fn remove_stream_from_catalog(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) -> Result<bool> {
+        match incarnation {
+            Some(through) => {
+                self.delete_stream_through(tenant_id, namespace, stream, through)
+                    .await
+            }
+            None => {
+                self.close_unincarnated(&StreamKey::new(tenant_id, namespace, stream))
+                    .await
+            }
+        }
+    }
+
+    /// Unregister `key` and end everything reading it, returning what was
+    /// registered. Its logs and data are the caller's to close or delete.
+    pub(super) async fn drop_stream(&self, key: &StreamKey) -> Option<StreamMetadata> {
+        let metadata = self.streams.write().await.remove(key)?;
+        let mut topics = self.topics.write().await;
+        // Every shard of the stream, not just the one registration opened:
+        // a broker may have been asked to serve several.
+        topics.retain(|topic, state| {
+            let same_stream = topic.tenant_id == key.tenant_id
+                && topic.namespace == key.namespace
+                && topic.stream == key.stream;
+            if same_stream {
+                state.deactivate();
+                state.end_subscribers(Some(crate::handoff::Ending::Deleted));
+            }
+            !same_stream
+        });
+        Some(metadata)
     }
 
     /// Whether the stream and its tenant and namespace are all registered.

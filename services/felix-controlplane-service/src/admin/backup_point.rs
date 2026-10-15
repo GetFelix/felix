@@ -133,7 +133,15 @@ pub struct PointShard {
     /// The broker whose copy of the shard the point describes.
     pub leader: String,
     pub generation: u64,
+    /// Which incarnation of the stream the leader's logs belong to, as it
+    /// answered. Left out when 0, a stream from before incarnations.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub incarnation: u64,
     pub logs: PointLogs,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl PointShard {
@@ -353,6 +361,9 @@ struct BrokerShard {
     shard: u32,
     kind: String,
     generation: u64,
+    /// Absent from a broker that predates incarnations.
+    #[serde(default)]
+    incarnation: u64,
     logs: PointLogs,
 }
 
@@ -447,6 +458,7 @@ fn match_leader(
                     kind: assignment.kind.clone(),
                     leader: leader.to_string(),
                     generation: assignment.generation,
+                    incarnation: found.incarnation,
                     logs: found.logs,
                 });
             }

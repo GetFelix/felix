@@ -3,7 +3,10 @@
 mod apply;
 mod consistency;
 mod fetch;
+mod incarnation;
 mod pass;
+mod refresh;
+mod replay;
 mod retention;
 mod seeding;
 mod start_sync;

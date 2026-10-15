@@ -24,6 +24,7 @@ struct StreamChangeRow {
     namespace: String,
     stream: String,
     payload: Option<Value>,
+    deleted_through: Option<i64>,
 }
 
 pub(super) async fn list_streams(
@@ -32,7 +33,7 @@ pub(super) async fn list_streams(
     namespace: &str,
 ) -> StoreResult<Vec<Stream>> {
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream"#,
     )
     .bind(tenant_id)
@@ -54,14 +55,14 @@ pub(super) async fn list_streams_page(
     let fetch = page_fetch(page.limit);
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream LIMIT $3"#,
         )
         .bind(tenant_id)
         .bind(namespace)
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream > $3
                ORDER BY stream LIMIT $4"#,
         )
@@ -81,7 +82,7 @@ pub(super) async fn list_streams_page(
 
 pub(super) async fn get_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<Stream> {
     let row = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
     )
     .bind(&key.tenant_id)
@@ -133,10 +134,13 @@ pub(super) async fn stream_routings(
     Ok(routings)
 }
 
-pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> StoreResult<Stream> {
+pub(super) async fn create_stream(
+    store: &PostgresStore,
+    mut stream: Stream,
+) -> StoreResult<Stream> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     super::ensure_namespace(&mut tx, &stream.tenant_id, &stream.namespace).await?;
-    insert_stream(&mut tx, &stream).await?;
+    insert_stream(&mut tx, &mut stream).await?;
     tx.commit().await?;
     metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
     store.refresh_counts().await?;
@@ -146,13 +150,21 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
 /// The row and its `Created` change, inside the caller's transaction, which
 /// must hold the feed lock (`begin_feed_write`).
 /// `Conflict` when the stream exists.
+///
+/// The stream's incarnation is decided by the row's insert trigger (migration
+/// 0028), against the finalize and the name's tombstone as they stand inside
+/// this transaction, and read back into `stream`. This side only proposes one.
 pub(super) async fn insert_stream(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    stream: &Stream,
+    stream: &mut Stream,
 ) -> StoreResult<()> {
-    let insert = sqlx::query(
-        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+    if stream.incarnation == 0 {
+        stream.incarnation = crate::model::proposed_incarnation();
+    }
+    let insert = sqlx::query_scalar::<_, i64>(
+        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               RETURNING incarnation"#,
     )
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
@@ -167,16 +179,18 @@ pub(super) async fn insert_stream(
     .bind(stream.durable)
     .bind(stream.region.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
-    .execute(&mut **tx)
+    .bind(stream.incarnation as i64)
+    .fetch_one(&mut **tx)
     .await;
-    if let Err(err) = insert {
-        if is_unique_violation(&err) {
+    match insert {
+        Ok(incarnation) => stream.incarnation = incarnation as u64,
+        Err(err) if is_unique_violation(&err) => {
             return Err(StoreError::Conflict(format!(
                 "stream {} exists",
                 stream.stream
             )));
         }
-        return Err(StoreError::Unexpected(err.into()));
+        Err(err) => return Err(StoreError::Unexpected(err.into())),
     }
 
     sqlx::query(
@@ -186,7 +200,7 @@ pub(super) async fn insert_stream(
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
     .bind(&stream.stream)
-    .bind(serde_json::to_value(stream).ok())
+    .bind(serde_json::to_value(&*stream).ok())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -199,7 +213,7 @@ pub(super) async fn patch_stream(
 ) -> StoreResult<Stream> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let current = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
@@ -265,17 +279,20 @@ pub(super) async fn patch_stream(
 
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
-    let removed = sqlx::query(
-        r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
+    let removed = sqlx::query_as::<_, DbStream>(
+        r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3
+               RETURNING tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.stream)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
-    if removed.rows_affected() == 0 {
+    let Some(removed) = removed else {
         return Err(StoreError::NotFound("stream".into()));
-    }
+    };
+    let payload = crate::model::deleted_stream_payload(stream_from_db(removed)?)
+        .and_then(|stream| serde_json::to_value(stream).ok());
 
     sqlx::query(
         r#"INSERT INTO stream_changes (op, tenant_id, namespace, stream, payload) VALUES ($1, $2, $3, $4, $5)"#,
@@ -284,7 +301,7 @@ pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> Sto
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.stream)
-    .bind(Option::<Value>::None)
+    .bind(payload)
     .execute(&mut *tx)
     .await
     ?;
@@ -301,7 +318,7 @@ pub(super) async fn stream_snapshot(store: &PostgresStore) -> StoreResult<Snapsh
     let mut tx = store.pool.begin().await?;
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing FROM streams ORDER BY tenant_id, namespace, stream"#,
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation FROM streams ORDER BY tenant_id, namespace, stream"#,
     )
     .fetch_all(&mut *tx)
     .await
@@ -324,7 +341,7 @@ pub(super) async fn stream_changes(
     let mut tx = store.pool.begin().await?;
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, StreamChangeRow>(
-        r#"SELECT seq, op, tenant_id, namespace, stream, payload FROM stream_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
+        r#"SELECT seq, op, tenant_id, namespace, stream, payload, deleted_through FROM stream_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
@@ -350,6 +367,7 @@ pub(super) async fn stream_changes(
                 stream: row.stream,
             },
             stream,
+            deleted_through: row.deleted_through.map(|through| through as u64),
         });
     }
     let head = feed_head(&mut tx, CatalogFeed::Streams).await?;
@@ -360,4 +378,26 @@ pub(super) async fn stream_changes(
         head,
         |change| change.seq,
     ))
+}
+
+pub(super) async fn stream_tombstones(
+    store: &PostgresStore,
+) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        r#"SELECT tenant_id, namespace, stream, incarnation FROM stream_tombstones
+               ORDER BY tenant_id, namespace, stream"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(tenant_id, namespace, stream, incarnation)| crate::model::StreamTombstone {
+                tenant_id,
+                namespace,
+                stream,
+                incarnation: incarnation as u64,
+            },
+        )
+        .collect())
 }

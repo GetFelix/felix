@@ -85,6 +85,9 @@ pub trait ControlPlaneStore: Send + Sync {
     -> StoreResult<Stream>;
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()>;
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>>;
+    /// Every stream tombstone. Each records a delete for good, so it may be
+    /// read apart from the snapshot it is served with.
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>>;
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>>;
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>>;
@@ -106,8 +109,19 @@ pub trait ControlPlaneStore: Send + Sync {
     ///
     /// `NotFound` when an item's namespace does not exist, and `Conflict` when
     /// one already exists or the batch names it twice. Either way nothing is
-    /// written.
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()>;
+    /// written. Returns the streams as stored, with the incarnations the
+    /// store gave them.
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>>;
+    /// Whether a create may carry a proposed incarnation. Only a Raft group
+    /// with a member below the metadata level that stores one answers no.
+    async fn takes_incarnation_proposals(&self) -> bool {
+        true
+    }
+
     /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
     /// part-way through an upgrade answers no.
     async fn create_resources_ready(&self) -> bool {

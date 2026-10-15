@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use felix_storage::inspect::{
     Action, IndexState, SegmentReport, ShardDir, ShardReport, Startup, Store, find_shards,
-    inspect_shard, shard_dir,
+    inspect_shard,
 };
 use felix_storage::log::{LogConfig, ShardKey};
 use serde_json::{Value, json};
@@ -26,7 +26,8 @@ pub const EXIT_NOT_FOUND: u8 = 5;
 
 const USAGE: &str = "\
 usage: felix-broker inspect segments DATA_DIR [TENANT/NAMESPACE/NAME/SHARD]
-           [--kind stream|cache|groups|dead-letters|counters] [--segments] [--json]
+           [--kind stream|cache|groups|dead-letters|counters] [--incarnation N]
+           [--segments] [--json]
            [--repair-checksum-tail] [--index-spacing BYTES] [--verify-all-on-open]
 
 Reads a broker's data directory (FELIX_DURABLE_STORAGE_DIR) and reports, for
@@ -41,6 +42,9 @@ with: --repair-checksum-tail (FELIX_DURABLE_REPAIR_CHECKSUM_TAIL),
 --index-spacing (FELIX_DURABLE_INDEX_SPACING_BYTES) and --verify-all-on-open
 (FELIX_DURABLE_VERIFY_ALL_ON_OPEN).
 
+A named stream shard is looked for at incarnation 0, a stream from before
+incarnations, unless --incarnation gives the one the catalog shows.
+
 A shard you name, shards with findings, and with --segments every shard, get
 their segments listed. --json prints one line per shard.
 
@@ -54,6 +58,7 @@ struct Args {
     data_dir: PathBuf,
     shard: Option<String>,
     kind: Option<Store>,
+    incarnation: Option<u64>,
     segments: bool,
     json: bool,
     repair_checksum_tail: bool,
@@ -125,6 +130,13 @@ fn parse(args: Vec<String>) -> Result<Parsed, String> {
                     .map_err(|_| format!("--index-spacing {value:?} is not a byte count"))?;
                 parsed.index_spacing = Some(bytes);
             }
+            "--incarnation" => {
+                let value = args.next().ok_or("--incarnation needs a number")?;
+                let incarnation = value
+                    .parse()
+                    .map_err(|_| format!("--incarnation {value:?} is not a number"))?;
+                parsed.incarnation = Some(incarnation);
+            }
             "--kind" => {
                 let value = args.next().ok_or("--kind needs a store")?;
                 parsed.kind = Some(
@@ -192,7 +204,11 @@ fn select(args: &Args) -> Result<Vec<ShardDir>, (u8, String)> {
     if let Some(given) = &args.shard {
         let key = parse_shard(given).map_err(|message| (EXIT_USAGE, message))?;
         let store = args.kind.unwrap_or(Store::Stream);
-        let path = shard_dir(data, store, &key);
+        let path = felix_storage::disk_log::layout::incarnation_dir(
+            &store.root(data),
+            &key,
+            args.incarnation.unwrap_or(0),
+        );
         if !path.is_dir() {
             return Err((
                 EXIT_NOT_FOUND,

@@ -51,6 +51,11 @@ pub(super) async fn create_stream(store: &InMemoryStore, stream: Stream) -> Stor
     if streams.contains_key(&key) {
         return Err(StoreError::Conflict("stream exists".into()));
     }
+    // Held until the stream is in, so a finalize cannot land between the
+    // read and the write: nothing is created at 0 after it.
+    let nodes = store.nodes.read().await;
+    let mut stream = stream;
+    stream.incarnation = incarnation_for(store, &nodes, &key, stream.incarnation).await;
     streams.insert(key.clone(), stream.clone());
     store
         .stream_changes
@@ -61,6 +66,7 @@ pub(super) async fn create_stream(store: &InMemoryStore, stream: Stream) -> Stor
             op: StreamChangeOp::Created,
             key,
             stream: Some(stream.clone()),
+            deleted_through: None,
         });
     metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
     metrics::gauge!("felix_streams_total").set(streams.len() as f64);
@@ -99,6 +105,7 @@ pub(super) async fn patch_stream(
             op: StreamChangeOp::Updated,
             key: key.clone(),
             stream: Some(updated.clone()),
+            deleted_through: None,
         });
     metrics::counter!("felix_stream_changes_total", "op" => "updated").increment(1);
     Ok(updated)
@@ -106,10 +113,11 @@ pub(super) async fn patch_stream(
 
 pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> StoreResult<()> {
     let mut streams = store.streams.write().await;
-    let removed = streams.remove(key);
-    if removed.is_none() {
+    let Some(removed) = streams.remove(key) else {
         return Err(StoreError::NotFound("stream".into()));
-    }
+    };
+    let nodes = store.nodes.read().await;
+    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation).await;
     store
         .drop_shard_assignments_for(
             ShardKind::Stream,
@@ -126,7 +134,8 @@ pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> Sto
             seq,
             op: StreamChangeOp::Deleted,
             key: key.clone(),
-            stream: None,
+            stream: crate::model::deleted_stream_payload(removed.clone()),
+            deleted_through,
         });
     metrics::counter!("felix_stream_changes_total", "op" => "deleted").increment(1);
     metrics::gauge!("felix_streams_total").set(streams.len() as f64);
@@ -155,4 +164,67 @@ pub(super) async fn stream_changes(
         .read()
         .await
         .page(since, store.limit(), |change| change.seq))
+}
+
+pub(super) async fn stream_tombstones(store: &InMemoryStore) -> Vec<crate::model::StreamTombstone> {
+    let mut tombstones: Vec<_> = store
+        .stream_tombstones
+        .read()
+        .await
+        .iter()
+        .map(|(key, incarnation)| crate::model::StreamTombstone {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation: *incarnation,
+        })
+        .collect();
+    tombstones.sort_by(|a, b| {
+        (&a.tenant_id, &a.namespace, &a.stream).cmp(&(&b.tenant_id, &b.namespace, &b.stream))
+    });
+    tombstones
+}
+
+/// Whether the fleet finalized `stream_incarnations`, from the node state the
+/// caller holds: held across the write it decides, a finalize cannot land in
+/// between.
+pub(super) fn incarnations_finalized(nodes: &super::NodeState) -> bool {
+    nodes
+        .fleet_enabled
+        .contains(felix_common::fleet::STREAM_INCARNATIONS.name())
+}
+
+/// The incarnation a stream created now under `key` gets, from the
+/// `proposed` one its request carried. 0 until the finalize; after it, never
+/// 0 and above every earlier incarnation of the name.
+pub(super) async fn incarnation_for(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &StreamKey,
+    proposed: u64,
+) -> u64 {
+    if !incarnations_finalized(nodes) {
+        return 0;
+    }
+    let deleted = store.stream_tombstones.read().await.get(key).copied();
+    crate::model::next_incarnation(proposed, deleted)
+}
+
+/// Record the delete of `incarnation` of `key` once incarnations are
+/// finalized, returning what the `Deleted` change carries. Nothing before the
+/// finalize: a stream created again at 0 then still reopens the deleted
+/// one's logs, so its data must stay.
+pub(super) async fn record_tombstone(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &StreamKey,
+    incarnation: u64,
+) -> Option<u64> {
+    if !incarnations_finalized(nodes) {
+        return None;
+    }
+    let mut tombstones = store.stream_tombstones.write().await;
+    let through = tombstones.entry(key.clone()).or_default();
+    *through = (*through).max(incarnation);
+    Some(*through)
 }

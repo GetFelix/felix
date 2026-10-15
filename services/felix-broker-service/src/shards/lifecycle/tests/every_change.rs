@@ -96,6 +96,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             stream: "orders".to_string(),
             shard: 0,
             generation,
+            incarnation: None,
         },
         first_offset,
         checksum: batch_checksum(&payloads, &[], &[]),

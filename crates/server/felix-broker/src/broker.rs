@@ -8,6 +8,7 @@
 
 mod backup;
 mod commit;
+mod incarnation;
 mod inspect;
 mod keys;
 mod metadata;
@@ -118,6 +119,10 @@ pub struct Broker {
     // means the broker is in-memory only and durable streams are rejected at
     // registration rather than silently downgraded.
     durable_storage: Option<DurableStorage>,
+    /// See [`Broker::require_registered_streams`].
+    registration_required: std::sync::atomic::AtomicBool,
+    /// See [`Broker::request_catalog_refresh`].
+    catalog_wanted: Arc<tokio::sync::Notify>,
     /// Serves consumer groups, when this broker keeps their positions.
     group_reader: Option<Arc<GroupReader>>,
     /// Consumer-group positions, when this broker has somewhere to keep them.
@@ -204,6 +209,8 @@ impl Broker {
             ring_bytes: RingBytes::new(DEFAULT_REPLAY_RING_MAX_BYTES, 0),
             next_stream_handle: AtomicU64::new(1),
             durable_storage: None,
+            registration_required: Default::default(),
+            catalog_wanted: Default::default(),
             consumer_groups: None,
             group_reader: None,
             counters: None,
@@ -315,6 +322,12 @@ impl Broker {
     /// Without this, registering a durable stream fails rather than quietly
     /// producing an in-memory stream that claims a guarantee it cannot keep.
     pub fn with_durable_storage(mut self, storage: DurableStorage) -> Self {
+        if self
+            .registration_required
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            storage.require_registration();
+        }
         self.durable_storage = Some(storage);
         self
     }

@@ -127,6 +127,7 @@ fn shard() -> ShardRef {
         stream: STREAM.to_string(),
         shard: 0,
         generation: GENERATION,
+        incarnation: None,
     }
 }
 

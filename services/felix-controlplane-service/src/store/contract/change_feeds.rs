@@ -210,6 +210,7 @@ fn stream(name: &str, shards: u32) -> Stream {
         durable: true,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -242,5 +243,6 @@ fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }

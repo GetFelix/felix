@@ -38,7 +38,7 @@ use felix_broker::Broker;
 
 use crate::cluster::credential::NodeCredential;
 use crate::cluster::feed_cursor::BehindCursor;
-use pass::sync_once;
+use pass::sync_into;
 
 /// Polls the control plane forever, applying changes as they arrive.
 ///
@@ -56,6 +56,13 @@ pub async fn start_sync(
 ) -> Result<()> {
     start_sync_with_signal(broker, base_url, interval, None, credential).await
 }
+
+/// The least time between catalog polls asked for by
+/// `Broker::request_catalog_refresh`. An asked-for poll that fails or brings
+/// nothing new doubles the gap, up to the normal interval, so a fleet waiting
+/// on a slow or absent control plane does not keep polling it this often; one
+/// that brings something resets it.
+const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
 
 /// Starts the control-plane sync loop as a background task.
 ///
@@ -91,19 +98,25 @@ pub(crate) async fn start_sync_with_signal(
     let client = crate::cluster::controlplane_client::build()?;
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
+    let mut asked_gap = MIN_ASKED_GAP;
+    let mut asked = false;
     loop {
+        let before = state.position();
         let bearer = credential.as_ref().map(NodeCredential::bearer);
-        match sync_once(
+        // The loop owns the cursors and a pass moves them as it applies each
+        // change, so a pass that fails part-way keeps what it applied: the
+        // next one starts at the change that failed rather than replaying the
+        // ones before it.
+        match sync_into(
             &broker,
             &client,
             &base_url,
             bearer.as_deref().map(String::as_str),
-            state,
+            &mut state,
         )
         .await
         {
-            Ok(next_state) => {
-                state = next_state;
+            Ok(()) => {
                 // Only signal once the catalog is genuinely in place. An
                 // iteration can succeed having applied nothing at all, and
                 // reporting ready off the back of that would advertise a broker
@@ -118,8 +131,23 @@ pub(crate) async fn start_sync_with_signal(
                 tracing::warn!(error = %err, "control plane sync iteration failed; retrying")
             }
         }
-        // Polling interval between change feed reads.
-        tokio::time::sleep(interval).await;
+        // Polling interval between change feed reads, cut short when a
+        // follower or a shard is waiting on a stream this broker has not
+        // registered yet. Asked-for polls are `asked_gap` apart, which backs
+        // off while they bring nothing; see `MIN_ASKED_GAP`.
+        if state.position() != before {
+            asked_gap = MIN_ASKED_GAP;
+        } else if asked {
+            asked_gap = (asked_gap * 2).min(interval);
+        }
+        let wanted = broker.catalog_wanted();
+        asked = tokio::select! {
+            _ = tokio::time::sleep(interval) => false,
+            _ = wanted.notified() => {
+                tokio::time::sleep(asked_gap.min(interval)).await;
+                true
+            }
+        };
     }
 }
 
@@ -134,7 +162,9 @@ pub(crate) async fn start_sync_with_signal(
 ///
 /// NOTE: These cursors are **in-memory** in the broker process. On broker restart,
 /// we re-seed from snapshots (safe but more expensive than resuming from a stored cursor).
-#[derive(Debug, Clone, Copy)]
+// Not `Copy`: a copy advanced by a pass and then dropped is how progress was
+// lost before.
+#[derive(Debug)]
 struct SyncState {
     /// Next sequence cursor for the tenants change feed.
     next_tenant_seq: u64,
@@ -173,6 +203,17 @@ impl SyncState {
     /// stronger statement.
     fn is_seeded(&self) -> bool {
         self.seeded.all()
+    }
+
+    /// Where every cursor stands, to tell whether a pass brought anything.
+    fn position(&self) -> (u64, u64, u64, u64, SeededSnapshots) {
+        (
+            self.next_tenant_seq,
+            self.next_namespace_seq,
+            self.next_cache_seq,
+            self.next_stream_seq,
+            self.seeded,
+        )
     }
 
     fn new() -> Self {

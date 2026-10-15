@@ -414,6 +414,7 @@ async fn seed_shards(store: &InMemoryStore) {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -442,6 +443,7 @@ async fn seed_shards(store: &InMemoryStore) {
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                incarnation: 0,
             })
             .await
             .expect("assign");
@@ -508,12 +510,24 @@ async fn shard_assignments_list_and_filter_by_leader() {
     assert_eq!(shards, vec![0, 2]);
 }
 
-/// Every assignment feed a broker reads carries its stream's routing, and a
-/// modulo stream's assignments omit it so an older broker reads the same bytes.
+/// Every assignment feed a broker reads carries its stream's routing and
+/// incarnation, and a modulo stream at incarnation 0 omits both so an older
+/// broker reads the same bytes.
 #[tokio::test]
 async fn shard_assignments_carry_the_streams_routing() {
     let (app, store, keys) = setup().await;
     seed_shards(&store).await;
+    // Incarnations are given only once the fleet finalized them.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-a", "broker-b"].iter().enumerate() {
+        let mut broker = node(id, 7100 + i as u16, "us-west-2", "a1");
+        broker.status.features = [feature.to_string()].into();
+        store.register_node(broker).await.expect("node");
+    }
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
     store
         .create_stream(Stream {
             tenant_id: "t1".to_string(),
@@ -531,6 +545,7 @@ async fn shard_assignments_carry_the_streams_routing() {
             durable: true,
             region: None,
             routing: felix_controlplane_service::model::StreamRouting::JumpHash,
+            incarnation: 77,
         })
         .await
         .expect("stream");
@@ -552,6 +567,7 @@ async fn shard_assignments_carry_the_streams_routing() {
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                incarnation: 0,
             })
             .await
             .expect("assign");
@@ -581,10 +597,15 @@ async fn shard_assignments_carry_the_streams_routing() {
             match assignment["stream"].as_str() {
                 Some("clicks") => {
                     assert_eq!(assignment["routing"], "jump_hash", "{path}");
+                    assert_eq!(assignment["incarnation"], 77, "{path}");
                     seen += 1;
                 }
                 Some("orders") => {
                     assert!(assignment.get("routing").is_none(), "{path}: {assignment}");
+                    assert!(
+                        assignment.get("incarnation").is_none(),
+                        "{path}: {assignment}"
+                    );
                     seen += 1;
                 }
                 other => panic!("{path}: unexpected stream {other:?}"),

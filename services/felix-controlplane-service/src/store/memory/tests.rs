@@ -198,6 +198,7 @@ async fn namespace_stream_cache_errors_and_cascades() {
             durable: false,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -265,6 +266,13 @@ async fn backend_health_and_identity() {
     store.health_check().await.expect("health");
     assert!(!store.is_durable());
     assert_eq!(store.backend_name(), "memory");
+}
+
+/// The same suite Postgres runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_incarnation_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::incarnations::run_incarnation_contract(store).await;
 }
 
 /// The same suite Postgres runs.
@@ -373,6 +381,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
         durable: false,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     };
     let stream_key = StreamKey {
         tenant_id: "t".to_string(),
@@ -390,6 +399,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
             op: StreamChangeOp::Created,
             key: stream_key.clone(),
             stream: Some(stream.clone()),
+            deleted_through: None,
         }
     );
 

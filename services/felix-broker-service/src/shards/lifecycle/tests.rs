@@ -23,6 +23,7 @@ fn assigned_to(leader: &str, generation: u64) -> ShardAssignment {
         state: "active".to_string(),
         successor: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -45,6 +46,7 @@ fn an_assignment_does_not_serve_until_the_log_is_open() {
             generation: 3,
             new_term: true,
             fence: false,
+            incarnation: 0,
         }
     );
     assert_eq!(own.phase(&key(0)), Phase::Opening);
@@ -116,6 +118,7 @@ fn a_newer_generation_reopens() {
             generation: 4,
             new_term: false,
             fence: false,
+            incarnation: 0,
         }
     );
     assert_eq!(own.phase(&key(0)), Phase::Opening);
@@ -196,6 +199,7 @@ fn a_closed_shard_can_be_reacquired() {
             generation: 6,
             new_term: true,
             fence: false,
+            incarnation: 0,
         }
     );
     assert_eq!(own.opened(&key(0), 6), Opened::Activated);
@@ -237,6 +241,7 @@ fn a_new_generation_retries_a_failed_open() {
             generation: 2,
             new_term: true,
             fence: false,
+            incarnation: 0,
         }
     );
     // The old error goes with the phase it explained.
@@ -359,6 +364,7 @@ mod driver {
             &self,
             key: &ShardKey,
             _generation: u64,
+            _incarnation: u64,
             _begins_here: bool,
         ) -> anyhow::Result<()> {
             if self.fail_open.load(Ordering::Acquire) {
@@ -719,7 +725,7 @@ mod recording_where_a_leadership_begins {
         let (storage, _dir) = storage(7).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
 
-        store.open(&key(0), 4, true).await.expect("open");
+        store.open(&key(0), 4, 0, true).await.expect("open");
 
         let log = storage
             .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -732,6 +738,28 @@ mod recording_where_a_leadership_begins {
         );
     }
 
+    /// The catalog moved to another incarnation after the shard was found
+    /// ready to open: the old assignment's generation must not reach the new
+    /// stream's log.
+    #[tokio::test]
+    async fn an_assignment_opens_only_its_own_incarnation() {
+        let (storage, _dir) = storage(0).await;
+        let (tenant, namespace, stream) = (&key(0).tenant_id, &key(0).namespace, &key(0).stream);
+        storage.set_stream_incarnation(tenant, namespace, stream, Some(8));
+        let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
+
+        store
+            .open(&key(0), 4, 7, true)
+            .await
+            .expect_err("opened another incarnation's log");
+
+        let log = storage
+            .open_stream(tenant, namespace, stream, 0)
+            .expect("the new stream's log");
+        assert!(log.generations().is_empty(), "{:?}", log.generations());
+        assert_eq!(log.accepted_generation(), 0);
+    }
+
     /// A restart takes the same shard at the same generation. The start offset
     /// must not move to wherever the tail has since reached, or a later repair
     /// would be bounded by a point this leadership did not begin at.
@@ -739,7 +767,7 @@ mod recording_where_a_leadership_begins {
     async fn retaking_the_same_generation_does_not_move_its_start() {
         let (storage, _dir) = storage(7).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
-        store.open(&key(0), 4, true).await.expect("open");
+        store.open(&key(0), 4, 0, true).await.expect("open");
 
         let log = storage
             .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -747,7 +775,7 @@ mod recording_where_a_leadership_begins {
         log.append(&[bytes::Bytes::from("led")])
             .await
             .expect("append");
-        store.open(&key(0), 4, true).await.expect("reopen");
+        store.open(&key(0), 4, 0, true).await.expect("reopen");
 
         assert_eq!(
             log.generations().last().map(|epoch| epoch.start_offset),
@@ -771,11 +799,11 @@ mod recording_where_a_leadership_begins {
             DurableShardStore::new(std::sync::Arc::clone(&storage)).with_ballots("broker-a");
 
         store
-            .open(&key(0), 4, true)
+            .open(&key(0), 4, 0, true)
             .await
             .expect_err("promised to broker-c");
         store
-            .open(&key(0), 5, true)
+            .open(&key(0), 5, 0, true)
             .await
             .expect("a newer generation");
         assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
@@ -791,7 +819,7 @@ mod recording_where_a_leadership_begins {
         let mut cache_key = key(0);
         cache_key.kind = crate::shards::ShardKind::Cache;
 
-        store.open(&cache_key, 4, true).await.expect("open");
+        store.open(&cache_key, 4, 0, true).await.expect("open");
     }
 
     /// Against the real log: a shard moved off this broker is closed under
@@ -852,6 +880,7 @@ fn a_draining_assignment_stops_serving_and_stays_stopped() {
             generation: 4,
             new_term: false,
             fence: false,
+            incarnation: 0,
         },
         "the new generation is recovered so replication can ship from it",
     );
@@ -924,6 +953,7 @@ fn a_drained_shard_reassigned_here_serves_again() {
             generation: 5,
             new_term: true,
             fence: false,
+            incarnation: 0,
         }
     );
     assert_eq!(own.opened(&key(0), 5), Opened::Activated);
@@ -1070,6 +1100,7 @@ fn a_named_destination_prepares_once_and_serves_only_after_the_cut_over() {
             generation: 4,
             new_term: true,
             fence: false,
+            incarnation: 0,
         }
     );
     assert_eq!(own.opened(&key(0), 4), Opened::Activated);
@@ -1188,4 +1219,137 @@ fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
             },
         ]
     );
+}
+
+/// A shard assigned before the catalog registers its stream at the
+/// assignment's incarnation: opened then, the log would be the wrong
+/// incarnation's. It waits without holding up any other shard, and opens on
+/// the first pass after the stream registers.
+mod opening_before_registration {
+    use super::*;
+    use felix_storage::log::{FsyncMode, LogConfig};
+
+    async fn broker(dir: &std::path::Path) -> std::sync::Arc<felix_broker::Broker> {
+        let config = LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        };
+        let storage = felix_broker::DurableStorage::open(dir, config).expect("storage");
+        let broker = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
+            .with_durable_storage(storage);
+        // The fleet finalized `stream_incarnations`.
+        broker.require_registered_streams();
+        broker.register_tenant("t1").await.expect("tenant");
+        broker.register_namespace("t1", "ns").await.expect("ns");
+        std::sync::Arc::new(broker)
+    }
+
+    fn store(broker: &std::sync::Arc<felix_broker::Broker>) -> DurableShardStore {
+        DurableShardStore::new(std::sync::Arc::new(
+            broker.durable_storage().expect("storage").clone(),
+        ))
+        .with_generation_starts(GenerationStarts {
+            broker: std::sync::Arc::clone(broker),
+            fleet: std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        })
+    }
+
+    fn assigned(shard: u32, incarnation: u64) -> (ShardKey, ShardAssignment) {
+        let assignment = ShardAssignment {
+            key: key(shard),
+            incarnation,
+            ..assigned_to("broker-a", 1)
+        };
+        (key(shard), assignment)
+    }
+
+    async fn register(broker: &felix_broker::Broker, incarnation: u64) {
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                "orders",
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    shards: 2,
+                    incarnation,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("register");
+    }
+
+    /// A broker restarting while the catalog is slow to seed.
+    #[tokio::test]
+    async fn waits_without_blocking_and_opens_once_registered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = broker(dir.path()).await;
+        let store = store(&broker);
+        let own = tokio::sync::Mutex::new(lifecycle());
+        let assignments: HashMap<_, _> = [assigned(0, 7), assigned(1, 7)].into_iter().collect();
+
+        let started = std::time::Instant::now();
+        reconcile(&own, &store, &assignments).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        for shard in [0, 1] {
+            assert_eq!(own.lock().await.phase(&key(shard)), Phase::Opening);
+        }
+        // Still waiting, not failed, however many passes run first.
+        reconcile(&own, &store, &assignments).await;
+        assert_eq!(own.lock().await.phase(&key(0)), Phase::Opening);
+
+        register(&broker, 7).await;
+        reconcile(&own, &store, &assignments).await;
+        for shard in [0, 1] {
+            assert_eq!(own.lock().await.phase(&key(shard)), Phase::Active);
+        }
+        let shard_dir = |incarnation| {
+            let key = felix_storage::log::ShardKey {
+                tenant: "t1".into(),
+                namespace: "ns".into(),
+                stream: "orders".into(),
+                shard: 1,
+            };
+            felix_storage::disk_log::layout::incarnation_dir(dir.path(), &key, incarnation)
+        };
+        assert!(shard_dir(7).is_dir());
+        assert!(!shard_dir(0).exists(), "opened an incarnation-0 log");
+    }
+
+    /// The catalog here still has the deleted stream.
+    #[tokio::test]
+    async fn waits_while_the_catalog_has_another_incarnation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = broker(dir.path()).await;
+        register(&broker, 6).await;
+        let store = store(&broker);
+        let own = tokio::sync::Mutex::new(lifecycle());
+        let assignments: HashMap<_, _> = [assigned(0, 7)].into_iter().collect();
+
+        reconcile(&own, &store, &assignments).await;
+        assert_eq!(own.lock().await.phase(&key(0)), Phase::Opening);
+        register(&broker, 7).await;
+        reconcile(&own, &store, &assignments).await;
+        assert_eq!(own.lock().await.phase(&key(0)), Phase::Active);
+    }
+
+    /// Before the fleet finalizes incarnations every stream is incarnation 0,
+    /// and a shard opens as soon as it is assigned, as it always did.
+    #[tokio::test]
+    async fn opens_at_once_before_incarnations_are_required() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage =
+            felix_broker::DurableStorage::open(dir.path(), LogConfig::default()).expect("storage");
+        let broker = std::sync::Arc::new(
+            felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
+                .with_durable_storage(storage),
+        );
+        let store = store(&broker);
+        let own = tokio::sync::Mutex::new(lifecycle());
+        let assignments: HashMap<_, _> = [assigned(0, 0)].into_iter().collect();
+        reconcile(&own, &store, &assignments).await;
+        assert_eq!(own.lock().await.phase(&key(0)), Phase::Active);
+    }
 }

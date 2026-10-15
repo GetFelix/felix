@@ -61,6 +61,12 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     producers                                ← producer snapshot, when any producer wrote here
     offload.manifest                         ← segments copied to the object store, once offload has run
     keys.idx                                 ← a cache shard's key index, once compaction has run
+  acme_default_orders_0-0d3aed4b998d2798-0006411a0ccf2e40/
+                                             ← the same shard of a stream with incarnation 0x6411a0ccf2e40
+  .deleted/                                  ← directories of deleted streams, waiting to be removed
+  .streams/
+    acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation of a stream this broker holds
+    .floors                                   ← deleted floors from catalog tombstones
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -68,6 +74,61 @@ of the exact key. The readable part is lossy (anything outside `[A-Za-z0-9-]`
 becomes `_`, and components are truncated), so the hash is what guarantees
 uniqueness. Dots are excluded deliberately: with no dots in the name, a
 component like `..` is not merely escaped but unrepresentable.
+
+A stream created once the fleet finalized `stream_incarnations` has an
+incarnation, a number the control plane gives each creation of a name and that
+only increases for the name. Its shard directories end in `-` and the
+incarnation as 16 hex digits, so a stream deleted and created again under the
+same name never opens the old one's directories. A stream from before the
+finalize is incarnation 0 and keeps the name above. The same naming applies
+under `groups/` and `dead-letters/`, which belong to a stream shard; caches and
+counters stay at 0.
+
+`.streams/` holds one marker per durable stream, and per ephemeral stream once
+it has an incarnation, named like a shard directory without the shard. It is
+text, replaced whole by writing a sibling, flushing it, renaming it over the
+old one and flushing the directory, so a crash leaves the old marker or the
+new one:
+
+```text
+felix-stream-marker 1
+incarnation <decimal>
+retiring <0|1>
+tenant <hex of the UTF-8 bytes>
+namespace <hex>
+stream <hex>
+shards <decimal>       (optional)
+deleted <decimal>      (optional)
+```
+
+`incarnation` is the one last registered here. `retiring 1` is a delete that
+started and has not finished; startup finishes it before anything registers.
+`shards` is the most shards the stream had here, which a delete of
+incarnation 0 reads to find the dead letters the layout before 0.6 kept per
+group. `deleted` records that the control plane said every incarnation of the
+name up to and including this one is deleted: their data goes, and none of
+them is registered again. The optional lines appear at most once each, in this
+order. A marker that does not parse (damage) is logged and read as unknown:
+nothing is deleted on its account, and a record without an incarnation is
+refused while an incarnated stream of the name has directories here. It never
+stops a start. See `docs/durable-storage.md`, "Deleting a stream".
+
+`.streams/.incarnations` records, written the same way, that this broker has
+seen a stream with an incarnation; from then on, and from the start after a
+restart, it opens a stream's logs only once the catalog has registered it.
+
+`.streams/.floors` holds the deleted floors of catalog tombstones that had
+nothing to delete here: a `felix-stream-floors 1` header, then one line per
+name, `<deleted> <tenant> <namespace> <stream>` with the names in hex. It is
+replaced whole and flushed like a marker, so a snapshot's tombstones cost one
+flush however many names they cover. A registration at or below a name's
+floor is refused, as for the `deleted` line of its marker.
+
+`.deleted/` holds directories taken out of service when a stream is deleted.
+Moving a directory there is a rename, so a crash leaves it either where it was
+or where nothing opens it; the broker deletes what is there in the background
+and again at startup. Being dotted, it is never read as a shard. See
+`docs/durable-storage.md` ("Deleting a stream").
 
 File names are zero-padded to 20 digits so lexicographic and numeric order agree.
 Recovery still parses the number and sorts on it rather than trusting directory

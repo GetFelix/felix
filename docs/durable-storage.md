@@ -81,7 +81,7 @@ Each module owns one decision:
 | `disk_log/segments` | rollover, which segment holds an offset, truncation |
 | `disk_log/recovery` | startup discovery, validation, torn-tail repair |
 | `disk_log/sync` | when a flush happens and who waits for it |
-| `disk_log/layout` | `ShardKey` to a safe directory name |
+| `disk_log/layout` | `ShardKey` and incarnation to a safe directory name |
 | `broker/durable` | the ordering of append, fanout, and acknowledgement |
 
 ## The publish path
@@ -731,7 +731,8 @@ cannot keep.
 Durability is immutable while a stream is registered. Remove and recreate a
 stream to change it between ephemeral and durable; this explicitly invalidates
 old handles and prevents durable offsets from diverging from existing in-memory
-cursors.
+cursors. Once the fleet has finalized `stream_incarnations` the recreated
+stream starts empty; see [Deleting a stream](#deleting-a-stream).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -812,6 +813,206 @@ FELIX_DURABLE_STORAGE_DIR=/var/lib/felix/streams \
 FELIX_DURABLE_FSYNC_MODE=on_commit \
   cargo run --release -p felix-broker-service --bin felix-broker
 ```
+
+### Deleting a stream
+
+Once the fleet has finalized `stream_incarnations`, a stream deleted and
+created again under the same name is a new stream. It starts at offset 0 with
+no records, no idempotent producer state, no consumer-group positions and no
+dead letters, on every broker, including one that was down for the delete.
+
+**Each creation has its own directories.** After the finalize the control
+plane gives every stream it creates an incarnation, higher than any earlier
+one of the same name (see `docs/control-plane.md`). The catalog carries it,
+and each shard assignment stores the one of the stream it was written for.
+The stream's shard directories, and its `groups/` and `dead-letters/`
+directories, end in the incarnation (see `docs/storage-format.md`), and every
+store caches open logs per shard and incarnation. A stream created before the
+finalize is incarnation 0 and keeps the directory names it always had, so
+upgrading moves nothing.
+
+**A marker records what the broker holds.** A durable stream has a marker
+under `.streams/` in the stream store's root naming the incarnation
+registered here, whether a delete of it is unfinished, and, once the control
+plane has said so, the incarnation through which the name is deleted. An
+ephemeral stream gets one once it has an incarnation, since its group state is
+on disk too. A marker is replaced whole through a flushed sibling and a rename,
+so a crash leaves the old one or the new one. A marker that does not parse is
+read as unknown, and nothing is deleted on its account.
+
+**A name never moves back.** A name's incarnations only increase, so a
+registration naming one below the incarnation held here (registered, or named
+by the marker and not deleted), or one the catalog deleted, comes from a
+catalog view older than one already applied: a Raft member behind the one read
+before, since each member answers from its own applied state, or a restart
+seeded from one. The broker refuses it and leaves the stream as it is, logs a
+warning and counts `felix_broker_stream_incarnation_refused_total`. A record
+without an incarnation for a name this broker has seen incarnated is refused
+the same way, never mapped to the held incarnation. That covers a held
+incarnation other than 0, and a missing or unreadable marker while an
+incarnated stream of the name has directories here. A higher incarnation
+replaces the held one: the old one stops serving and its logs close, and its
+data stays until a delete covers it
+(`an_older_catalog_never_replaces_the_live_incarnation`,
+`a_new_incarnation_replaces_the_registered_one`).
+
+**Data goes only on the control plane's word.** A broker deletes a stream's
+data on a `Deleted` change carrying `deleted_through` (or, without it, a
+payload naming a non-zero incarnation), a tombstone in the catalog snapshot,
+or an operator's or tool's `Broker::remove_stream`. Each names an
+incarnation, and every incarnation of the name up to it goes from every store:
+records, group cursors and dead letters. When incarnation 0 is covered, the
+dead letters the layout before 0.6 kept per group go too, found through the
+cursors before those are deleted. If a later incarnation is registered by
+then, incarnation 0's cursors are read through a second store, so the live
+stream's stay open.
+
+The order is fixed. The broker first writes the marker with `retiring 1` and
+the deleted incarnation; that write is the commit point. If the registered
+incarnation is covered it unregisters it and ends its subscriptions, then
+closes its logs (a handle held elsewhere fails with `StorageError::Closed`).
+Each covered directory is renamed into `.deleted/` under its store's root and
+the rename flushed; a background thread removes what `.deleted/` holds, and so
+does the next start. Last, the marker is rewritten with `retiring 0`, keeping
+the deleted incarnation as a floor. Every store is tried even when one fails.
+A delete cut short by a crash or an I/O error is finished at start
+(`Broker::finish_pending_deletes`), by the next delete, or by the next
+registration of the name, before anything opens. Applying a tombstone already
+applied costs one marker read.
+
+`remove_stream` deletes the registered incarnation. For one other than 0 the
+marker keeps it as deleted, as a tombstone would; for incarnation 0 the marker
+is removed, so a broker that registers its own streams can create the name
+again.
+
+**A delete from before the finalize keeps the data.** A `Deleted` change with
+neither `deleted_through` nor an incarnation in its payload is of a stream
+created before incarnations and deleted before the finalize. The broker
+unregisters it, ends its subscriptions and closes its logs, and keeps the
+data, as brokers always have. If the name is created again at 0 it reopens the
+old logs. That is deliberate: the new stream's shards start at the same
+generations as the deleted one's, and brokers keep quorum marks and follower
+positions per shard and generation, so a fresh empty log there could
+acknowledge `Quorum` writes against the old stream's marks. The data goes only
+when a tombstone covering incarnation 0 arrives, which can happen only after
+the finalize, when nothing is created at 0 any more. A delete without
+`deleted_through` delivered again therefore deletes nothing
+(`a_delete_naming_no_incarnation_keeps_the_data_for_a_create_at_0`,
+`a_tombstone_for_0_takes_kept_data_and_legacy_dead_letters`).
+
+**A broker that was down still deletes.** The catalog snapshot carries the
+tombstones, and the broker applies them before the snapshot's streams. One
+that missed a delete and the create after it learns of the delete from the
+tombstone and deletes the old incarnation's data
+(`a_snapshot_tombstone_deletes_a_stream_missed_while_down`). A registration of
+a higher incarnation alone never deletes the lower one's data. Most of a
+snapshot's tombstones name streams the broker never held, as on a broker
+joining the fleet. Those have nothing to delete, so only their floors are
+recorded, all in `.streams/.floors`, replaced and flushed once for the
+snapshot. A floor there refuses a registration as a marker's would, and
+survives a marker lost to a crash
+(`a_snapshots_tombstones_record_floors_and_delete_held_data`,
+`a_tombstone_floor_outlives_its_markers`).
+
+**Replication state does not carry over to a new incarnation.** The control
+plane gives the first assignment of an incarnated stream's shard the sequence
+number of the change that records it, which is usually above every generation
+an earlier stream of that name reached. A control-plane restore rewinds that
+sequence, so after one the new stream can start at the deleted one's
+generation, and if the delete and the create arrive in one catalog poll, the
+leader never sees the shard unled in between. So the leader keeps its follower
+positions and quorum marks per shard, generation *and* incarnation. Follower
+positions start over when the registered incarnation changes, a quorum wait
+only counts a mark measured on the log of the incarnation registered now, and
+a replication pass that began on the old log publishes neither its mark nor
+its report (`a_recreate_at_the_same_generation_does_not_inherit_the_mark`).
+A promotion fence taken on the old incarnation's logs does not open the new
+one. A broker leading the shard also starts a new, fenced term whenever the
+assignment names another incarnation, whatever the generations say.
+
+Replica reports name the incarnation they measured (`stream_incarnation`),
+and the control plane refuses one naming another than the assignment's. The
+leader also drops a report from a pass that began on the old log, keeps the
+tail it reports for a shard led alone per incarnation, and deleting a stream
+deletes its shards' reports with their assignments in every store. A
+follower's record of a leader that disagreed with a committed record, which
+refuses that leader's rebuilds, is kept per incarnation too.
+
+**A delete is applied once.** A delete names the incarnation through which the
+name is gone, so a delete delivered again after the create that followed it
+leaves the new stream alone. The catalog sync loop moves its cursor past each
+change as it applies it and keeps that progress when a later change fails, so
+one change that fails every time does not make it apply the ones before it
+again.
+
+**Nothing opens a stream at the wrong incarnation.** The first time a broker
+sees a stream with an incarnation (registering one, a replication request
+naming one, or a shard assignment naming one), it records that in
+`.streams/.incarnations`, flushed, and from then on opens a stream's logs only
+at the incarnation the catalog registered (`Broker::require_registered_streams`).
+At start it reads that record, or any marker naming an incarnation, before a
+shard task or peer can open anything
+(`Broker::require_registration_if_in_play`), so a restart is covered before the
+catalog seeds. It does not wait for the fleet's features, which arrive only
+after the catalog seeds. A broker that has never seen an incarnation, which is
+every broker before the fleet finalizes `stream_incarnations`, behaves as it
+always did: a follower takes records for a stream its catalog has not
+registered yet, and a shard opens as soon as it is assigned.
+
+Once registration is required:
+
+- A shard assigned before its stream is registered here, or while the catalog
+  still has another incarnation than the assignment names, stays `Opening`
+  and opens on the first assignment pass after the registration catches up.
+  It holds up no other shard and is never marked failed for it.
+- A leader names a non-zero incarnation on every replication request for a
+  stream shard (the `Incarnated` frame, `docs/internal-protocol.md`); a stream
+  has one only after the finalize, when every peer reads the frame. A follower
+  that has not registered the stream, or holds another incarnation than the
+  one named (none is 0), answers `StaleRoute` and the leader sends again
+  later. Taking the records would put them in a log the follower never reads,
+  or deletes once its catalog catches up, after the leader counted them toward
+  a `Quorum` acknowledgement. The open itself takes only the named
+  incarnation (`Broker::shard_log_for`) and refuses before creating anything,
+  so a delete and create landing between the check and the open cannot hand
+  the request the new stream's log, nor create it at the old stream's base.
+- A broker acting for an incarnation opens its own logs at that one too: a
+  shard opening for an assignment opens at the incarnation the assignment
+  names, and a leader opens what it ships, fences or takes at the incarnation
+  its requests name.
+- Either wait asks the catalog sync to poll at once instead of at its next
+  interval (`Broker::request_catalog_refresh`), so a lagging catalog costs one
+  poll, not `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`. Asked-for polls start 100 ms
+  apart and double, up to the interval, while they fail or bring nothing new,
+  so a fleet waiting on a slow or absent control plane does not hammer it; one
+  that brings something resets the gap.
+
+**Restoring to a backup point.** `felix-broker restore-point` rewrites each
+stream's marker to the incarnation the point names, with no deletion floor,
+because the operator's restore is the evidence. The broker then takes the
+point's incarnation even if it registered, or saw deleted, a later one after
+the point. It deletes nothing: directories of incarnations created after the
+point stay until a tombstone covers them
+(`a_restore_to_a_backup_point_takes_the_points_incarnation`). A control plane restored to an
+earlier point while its brokers keep running is another matter. A broker
+holding a later incarnation than the restored catalog names refuses that
+stream, since it never moves a name to a lower incarnation. Run
+`restore-point` with the matching backup point, or delete the stream and
+create it again; the new create gets a higher incarnation from the control
+plane's clock.
+
+What this does not cover:
+
+- Data of a name deleted before the finalize and never deleted again after it
+  stays on the broker, as it did before incarnations. Nothing opens it unless
+  the name is created again at 0, which only happens before the finalize.
+- Copies in the offload directory are not deleted.
+- A stream created again at incarnation 0, before the finalize, starts its
+  shard assignments at generation 0 again, which a broker that held the
+  deleted stream's shard ignores until it resnapshots
+  ([#1209](https://github.com/GetFelix/felix/issues/1209)). Incarnated
+  streams start above the deleted one's generations.
+- Caches have the same problem and do not have incarnations yet (#1209).
 
 ## Observability
 

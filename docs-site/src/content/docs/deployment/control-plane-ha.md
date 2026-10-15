@@ -53,7 +53,12 @@ suggestion.
   reference each other, and the migration ledger records which schema the data
   is in. A partial restore leaves instances refusing readiness or misreading
   rows. Point-in-time recovery is fine. Any consistent point is a state
-  Felix has actually been in.
+  Felix has actually been in. A broker kept running across a restore to an
+  earlier point refuses a stream whose restored incarnation is below the one
+  it holds, since it never moves a name back. Restore a backup point with the
+  brokers stopped, as
+  [Backup and restore](/deployment/backup-and-restore/#restoring) says, or
+  delete and recreate the stream: the new create gets a higher incarnation.
 
 ## Supported topologies
 

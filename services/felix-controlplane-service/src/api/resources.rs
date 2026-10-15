@@ -18,7 +18,7 @@ use crate::api::error::{
     ApiError, api_conflict, api_error, api_internal, api_not_found, api_validation_error,
 };
 use crate::api::streams::{
-    jump_hash_finalized, new_stream, same_stream, stream_key, stream_object,
+    jump_hash_finalized, new_stream, proposes_incarnation, same_stream, stream_key, stream_object,
     validate_stream_request,
 };
 use crate::api::types::{
@@ -98,18 +98,27 @@ pub(crate) async fn create_resources(
     }
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
 
-    let finalized = if body.streams.is_empty() {
-        false
+    let (finalized, incarnations) = if body.streams.is_empty() {
+        (false, false)
     } else {
-        jump_hash_finalized(&state).await?
+        (
+            jump_hash_finalized(&state).await?,
+            proposes_incarnation(&state).await?,
+        )
     };
     let streams = body
         .streams
         .into_iter()
         .map(|item| {
             let asked = item.routing;
-            new_stream(tenant_id.clone(), namespace.clone(), item, finalized)
-                .map(|stream| (stream, asked))
+            new_stream(
+                tenant_id.clone(),
+                namespace.clone(),
+                item,
+                finalized,
+                incarnations,
+            )
+            .map(|stream| (stream, asked))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let caches: Vec<Cache> = body
@@ -135,7 +144,21 @@ pub(crate) async fn create_resources(
             .create_resources(plan.new_streams, plan.new_caches)
             .await
         {
-            Ok(()) => return Ok((StatusCode::CREATED, Json(plan.response))),
+            Ok(stored) => {
+                // The store decides the incarnation, so answer with its copy.
+                let mut response = plan.response;
+                for item in &mut response.streams {
+                    if let Some(stored) = stored.iter().find(|stored| {
+                        stored.tenant_id == item.stream.tenant_id
+                            && stored.namespace == item.stream.namespace
+                            && stored.stream == item.stream.stream
+                    }) && matches!(item.status, BatchItemStatus::Created)
+                    {
+                        item.stream = stored.clone();
+                    }
+                }
+                return Ok((StatusCode::CREATED, Json(response)));
+            }
             // Something in the batch was created after it was looked at.
             // Nothing was written; look again.
             Err(StoreError::Conflict(_)) => continue,

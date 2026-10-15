@@ -211,6 +211,17 @@ pub struct ShardAssignment {
     /// shard is `Draining`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub move_reason: Option<MoveReason>,
+    /// The incarnation of the stream this assignment is for, read from the
+    /// stream when the assignment is written; whatever a caller passes is
+    /// replaced. Stored with it, so a change replayed after the stream was
+    /// created anew still names the stream it was written for. 0 for a cache,
+    /// and for a stream from before incarnations.
+    #[serde(default, skip_serializing_if = "is_zero_incarnation")]
+    pub incarnation: u64,
+}
+
+fn is_zero_incarnation(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Why a shard is moving.
@@ -373,6 +384,12 @@ pub struct ReplicaReport {
     /// predate it, and for streams.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub counter_offsets: BTreeMap<String, u64>,
+    /// The stream incarnation this report was measured against. Only a
+    /// write-time check: the store compares it with the assignment's under
+    /// the lock or apply that checks leader and generation, then drops it,
+    /// so a stored report never carries one. `None` skips the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_incarnation: Option<u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.
@@ -450,6 +467,18 @@ impl ReplicaReport {
             },
         }
     }
+}
+
+/// The generation a shard's first assignment takes. For a stream with an
+/// incarnation, the sequence number of the change that records it: on one
+/// timeline every generation the shard had under an earlier incarnation came
+/// from an earlier change, so it is below this. A restore rewinds the seq, so
+/// brokers also key what they keep per shard (quorum marks, follower
+/// positions) by incarnation, and a delete takes the shard's reports. A
+/// stream from before incarnations starts at 0, as every member of a Raft
+/// group that may hold one does.
+pub(crate) fn first_generation(incarnation: u64, change_seq: u64) -> u64 {
+    if incarnation == 0 { 0 } else { change_seq }
 }
 
 #[cfg(test)]

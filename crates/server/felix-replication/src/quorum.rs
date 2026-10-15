@@ -41,6 +41,19 @@ pub struct QuorumMarks {
     /// How a `Quorum` read may confirm this broker leads without the lease.
     /// Unset on a broker that cannot send a round.
     reads: std::sync::OnceLock<ReadRounds>,
+    /// Where a stream's registered incarnation is read, so a wait matches
+    /// only a mark measured on the log it wrote to. Set by the replication
+    /// driver; unset, every stream reads as incarnation 0.
+    incarnations: std::sync::OnceLock<Incarnations>,
+}
+
+/// The broker whose registered incarnations stream marks are checked against.
+struct Incarnations(Arc<felix_broker::Broker>);
+
+impl std::fmt::Debug for Incarnations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Incarnations")
+    }
 }
 
 /// Confirms, for a read, that no newer leader of a shard has taken over:
@@ -147,16 +160,81 @@ impl QuorumMarks {
         self.acks_by_followers() && self.fleet_supports(felix_common::fleet::FENCED_CACHES)
     }
 
+    /// Check stream marks against `broker`'s registered incarnations from
+    /// here on. Only the first call counts.
+    pub(crate) fn track_incarnations(&self, broker: &Arc<felix_broker::Broker>) {
+        if self.incarnations.get().is_none() {
+            let _ = self.incarnations.set(Incarnations(Arc::clone(broker)));
+        }
+    }
+
+    /// The incarnation `key`'s logs open at here now, which a mark must have
+    /// been measured at to answer a wait.
+    ///
+    /// A recreated stream can start at the deleted one's generation (after a
+    /// control-plane restore rewinds the change seq), so the generation alone
+    /// would let the deleted log's mark release writes to the new one.
+    fn incarnation_of(&self, key: &ShardKey) -> u64 {
+        match self.incarnations.get() {
+            Some(Incarnations(broker)) => crate::incarnation::current(
+                broker,
+                key.kind == crate::ShardKind::Stream,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+            ),
+            None => 0,
+        }
+    }
+
     /// Whether `key`'s mark at `generation` was decided by its followers, so
     /// an acknowledgement released on it needs no lease.
     pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
-        self.shards.decided_by_followers(key, generation)
+        self.shards
+            .decided_by_followers_at(key, self.incarnation_of(key), generation)
     }
 
-    /// [`Self::publish`], for a mark the followers decided. From here on the
-    /// shard's mark at `generation` releases writes without the lease.
+    /// [`Self::publish_by_followers_at`], at the incarnation `key` is
+    /// registered at now.
+    #[cfg(test)]
     pub(crate) fn publish_by_followers(&self, key: &ShardKey, generation: u64, offset: u64) {
-        self.shards.publish_marked(key, generation, offset, true);
+        self.publish_by_followers_at(key, self.incarnation_of(key), generation, offset);
+    }
+
+    /// [`Self::publish_at`], for a mark the followers decided. From here on the
+    /// shard's mark at `generation` releases writes without the lease.
+    pub(crate) fn publish_by_followers_at(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+        offset: u64,
+    ) {
+        self.shards
+            .publish_marked(key, incarnation, generation, offset, true);
+    }
+
+    /// Record how far the majority holds `key`'s log of `incarnation` at
+    /// `generation`.
+    pub(crate) fn publish_at(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+        offset: u64,
+    ) {
+        self.shards
+            .publish_marked(key, incarnation, generation, offset, false);
+    }
+
+    /// The mark for `key`'s log of `incarnation` at `generation`.
+    pub(crate) fn offset_at(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+    ) -> Option<u64> {
+        self.shards.offset_at(key, incarnation, generation)
     }
 
     /// The marks of the counter logs that ride cache shards.
@@ -164,9 +242,10 @@ impl QuorumMarks {
         &self.counters
     }
 
-    /// See [`MarkTable::publish`].
+    /// See [`MarkTable::publish`]. Recorded at the incarnation `key` is
+    /// registered at now.
     pub fn publish(&self, key: &ShardKey, generation: u64, offset: u64) {
-        self.shards.publish(key, generation, offset);
+        self.publish_at(key, self.incarnation_of(key), generation, offset);
     }
 
     /// Stop tracking a shard this broker no longer leads, in both tables.
@@ -181,9 +260,10 @@ impl QuorumMarks {
         self.counters.retain(live);
     }
 
-    /// See [`MarkTable::offset`].
+    /// See [`MarkTable::offset`], for the incarnation `key` is registered at
+    /// now.
     pub fn offset(&self, key: &ShardKey, generation: u64) -> Option<u64> {
-        self.shards.offset(key, generation)
+        self.offset_at(key, self.incarnation_of(key), generation)
     }
 
     /// See [`MarkTable::wait_for`].
@@ -194,7 +274,15 @@ impl QuorumMarks {
         offset: u64,
         timeout: std::time::Duration,
     ) -> QuorumWait {
-        self.shards.wait_for(key, generation, offset, timeout).await
+        self.shards
+            .wait_for_at(
+                key,
+                || self.incarnation_of(key),
+                generation,
+                offset,
+                timeout,
+            )
+            .await
     }
 
     /// See [`MarkTable::wait_while_leading`].
@@ -206,7 +294,7 @@ impl QuorumMarks {
         timeout: std::time::Duration,
     ) -> QuorumWait {
         self.shards
-            .wait_while_leading(key, leading, offset, timeout)
+            .wait_while_leading_at(key, || self.incarnation_of(key), leading, offset, timeout)
             .await
     }
 }
@@ -222,6 +310,9 @@ pub struct MarkTable {
 
 #[derive(Debug)]
 struct ShardMark {
+    /// The stream incarnation whose log the mark was measured on; 0 for a
+    /// cache and before incarnations.
+    incarnation: u64,
     generation: u64,
     offset: watch::Sender<u64>,
     /// Set by the first mark the followers decided at this generation. Only
@@ -235,21 +326,30 @@ impl MarkTable {
     /// A generation change restarts the mark at zero rather than carrying the
     /// old one forward.
     pub fn publish(&self, key: &ShardKey, generation: u64, offset: u64) {
-        self.publish_marked(key, generation, offset, false);
+        self.publish_marked(key, 0, generation, offset, false);
     }
 
     /// [`Self::publish`], for a mark the followers decided. From here on the
     /// shard's mark at `generation` releases writes without the lease.
     pub(crate) fn publish_by_followers(&self, key: &ShardKey, generation: u64, offset: u64) {
-        self.publish_marked(key, generation, offset, true);
+        self.publish_marked(key, 0, generation, offset, true);
     }
 
-    /// [`Self::publish`], marking the shard as decided by its followers first
-    /// when `by_followers`, so a waiter the new offset wakes already sees it.
-    fn publish_marked(&self, key: &ShardKey, generation: u64, offset: u64, by_followers: bool) {
+    /// [`Self::publish`] for the log of `incarnation`, marking the shard as
+    /// decided by its followers first when `by_followers`, so a waiter the
+    /// new offset wakes already sees it. Another incarnation replaces the
+    /// mark like another generation does.
+    fn publish_marked(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+        offset: u64,
+        by_followers: bool,
+    ) {
         let mut shards = self.shards.lock();
         match shards.get_mut(key) {
-            Some(mark) if mark.generation == generation => {
+            Some(mark) if mark.incarnation == incarnation && mark.generation == generation => {
                 mark.by_followers |= by_followers;
                 // Monotonic within a generation: the mark is a high-water mark,
                 // and a pass that saw less than the last one saw a follower
@@ -267,6 +367,7 @@ impl MarkTable {
                 shards.insert(
                     key.clone(),
                     ShardMark {
+                        incarnation,
                         generation,
                         offset: watch::Sender::new(offset),
                         by_followers,
@@ -279,10 +380,14 @@ impl MarkTable {
 
     /// Whether `key`'s mark at `generation` was decided by its followers.
     pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
-        self.shards
-            .lock()
-            .get(key)
-            .is_some_and(|mark| mark.generation == generation && mark.by_followers)
+        self.decided_by_followers_at(key, 0, generation)
+    }
+
+    /// [`Self::decided_by_followers`] for the log of `incarnation`.
+    fn decided_by_followers_at(&self, key: &ShardKey, incarnation: u64, generation: u64) -> bool {
+        self.shards.lock().get(key).is_some_and(|mark| {
+            mark.incarnation == incarnation && mark.generation == generation && mark.by_followers
+        })
     }
 
     /// Stop tracking a shard this broker no longer leads.
@@ -302,9 +407,20 @@ impl MarkTable {
     /// The mark as it stands for `key` at `generation`, or `None` when this
     /// broker is not tracking the shard at that generation.
     pub fn offset(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.offset_at(key, 0, generation)
+    }
+
+    /// [`Self::offset`] for the log of `incarnation`.
+    pub(crate) fn offset_at(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+    ) -> Option<u64> {
         let shards = self.shards.lock();
         let mark = shards.get(key)?;
-        (mark.generation == generation).then(|| *mark.offset.borrow())
+        (mark.incarnation == incarnation && mark.generation == generation)
+            .then(|| *mark.offset.borrow())
     }
 
     /// Wait until a majority holds every offset below `offset`.
@@ -318,7 +434,21 @@ impl MarkTable {
         offset: u64,
         timeout: std::time::Duration,
     ) -> QuorumWait {
-        let Some(mut watcher) = self.watcher(key, generation) else {
+        self.wait_for_at(key, || 0, generation, offset, timeout)
+            .await
+    }
+
+    /// [`Self::wait_for`], on the mark of the log of the incarnation
+    /// `incarnation` names.
+    async fn wait_for_at(
+        &self,
+        key: &ShardKey,
+        incarnation: impl Fn() -> u64,
+        generation: u64,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> QuorumWait {
+        let Some(mut watcher) = self.watcher(key, incarnation(), generation) else {
             // Nothing is tracking this shard at this generation: either this
             // broker does not lead it, or the leadership has already moved.
             // Either way it cannot promise a quorum for this write.
@@ -367,6 +497,20 @@ impl MarkTable {
         offset: u64,
         timeout: std::time::Duration,
     ) -> QuorumWait {
+        self.wait_while_leading_at(key, || 0, leading, offset, timeout)
+            .await
+    }
+
+    /// [`Self::wait_while_leading`], on the mark of the log of the
+    /// incarnation `incarnation` names, read with the generation each time.
+    async fn wait_while_leading_at(
+        &self,
+        key: &ShardKey,
+        incarnation: impl Fn() -> u64,
+        leading: impl Fn() -> Option<u64>,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> QuorumWait {
         /// How often a wait with no mark to watch looks again at whether this
         /// broker still leads; nothing signals a leadership change here.
         const RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
@@ -381,7 +525,7 @@ impl MarkTable {
                 return QuorumWait::NotLeading;
             };
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-            match self.watcher(key, generation) {
+            match self.watcher(key, incarnation(), generation) {
                 Some(mut watcher) => {
                     if *watcher.borrow_and_update() >= offset {
                         return QuorumWait::Reached;
@@ -413,11 +557,18 @@ impl MarkTable {
         }
     }
 
-    /// A receiver for `key` at `generation`, if this broker is tracking it.
-    fn watcher(&self, key: &ShardKey, generation: u64) -> Option<watch::Receiver<u64>> {
+    /// A receiver for `key`'s log of `incarnation` at `generation`, if this
+    /// broker is tracking it.
+    fn watcher(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        generation: u64,
+    ) -> Option<watch::Receiver<u64>> {
         let shards = self.shards.lock();
         let mark = shards.get(key)?;
-        (mark.generation == generation).then(|| mark.offset.subscribe())
+        (mark.incarnation == incarnation && mark.generation == generation)
+            .then(|| mark.offset.subscribe())
     }
 }
 

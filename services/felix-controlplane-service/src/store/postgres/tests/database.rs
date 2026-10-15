@@ -217,7 +217,7 @@ async fn reset_db(url: &str, schema: &str) -> Result<(), sqlx::Error> {
          {schema_ident}.tenant_signing_keys, {schema_ident}.nodes, \
          {schema_ident}.node_changes, {schema_ident}.shard_assignments, \
          {schema_ident}.shard_assignment_changes, {schema_ident}.tenants, \
-         {schema_ident}.fleet_features RESTART IDENTITY CASCADE",
+         {schema_ident}.fleet_features, {schema_ident}.stream_tombstones RESTART IDENTITY CASCADE",
     );
     // Same as `ensure_schema`: the interpolated identifier is our own generated schema name,
     // which cannot be passed as a bind parameter.
@@ -421,6 +421,19 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// On a database of its own, as in memory and Raft: it finalizes stream
+/// incarnations, which the brokers other cases register would refuse.
+#[tokio::test]
+#[serial]
+async fn satisfies_the_incarnation_contract() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, _pool) = fleet_store(&url).await?;
+    crate::store::contract::incarnations::run_incarnation_contract(store).await;
+    Ok(())
+}
+
 /// The same signing-key suite the memory store runs. A pool wider than the
 /// default so the racing callers really hold separate connections, as they
 /// would on separate control-plane instances.
@@ -575,6 +588,7 @@ fn feed_stream(name: &str) -> Stream {
         durable: true,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -1135,6 +1149,7 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
             durable: false,
             region: Some("eu-west-1".to_string()),
             routing: Default::default(),
+            incarnation: 0,
         })
         .await?;
     store
@@ -1386,6 +1401,228 @@ async fn a_registration_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
     assert!(
         registered.is_err(),
         "broker-old joined without x while x was being enabled: {registered:?}"
+    );
+    Ok(())
+}
+
+/// A catalog to create streams in, and a broker reporting
+/// `stream_incarnations` so it can be finalized.
+async fn incarnation_store(
+    url: &str,
+) -> anyhow::Result<(std::sync::Arc<PostgresStore>, sqlx::PgPool)> {
+    use crate::store::contract::nodes::{node, with_features};
+    let (store, pool) = fleet_store(url).await?;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t".to_string(),
+            display_name: "T".to_string(),
+        })
+        .await?;
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            display_name: "N".to_string(),
+        })
+        .await?;
+    store
+        .register_node(with_features(
+            node("broker-a", 7001),
+            &[felix_common::fleet::STREAM_INCARNATIONS.name()],
+        ))
+        .await?;
+    Ok((store, pool))
+}
+
+fn incarnation_stream(name: &str) -> crate::model::Stream {
+    crate::model::Stream {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: name.to_string(),
+        kind: crate::model::StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: crate::model::RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: crate::model::ConsistencyLevel::Leader,
+        delivery: crate::model::DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation: 0,
+    }
+}
+
+/// What an instance from before incarnations writes: no incarnation, so the
+/// column's default of 0.
+const OLD_INSERT: &str = "INSERT INTO streams (tenant_id, namespace, stream, kind, shards, \
+    replication_factor, consistency, delivery, durable) \
+    VALUES ('t', 'n', $1, 'Stream', 1, 1, 'Leader', 'AtMostOnce', true)";
+
+/// An instance that predates incarnations, still running during a rolling
+/// upgrade, can create a stream at 0 before the finalize and not after it,
+/// and a stream it deletes after the finalize gets its tombstone and a change
+/// naming it all the same.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_incarnations_cannot_create_at_0_after_the_finalize()
+-> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = incarnation_store(&url).await?;
+    sqlx::query(OLD_INSERT)
+        .bind("before")
+        .execute(&pool)
+        .await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::STREAM_INCARNATIONS.name())
+        .await?;
+
+    let refused = sqlx::query(OLD_INSERT).bind("after").execute(&pool).await;
+    assert!(
+        refused.is_err(),
+        "a stream was created at 0 after the finalize"
+    );
+
+    // Its delete, as it writes it: the row, then a change without a payload.
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM streams WHERE tenant_id = 't' AND namespace = 'n' AND stream = 'before'",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO stream_changes (op, tenant_id, namespace, stream, payload) \
+         VALUES ('Deleted', 't', 'n', 'before', NULL)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let changes = store.stream_changes(0).await?;
+    let deleted = changes
+        .items
+        .iter()
+        .find(|change| {
+            change.key.stream == "before"
+                && matches!(change.op, crate::model::StreamChangeOp::Deleted)
+        })
+        .expect("the delete's change");
+    assert_eq!(deleted.deleted_through, Some(0));
+    assert_eq!(
+        store.stream_tombstones().await?,
+        vec![crate::model::StreamTombstone {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            stream: "before".to_string(),
+            incarnation: 0,
+        }]
+    );
+    Ok(())
+}
+
+/// The same older instance assigning a shard of an incarnated stream writes
+/// incarnation 0 and generation 0, as it always did. The row and its change
+/// still name the stream's incarnation, and take the change's seq as the
+/// generation, so a recreated stream's shard never repeats a deleted one's.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyhow::Result<()> {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = incarnation_store(&url).await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::STREAM_INCARNATIONS.name())
+        .await?;
+    let created = store.create_stream(incarnation_stream("old")).await?;
+    assert_ne!(created.incarnation, 0);
+
+    let key = ShardKey {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: "old".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let written = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-a".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    // Its write path: the row with no incarnation, then the change.
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, \
+         replicas, generation, state) VALUES ('t', 'n', 'old', 0, 'stream', 'broker-a', \
+         '[]'::jsonb, 0, 'assigning')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let seq: i64 = sqlx::query_scalar(
+        "UPDATE shard_assignment_change_seq SET next_seq = next_seq + 1 RETURNING next_seq - 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO shard_assignment_changes (seq, op, tenant_id, namespace, stream, shard, \
+         kind, payload) VALUES ($1, 'assigned', 't', 'n', 'old', 0, 'stream', $2)",
+    )
+    .bind(seq)
+    .bind(serde_json::to_value(&written)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let stored = store.get_shard_assignment(&key).await?;
+    assert_eq!(stored.incarnation, created.incarnation);
+    assert_eq!(stored.generation, seq as u64);
+    let changes = store.shard_assignment_changes(0).await?;
+    let change = changes
+        .items
+        .iter()
+        .find(|change| change.seq == seq as u64)
+        .and_then(|change| change.assignment.as_ref())
+        .expect("the assignment's change");
+    assert_eq!(change.incarnation, created.incarnation);
+    assert_eq!(change.generation, seq as u64);
+    Ok(())
+}
+
+/// A create that started while the finalize was between its write and its
+/// commit would read the feature still off and insert at 0, committing after
+/// the finalize. It has to wait for the finalize and then give an
+/// incarnation.
+#[tokio::test]
+#[serial]
+async fn a_create_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = incarnation_store(&url).await?;
+    let mut finalizing = pool.begin().await?;
+    sqlx::query("INSERT INTO fleet_features (feature) VALUES ('stream_incarnations')")
+        .execute(&mut *finalizing)
+        .await?;
+    let create = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.create_stream(incarnation_stream("raced")).await }).await
+    };
+    finalizing.commit().await?;
+    let created = create.await??;
+    assert_ne!(
+        created.incarnation, 0,
+        "a stream was created at 0 after the finalize committed"
     );
     Ok(())
 }

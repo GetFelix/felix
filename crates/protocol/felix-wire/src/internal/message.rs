@@ -135,6 +135,48 @@ impl InternalMessage {
     /// Every message has one, which is what makes the request lifecycle
     /// unambiguous: a response can always be matched or discarded, never left
     /// pending.
+    /// The shard a replication request is about: the requests an
+    /// [`Kind::Incarnated`] frame may carry.
+    pub fn replication_shard(&self) -> Option<&ShardRef> {
+        match self {
+            Self::ReplicateRecords(m)
+            | Self::ReplicateCacheRecords(m)
+            | Self::ReplicateGroupRecords(m)
+            | Self::ReplicateDeadLetterRecords(m)
+            | Self::ReplicateCounterRecords(m)
+            | Self::ReplicateMarkedRecords(m) => Some(&m.shard),
+            Self::ReplicateBootstrap(m)
+            | Self::ReplicateCacheBootstrap(m)
+            | Self::ReplicateGroupBootstrap(m)
+            | Self::ReplicateDeadLetterBootstrap(m)
+            | Self::ReplicateCounterBootstrap(m) => Some(&m.shard),
+            Self::ReplicateRebuild(m) => Some(&m.shard),
+            Self::Fence(m) => Some(&m.shard),
+            Self::ReplicateFetch(m) => Some(&m.shard),
+            _ => None,
+        }
+    }
+
+    pub(super) fn replication_shard_mut(&mut self) -> Option<&mut ShardRef> {
+        match self {
+            Self::ReplicateRecords(m)
+            | Self::ReplicateCacheRecords(m)
+            | Self::ReplicateGroupRecords(m)
+            | Self::ReplicateDeadLetterRecords(m)
+            | Self::ReplicateCounterRecords(m)
+            | Self::ReplicateMarkedRecords(m) => Some(&mut m.shard),
+            Self::ReplicateBootstrap(m)
+            | Self::ReplicateCacheBootstrap(m)
+            | Self::ReplicateGroupBootstrap(m)
+            | Self::ReplicateDeadLetterBootstrap(m)
+            | Self::ReplicateCounterBootstrap(m) => Some(&mut m.shard),
+            Self::ReplicateRebuild(m) => Some(&mut m.shard),
+            Self::Fence(m) => Some(&mut m.shard),
+            Self::ReplicateFetch(m) => Some(&mut m.shard),
+            _ => None,
+        }
+    }
+
     pub fn correlation_id(&self) -> u64 {
         match self {
             Self::ForwardPublish(m) => m.correlation_id,
@@ -181,4 +223,8 @@ pub struct ShardRef {
     /// The owner compares this with its own. Equal proceeds; either mismatch is
     /// an explicit typed answer, and never a successful ownership claim.
     pub generation: u64,
+    /// The stream incarnation the sender's log belongs to, on a replication
+    /// request. `Some` travels as [`Kind::Incarnated`] around the request's
+    /// own kind; `None` is the request's kind byte for byte.
+    pub incarnation: Option<u64>,
 }

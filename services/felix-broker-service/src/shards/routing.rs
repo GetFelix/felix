@@ -617,6 +617,7 @@ pub fn routing_table_from(
             draining: assignment.is_draining(),
             successor: assignment.successor.clone(),
             routing: assignment.routing,
+            incarnation: assignment.incarnation,
         }),
         nodes,
     )

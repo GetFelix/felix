@@ -38,6 +38,9 @@ use crate::model::{
     TenantChange,
 };
 use crate::raft::{AskLeaderError, RaftHandle};
+
+/// The metadata level whose members store a stream's incarnation.
+const INCARNATION_LEVEL: u16 = 10;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -72,12 +75,35 @@ impl RaftStore {
         self.machine.store()
     }
 
+    /// The metadata level the group can apply, for gating what is proposed.
+    /// A member that has not answered a probe since this process started
+    /// counts as 0 in `cluster_version`. Once `stream_incarnations` is
+    /// finalized it counts at [`INCARNATION_LEVEL`] instead, since the
+    /// finalize needed every member there. A member that answered counts at
+    /// what it said, so a rolled-back member or an old build that joined
+    /// still holds newer commands back. Without the floor, a restarted member
+    /// with a peer down refuses an incarnated create the finalize allows.
+    async fn group_level(&self) -> u16 {
+        let finalized = self
+            .local()
+            .enabled_fleet_features()
+            .await
+            .is_ok_and(|enabled| enabled.contains(felix_common::fleet::STREAM_INCARNATIONS.name()));
+        if finalized {
+            self.handle
+                .cluster_version_with_unknown_at(INCARNATION_LEVEL)
+                .await
+        } else {
+            self.handle.cluster_version().await
+        }
+    }
+
     /// Propose one command and decode its outcome. A command newer than
     /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
         let needs = command.version();
         if needs > 0 {
-            let level = self.handle.cluster_version().await;
+            let level = self.group_level().await;
             if level < needs {
                 return Err(StoreError::Conflict(format!(
                     "this change needs every control-plane member at metadata version {needs}, \
@@ -241,6 +267,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().stream_snapshot().await
     }
 
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        self.local().stream_tombstones().await
+    }
+
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
         self.local().stream_changes(since).await
     }
@@ -298,10 +328,33 @@ impl ControlPlaneStore for RaftStore {
         self.local().cache_changes(since).await
     }
 
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
-        self.propose(MetaCommand::CreateResources { streams, caches })
-            .await
-            .map(|_| ())
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>> {
+        match self
+            .propose(MetaCommand::CreateResources {
+                streams: streams.clone(),
+                caches,
+            })
+            .await?
+        {
+            MetaResponse::Streams { streams } => Ok(streams),
+            // Before the finalize, every stream is stored at incarnation 0.
+            MetaResponse::Unit => Ok(streams
+                .into_iter()
+                .map(|stream| Stream {
+                    incarnation: 0,
+                    ..stream
+                })
+                .collect()),
+            _ => Err(unexpected_shape("streams")),
+        }
+    }
+
+    async fn takes_incarnation_proposals(&self) -> bool {
+        self.handle.cluster_version().await >= INCARNATION_LEVEL
     }
 
     async fn create_resources_ready(&self) -> bool {
@@ -310,7 +363,7 @@ impl ControlPlaneStore for RaftStore {
             caches: Vec::new(),
         }
         .version();
-        self.handle.cluster_version().await >= needs
+        self.group_level().await >= needs
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
@@ -598,6 +651,13 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // The API's own check still stands for a group that cannot apply
+        // the field.
+        if report.stream_incarnation.is_some()
+            && self.handle.cluster_version().await < INCARNATION_LEVEL
+        {
+            report.stream_incarnation = None;
+        }
         // Halts and counter positions are advisory: a group with a member that
         // would drop them records the rest of the report, which placement
         // needs.

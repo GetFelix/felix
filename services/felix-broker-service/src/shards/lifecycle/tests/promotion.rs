@@ -22,6 +22,7 @@ fn a_promotion_waits_in_fencing_until_the_fence_is_done() {
             generation: 3,
             new_term: true,
             fence: true,
+            incarnation: 0,
         }
     );
     assert_eq!(own.opened(&key(0), 3), Opened::Fencing);
@@ -64,6 +65,7 @@ fn a_new_generation_while_fencing_keeps_the_promotion_pending() {
             generation: 4,
             new_term: true,
             fence: true,
+            incarnation: 0,
         }
     );
     assert_eq!(own.fence().awaiting_promotion(&key(0)), Some(3));
@@ -354,7 +356,7 @@ mod group_labels {
                 fleet: finalized(),
             });
 
-        store.open(&key(0), 3, true).await.expect("open");
+        store.open(&key(0), 3, 0, true).await.expect("open");
 
         assert_eq!(
             labels(&groups.broker, 3).await,
@@ -565,7 +567,7 @@ mod cache_generation_start {
             },
         );
 
-        store.open(&cache_key(), 3, true).await.expect("open");
+        store.open(&cache_key(), 3, 0, true).await.expect("open");
 
         for kind in [
             felix_broker::LogKind::Cache,
@@ -671,4 +673,67 @@ mod cache_generation_start {
             .expect("add after the record");
         assert_eq!((sum, offset), (3, 2));
     }
+}
+
+/// A stream deleted and created again is a new shard however its generations
+/// compare: a new term, fenced, never a continuation of the deleted one's.
+#[test]
+fn a_new_incarnation_starts_a_new_term() {
+    let mut own = fencing_lifecycle();
+    let at = |generation, incarnation| ShardAssignment {
+        incarnation,
+        ..assigned_to("broker-a", generation)
+    };
+    own.observe(&key(0), Some(&at(3, 1)));
+    assert_eq!(own.opened(&key(0), 3), Opened::Fencing);
+    assert!(own.fenced(&key(0), 3));
+    assert_eq!(own.phase(&key(0)), Phase::Active);
+
+    // The next generation of the same incarnation would continue unfenced.
+    let renewed = Action::Open {
+        key: key(0),
+        generation: 4,
+        new_term: true,
+        fence: true,
+        incarnation: 2,
+    };
+    assert_eq!(own.observe(&key(0), Some(&at(4, 2))), renewed);
+    assert!(!own.may_serve(&key(0)));
+    assert_eq!(own.opened(&key(0), 4), Opened::Fencing);
+    assert!(own.fenced(&key(0), 4));
+
+    // The deleted incarnation's assignment delivered late is stale: the
+    // shard keeps serving.
+    assert_eq!(own.observe(&key(0), Some(&at(3, 1))), Action::None);
+    assert!(own.may_serve(&key(0)));
+}
+
+/// After a control-plane restore the change seq a recreated stream's first
+/// generation comes from can be below the deleted stream's generations. The
+/// new incarnation still opens, and the deleted one's stays stale.
+#[test]
+fn a_new_incarnation_opens_at_a_lower_generation() {
+    let mut own = fencing_lifecycle();
+    let at = |generation, incarnation| ShardAssignment {
+        incarnation,
+        ..assigned_to("broker-a", generation)
+    };
+    own.observe(&key(0), Some(&at(9, 1)));
+    assert_eq!(own.opened(&key(0), 9), Opened::Fencing);
+    assert!(own.fenced(&key(0), 9));
+
+    let renewed = Action::Open {
+        key: key(0),
+        generation: 4,
+        new_term: true,
+        fence: true,
+        incarnation: 2,
+    };
+    assert_eq!(own.observe(&key(0), Some(&at(4, 2))), renewed);
+    assert_eq!(own.opened(&key(0), 4), Opened::Fencing);
+    assert!(own.fenced(&key(0), 4));
+    assert!(own.may_serve(&key(0)));
+
+    assert_eq!(own.observe(&key(0), Some(&at(9, 1))), Action::None);
+    assert!(own.may_serve(&key(0)));
 }

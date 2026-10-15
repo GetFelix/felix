@@ -16,6 +16,7 @@ use super::*;
 
 mod fence;
 mod groups;
+mod incarnation;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
@@ -105,6 +106,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             stream: STREAM.to_string(),
             shard: 0,
             generation,
+            incarnation: None,
         },
         first_offset,
         checksum: batch_checksum(&payloads, &[], &[]),
@@ -322,6 +324,7 @@ mod bootstrap {
                 stream: STREAM.to_string(),
                 shard: 0,
                 generation,
+                incarnation: None,
             },
             base_offset,
         }
@@ -890,6 +893,7 @@ mod rebuild {
                 stream: STREAM.to_string(),
                 shard: 0,
                 generation,
+                incarnation: None,
             },
             log: ReplicaLog::Stream,
             base_offset,

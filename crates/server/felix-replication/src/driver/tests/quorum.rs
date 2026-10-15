@@ -711,3 +711,63 @@ async fn a_cache_leader_counts_only_its_own_generation() {
 
     shutdown.cancel();
 }
+
+/// **A stream recreated at the deleted one's generation starts its
+/// replication state over.** After a control-plane restore rewinds the change
+/// seq, the new incarnation's first generation can equal the old one's, and a
+/// delete and create in one poll leave the shard led throughout. The old
+/// log's follower positions and mark describe nothing in the new log, so a
+/// write to it must not be acknowledged on them.
+#[tokio::test]
+async fn a_recreate_at_the_same_generation_does_not_inherit_the_mark() {
+    let (broker, _dir) = incarnated_leader(5, 10).await;
+
+    let router = router(LOCAL, &["broker-b"], 4);
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let pass = replicate_once(
+        &AcceptingFollower::default(),
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(10));
+    // The report names the log it measured, so the control plane can refuse
+    // it for another incarnation's assignment.
+    assert!(!pass.reports.is_empty());
+    assert!(pass.reports.iter().all(|report| report.incarnation == 5));
+
+    // Deleted and created again in one catalog batch, at the same generation.
+    reincarnate(&broker, 6, 3).await;
+    replicate_once(
+        &UnreachableFollowers {
+            handshake: Duration::from_millis(1),
+        },
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+
+    let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+    assert!(
+        mark < 3,
+        "the new log's records were acknowledged at mark {mark} with no follower holding them",
+    );
+}
