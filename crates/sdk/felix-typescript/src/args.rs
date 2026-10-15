@@ -2,22 +2,34 @@
 //! invalid-argument error when they do not fit.
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::ToSocketAddrs;
 
+use felix_client::Seed;
 use felix_wire::{AckMode, StartPosition};
 use napi::bindgen_prelude::*;
 
 use crate::errors::invalid;
 
-pub(crate) fn resolve(addrs: Vec<String>) -> Result<Vec<SocketAddr>> {
-    let mut out = Vec::new();
+pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
+    // A name is handed to the client as a name, which resolves it again when
+    // every address it holds stops answering. It is resolved here too, so a
+    // name that does not resolve now is still an invalid argument.
+    let mut seeds = Vec::with_capacity(addrs.len());
     for addr in addrs {
-        let resolved = addr
-            .to_socket_addrs()
-            .map_err(|err| invalid(format!("could not resolve {addr:?}: {err}")))?;
-        out.extend(resolved);
+        let seed = addr
+            .parse::<Seed>()
+            .map_err(|err| invalid(format!("{err:#}")))?;
+        if let Seed::Name(name) = &seed {
+            let mut found = name
+                .to_socket_addrs()
+                .map_err(|err| invalid(format!("could not resolve {addr:?}: {err}")))?;
+            if found.next().is_none() {
+                return Err(invalid(format!("{addr:?} resolved to no addresses")));
+            }
+        }
+        seeds.push(seed);
     }
-    Ok(out)
+    Ok(seeds)
 }
 
 /// How much the broker must have done before a publish resolves.

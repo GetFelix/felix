@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -56,9 +56,14 @@ impl AsyncClient {
         let server_name = server_name.to_string();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = ClusterClient::connect(&seeds, &server_name, config)
-                .await
-                .map_err(to_py_err)?;
+            let inner = ClusterClient::connect_seeds(
+                &seeds,
+                &server_name,
+                config,
+                ReconnectPolicy::default(),
+            )
+            .await
+            .map_err(to_py_err)?;
             Ok(AsyncClient {
                 inner: Arc::new(inner),
             })

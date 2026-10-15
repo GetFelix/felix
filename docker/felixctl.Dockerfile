@@ -5,7 +5,7 @@
 # not need: no init, no healthcheck, no ports.
 
 # Docker Hub by default. CI passes a mirror of the same official images
-# (`--build-arg BASE_REGISTRY=public.ecr.aws/docker/library`) to stay clear
+# (`--build-arg BASE_REGISTRY=mirror.gcr.io/library`) to stay clear
 # of Docker Hub's anonymous pull limit. There is no `# syntax=` line for the
 # same reason: BuildKit's built-in frontend handles the cache mounts below.
 ARG BASE_REGISTRY=docker.io/library
