@@ -654,6 +654,7 @@ impl Driver {
                 // Whether an earlier attempt may have landed. A refusal that
                 // applied nothing says so only of its own attempt.
                 let mut ambiguous = false;
+                let mut client = cluster.client().await;
                 for attempt in 0..policy.attempts.max(1) {
                     if attempt > 0
                         && let Some(at_least) = wait
@@ -669,12 +670,12 @@ impl Driver {
                         // broker that just failed; forget it and let the
                         // next refusal name the new one.
                         self.leaders.lock().await.remove(key);
-                        if let Err(err) = cluster.reconnect().await {
+                        if let Err(err) = cluster.reconnect(&client).await {
                             last = Some(err.context("no broker answered"));
                             continue;
                         }
+                        client = cluster.client().await;
                     }
-                    let client = cluster.client().await;
                     let (settled, result) = self
                         .send_via(
                             &client,

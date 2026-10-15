@@ -317,7 +317,9 @@ export declare class Client {
   /**
    * Connect to a cluster.
    *
-   * Any reachable seed address is enough; the client discovers the rest.
+   * Any reachable seed address is enough; the client discovers the rest. A
+   * `host:port` name is resolved again whenever no broker the client knows
+   * answers. A name that does not resolve now is an `InvalidArg` error.
    * TLS is not optional — QUIC has no unencrypted mode. Pass `caFile` to trust
    * a specific CA (what a self-signed development broker needs), or omit it to
    * use the operating system's trust store.
