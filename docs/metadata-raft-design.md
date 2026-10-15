@@ -468,15 +468,43 @@ recomputed at most every two seconds, so it rises shortly after the last
 member restarts on the new build. The rollout order therefore does not
 matter: a StatefulSet can upgrade the leader first.
 
-**A member below a finalized level is not added.** Finalizing a fleet
-feature needed every member at that finalize's level (`stream_incarnations`
-needs 10, `jump_hash_routing` 3, any other 2), and the entries after it rely
-on it. Once one is finalized, the leader asks a new member its level on the
-`standing` route before adding it as a learner, and refuses the join when
-it is below the highest such level, or reports none, or does not answer,
-naming both versions. Before anything is finalized any build may join: the
-group's level drops to the newcomer's, as during a rolling upgrade. Run a
-member you add on a build at or above the group's level.
+**A member below the group's floor is not added.** The floor is the
+higher of two levels. One is the highest level a finalized fleet feature
+needed (`stream_incarnations` needs 10, `jump_hash_routing` 3, any other 2),
+since the entries after a finalize rely on it. The other is a mark the state
+machine keeps: applying an entry whose variant or fields
+(`store/raft/command/fields.txt`) need a level above 8, the last released
+one, raises it to that level, whether or not the entry succeeds. Before any
+finalize, a delete carrying `take_shards` raises it to 10. The mark comes
+from the entries alone, so every member holds the same one, and it rides
+the snapshot as `levels_used`, left out while it is 0. A
+v0.6.0-preview.7 member, at level 8, refuses a snapshot with a non-empty
+field it does not know; it never sees the mark, because the mark is only
+set by entries it could not apply either. Once the floor is above 0, the
+leader asks a new member its level on the `standing` route before adding it
+as a learner, and refuses the join when it is below the floor, reports
+none, or does not answer, naming both versions. At floor 0 any build may
+join: the group's level drops to the newcomer's, as during a rolling
+upgrade.
+
+**A member below the floor is held, not fed.** A member already in the
+membership is never asked to join again: one whose volume was wiped and
+that restarts on an older build under its old id would otherwise be sent
+the log and a snapshot it cannot apply. So before each append or snapshot
+it sends, the leader checks the member's reported level against the floor
+(`raft/hold.rs`). A member below it, or one that has not reported a level
+while the floor is above 0, is held: the send fails as unreachable and
+nothing is written to it. A reported level is trusted until the member
+answers an append with a conflict, which is what a member that lost its log
+does, and is asked again before the next send. A held member is asked on
+every retry, so replication resumes within about a second of it reporting
+the floor. The leader logs the hold once and sets
+`felix_meta_raft_member_below_floor{member}` to 1 until it ends. To openraft
+a held member is a follower that is down, so commits still need only a
+majority, but holding a voter takes one failure off what the group can
+survive until that member is upgraded. A member restarted on an older build
+with its log intact is not caught this way; that is a rollback, covered
+below.
 
 Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 `remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,

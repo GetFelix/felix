@@ -304,3 +304,44 @@ async fn a_snapshot_with_a_field_this_build_does_not_know_is_refused() {
 
     crate::raft::AppStateMachine::restore(&machine(), &newer).await;
 }
+
+/// An entry carrying a level-10 field raises the mark, whether or not it
+/// succeeds; the mark rides the snapshot and sets the join floor. Entries at
+/// a released level leave it at 0 and out of the snapshot, which a
+/// v0.6.0-preview.7 member would refuse.
+#[tokio::test]
+async fn a_level_10_field_raises_the_mark_and_survives_a_snapshot() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    original
+        .apply(&encode_command(&MetaCommand::CreateTenant {
+            tenant: tenant("acme"),
+        }))
+        .await;
+    assert_eq!(original.levels_used(), 0);
+    assert_eq!(original.join_floor().await, 0);
+    let unmarked = original.snapshot().await;
+    assert!(
+        !String::from_utf8_lossy(&unmarked).contains("levels_used"),
+        "a released-level snapshot carries the mark"
+    );
+
+    // `acme` has no namespaces; the entry's field is what counts.
+    let flagged = MetaCommand::DeleteTenant {
+        tenant_id: "missing".to_string(),
+        take_shards: true,
+    };
+    assert_eq!(flagged.version(), 10);
+    original.apply(&encode_command(&flagged)).await;
+    assert_eq!(original.levels_used(), 10);
+    assert_eq!(original.join_floor().await, 10);
+
+    let restored = machine();
+    restored.restore(&original.snapshot().await).await;
+    assert_eq!(restored.levels_used(), 10);
+    assert_eq!(restored.join_floor().await, 10);
+    assert_eq!(restored.snapshot().await, original.snapshot().await);
+
+    restored.restore(&unmarked).await;
+    assert_eq!(restored.levels_used(), 0, "a restore replaces the mark");
+}

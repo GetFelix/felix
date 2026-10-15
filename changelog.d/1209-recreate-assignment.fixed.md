@@ -10,9 +10,14 @@
   only once every member is at metadata version 10, the same gate as stream
   incarnations; below it every member keeps what the older release keeps, so
   members never disagree.
-- Under Raft, once a fleet feature is finalized the leader refuses to add a
-  control-plane member whose build is below the metadata version that
-  finalize needed (10 for `stream_incarnations`), or that reports none; the
-  error names both versions. Such a member would refuse entries the others
-  apply and diverge from them. Before any finalize an older build may still
-  join (#1209).
+- Under Raft, the leader refuses to add a control-plane member whose build is
+  below the metadata version the group already uses, or that reports none;
+  the error names both versions. That version is the one a finalized fleet
+  feature needed (10 for `stream_incarnations`), or the newest one any
+  committed entry needed, which the state machine now tracks and carries in
+  its snapshot (#1209). A member already in the group that comes back on an
+  older build, as after a lost volume, is no longer sent entries or a
+  snapshot until it reports that version; the leader logs it once and sets
+  `felix_meta_raft_member_below_floor{member}` to 1. Either member would
+  refuse entries the others apply and diverge from them. A held voter is one
+  fewer failure the group survives until it is upgraded.

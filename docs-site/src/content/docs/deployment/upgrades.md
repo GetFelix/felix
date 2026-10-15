@@ -370,14 +370,24 @@ before it would store a jump-hash stream as modulo: until every member is
 there the finalize, and any request for a `jump_hash` stream, is refused
 with 409. Upgrade the control plane first.
 
-Once a fleet feature is finalized, a Raft member is added to the group only
-if it runs a build at or above the metadata version that finalize needed:
-10 for `stream_incarnations`, 3 for `jump_hash_routing`, 2 for the others.
-The leader asks the new member before the membership changes and refuses a
-lower build, or one that does not report a version, with an error naming
-both versions. Added anyway, it would refuse entries the other members
-apply, and its metadata would part ways with theirs. Before any finalize an
-older build may join, as it would part-way through a rolling upgrade.
+Under the Raft backend a member is added to the group only if it runs a
+build at or above the metadata version the group already uses: the one a
+finalized fleet feature needed (10 for `stream_incarnations`, 3 for
+`jump_hash_routing`, 2 for the others), or the newest one any committed
+entry needed, such as 10 once a delete has taken shard state. The leader
+asks the new member before the membership changes and refuses a lower
+build, or one that does not report a version, with an error naming both
+versions. Added anyway, it would refuse entries the other members apply,
+and its metadata would part ways with theirs. While neither applies, an older
+build may join, as it would part-way through a rolling upgrade.
+
+A member already in the group that comes back on an older build, for
+example after its volume was lost, is held rather than fed: the leader
+sends it no entries and no snapshot, logs a warning once, and sets
+`felix_meta_raft_member_below_floor{member}` to 1. The group keeps
+committing with the other members, but a held voter is one fewer failure
+the group can survive. Upgrade that member; replication to it resumes
+within about a second of it starting on a build at the group's version.
 
 ### Storage format: the one that does not roll back
 

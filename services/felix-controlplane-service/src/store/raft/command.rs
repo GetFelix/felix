@@ -720,6 +720,12 @@ pub fn restamp(command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
 /// way. Applying the rest would store something other than what the leader
 /// stored, with nothing to show for it.
 pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
+    decode_command_with_level(bytes).map(|(command, _)| command)
+}
+
+/// [`decode_command`], with the command's [`MetaCommand::version`] worked
+/// out from the same decoding rather than serializing it again.
+pub(crate) fn decode_command_with_level(bytes: &[u8]) -> Result<(MetaCommand, u16), MetaError> {
     let envelope: Envelope = serde_json::from_slice(bytes)
         .map_err(|err| MetaError::Unsupported(format!("undecodable command: {err}")))?;
     if envelope.v > COMMAND_VERSION {
@@ -738,7 +744,13 @@ pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
             dropped.join(", ")
         )));
     }
-    Ok(envelope.command)
+    // The envelope's own keys (`v`, `rid`) are in no command's table, so
+    // they count as 0.
+    let level = envelope
+        .command
+        .variant_level()
+        .max(fields::level_of(&decoded));
+    Ok((envelope.command, level))
 }
 
 /// Serialize a command's outcome for the Raft response channel.

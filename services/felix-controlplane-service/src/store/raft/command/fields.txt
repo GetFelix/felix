@@ -708,6 +708,7 @@
 0 snapshot.applied.order
 0 snapshot.applied.responses
 0 snapshot.applied.responses.*
+10 snapshot.levels_used
 0 snapshot.state
 0 snapshot.state.auth_bootstrapped
 0 snapshot.state.cache_changes

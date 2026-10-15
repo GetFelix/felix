@@ -22,7 +22,9 @@ use openraft::raft::{
 };
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use super::hold::Hold;
 use super::types::TypeConfig;
 use super::{NodeId, PeerSecurity};
 
@@ -31,6 +33,7 @@ pub(super) struct HttpNetworkFactory {
     scheme: &'static str,
     peer_addrs: BTreeMap<NodeId, String>,
     heartbeat: Duration,
+    hold: Arc<Hold>,
 }
 
 impl HttpNetworkFactory {
@@ -38,6 +41,7 @@ impl HttpNetworkFactory {
         security: &PeerSecurity,
         peer_addrs: BTreeMap<NodeId, String>,
         heartbeat: Duration,
+        hold: Arc<Hold>,
     ) -> anyhow::Result<Self> {
         // One client, shared by every peer connection: reqwest pools per
         // host underneath. The timeout bounds a peer that accepts and then
@@ -49,6 +53,7 @@ impl HttpNetworkFactory {
             scheme: security.scheme(),
             peer_addrs,
             heartbeat,
+            hold,
         })
     }
 }
@@ -66,6 +71,7 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             target,
             base: format!("{}://{addr}", self.scheme),
             heartbeat: self.heartbeat,
+            hold: Arc::clone(&self.hold),
         }
     }
 }
@@ -75,6 +81,7 @@ pub(super) struct HttpNetwork {
     target: u64,
     base: String,
     heartbeat: Duration,
+    hold: Arc<Hold>,
 }
 
 /// The longest wait between retries to an unreachable member, so a member
@@ -113,6 +120,20 @@ impl std::error::Error for PeerStatus {}
 const BODY_EXCERPT: usize = 200;
 
 impl HttpNetwork {
+    #[cfg(test)]
+    pub(super) fn for_tests(addr: &str, hold: Arc<Hold>) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("client"),
+            target: 2,
+            base: format!("http://{addr}"),
+            heartbeat: Duration::from_millis(150),
+            hold,
+        }
+    }
+
     async fn send<Req, Resp, E>(
         &self,
         path: &str,
@@ -165,6 +186,17 @@ impl HttpNetwork {
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
         result.map_err(|err| RPCError::RemoteError(RemoteError::new(self.target, err)))
     }
+
+    /// Entries and snapshots go only to a member at the group's floor
+    /// ([`super::hold`]); otherwise it reads as unreachable.
+    async fn hold_back<E: std::error::Error>(
+        &self,
+    ) -> Result<(), RPCError<u64, openraft::BasicNode, E>> {
+        self.hold
+            .check(self.target, &self.client, &self.base)
+            .await
+            .map_err(|held| RPCError::Unreachable(Unreachable::new(&held)))
+    }
 }
 
 impl RaftNetwork<TypeConfig> for HttpNetwork {
@@ -174,7 +206,12 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>
     {
-        self.send("append-entries", &rpc).await
+        self.hold_back().await?;
+        let response = self.send("append-entries", &rpc).await;
+        if let Ok(AppendEntriesResponse::Conflict) = &response {
+            self.hold.conflicted(self.target);
+        }
+        response
     }
 
     async fn install_snapshot(
@@ -185,6 +222,7 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
         InstallSnapshotResponse<u64>,
         RPCError<u64, openraft::BasicNode, RaftError<u64, InstallSnapshotError>>,
     > {
+        self.hold_back().await?;
         self.send("install-snapshot", &rpc).await
     }
 

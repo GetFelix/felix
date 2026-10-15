@@ -32,8 +32,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Absent from a member that predates it.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Asker {
-    from: Option<NodeId>,
-    version: Option<u16>,
+    pub(super) from: Option<NodeId>,
+    pub(super) version: Option<u16>,
 }
 
 #[derive(Default)]
@@ -41,6 +41,34 @@ pub(super) struct Versions {
     reported: BTreeMap<NodeId, u16>,
     checked: Option<(Instant, Level)>,
     refreshing: bool,
+}
+
+impl Versions {
+    pub(super) fn reported(&self, id: NodeId) -> Option<u16> {
+        self.reported.get(&id).copied()
+    }
+
+    /// Remember what `id` answered, and work the level out again next time.
+    pub(super) fn record(&mut self, id: NodeId, version: u16) {
+        self.reported.insert(id, version);
+        self.checked = None;
+    }
+}
+
+/// Ask the member at `base` for the level it can apply. `None` when it does
+/// not answer.
+pub(super) async fn probe(client: &reqwest::Client, base: &str, asker: &Asker) -> Option<u16> {
+    let response = client
+        .get(format!("{base}/internal/raft/standing"))
+        .query(asker)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    Some(response.json::<Standing>().await.ok()?.version)
 }
 
 /// The levels the members reported, as of one refresh.
@@ -125,23 +153,8 @@ impl RaftHandle {
             let Some(base) = self.peer_url(Some(*id), Some(addr)) else {
                 continue;
             };
-            let request = self
-                .forward
-                .get(format!("{base}/internal/raft/standing"))
-                .query(&Asker {
-                    from: Some(self.id),
-                    version: Some(self.app.version()),
-                })
-                .timeout(PROBE_TIMEOUT);
-            let id = *id;
-            probes.spawn(async move {
-                let response = request.send().await.ok()?;
-                if !response.status().is_success() {
-                    return None;
-                }
-                let standing = response.json::<Standing>().await.ok()?;
-                Some((id, standing.version))
-            });
+            let (client, asker, id) = (self.forward.clone(), self.asker(), *id);
+            probes.spawn(async move { Some((id, probe(&client, &base, &asker).await?)) });
         }
         let mut answers = Vec::new();
         while let Some(joined) = probes.join_next().await {
@@ -168,25 +181,19 @@ impl RaftHandle {
     /// Ask one member at `base` for the level it can apply, and remember the
     /// answer. `None` when it does not answer.
     pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
-        let response = self
-            .forward
-            .get(format!("{base}/internal/raft/standing"))
-            .query(&Asker {
-                from: Some(self.id),
-                version: Some(self.app.version()),
-            })
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-            .ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        let version = response.json::<Standing>().await.ok()?.version;
-        let mut versions = self.versions.lock().expect("versions lock");
-        versions.reported.insert(id, version);
-        versions.checked = None;
+        let version = probe(&self.forward, base, &self.asker()).await?;
+        self.versions
+            .lock()
+            .expect("versions lock")
+            .record(id, version);
         Some(version)
+    }
+
+    fn asker(&self) -> Asker {
+        Asker {
+            from: Some(self.id),
+            version: Some(self.app.version()),
+        }
     }
 
     /// Forget every level the members reported, as a restart does.

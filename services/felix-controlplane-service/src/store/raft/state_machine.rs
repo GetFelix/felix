@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::raft::AppStateMachine;
 use crate::store::memory::{FleetRule, InMemoryStore, ShardCleanup};
 use crate::store::raft::command::{
-    MetaCommand, MetaResponse, MetaResult, decode_command, encode_result,
+    MetaCommand, MetaResponse, MetaResult, decode_command_with_level, encode_result,
 };
 use crate::store::{AssignmentWrite, AuthStore, ControlPlaneStore};
 
@@ -85,11 +85,29 @@ pub(super) struct Snapshot {
     pub(super) state: crate::store::export::ExportedState,
     #[serde(default)]
     pub(super) applied: AppliedIds,
+    /// [`MetadataStateMachine::levels_used`]. Left out at 0, which is all a
+    /// v0.6.0-preview.7 member can restore: it refuses a snapshot carrying
+    /// a non-empty field it does not know.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) levels_used: u16,
 }
+
+fn is_zero(level: &u16) -> bool {
+    *level == 0
+}
+
+/// The last released level (v0.6.0-preview.7). Entries at or below it never
+/// raise [`MetadataStateMachine::levels_used`], so the mark stays 0, and out
+/// of the snapshot, for as long as such a member can still apply the log.
+const RELEASED_LEVEL: u16 = 8;
 
 pub struct MetadataStateMachine {
     store: Arc<InMemoryStore>,
     applied: tokio::sync::RwLock<AppliedIds>,
+    /// The highest level any applied entry needed, counting only levels
+    /// above [`RELEASED_LEVEL`]. Derived from the entries alone, so every
+    /// replica holds the same mark, and carried in the snapshot.
+    levels_used: std::sync::atomic::AtomicU16,
     node_reset: std::sync::OnceLock<NodeReset>,
 }
 
@@ -102,6 +120,7 @@ impl MetadataStateMachine {
         Self {
             store,
             applied: tokio::sync::RwLock::new(AppliedIds::default()),
+            levels_used: std::sync::atomic::AtomicU16::new(0),
             node_reset: std::sync::OnceLock::new(),
         }
     }
@@ -125,6 +144,12 @@ impl MetadataStateMachine {
     /// the whole reason the state machine is the serving store itself.
     pub fn store(&self) -> &Arc<InMemoryStore> {
         &self.store
+    }
+
+    /// The highest level above the last released one that any applied entry
+    /// needed, or 0. A member below it refuses something already in the log.
+    pub(crate) fn levels_used(&self) -> u16 {
+        self.levels_used.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Apply one already-decoded command. Public for the determinism
@@ -498,8 +523,16 @@ impl AppStateMachine for MetadataStateMachine {
             return response.clone();
         }
 
-        let result: MetaResult = match decode_command(command) {
-            Ok(command) => self.dispatch(command).await,
+        let result: MetaResult = match decode_command_with_level(command) {
+            Ok((command, level)) => {
+                // Raised whether or not the command succeeds: a member that
+                // cannot decode it diverges either way.
+                if level > RELEASED_LEVEL {
+                    self.levels_used
+                        .fetch_max(level, std::sync::atomic::Ordering::SeqCst);
+                }
+                self.dispatch(command).await
+            }
             Err(err) => {
                 // Deterministic among members running the same build, but a
                 // newer leader applied this for real: in a mixed-version group
@@ -531,6 +564,7 @@ impl AppStateMachine for MetadataStateMachine {
         serde_json::to_vec(&Snapshot {
             state: self.store.export_state().await,
             applied,
+            levels_used: self.levels_used(),
         })
         .expect("exported state serializes by construction")
     }
@@ -539,19 +573,22 @@ impl AppStateMachine for MetadataStateMachine {
         // Two shapes: this build's, and one from before applied ids were
         // carried. A rolling upgrade installs the older one, and refusing it
         // would make the upgrade the outage.
-        let (state, applied) = match serde_json::from_slice::<Snapshot>(snapshot) {
-            Ok(snapshot) => (snapshot.state, snapshot.applied),
+        let (state, applied, levels_used) = match serde_json::from_slice::<Snapshot>(snapshot) {
+            Ok(snapshot) => (snapshot.state, snapshot.applied, snapshot.levels_used),
             Err(_) => (
                 serde_json::from_slice(snapshot).expect("snapshot produced by export_state"),
                 AppliedIds::default(),
+                0,
             ),
         };
-        refuse_unknown_fields(snapshot, &state, &applied);
+        refuse_unknown_fields(snapshot, &state, &applied, levels_used);
         self.store
             .import_state(state)
             .await
             .expect("snapshot version produced by this cluster");
         *self.applied.write().await = applied;
+        self.levels_used
+            .store(levels_used, std::sync::atomic::Ordering::SeqCst);
         self.node_reset(None);
     }
 
@@ -563,8 +600,9 @@ impl AppStateMachine for MetadataStateMachine {
         crate::store::raft::command::METADATA_VERSION
     }
 
-    /// Finalizing a fleet feature needed every member at that finalize's
-    /// level, and the entries after it may rely on that level.
+    /// The higher of the levels the finalized fleet features needed and
+    /// [`MetadataStateMachine::levels_used`]: a member below either refuses
+    /// entries already in the log or the snapshot.
     async fn join_floor(&self) -> u16 {
         self.store
             .enabled_fleet_features()
@@ -572,8 +610,7 @@ impl AppStateMachine for MetadataStateMachine {
             .unwrap_or_default()
             .into_iter()
             .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
-            .max()
-            .unwrap_or(0)
+            .fold(self.levels_used(), u16::max)
     }
 }
 
@@ -586,11 +623,16 @@ fn refuse_unknown_fields(
     raw: &[u8],
     state: &crate::store::export::ExportedState,
     applied: &AppliedIds,
+    levels_used: u16,
 ) {
     let original: serde_json::Value = serde_json::from_slice(raw).expect("snapshot is JSON");
     // Compared in whichever of the two shapes it arrived in.
     let decoded = if original.get("state").is_some() {
-        serde_json::json!({ "state": state, "applied": applied })
+        let mut decoded = serde_json::json!({ "state": state, "applied": applied });
+        if levels_used != 0 {
+            decoded["levels_used"] = levels_used.into();
+        }
+        decoded
     } else {
         serde_json::to_value(state).expect("exported state serializes by construction")
     };

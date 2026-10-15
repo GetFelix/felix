@@ -1209,3 +1209,144 @@ async fn a_member_below_a_finalized_level_is_refused() {
         .await
         .expect("a member at the group's level joins");
 }
+
+/// With nothing finalized, a delete that takes shard state still carries a
+/// level-10 field. A member below 10 would refuse it on replay, so once one
+/// is in the log an older member is refused too.
+#[tokio::test]
+async fn an_older_member_is_refused_after_a_flagged_delete() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "T1".to_string(),
+        })
+        .await
+        .expect("tenant");
+    assert!(store.deletes_take_shards().await);
+    store.delete_tenant("t1").await.expect("delete");
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("features")
+            .is_empty(),
+        "nothing is finalized"
+    );
+
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
+    let addr = stub_member(Arc::clone(&version)).await;
+    let refused = store
+        .handle
+        .add_learner_without_waiting(2, addr.clone())
+        .await;
+    assert!(
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 10")),
+        "{refused:?}"
+    );
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the group's level joins");
+}
+
+/// A member already in the group that comes back on an older build (a wiped
+/// volume, the same id) answers the next append with a conflict. The leader
+/// asks its level again and sends it nothing while it is below the floor,
+/// then feeds it again once it reports the floor.
+#[tokio::test]
+async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "T1".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store.delete_tenant("t1").await.expect("delete");
+
+    let version = Arc::new(AtomicU16::new(
+        crate::store::raft::command::METADATA_VERSION,
+    ));
+    let conflict = Arc::new(AtomicBool::new(false));
+    let appends = Arc::new(AtomicUsize::new(0));
+    let app = {
+        let (version, conflict, appends) = (
+            Arc::clone(&version),
+            Arc::clone(&conflict),
+            Arc::clone(&appends),
+        );
+        axum::Router::new()
+            .route(
+                "/internal/raft/append-entries",
+                axum::routing::post(move || {
+                    appends.fetch_add(1, Ordering::SeqCst);
+                    let reply = if conflict.load(Ordering::SeqCst) {
+                        "Conflict"
+                    } else {
+                        "Success"
+                    };
+                    async move { axum::Json(serde_json::json!({ "Ok": reply })) }
+                }),
+            )
+            .route(
+                "/internal/raft/standing",
+                axum::routing::get(move || {
+                    let version = version.load(Ordering::SeqCst);
+                    async move {
+                        axum::Json(
+                            serde_json::json!({ "last_log_index": null, "version": version }),
+                        )
+                    }
+                }),
+            )
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the floor joins");
+
+    let fed_within = |within: Duration| {
+        let appends = Arc::clone(&appends);
+        async move {
+            let before = appends.load(Ordering::SeqCst);
+            tokio::time::sleep(within).await;
+            appends.load(Ordering::SeqCst) > before
+        }
+    };
+    assert!(fed_within(Duration::from_secs(2)).await, "never fed");
+
+    version.store(8, Ordering::SeqCst);
+    conflict.store(true, Ordering::SeqCst);
+    // The conflict lands, the member is asked again and held.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !fed_within(Duration::from_secs(2)).await,
+        "the leader kept replicating to a member below the floor"
+    );
+
+    conflict.store(false, Ordering::SeqCst);
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        Ordering::SeqCst,
+    );
+    assert!(
+        fed_within(Duration::from_secs(3)).await,
+        "the member was not fed again after reporting the floor"
+    );
+}

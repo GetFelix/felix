@@ -18,15 +18,7 @@ async fn serve(app: axum::Router) -> String {
 }
 
 fn network(addr: &str) -> HttpNetwork {
-    HttpNetwork {
-        client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("client"),
-        target: 2,
-        base: format!("http://{addr}"),
-        heartbeat: Duration::from_millis(150),
-    }
+    HttpNetwork::for_tests(addr, crate::raft::hold::tests::hold_at(Default::default()))
 }
 
 async fn vote(addr: &str) -> Reply {

@@ -30,6 +30,7 @@
 //!   state machine (#338 gives them theirs).
 mod handle;
 mod health;
+mod hold;
 mod http;
 mod join;
 mod leader;

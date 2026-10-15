@@ -356,6 +356,7 @@ fn snapshot() -> Snapshot {
             order: VecDeque::from([s("r")]),
             responses: any_map(vec![1]),
         },
+        levels_used: 10,
     }
 }
 

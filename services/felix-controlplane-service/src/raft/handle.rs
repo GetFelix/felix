@@ -84,6 +84,12 @@ impl RaftHandle {
         let state_machine =
             store::StateMachineStore::open(Arc::clone(&db), Arc::clone(&app)).await?;
 
+        let versions = Arc::default();
+        let hold = Arc::new(super::hold::Hold::new(
+            settings.node_id,
+            Arc::clone(&app),
+            Arc::clone(&versions),
+        ));
         let raft = Raft::new(
             settings.node_id,
             config,
@@ -91,6 +97,7 @@ impl RaftHandle {
                 &settings.security,
                 settings.peer_addrs.clone(),
                 settings.heartbeat_interval,
+                hold,
             )?,
             log_store,
             state_machine,
@@ -140,7 +147,7 @@ impl RaftHandle {
             db: Arc::downgrade(&db),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
-            versions: Arc::default(),
+            versions,
             stopped: Arc::default(),
         })
     }
