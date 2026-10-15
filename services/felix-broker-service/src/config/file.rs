@@ -215,6 +215,21 @@ impl BrokerConfig {
         if let Some(value) = override_cfg.subscriber_queue_max_bytes_total {
             config.subscriber_queue_max_bytes_total = value;
         }
+        if let Some(value) = override_cfg.subscriber_egress_max_bytes {
+            config.subscriber_egress_max_bytes = value;
+        }
+        if let Some(value) = override_cfg.replay_ring_max_bytes {
+            config.replay_ring_max_bytes = value;
+        }
+        if let Some(value) = override_cfg.replay_ring_max_bytes_total {
+            config.replay_ring_max_bytes_total = value;
+        }
+        if let Some(value) = override_cfg.cache_watch_max_bytes {
+            config.cache_watch_max_bytes = value;
+        }
+        if let Some(value) = override_cfg.cache_watch_max_bytes_total {
+            config.cache_watch_max_bytes_total = value;
+        }
         if let Some(value) = override_cfg.subscriber_queue_policy
             && let Some(parsed) = parse_sub_queue_policy(&value)
         {
@@ -319,6 +334,11 @@ pub(super) struct BrokerConfigOverride {
     max_subscriptions_per_conn_total: Option<usize>,
     subscriber_queue_max_bytes: Option<usize>,
     subscriber_queue_max_bytes_total: Option<usize>,
+    subscriber_egress_max_bytes: Option<usize>,
+    replay_ring_max_bytes: Option<usize>,
+    replay_ring_max_bytes_total: Option<usize>,
+    cache_watch_max_bytes: Option<usize>,
+    cache_watch_max_bytes_total: Option<usize>,
     subscriber_queue_policy: Option<String>,
     subscriber_writer_lanes: Option<usize>,
     subscriber_lane_queue_depth: Option<usize>,

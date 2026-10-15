@@ -107,7 +107,15 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
         .context("configure subscriber queue depth")?
         .with_subscriber_queue_policy(config.subscriber_queue_policy)
         .with_subscriber_queue_max_bytes(config.subscriber_queue_max_bytes)
-        .with_subscriber_queue_max_bytes_total(config.subscriber_queue_max_bytes_total);
+        .with_subscriber_queue_max_bytes_total(config.subscriber_queue_max_bytes_total)
+        .with_replay_ring_max_bytes(
+            config.replay_ring_max_bytes,
+            config.replay_ring_max_bytes_total,
+        )
+        .with_cache_watch_max_bytes(
+            config.cache_watch_max_bytes,
+            config.cache_watch_max_bytes_total,
+        );
     let broker = match consumer_groups {
         Some((groups, dead_letters)) => broker.with_consumer_groups(
             groups,

@@ -26,7 +26,7 @@ In publish → delivery order:
 | 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | none, always waits (within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
 | 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
 | 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
-| 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream; their bytes count toward checkpoint 5's byte bound | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
+| 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream; their bytes count toward the subscription's share of the connection's egress byte bound | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new`; `subscriber_egress_max_bytes` = 256 MiB per connection |
 
 Checkpoints 1-2 are client-side (see
 [Internals: The Publish Path](/development/internals-publish/#client-side-publisherpublish)),
@@ -62,15 +62,29 @@ waits for the bytes. It waits only after queueing the batch for every
 subscriber with room, and then on all the full ones at once, so one full queue
 does not delay delivery to the others.
 
-The bytes do not come back when the feeder takes the batch. The feeder reads
-with `SubscriptionReceiver::recv_held`, and the permit travels with the frame
-built from it through the writer lane, the connection writer's queue at
-checkpoint 6, and the write itself; a frame built from several batches carries
-all their permits (`HeldBytes::absorb`). So one byte bound covers a
-subscription's whole egress path: frames piling up behind a flow-controlled
-stream fill it, and the next batch meets the policy at checkpoint 5 instead of
-another frame queueing in the lanes. The lanes' entry counts still apply, but
-memory is decided by the byte bound.
+Past checkpoint 5 the batch counts against a second byte bound. The feeder
+reads with `SubscriptionReceiver::recv_held`, then takes room for the batch in
+its subscription's share of the connection's egress budget
+(`handlers/subscribe/egress.rs`), and only then gives back the subscriber's
+own bytes (`HeldBytes::release_subscriber`). The egress hold travels with the
+frame through the writer lane, the connection writer's queue at checkpoint 6,
+and the write itself; a frame built from several batches carries all their
+holds. The broker-wide permit, when there is one, rides along the same way,
+so `subscriber_queue_max_bytes_total` still covers a batch until it is
+written.
+
+Each subscription's share is the budget divided by the subscriptions on the
+connection, and a feeder waits only on its own share: the only thing that
+frees it is the subscription's own frames being written or dropped. A pool
+shared by the whole connection would let one flow-controlled subscription
+take all of it and make every other feeder on the connection wait. With
+shares, a stalled subscription stops at its share, its broker queue fills,
+and the next batch meets the policy at checkpoint 5 for that subscriber
+alone. A frame larger than the share still goes once the subscription has
+nothing else waiting. While coalescing, a feeder that finds its share full
+ends the frame instead of waiting with it unsent. The lanes' entry counts
+still apply, but memory is decided by the byte bounds: the queue bound for
+what waits at checkpoint 5, the egress share for everything after it.
 
 ### Why two queue-policy checkpoints on egress (5 and 6)
 

@@ -1,6 +1,7 @@
 //! The shared per-connection writer.
 
 use super::*;
+use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
 use crate::serving::quic::handlers::subscribe::writer::ConnectionWriterConfig;
 
 fn writer_config() -> ConnectionWriterConfig {
@@ -13,9 +14,11 @@ fn writer_config() -> ConnectionWriterConfig {
 
 #[tokio::test]
 async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
-    // Byte-bounded, so the test can see the writer give the bytes back.
-    let broker =
-        Arc::new(Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100));
+    // Bounded broker-wide, which covers a frame until it is written, so the
+    // test can see the writer give the bytes back.
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes_total(100),
+    );
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
@@ -34,8 +37,10 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
     broker
         .publish("t1", "default", "orders", Bytes::from_static(b"bb"))
         .await?;
-    let (_, held_a) = rx.recv_held().await.expect("a");
-    let (_, held_b) = rx.recv_held().await.expect("bb");
+    let mut held_a = EgressBytes::default();
+    held_a.carry(rx.recv_held().await.expect("a").1);
+    let mut held_b = EgressBytes::default();
+    held_b.carry(rx.recv_held().await.expect("bb").1);
 
     let (server_config, cert) = make_server_config()?;
     let transport = TransportConfig::default();
@@ -176,7 +181,7 @@ async fn run_connection_writer_handles_write_error() -> Result<()> {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: EgressBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -238,7 +243,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: EgressBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -271,7 +276,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: EgressBytes::default(),
     })
     .await
     .context("late delivery")?;
@@ -348,7 +353,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: EgressBytes::default(),
     })
     .await
     .context("delivery")?;
@@ -466,7 +471,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
             item_count: 1,
             first_enqueued_at: now,
             enqueue_at: now,
-            held: felix_broker::HeldBytes::default(),
+            held: EgressBytes::default(),
         })
         .await
         .context("delivery for the stalled subscription")?;
@@ -482,7 +487,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: EgressBytes::default(),
     })
     .await
     .context("delivery for the healthy subscription")?;
@@ -572,7 +577,7 @@ async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
             item_count: 1,
             first_enqueued_at: now,
             enqueue_at: now,
-            held: felix_broker::HeldBytes::default(),
+            held: EgressBytes::default(),
         })
         .await
         .context("delivery")?;

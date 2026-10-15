@@ -1,10 +1,7 @@
 use super::*;
 
 fn bytes(per_subscriber: usize, broker: usize) -> QueueBytes {
-    QueueBytes {
-        per_subscriber,
-        broker: ByteBudget::new(broker),
-    }
+    QueueBytes::new(per_subscriber, broker, "felix_sub_queue_bytes")
 }
 
 #[test]
@@ -123,4 +120,49 @@ async fn both_bounds_above_four_gib_hold_and_wait_in_bytes() {
     assert_eq!(sub.own_available(), Some(0));
     drop(oversize);
     assert_eq!(sub.own_available(), Some(6 * GIB));
+}
+
+#[test]
+fn releasing_the_subscriber_share_keeps_the_broker_share() {
+    let bytes = bytes(100, 100);
+    let broker = bytes.broker.clone().expect("bounded");
+    let sub = bytes.for_subscriber();
+    let mut held = sub.try_hold(60).expect("fits");
+    held.release_subscriber();
+    assert_eq!(sub.own_available(), Some(100));
+    assert_eq!(broker.available(), 40);
+    // Absorbing more after the release still gives everything back on drop.
+    held.absorb(sub.try_hold(30).expect("fits"));
+    drop(held);
+    assert_eq!(sub.own_available(), Some(100));
+    assert_eq!(broker.available(), 100);
+}
+
+#[test]
+fn pooled_bytes_grow_and_shrink_against_a_shared_budget() {
+    let budget = ByteBudget::new(100).expect("bounded");
+    let mut a = PooledBytes::new(Some(budget.clone()));
+    let mut b = PooledBytes::new(Some(budget.clone()));
+    assert!(a.try_grow(70));
+    assert!(!b.try_grow(40));
+    assert_eq!(b.bytes(), 0);
+    assert!(b.try_grow(30));
+    assert_eq!(budget.available(), 0);
+    a.shrink(50);
+    assert_eq!(budget.available(), 50);
+    drop(a);
+    assert_eq!(budget.available(), 70);
+}
+
+#[test]
+fn pooled_bytes_round_to_whole_units_above_four_gib() {
+    let budget = ByteBudget::new(8 << 30).expect("bounded");
+    let full = budget.available();
+    let mut pool = PooledBytes::new(Some(budget.clone()));
+    assert!(pool.try_grow(1));
+    assert!(pool.try_grow(1));
+    // 8 GiB counts in units of four bytes; two bytes held take one unit.
+    assert_eq!(full - budget.available(), 4);
+    pool.shrink(2);
+    assert_eq!(budget.available(), full);
 }

@@ -740,7 +740,11 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
             .with_log_capacity(log_capacity)?
             .with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block)
             .with_subscriber_queue_max_bytes(broker_config.subscriber_queue_max_bytes)
-            .with_subscriber_queue_max_bytes_total(broker_config.subscriber_queue_max_bytes_total),
+            .with_subscriber_queue_max_bytes_total(broker_config.subscriber_queue_max_bytes_total)
+            .with_replay_ring_max_bytes(
+                broker_config.replay_ring_max_bytes,
+                broker_config.replay_ring_max_bytes_total,
+            ),
     );
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;

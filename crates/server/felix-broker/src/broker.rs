@@ -43,14 +43,15 @@ use crate::cache::CacheWatchHub;
 use crate::durable::DurableStorage;
 use crate::error::{BrokerError, Result};
 use crate::queue::{ConsumerGroups, DeadLetters, GroupReader};
-use crate::stream::{ByteBudget, QueueBytes, StreamState, SubQueuePolicy};
+use crate::stream::{QueueBytes, RingBytes, StreamState, SubQueuePolicy};
 use keys::{CacheKey, NamespaceKey, StreamKey, TopicKey};
 
 // Capacity defaults for streams this broker creates.
 const DEFAULT_TOPIC_CAPACITY: usize = 1024;
 const DEFAULT_LOG_CAPACITY: usize = 1024;
 const DEFAULT_SUB_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
-const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_REPLAY_RING_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// In-process broker for pub/sub messaging.
 ///
@@ -110,6 +111,8 @@ pub struct Broker {
     subscriber_queue_policy: SubQueuePolicy,
     // Byte bounds on subscriber queues.
     subscriber_queue_bytes: QueueBytes,
+    // Byte bounds on replay rings.
+    ring_bytes: RingBytes,
     next_stream_handle: AtomicU64,
     // Disk-backed storage for streams registered with `durable: true`. `None`
     // means the broker is in-memory only and durable streams are rejected at
@@ -193,10 +196,12 @@ impl Broker {
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
             log_capacity: DEFAULT_LOG_CAPACITY,
             subscriber_queue_policy: DEFAULT_SUB_QUEUE_POLICY,
-            subscriber_queue_bytes: QueueBytes {
-                per_subscriber: DEFAULT_SUB_QUEUE_MAX_BYTES,
-                broker: None,
-            },
+            subscriber_queue_bytes: QueueBytes::new(
+                DEFAULT_SUB_QUEUE_MAX_BYTES,
+                0,
+                "felix_sub_queue_bytes",
+            ),
+            ring_bytes: RingBytes::new(DEFAULT_REPLAY_RING_MAX_BYTES, 0),
             next_stream_handle: AtomicU64::new(1),
             durable_storage: None,
             consumer_groups: None,
@@ -254,18 +259,53 @@ impl Broker {
     /// How many payload bytes one subscriber's queue may hold; zero for no
     /// bound. When it is full the queue policy applies, as for a full count.
     /// A batch larger than the bound is still queued into an empty queue.
-    /// Defaults to 256 MiB.
+    /// A receiver that moves a batch on into a queue of its own can stop
+    /// counting it here ([`HeldBytes::release_subscriber`](crate::HeldBytes::release_subscriber)).
+    /// Defaults to 64 MiB.
     pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
         self.subscriber_queue_bytes.per_subscriber = bytes;
         self
     }
 
-    /// How many payload bytes all subscriber queues together may hold; zero,
-    /// the default, for no bound. A hard ceiling on queued memory, at the
-    /// cost of isolation: once it is reached, a fast subscriber's batch is
-    /// handled by the queue policy because slow ones hold the budget.
+    /// How many payload bytes all subscriber queues together may hold,
+    /// including batches a receiver has taken but not yet written; zero, the
+    /// default, for no bound. A hard ceiling on queued memory, at the cost of
+    /// isolation: once it is reached, a fast subscriber's batch is handled by
+    /// the queue policy because slow ones hold the budget.
     pub fn with_subscriber_queue_max_bytes_total(mut self, bytes: usize) -> Self {
-        self.subscriber_queue_bytes.broker = ByteBudget::new(bytes);
+        self.subscriber_queue_bytes = QueueBytes::new(
+            self.subscriber_queue_bytes.per_subscriber,
+            bytes,
+            "felix_sub_queue_bytes",
+        );
+        self
+    }
+
+    /// Payload bytes each stream shard's replay ring keeps, on top of its
+    /// entry count, and across every ring on the broker; zero leaves that
+    /// bound off. The oldest records go first. Readers further back are
+    /// served from disk, or told their cursor is too old on an in-memory
+    /// stream. Defaults to 64 MiB per ring and no broker-wide bound. Applies
+    /// to streams created after the call.
+    pub fn with_replay_ring_max_bytes(mut self, per_ring: usize, total: usize) -> Self {
+        self.ring_bytes = RingBytes::new(per_ring, total);
+        self
+    }
+
+    /// Payload bytes (key and value) one cache watch may have queued, and
+    /// every watch on the broker together; zero leaves that bound off. A
+    /// watch that would go over is ended as lagged, as for a full count, and
+    /// the client re-watches from where it fell behind. Defaults to 64 MiB
+    /// per watch and no broker-wide bound. Applies to watches registered
+    /// after the call.
+    pub fn with_cache_watch_max_bytes(self, per_watch: usize, total: usize) -> Self {
+        if let Some(hub) = &self.cache_watches {
+            hub.set_queue_bytes(QueueBytes::new(
+                per_watch,
+                total,
+                "felix_cache_watch_queue_bytes",
+            ));
+        }
         self
     }
 

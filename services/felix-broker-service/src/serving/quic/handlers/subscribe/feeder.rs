@@ -10,6 +10,7 @@ use crate::observability::tenants::TenantDelivery;
 use crate::observability::timings;
 use crate::serving::quic::handlers::publish::IdentityLimits;
 use crate::serving::quic::handlers::subscribe::config::EventWriterConfig;
+use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
 use crate::serving::quic::handlers::subscribe::lane::{LaneCommand, WriterLaneManager};
 use crate::serving::quic::telemetry::{t_histogram, t_now_if, t_should_sample};
 
@@ -48,8 +49,12 @@ pub(super) async fn run_lane_feeder(
     config: EventWriterConfig,
     subscriptions: Arc<IdentityLimits>,
     delivery: TenantDelivery,
-    revocation: Option<SubscriberRevocation>,
+    mut revocation: Option<SubscriberRevocation>,
 ) {
+    let Some(share) = manager.upgrade().map(|manager| manager.egress.join()) else {
+        subscriptions.release();
+        return;
+    };
     let mut revoked_frame = None;
     let mut revoked = {
         let revocable = revocation.as_ref().map(|r| r.revocable.clone());
@@ -67,14 +72,15 @@ pub(super) async fn run_lane_feeder(
         config.flush_max_delay,
         config.max_bytes_per_write,
     );
-    // Each batch keeps its bytes held against the subscriber's byte bounds
-    // until the frame carrying it is written, so a frame waiting in the lanes
-    // counts toward them like one waiting in the broker queue.
+    // A batch counts against the subscriber's queue bound until it holds room
+    // in this subscription's share of the connection's egress budget, and
+    // against that share until its frame is written. A broker-wide queue
+    // bound, if set, covers it the whole way.
     let mut pending: Option<(DeliveryEnvelope, HeldBytes)> = None;
     let mut busy = false;
 
     loop {
-        let (envelope, mut held) = match pending.take() {
+        let (envelope, queued) = match pending.take() {
             Some(next) => next,
             None => tokio::select! {
                 next = event_rx.recv_held() => match next {
@@ -82,15 +88,22 @@ pub(super) async fn run_lane_feeder(
                     None => break,
                 },
                 () = &mut revoked => {
-                    tracing::info!(
-                        subscriber_id = config.subscription_id,
-                        "ending a subscription: its credential was revoked"
-                    );
-                    revoked_frame = revocation.map(|r| r.last_frame);
+                    revoked_frame = revoke(&config, revocation.take());
                     break;
                 }
             },
         };
+        // Waits only on this subscription's own frames, so a stalled stream
+        // holds up nobody else. Its broker queue fills and sheds meanwhile.
+        let mut held = tokio::select! {
+            biased;
+            held = share.hold(envelope.payload_bytes()) => held,
+            () = &mut revoked => {
+                revoked_frame = revoke(&config, revocation.take());
+                break;
+            }
+        };
+        held.carry(queued);
         let first_enqueued_at = envelope.enqueued_at();
         let Some(manager) = manager.upgrade() else {
             break;
@@ -176,7 +189,7 @@ pub(super) async fn run_lane_feeder(
                             if end == payloads.len() {
                                 held.take().unwrap_or_default()
                             } else {
-                                HeldBytes::default()
+                                EgressBytes::default()
                             },
                         )
                         .await;
@@ -256,8 +269,14 @@ pub(super) async fn run_lane_feeder(
                 pending = Some((envelope, next_held));
                 break;
             }
+            // A full share ends the frame rather than waiting with it unsent.
+            let Some(more) = share.try_hold(payload_len) else {
+                pending = Some((envelope, next_held));
+                break;
+            };
             let payload = envelope.payloads()[0].clone();
-            held.absorb(next_held);
+            held.absorb(more);
+            held.carry(next_held);
             batch_bytes += payload.len();
             batch.push(payload);
             if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
@@ -364,7 +383,7 @@ pub(super) async fn enqueue_lane_frame(
     frame: Bytes,
     item_count: usize,
     first_enqueued_at: Instant,
-    held: HeldBytes,
+    held: EgressBytes,
 ) {
     let cmd = LaneCommand::Delivery {
         subscriber_id,
@@ -377,6 +396,14 @@ pub(super) async fn enqueue_lane_frame(
     // Fails only once the connection's lanes are gone, and its subscriptions
     // with them.
     let _ = manager.enqueue(lane_idx, cmd).await;
+}
+
+fn revoke(config: &EventWriterConfig, revocation: Option<SubscriberRevocation>) -> Option<Bytes> {
+    tracing::info!(
+        subscriber_id = config.subscription_id,
+        "ending a subscription: its credential was revoked"
+    );
+    revocation.map(|r| r.last_frame)
 }
 
 /// What ends a subscription when the credential it was opened with is

@@ -1,7 +1,7 @@
 //! Per-stream state: the subscriber registry, its lock-free publish snapshot,
 //! and the bounded in-memory log that backs cursor replay.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -16,6 +16,7 @@ use super::budget::{QueueBytes, SubscriberBytes};
 use super::committed::{CommitHold, ReadBound};
 use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
+use super::ring::{LogEntry, Ring, RingBytes};
 use super::subscription::SubscriptionReceiver;
 use crate::ConsistencyLevel;
 use crate::broker::RingRecord;
@@ -79,6 +80,7 @@ impl StreamState {
         subscriber_queue_capacity: usize,
         subscriber_queue_policy: SubQueuePolicy,
         subscriber_queue_bytes: QueueBytes,
+        ring_bytes: &RingBytes,
         durable: Option<StreamLog>,
         consistency: ConsistencyLevel,
     ) -> Self {
@@ -89,7 +91,7 @@ impl StreamState {
             subscribers_snapshot: ArcSwap::from_pointee(Vec::new()),
             subscribers: Mutex::new(SubscriberRegistry::default()),
             log_state: Mutex::new(LogState {
-                log: VecDeque::new(),
+                log: Ring::new(ring_bytes),
                 next_seq: 0,
                 generation_start_run: None,
                 state_view: None,
@@ -216,6 +218,9 @@ impl StreamState {
                 continue;
             }
             let record = crate::commit::client_record(record);
+            if !state.log.admit(record.payload.len()) {
+                continue;
+            }
             state.log.push_back(LogEntry {
                 seq: record.offset,
                 payload: record.payload,
@@ -223,10 +228,7 @@ impl StreamState {
                 timestamp_micros: Some(record.timestamp_micros),
             });
         }
-        let overflow = state.log.len().saturating_sub(capacity);
-        if overflow > 0 {
-            state.log.drain(..overflow);
-        }
+        state.log.trim(capacity);
         state.next_seq = next_seq;
         state.state_view = None;
         state.next_seq = next_seq;
@@ -364,14 +366,21 @@ impl StreamState {
             _ => 0,
         };
         let mut seq = first_seq.unwrap_or(state.next_seq);
-        for payload in payloads {
-            state.log.push_back(LogEntry {
-                seq,
-                payload: payload.clone(),
-                publisher: publisher.cloned(),
-                timestamp_micros,
-            });
-            seq = seq.checked_add(1).expect("log sequence overflow");
+        let bytes = payloads.iter().map(Bytes::len).sum();
+        if state.log.admit(bytes) {
+            for payload in payloads {
+                state.log.push_back(LogEntry {
+                    seq,
+                    payload: payload.clone(),
+                    publisher: publisher.cloned(),
+                    timestamp_micros,
+                });
+                seq = seq.checked_add(1).expect("log sequence overflow");
+            }
+        } else {
+            seq = seq
+                .checked_add(payloads.len() as u64)
+                .expect("log sequence overflow");
         }
         // A pinned batch may start beyond `next_seq` when an earlier publish
         // consumed offsets without reaching the ring; the tail is what the next
@@ -383,10 +392,7 @@ impl StreamState {
         }
 
         // Trim once after append to keep the newest `log_capacity` entries.
-        let overflow = state.log.len().saturating_sub(log_capacity);
-        if overflow > 0 {
-            state.log.drain(..overflow);
-        }
+        state.log.trim(log_capacity);
 
         // Captured while the log lock is still held, so any subscriber that
         // registers after this point takes these records as backlog instead.
@@ -727,7 +733,7 @@ pub(crate) struct SubscriberRegistry {
 #[derive(Debug)]
 pub(crate) struct LogState {
     // Bounded log; oldest entries are dropped as new ones arrive.
-    pub(crate) log: VecDeque<LogEntry>,
+    pub(crate) log: Ring,
     // Next sequence number to assign.
     pub(crate) next_seq: u64,
     /// `(offset, run)`: the `run` offsets just below `offset` hold
@@ -737,14 +743,6 @@ pub(crate) struct LogState {
     /// The keyed state of every commit below `next_seq`, once built. `None`
     /// until a reader asks, and again whenever the ring is reset.
     pub(crate) state_view: Option<StateView>,
-}
-
-#[derive(Debug)]
-pub(crate) struct LogEntry {
-    pub(crate) seq: u64,
-    pub(crate) payload: Bytes,
-    pub(crate) publisher: Option<Bytes>,
-    pub(crate) timestamp_micros: Option<u64>,
 }
 
 #[cfg(test)]

@@ -191,10 +191,11 @@ at each level:
   is overloaded, and it is deliberately visible.
 - **The subscriber queue** bounds what one subscription can have pending, by
   entries (`subscriber_queue_capacity`) and by payload bytes
-  (`subscriber_queue_max_bytes`, 256 MiB by default). The byte bound also
-  covers frames already taken from the queue and waiting to be written, so it
-  bounds the subscription's memory all the way to the network. What happens
-  when either fills is set by the overflow policy:
+  (`subscriber_queue_max_bytes`, 64 MiB by default). Frames already taken
+  from the queue and waiting to be written count against the connection's
+  writer-lane bound instead (`subscriber_egress_max_bytes`), so the
+  subscription's memory is bounded all the way to the network. What happens
+  when either queue bound fills is set by the overflow policy:
 
 ![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/diagrams/slow-consumer.svg)
 
@@ -228,26 +229,44 @@ caused by the byte bound is the same drop as one caused by the count: the same
 offset gap, the same `subscription_lagged` on a durable stream, the same
 counters, plus `felix_sub_queue_byte_dropped_total`.
 
-Because the bound reaches the writer lanes, it also has to fit what a
-subscriber that is keeping up has in flight. At 64 MiB, a subscriber reading
-4 MiB batches (64 records of 64 KiB) at fanout 10 was throttled and its p99
-latency grew; 256 MiB, the default, was enough.
+The subscriber bound counts only what waits in the broker queue. Once the
+subscription's feeder takes a batch toward the network, the batch counts
+against `subscriber_egress_max_bytes` instead: a byte bound on everything one
+connection's subscriptions have in the writer lanes and the connection writer,
+256 MiB by default. Each subscription on the connection gets an equal share of
+it and waits only for its own frames to be written. A subscription whose QUIC
+stream stalls fills its share and stops there; its broker queue then fills and
+the overflow policy applies to it alone. The other subscriptions on the
+connection never wait for it. A frame larger than the share still goes once
+the subscription has nothing else waiting. Splitting the two keeps a
+subscriber that is keeping up from looking like one that has fallen behind
+just because its batches are in the middle of being written.
 
 `subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
-on the broker. It is off by default because it gives up isolation: once slow
+on the broker, and it keeps covering a batch through the writer lanes until it
+is written. It is off by default because it gives up isolation: once slow
 subscribers hold the shared budget, a fast subscriber's batch meets the
-overflow policy too. Without it, each subscriber can hold up to
-`subscriber_queue_max_bytes` or its largest single batch, whichever is larger,
-since an oversize batch still enters an empty queue: 1,000 slow subscribers at
-the 256 MiB default could pin 250 GiB. With `subscriber_queue_max_bytes` set to
-`0` there is no per-subscriber byte term at all, and only queue capacity times
-batch size limits a subscriber. In production, set the total to what the broker
-can afford for queued payloads. Any size works, including totals above 4 GiB.
+overflow policy too. Without it, a stalled subscriber can hold up to
+`subscriber_queue_max_bytes` (or its largest single batch, since an oversize
+batch still enters an empty queue) plus its share of the writer lanes: 1,000
+slow subscribers at the 64 MiB default could pin 62.5 GiB in their queues,
+plus up to 256 MiB per connection in the lanes. With
+`subscriber_queue_max_bytes` set to `0` there is no per-subscriber byte term
+at all, and only queue capacity times batch size limits a subscriber's queue.
+In production, set the total to what the broker can afford for queued
+payloads. Any size works, including totals above 4 GiB.
 
-Two other in-memory buffers are bounded by entry count only. A stream shard's
-replay ring keeps its most recent 1024 records for cursor replay and fanout,
-however large those records are. A cache watch's queue holds up to 1024
-changes, each with its value. Neither counts toward the byte bounds above.
+Two other in-memory buffers have byte bounds of their own. A stream shard's
+replay ring keeps its most recent 1024 records for cursor replay, and at most
+`replay_ring_max_bytes` (64 MiB by default) of their payloads; the oldest go
+first, so a large-record stream keeps fewer records in memory and a resume
+from further back reads from disk (or, on an in-memory stream, is refused as
+too old). A cache watch's queue holds up to 1024 changes and at most
+`cache_watch_max_bytes` (64 MiB by default) of their keys and values; a watch
+that would go over ends as lagged and the client re-watches from the change it
+missed, as for a full queue. Each has an optional broker-wide total
+(`replay_ring_max_bytes_total`, `cache_watch_max_bytes_total`), off by
+default.
 
 `DropOld` is accepted in configuration and counted separately, but it currently
 behaves as `DropNew`: the arriving record is the one discarded. The metric

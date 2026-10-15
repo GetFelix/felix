@@ -579,19 +579,31 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES`
 
-**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads, and keeps counting until the frame carrying it is written to the subscriber's QUIC stream, so frames waiting in the writer lanes count too. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+**Description**: Payload bytes waiting in one subscriber's broker-side queue. A queued batch counts the sum of its records' payloads until the subscription's feeder moves it into the writer lanes, where `FELIX_SUB_EGRESS_MAX_BYTES` counts it instead. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+```bash
+export FELIX_SUB_QUEUE_MAX_BYTES="67108864"
+```
+
+### `FELIX_SUB_EGRESS_MAX_BYTES`
+
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share (this divided by the subscriptions on the connection) and waits only for its own frames, so one whose QUIC stream stalls stops at its share and never holds up the others; its broker queue fills behind it and `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the share still goes once the subscription has nothing else in the lanes. `0` leaves the lanes bounded by entry counts only. `felix_sub_egress_bytes` shows what the lanes hold.
 
 **Type**: Non-negative integer (bytes)
 
 **Default**: `268435456` (256 MiB)
 
 ```bash
-export FELIX_SUB_QUEUE_MAX_BYTES="268435456"
+export FELIX_SUB_EGRESS_MAX_BYTES="268435456"
 ```
 
 ### `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
 
-**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`. Without it, each subscriber can hold up to `FELIX_SUB_QUEUE_MAX_BYTES` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `FELIX_SUB_QUEUE_MAX_BYTES=0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
+**Description**: Payload bytes all subscriber queues on the broker may hold together, counting a batch until its frame is written, so the writer lanes are inside it. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`. Without it, a stalled subscriber can hold up to `FELIX_SUB_QUEUE_MAX_BYTES` (or its largest single batch, since an oversize batch still enters an empty queue) plus its share of `FELIX_SUB_EGRESS_MAX_BYTES`; worst-case memory is the number of subscribers times the first, plus the second per connection. With `FELIX_SUB_QUEUE_MAX_BYTES=0`, only queue capacity times batch size limits a subscriber's queue. Set it in production. Values above 4 GiB are honoured.
 
 **Type**: Non-negative integer (bytes)
 
@@ -599,6 +611,30 @@ export FELIX_SUB_QUEUE_MAX_BYTES="268435456"
 
 ```bash
 export FELIX_SUB_QUEUE_MAX_BYTES_TOTAL="1073741824"
+```
+
+### `FELIX_REPLAY_RING_MAX_BYTES`
+
+**Description**: Payload bytes each stream shard's replay ring keeps in memory for cursor replay, on top of its 1024 records. The oldest records go first; the newest is kept even when it alone is larger. A resume from below the ring reads from disk on a durable stream and is refused as too old on an in-memory stream, so this trades replay depth for memory and never affects live delivery. `felix_replay_ring_bytes` shows what rings hold. `0` turns the byte bound off.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+```bash
+export FELIX_REPLAY_RING_MAX_BYTES="67108864"
+```
+
+### `FELIX_REPLAY_RING_MAX_BYTES_TOTAL`
+
+**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records to make room, never another ring's. A batch that does not fit even in an empty ring is not kept, and that ring is left empty until the next batch.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `0` (no bound)
+
+```bash
+export FELIX_REPLAY_RING_MAX_BYTES_TOTAL="1073741824"
 ```
 
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
@@ -877,6 +913,30 @@ export FELIX_CACHE_STREAM_RECV_WINDOW="33554432"   # 32 MiB
 **Example**:
 ```bash
 export FELIX_CACHE_SEND_WINDOW="268435456"
+```
+
+### `FELIX_CACHE_WATCH_MAX_BYTES`
+
+**Description**: Key and value bytes one cache watch may have queued on the broker, on top of its 1024 changes. A watch that would go over ends as lagged, as for a full queue, and the client re-watches from the change it missed without a gap. Counts in `felix_cache_watch_lagged_total`; `felix_cache_watch_queue_bytes` shows what watch queues hold. `0` turns the byte bound off.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+```bash
+export FELIX_CACHE_WATCH_MAX_BYTES="67108864"
+```
+
+### `FELIX_CACHE_WATCH_MAX_BYTES_TOTAL`
+
+**Description**: Key and value bytes all cache watches on the broker may have queued together. Caps watch memory at the cost of isolation: once slow watchers fill it, a watch that is keeping up can be ended as lagged too.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `0` (no bound)
+
+```bash
+export FELIX_CACHE_WATCH_MAX_BYTES_TOTAL="268435456"
 ```
 
 ## Cluster Client Connections
