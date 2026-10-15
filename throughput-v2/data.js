@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792097129478,
+  "lastUpdate": 1792101816325,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30628,6 +30628,58 @@ window.BENCHMARK_DATA = {
             "range": "2909.83",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 840466.39\nmean: 840045.98\nstdev: 2909.83\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "435ec7c810da72a88e4548adf679491404521f74",
+          "message": "feat(replication): learn each follower's storage id and reset it when it changes (part of #1266) (#1270)\n\n* feat(replication): learn each follower's storage id and reset it when it changes (part of #1266)\n\nPeers exchange storage identities behind a new capability bit,\nSTORAGE_IDENTITY (1 << 10): HelloCapableOk carries 16 trailing bytes only\nwhen its bits include it, and a responder sets it only for a caller that\noffered it, so older peers see unchanged frames.\n\nThe leader asks the pool for each follower's identity at the start of every\nexchange. A different identity starts the follower's cursor over at the\nshard's base and its group, dead-letter and counter cursors at zero, giving\nback any rebuild slot, so a wiped follower on an idle shard is no longer\nreported caught up. Reports carry the identity each follower was counted\nunder (replica_storage_ids, omitted when empty).\n\nFelixShard.tla gains Wipe, storage ids and a probe, with FelixShardWipe.cfg\n(pass) and FelixShardWipeNoIds.cfg (violates AckedSurvive).\n\n* spec: floor a wiped run's report at the report that landed\n\nTLC found FelixShardWipe reaching AckedSurvive: after a probe reset a\nfollower's count, a later report fell to length 0 and named the lagging\nfollower, while the acknowledgement was still released from the earlier\nreport the leader had heard. The code publishes the mark when that report\nlands, so its later reports never go below it; the model now floors the\nreport at what it heard, where wipes are checked.",
+          "timestamp": "2026-10-15T22:00:25Z",
+          "tree_id": "72bab3bce0ead7de3aab1b557aec60d244e8adc6",
+          "url": "https://github.com/GetFelix/felix/commit/435ec7c810da72a88e4548adf679491404521f74"
+        },
+        "date": 1792101815647,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 645640.03,
+            "range": "82646.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 645640.03\nmean: 665681.34\nstdev: 82646.14\ncv: 12.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 645640.03,
+            "range": "82646.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 645640.03\nmean: 665681.34\nstdev: 82646.14\ncv: 12.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 168168.24,
+            "range": "1291.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 168168.24\nmean: 168651.54\nstdev: 1291.83\ncv: 0.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1681682.44,
+            "range": "12918.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1681682.44\nmean: 1686515.45\nstdev: 12918.29\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
