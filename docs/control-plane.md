@@ -620,7 +620,7 @@ Four properties make that hold on every backend:
    row. Writers in one instance queue in memory before they take a pooled
    connection, so a long cascade does not starve reads of connections, and a
    writer that waits more than 5 s for its feed gives up with a 503
-   `unavailable` that is safe to retry.
+   `busy` that is safe to retry: nothing was written.
 3. A page holds at most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by
    default). A full page's `next_seq` is the seq after its last change, and a
    shorter page's is the feed's tail. A consumer further behind than one page

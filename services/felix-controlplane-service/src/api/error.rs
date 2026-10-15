@@ -62,13 +62,12 @@ pub fn api_conflict(code: &str, message: &str) -> ApiError {
 /// 500 from a store error: the error is logged here, the client gets only
 /// `message`.
 ///
-/// Except a write that could not go ahead in time, which is 503
-/// `unavailable` and worth retrying:
-/// - a Raft write that ran out its budget, because the group is electing or
-///   has lost quorum. It may still have committed, so a retried create can
-///   answer 409;
-/// - a Postgres catalog write that gave up waiting for other writes to its
-///   change feed. Nothing was written.
+/// Except a write that could not go ahead in time, which is 503:
+/// - `unavailable`: a Raft write that ran out its budget, because the group
+///   is electing or has lost quorum. It may still have committed, so a
+///   retried create can answer 409 and a retried delete 404;
+/// - `busy`: a Postgres write that gave up waiting for other writes to its
+///   change feed. Nothing was written, so a retry is safe.
 pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
     if let StoreError::Unexpected(inner) = err
         && inner
@@ -90,8 +89,8 @@ pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
         tracing::warn!(error = ?err, "controlplane write gave up waiting for its change feed");
         return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "too many concurrent catalog writes; retry",
+            "busy",
+            "too many concurrent writes; nothing was written, retry",
         );
     }
     tracing::error!(error = ?err, "controlplane storage error");

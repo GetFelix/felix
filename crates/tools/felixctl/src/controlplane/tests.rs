@@ -114,19 +114,14 @@ fn api(base: String) -> Api {
     }
 }
 
-const UNAVAILABLE: (&str, &str) = (
+const BUSY: (&str, &str) = (
     "503 Service Unavailable",
-    r#"{"code":"unavailable","message":"too many concurrent catalog writes; retry"}"#,
+    r#"{"code":"busy","message":"too many concurrent writes; nothing was written, retry"}"#,
 );
 
 #[tokio::test]
-async fn a_503_unavailable_is_retried() {
-    let (base, seen) = scripted(vec![
-        UNAVAILABLE,
-        UNAVAILABLE,
-        ("201 Created", r#"{"tenant_id":"t1"}"#),
-    ])
-    .await;
+async fn a_503_busy_is_retried() {
+    let (base, seen) = scripted(vec![BUSY, BUSY, ("201 Created", r#"{"tenant_id":"t1"}"#)]).await;
     let answer = api(base)
         .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
         .await
@@ -136,16 +131,16 @@ async fn a_503_unavailable_is_retried() {
 }
 
 #[tokio::test]
-async fn retries_of_a_503_unavailable_are_bounded() {
-    let (base, seen) = scripted(vec![UNAVAILABLE; 10]).await;
+async fn retries_of_a_503_busy_are_bounded() {
+    let (base, seen) = scripted(vec![BUSY; 10]).await;
     let err = api(base)
         .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
         .await
-        .expect_err("the control plane stays unavailable");
+        .expect_err("the control plane stays busy");
     assert_eq!(exit_for(&err), Exit::Server);
     assert_eq!(
         seen.load(std::sync::atomic::Ordering::SeqCst),
-        UNAVAILABLE_RETRIES.len() + 1
+        BUSY_RETRIES.len() + 1
     );
 }
 
@@ -163,5 +158,23 @@ async fn another_503_is_not_retried() {
         .post("/v1/resources", &[], Some(&json!({})))
         .await
         .expect_err("not a retryable 503");
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_503_unavailable_is_not_retried() {
+    let (base, seen) = scripted(vec![
+        (
+            "503 Service Unavailable",
+            r#"{"code":"unavailable","message":"no quorum"}"#,
+        ),
+        ("201 Created", "{}"),
+    ])
+    .await;
+    let err = api(base)
+        .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
+        .await
+        .expect_err("a Raft 503 may have committed");
+    assert_eq!(exit_for(&err), Exit::Server);
     assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

@@ -513,11 +513,12 @@ watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
 
 A create, update or delete of a tenant, namespace, stream or cache can answer
-`503` with code `unavailable`. On Postgres it means other writes to the same
-catalog feed held it for more than 5 s, for example a large tenant delete, and
-nothing was written, so retry it. On Raft it means no quorum committed the
-write in time; it may still land, so a retried create can answer `409`.
-`felixctl` retries an `unavailable` answer a few times before failing.
+`503`. Code `busy` means other writes to the same feed held it for more than
+5 s, for example a large tenant delete, and nothing was written, so retry it.
+Other store writes, such as rbac and placement, can answer `busy` too. Code
+`unavailable` is Raft: no quorum committed the write in time and it may still
+land, so a retried create can answer `409` and a retried delete `404`.
+`felixctl` retries only `busy`, a few times before failing.
 
 #### Creating several at once
 
@@ -545,7 +546,8 @@ Content-Type: application/json
 | `404` | the tenant or namespace does not exist | nothing |
 | `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
-| `503` | `unavailable`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; retry | nothing |
+| `503` | `busy`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; safe to retry | nothing |
+| `503` | `unavailable`: on Raft, no quorum committed the write in time; it may still land | unknown |
 
 A success lists every item in request order with `"status": "created"` or
 `"unchanged"`, so a caller that failed part-way sends the same batch again.

@@ -88,7 +88,7 @@ pub(crate) async fn list_streams(
         (status = 200, description = "Stream already exists with this configuration; nothing changed", body = Stream),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Stream already exists with a different configuration, or `jump_hash` routing was asked for before the fleet finalized it", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "Unavailable; retry. On Postgres, other writes to the same catalog feed held it for more than 5 s and nothing was written. On Raft, no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. Other store writes, such as rbac and placement, can answer `busy` too. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_stream(
@@ -271,7 +271,7 @@ pub(crate) async fn get_stream(
     responses(
         (status = 200, description = "Stream updated", body = Stream),
         (status = 404, description = "Stream or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "Unavailable; retry. On Postgres, other writes to the same catalog feed held it for more than 5 s and nothing was written. On Raft, no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. Other store writes, such as rbac and placement, can answer `busy` too. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn patch_stream(
@@ -311,7 +311,7 @@ pub(crate) async fn patch_stream(
     responses(
         (status = 204, description = "Stream deleted"),
         (status = 404, description = "Stream or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "Unavailable; retry. On Postgres, other writes to the same catalog feed held it for more than 5 s and nothing was written. On Raft, no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. Other store writes, such as rbac and placement, can answer `busy` too. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn delete_stream(

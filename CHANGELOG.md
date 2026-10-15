@@ -112,8 +112,10 @@ entries.
   queued in one control-plane instance no longer hold pooled connections while
   they wait, so a long cascading delete cannot starve reads (#1224). The
   commit-order guarantee holds once every control-plane instance runs this
-  release. `felixctl` retries a 503 `unavailable` from the control plane up
-  to three times, over about two seconds, before failing.
+  release. A Postgres write that gives up waiting answers 503
+  `busy` (nothing written, safe to retry); `felixctl` retries only `busy`, up
+  to three times over about two seconds. A Raft 503 `unavailable` may have
+  committed, so it is not retried.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
