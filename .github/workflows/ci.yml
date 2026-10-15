@@ -266,7 +266,9 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/warm-target
         with:
-          slot: ci-cluster-${{ matrix.suite }}
+          # Shared with `test`: a runner takes one job at a time, and the
+          # cluster build is a subset of the workspace's.
+          slot: ci-test
 
       - name: Install Task
         uses: arduino/setup-task@v3
@@ -356,12 +358,6 @@ jobs:
       - name: Rust Cache
         if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@v2
-
-      - name: Warm target dir
-        if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/warm-target
-        with:
-          slot: ci-checks
 
       - name: Install Task
         uses: arduino/setup-task@v3
