@@ -181,7 +181,7 @@ a majority already held (see "Retention and the quorum mark" in
 | `StagedCopyNeverDelaysAck` | A `Quorum` write the stream's own replicas would acknowledge is never held back by a destination's copy. A latency property, checked only where a destination is staged. |
 | `NoDuplicate` | No log holds one write twice. Checked where writes are re-sent. |
 | `OneLeaderPerGeneration` | No two brokers open for writes at one generation. Checked where replicas elect themselves and where placement promotes on suspicion. |
-| `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
+| `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation and while it still holds it, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 
@@ -566,15 +566,18 @@ pending change; it writes the set at a generation above the pending one.
 While a change is pending, `CpAdopt` adopts only a leader on the pending set
 and takes just the generation of one on the old set, which the new set's
 higher set generation deposes; the walk found an adopted old-set leader
-fenced that way. No other placement change starts while one is pending.
-Only the control plane ends a pending change, so while it is down a lost
-majority of the old set stops writes; nothing here checks liveness.
+fenced that way. No placement change other than a failover starts while
+one is pending. Only the control plane ends a pending change, so while it
+is down a lost majority of the old set stops writes, and a destination
+lost before the rest of the new set learns it leaves the change pending
+until a failover clears it; nothing here checks liveness.
 `AdoptedMatchesOpened` compares the control plane's leader, while it still
 holds the control plane's generation, with the pending set while there is
-one, since that is the set the control plane named it for. The swap walk found the window this closes: a replica removed by a
-cut-over that never heard of it stood, fenced the stopped old leader, and
-acknowledged on a majority of the old set, which the control plane had
-already dropped (`AckedOnMajority`).
+one, since that is the set the control plane named it for. The swap walk
+found the window this closes: a replica removed by a cut-over that never
+heard of it stood, fenced the stopped old leader, and acknowledged on a
+majority of the old set, which the control plane had already dropped
+(`AckedOnMajority`).
 
 Three rules come from TLC. The first version let a refused candidate fence on
 at the same generation with the set it had just learned, and let a leader or

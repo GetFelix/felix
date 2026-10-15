@@ -808,8 +808,8 @@ control plane.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need the next free metadata level on every
-  member, and a Postgres control plane gets a migration. Below that the control plane ignores election reports
-  and goes on promoting on suspicion.
+  member, and a Postgres control plane gets a migration. Below that the
+  control plane ignores election reports and goes on promoting on suspicion.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
   serving broker lacks `ELECTION`, the control plane is below that level, or
   the fleet does not fence every change of leader and every change of set:
