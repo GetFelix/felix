@@ -307,3 +307,150 @@ async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
         .expect("decodes")
         .expect("an empty unknown field is applied");
 }
+
+/// A tenant `t1` with namespace `ns`, a stream and a cache both named
+/// `orders`, and an assignment and report for each one's shard.
+async fn machine_with_reported_shards() -> MetadataStateMachine {
+    let machine = machine();
+    let setup = [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t1"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t1", "ns"),
+        },
+        MetaCommand::CreateStream {
+            stream: stream("t1", "ns", "orders"),
+        },
+        MetaCommand::CreateCache {
+            cache: cache("t1", "ns", "orders"),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-0", 7_000),
+        },
+    ];
+    for command in setup {
+        machine.dispatch(command).await.expect("setup");
+    }
+    for kind in [
+        crate::model::ShardKind::Stream,
+        crate::model::ShardKind::Cache,
+    ] {
+        let mut assignment = shard_assignment("t1", "ns", "orders", "broker-0");
+        assignment.key.kind = kind;
+        let mut report = replica_report("t1", "ns", "orders", 1_000);
+        report.key.kind = kind;
+        machine
+            .dispatch(MetaCommand::PutShardAssignment { assignment })
+            .await
+            .expect("assign");
+        machine
+            .dispatch(MetaCommand::RecordReplicaReport {
+                report,
+                leader: None,
+            })
+            .await
+            .expect("report");
+    }
+    machine
+}
+
+/// How many shard assignments and replica reports `t1/ns/orders` has left.
+async fn shards_left(machine: &MetadataStateMachine) -> (usize, usize) {
+    let store = machine.store();
+    let of_it = |key: &crate::model::ShardKey| key.tenant_id == "t1" && key.stream == "orders";
+    let assignments = store.list_shard_assignments().await.expect("assignments");
+    let reports = store.list_replica_reports().await.expect("reports");
+    (
+        assignments.iter().filter(|a| of_it(&a.key)).count(),
+        reports.iter().filter(|r| of_it(&r.key)).count(),
+    )
+}
+
+/// A delete entry without its level-10 flag applies as a member before that
+/// level applies it, so a mixed group stays identical: a namespace or tenant
+/// cascade leaves the shards' assignments and reports, and a stream or cache
+/// delete takes its assignments and leaves its reports. With the flag, every
+/// delete takes both.
+#[tokio::test]
+async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
+    let ns_key = || NamespaceKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+    };
+    let deletes = |take: bool| {
+        [
+            vec![MetaCommand::DeleteTenant {
+                tenant_id: "t1".to_string(),
+                take_shards: take,
+            }],
+            vec![MetaCommand::DeleteNamespace {
+                key: ns_key(),
+                take_shards: take,
+            }],
+            vec![
+                MetaCommand::DeleteStream {
+                    key: StreamKey {
+                        tenant_id: "t1".to_string(),
+                        namespace: "ns".to_string(),
+                        stream: "orders".to_string(),
+                    },
+                    take_reports: take,
+                },
+                MetaCommand::DeleteCache {
+                    key: crate::model::CacheKey {
+                        tenant_id: "t1".to_string(),
+                        namespace: "ns".to_string(),
+                        cache: "orders".to_string(),
+                    },
+                    take_reports: take,
+                },
+            ],
+        ]
+    };
+    let legacy_left = [(2, 2), (2, 2), (0, 2)];
+    for (commands, left) in deletes(false).into_iter().zip(legacy_left) {
+        let machine = machine_with_reported_shards().await;
+        let what = format!("{commands:?}");
+        for command in commands {
+            machine.dispatch(command).await.expect("delete");
+        }
+        assert_eq!(shards_left(&machine).await, left, "{what}");
+    }
+    for commands in deletes(true) {
+        let machine = machine_with_reported_shards().await;
+        let what = format!("{commands:?}");
+        for command in commands {
+            machine.dispatch(command).await.expect("delete");
+        }
+        assert_eq!(shards_left(&machine).await, (0, 0), "{what}");
+    }
+}
+
+/// The flag is a field an older build does not know, and such a build
+/// refuses an entry carrying one rather than applying the delete without it.
+#[tokio::test]
+async fn an_unknown_flag_on_a_delete_is_refused() {
+    let machine = machine_with_reported_shards().await;
+    let before = crate::raft::AppStateMachine::snapshot(&machine).await;
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&encode_command(&MetaCommand::DeleteTenant {
+            tenant_id: "t1".to_string(),
+            take_shards: false,
+        }))
+        .expect("json");
+    envelope["take_everything"] = serde_json::json!(true);
+    let bytes = serde_json::to_vec(&envelope).expect("bytes");
+
+    let response = crate::raft::AppStateMachine::apply(&machine, &bytes).await;
+    let result = decode_result(&response).expect("decodes");
+    assert!(
+        matches!(&result, Err(MetaError::Unsupported(message)) if message.contains("take_everything")),
+        "{result:?}"
+    );
+    assert_eq!(
+        crate::raft::AppStateMachine::snapshot(&machine).await,
+        before,
+        "a refused delete must change nothing"
+    );
+}

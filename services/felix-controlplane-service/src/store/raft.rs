@@ -98,6 +98,20 @@ impl RaftStore {
         }
     }
 
+    /// Whether a delete takes the deleted resources' shard assignments and
+    /// replica reports. Only once every member applies the delete that way;
+    /// before then the entry leaves them, on every member, as older members
+    /// do. A recreated name may then pick up the leftovers until the group
+    /// reaches the level.
+    async fn deletes_take_shards(&self) -> bool {
+        let needs = MetaCommand::DeleteTenant {
+            tenant_id: String::new(),
+            take_shards: true,
+        }
+        .version();
+        self.group_level().await >= needs
+    }
+
     /// Propose one command and decode its outcome. A command newer than
     /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
@@ -165,6 +179,7 @@ impl ControlPlaneStore for RaftStore {
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()> {
         self.propose(MetaCommand::DeleteTenant {
             tenant_id: tenant_id.to_string(),
+            take_shards: self.deletes_take_shards().await,
         })
         .await
         .map(|_| ())
@@ -201,9 +216,12 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()> {
-        self.propose(MetaCommand::DeleteNamespace { key: key.clone() })
-            .await
-            .map(|_| ())
+        self.propose(MetaCommand::DeleteNamespace {
+            key: key.clone(),
+            take_shards: self.deletes_take_shards().await,
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>> {
@@ -258,9 +276,12 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {
-        self.propose(MetaCommand::DeleteStream { key: key.clone() })
-            .await
-            .map(|_| ())
+        self.propose(MetaCommand::DeleteStream {
+            key: key.clone(),
+            take_reports: self.deletes_take_shards().await,
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
@@ -315,9 +336,12 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()> {
-        self.propose(MetaCommand::DeleteCache { key: key.clone() })
-            .await
-            .map(|_| ())
+        self.propose(MetaCommand::DeleteCache {
+            key: key.clone(),
+            take_reports: self.deletes_take_shards().await,
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>> {

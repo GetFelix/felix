@@ -140,6 +140,7 @@
 0 delete_cache.key.cache
 0 delete_cache.key.namespace
 0 delete_cache.key.tenant_id
+10 delete_cache.take_reports
 0 delete_idp_issuer
 0 delete_idp_issuer.issuer
 0 delete_idp_issuer.tenant_id
@@ -147,6 +148,7 @@
 0 delete_namespace.key
 0 delete_namespace.key.namespace
 0 delete_namespace.key.tenant_id
+10 delete_namespace.take_shards
 0 delete_node
 0 delete_node.node_id
 0 delete_shard_assignment
@@ -161,7 +163,9 @@
 0 delete_stream.key.namespace
 0 delete_stream.key.stream
 0 delete_stream.key.tenant_id
+10 delete_stream.take_reports
 0 delete_tenant
+10 delete_tenant.take_shards
 0 delete_tenant.tenant_id
 0 ensure_signing_keys
 0 ensure_signing_keys.candidate

@@ -1,5 +1,5 @@
 //! Streams and their change log.
-use super::InMemoryStore;
+use super::{InMemoryStore, ShardCleanup};
 use crate::model::{
     NamespaceKey, ShardKind, Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest,
 };
@@ -111,7 +111,11 @@ pub(super) async fn patch_stream(
     Ok(updated)
 }
 
-pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> StoreResult<()> {
+pub(super) async fn delete_stream(
+    store: &InMemoryStore,
+    key: &StreamKey,
+    cleanup: ShardCleanup,
+) -> StoreResult<()> {
     let mut streams = store.streams.write().await;
     let Some(removed) = streams.remove(key) else {
         return Err(StoreError::NotFound("stream".into()));
@@ -124,6 +128,7 @@ pub(super) async fn delete_stream(store: &InMemoryStore, key: &StreamKey) -> Sto
             &key.tenant_id,
             &key.namespace,
             &key.stream,
+            cleanup == ShardCleanup::Full,
         )
         .await;
     store

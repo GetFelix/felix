@@ -1,5 +1,5 @@
 //! Namespaces, and the cascade that deleting one sets off.
-use super::InMemoryStore;
+use super::{InMemoryStore, ShardCleanup};
 use crate::model::{
     CacheChange, CacheChangeOp, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey,
     ShardKind, StreamChange, StreamChangeOp,
@@ -51,7 +51,11 @@ pub(super) async fn create_namespace(
     Ok(namespace)
 }
 
-pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) -> StoreResult<()> {
+pub(super) async fn delete_namespace(
+    store: &InMemoryStore,
+    key: &NamespaceKey,
+    cleanup: ShardCleanup,
+) -> StoreResult<()> {
     if !store.tenant_exists(&key.tenant_id).await? {
         return Err(StoreError::NotFound("tenant".into()));
     }
@@ -100,14 +104,17 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
                     stream: Some(stream),
                     deleted_through,
                 });
-            store
-                .drop_shard_assignments_for(
-                    ShardKind::Stream,
-                    &stream_key.tenant_id,
-                    &stream_key.namespace,
-                    &stream_key.stream,
-                )
-                .await;
+            if cleanup == ShardCleanup::Full {
+                store
+                    .drop_shard_assignments_for(
+                        ShardKind::Stream,
+                        &stream_key.tenant_id,
+                        &stream_key.namespace,
+                        &stream_key.stream,
+                        true,
+                    )
+                    .await;
+            }
         }
     }
     drop(nodes);
@@ -130,14 +137,17 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
                 key: cache_key.clone(),
                 cache: Some(cache),
             });
-            store
-                .drop_shard_assignments_for(
-                    ShardKind::Cache,
-                    &cache_key.tenant_id,
-                    &cache_key.namespace,
-                    &cache_key.cache,
-                )
-                .await;
+            if cleanup == ShardCleanup::Full {
+                store
+                    .drop_shard_assignments_for(
+                        ShardKind::Cache,
+                        &cache_key.tenant_id,
+                        &cache_key.namespace,
+                        &cache_key.cache,
+                        true,
+                    )
+                    .await;
+            }
         }
     }
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);

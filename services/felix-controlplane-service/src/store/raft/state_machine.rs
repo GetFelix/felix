@@ -22,7 +22,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::raft::AppStateMachine;
-use crate::store::memory::{FleetRule, InMemoryStore};
+use crate::store::memory::{FleetRule, InMemoryStore, ShardCleanup};
 use crate::store::raft::command::{
     MetaCommand, MetaResponse, MetaResult, decode_command, encode_result,
 };
@@ -137,8 +137,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|tenant| MetaResponse::Tenant { tenant })
                 .map_err(Into::into),
-            MetaCommand::DeleteTenant { tenant_id } => store
-                .delete_tenant(&tenant_id)
+            MetaCommand::DeleteTenant {
+                tenant_id,
+                take_shards,
+            } => store
+                .apply_delete_tenant(&tenant_id, cleanup(take_shards))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -147,8 +150,8 @@ impl MetadataStateMachine {
                 .await
                 .map(|namespace| MetaResponse::Namespace { namespace })
                 .map_err(Into::into),
-            MetaCommand::DeleteNamespace { key } => store
-                .delete_namespace(&key)
+            MetaCommand::DeleteNamespace { key, take_shards } => store
+                .apply_delete_namespace(&key, cleanup(take_shards))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -162,8 +165,8 @@ impl MetadataStateMachine {
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
-            MetaCommand::DeleteStream { key } => store
-                .delete_stream(&key)
+            MetaCommand::DeleteStream { key, take_reports } => store
+                .apply_delete_stream(&key, cleanup(take_reports))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -177,8 +180,8 @@ impl MetadataStateMachine {
                 .await
                 .map(|cache| MetaResponse::Cache { cache })
                 .map_err(Into::into),
-            MetaCommand::DeleteCache { key } => store
-                .delete_cache(&key)
+            MetaCommand::DeleteCache { key, take_reports } => store
+                .apply_delete_cache(&key, cleanup(take_reports))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -597,5 +600,15 @@ fn assignment_written(written: AssignmentWrite) -> MetaResponse {
             current_generation: current,
         },
         AssignmentWrite::Fenced { token } => MetaResponse::FencedAssignment { token },
+    }
+}
+
+/// What a delete entry's flag means. Without it, the delete applies as a member
+/// before metadata level 10 applies it, which keeps such a member identical.
+fn cleanup(take: bool) -> ShardCleanup {
+    if take {
+        ShardCleanup::Full
+    } else {
+        ShardCleanup::Legacy
     }
 }

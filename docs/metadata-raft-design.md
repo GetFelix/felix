@@ -532,6 +532,16 @@ stream's and a shard assignment's `incarnation`, a stream change's
 carries the proposed incarnation and the applying member decides the final one
 against its tombstones, so every member decides alike.
 
+Level 10 also decides what a delete takes of a stream's or cache's shard state.
+`delete_stream` and `delete_cache` carry `take_reports`, and `delete_namespace`
+and `delete_tenant` carry `take_shards`. With the flag, the delete takes the
+shards' assignments and replica reports, as Postgres's cascade does. Without
+it, the delete applies as a member below level 10 applies it: a stream or cache
+delete takes the assignments and keeps the reports, and a namespace or tenant
+delete keeps both. The proposer sets the flag only once every member is at level
+10, so a mixed group applies every delete alike. Until then a stream created
+again under a deleted name can find what the delete kept, as before.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -552,6 +562,7 @@ the field itself, on every member alike, or refuses the command:
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
 | stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

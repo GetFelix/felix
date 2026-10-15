@@ -562,6 +562,148 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A member before level 10 leaves a deleted stream's replica reports, and
+/// leaves every shard of a deleted namespace or tenant. While one is in the
+/// group, deletes are proposed that way on every member; once every member
+/// has the level, they take both.
+#[tokio::test]
+async fn deletes_take_shard_state_only_once_every_member_does() {
+    use crate::model::{NamespaceKey, ReplicaReport, ShardAssignment, ShardKey, ShardKind};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 8).await;
+    store
+        .register_node(crate::store::contract::nodes::node("broker-x", 7101))
+        .await
+        .expect("register");
+    let key = |namespace: &str, stream: &str| ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    // A stream with its shard 0 assigned and reported on.
+    let reported = |namespace: &'static str, name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            let mut stream = routed_stream(name, Default::default());
+            stream.namespace = namespace.to_string();
+            store.create_stream(stream).await.expect("stream");
+            let assigned = store
+                .put_shard_assignment(ShardAssignment {
+                    key: key(namespace, name),
+                    leader: "broker-x".to_string(),
+                    replicas: Vec::new(),
+                    generation: 0,
+                    state: crate::model::ShardState::Active,
+                    successor: None,
+                    joining: None,
+                    move_started_at_millis: None,
+                    move_reason: None,
+                    incarnation: 0,
+                })
+                .await
+                .expect("assign");
+            store
+                .record_replica_report(
+                    ReplicaReport {
+                        key: key(namespace, name),
+                        generation: assigned.generation,
+                        caught_up: Default::default(),
+                        offsets: Default::default(),
+                        reported_at_millis: 1,
+                        drained: false,
+                        leader_offset: Some(5),
+                        halted: Default::default(),
+                        counter_offsets: Default::default(),
+                        stream_incarnation: None,
+                    },
+                    "broker-x",
+                )
+                .await
+                .expect("report");
+        }
+    };
+    let left = |namespace: &'static str, name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            let target = key(namespace, name);
+            let assignments = store.list_shard_assignments().await.expect("list");
+            let reports = store.list_replica_reports().await.expect("reports");
+            (
+                assignments.iter().any(|a| a.key == target),
+                reports.iter().any(|r| r.key == target),
+            )
+        }
+    };
+    let delete_stream = |namespace: &str, name: &str| crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: namespace.to_string(),
+        stream: name.to_string(),
+    };
+    let doomed = |namespace: &str| {
+        let store = Arc::clone(&store);
+        let namespace = namespace.to_string();
+        async move {
+            store
+                .create_namespace(crate::model::Namespace {
+                    tenant_id: "t1".to_string(),
+                    namespace: namespace.clone(),
+                    display_name: "Doomed".to_string(),
+                })
+                .await
+                .expect("namespace");
+        }
+    };
+
+    assert!(!store.deletes_take_shards().await);
+    reported("ns", "old-single").await;
+    store
+        .delete_stream(&delete_stream("ns", "old-single"))
+        .await
+        .expect("delete");
+    assert_eq!(left("ns", "old-single").await, (false, true));
+    doomed("old-ns").await;
+    reported("old-ns", "cascaded").await;
+    store
+        .delete_namespace(&NamespaceKey {
+            tenant_id: "t1".to_string(),
+            namespace: "old-ns".to_string(),
+        })
+        .await
+        .expect("delete");
+    assert_eq!(left("old-ns", "cascaded").await, (true, true));
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.deletes_take_shards().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deletes still leave shard state after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    reported("ns", "new-single").await;
+    store
+        .delete_stream(&delete_stream("ns", "new-single"))
+        .await
+        .expect("delete");
+    assert_eq!(left("ns", "new-single").await, (false, false));
+    doomed("new-ns").await;
+    reported("new-ns", "cascaded").await;
+    store
+        .delete_namespace(&NamespaceKey {
+            tenant_id: "t1".to_string(),
+            namespace: "new-ns".to_string(),
+        })
+        .await
+        .expect("delete");
+    assert_eq!(left("new-ns", "cascaded").await, (false, false));
+}
+
 /// A member before zones would store a node without its zone. Below that
 /// level the node is registered without one on every member, rather than
 /// with one on some.

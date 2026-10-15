@@ -1546,7 +1546,10 @@ Two references, two different policies, chosen rather than inherited:
   its assignments and their replica reports, because the shards no longer exist
   and keeping ownership records for them leaves placement chasing ghosts. The
   in-memory and Raft stores do the same, including when the stream or cache goes
-  with its namespace or tenant.
+  with its namespace or tenant. On Raft that needs every member at metadata
+  level 10. Below it a stream or cache delete keeps the reports and a namespace
+  or tenant delete keeps both, on every member alike (see
+  [metadata-raft-design.md](metadata-raft-design.md#upgrading)).
 - **Node**: deliberately **no** foreign key. Deleting a node that still leads or
   replicates a shard is **rejected**, not cascaded. A cascade would delete the
   only record of where that shard's data lives, turning an operator's tidy-up

@@ -337,6 +337,11 @@ the name is deleted again after the finalize.
   its shard assignments with the incarnation. Its catalog answers leave
   incarnations out, which brokers refuse rather than misread, so upgrade every
   instance before finalizing.
+- **Under Raft, deletes keep shard state until every member is at metadata
+  version 10.** Before that, deleting a namespace or tenant keeps its streams'
+  and caches' shard assignments and replica reports, and deleting a stream or
+  cache keeps its replica reports, as the older release does, so every member
+  holds the same state. From then on a delete takes both.
 - **Every broker must report it.** A broker that predates it would keep a new
   stream's records in the directory a deleted stream of that name used.
 - **Nothing moves on disk.** Existing streams keep incarnation 0 and their

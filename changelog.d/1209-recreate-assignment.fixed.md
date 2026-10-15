@@ -6,4 +6,7 @@
   its streams' and caches' shard assignments and replica reports, as deleting
   the stream itself and Postgres's cascade already did; before, a stream
   created again under the name was assigned as an update of the deleted one's
-  shard.
+  shard. On Raft, deletes take shard assignments and replica reports this way
+  only once every member is at metadata version 10, the same gate as stream
+  incarnations; below it every member keeps what the older release keeps, so
+  members never disagree.

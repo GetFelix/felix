@@ -364,19 +364,26 @@ fn snapshot() -> Snapshot {
 fn commands() -> Vec<MetaCommand> {
     vec![
         MetaCommand::CreateTenant { tenant: tenant() },
-        MetaCommand::DeleteTenant { tenant_id: s("t") },
+        MetaCommand::DeleteTenant {
+            tenant_id: s("t"),
+            take_shards: true,
+        },
         MetaCommand::CreateNamespace {
             namespace: namespace(),
         },
         MetaCommand::DeleteNamespace {
             key: namespace_key(),
+            take_shards: true,
         },
         MetaCommand::CreateStream { stream: stream() },
         MetaCommand::PatchStream {
             key: stream_key(),
             patch: stream_patch(),
         },
-        MetaCommand::DeleteStream { key: stream_key() },
+        MetaCommand::DeleteStream {
+            key: stream_key(),
+            take_reports: true,
+        },
         MetaCommand::CreateCache { cache: cache() },
         MetaCommand::PatchCache {
             key: cache_key(),
@@ -384,7 +391,10 @@ fn commands() -> Vec<MetaCommand> {
                 display_name: Some(s("C")),
             },
         },
-        MetaCommand::DeleteCache { key: cache_key() },
+        MetaCommand::DeleteCache {
+            key: cache_key(),
+            take_reports: true,
+        },
         MetaCommand::RegisterNode { node: node() },
         MetaCommand::PatchNode {
             node_id: s("b"),

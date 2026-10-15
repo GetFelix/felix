@@ -1,5 +1,5 @@
 //! Caches and their change log.
-use super::InMemoryStore;
+use super::{InMemoryStore, ShardCleanup};
 use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, NamespaceKey, ShardKind,
 };
@@ -87,14 +87,24 @@ pub(super) async fn patch_cache(
     Ok(updated)
 }
 
-pub(super) async fn delete_cache(store: &InMemoryStore, key: &CacheKey) -> StoreResult<()> {
+pub(super) async fn delete_cache(
+    store: &InMemoryStore,
+    key: &CacheKey,
+    cleanup: ShardCleanup,
+) -> StoreResult<()> {
     let mut caches = store.caches.write().await;
     let removed = caches.remove(key);
     if removed.is_none() {
         return Err(StoreError::NotFound("cache".into()));
     }
     store
-        .drop_shard_assignments_for(ShardKind::Cache, &key.tenant_id, &key.namespace, &key.cache)
+        .drop_shard_assignments_for(
+            ShardKind::Cache,
+            &key.tenant_id,
+            &key.namespace,
+            &key.cache,
+            cleanup == ShardCleanup::Full,
+        )
         .await;
     store.cache_changes.write().await.record(|seq| CacheChange {
         seq,
