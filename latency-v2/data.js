@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792078720875,
+  "lastUpdate": 1792082832848,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38082,6 +38082,72 @@ window.BENCHMARK_DATA = {
             "range": "806.52",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1062.00\nmean: 1317.00\nstdev: 806.52\ncv: 61.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a49df02deb20ab04e48b009e044fae79937738e",
+          "message": "ci: run the cluster suites and the repository checks beside the tests (#1246)\n\n* ci: run the cluster suites and the repository checks beside the tests\n\nThe test job ran lint, the whole suite and the repository checks one after\nanother, about 50 minutes, and three quarters of the suite is felix-cluster's\nrouting, failures and history suites. test now runs every crate but\nfelix-cluster; cluster runs those three each on a runner of their own and the\nrest of felix-cluster on a fourth (task test:cluster SUITE=...); checks runs\nlint and the repository checks. CI ok waits on all of them.\n\nSpec-Unaffected: CI and Taskfile only.\n\n* ci: cluster legs share the test job's warm slot; checks never runs self-hosted\n\n* ci: build felix-loadgen for the cluster suites (a --bin filter skipped it)",
+          "timestamp": "2026-10-15T16:43:42Z",
+          "tree_id": "e9981ceb12370c3d399a2d0e6233a77792a0a867",
+          "url": "https://github.com/GetFelix/felix/commit/4a49df02deb20ab04e48b009e044fae79937738e"
+        },
+        "date": 1792082828006,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 105.40\nstdev: 0.89\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "3.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 141.60\nstdev: 3.78\ncv: 2.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 201,
+            "range": "23.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 208.00\nstdev: 23.61\ncv: 11.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 140,
+            "range": "4.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 141.80\nstdev: 4.09\ncv: 2.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 277,
+            "range": "330.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 423.60\nstdev: 330.08\ncv: 77.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 501,
+            "range": "1133.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 501.00\nmean: 1225.60\nstdev: 1133.50\ncv: 92.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
