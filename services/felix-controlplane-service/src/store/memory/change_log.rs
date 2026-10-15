@@ -1,6 +1,7 @@
 //! The bounded change log behind every `*_changes` feed.
 use std::collections::VecDeque;
 
+use crate::store::ChangeSet;
 use crate::store::export::ExportedLog;
 
 /// Bounded, in-memory append-only log of changes for a single entity type.
@@ -42,6 +43,21 @@ impl<T> ChangeLog<T> {
             self.items.pop_front();
         }
         seq
+    }
+
+    /// The retained changes at or after `since`, at most `limit` of them.
+    pub(super) fn page(&self, since: u64, limit: usize, seq: impl Fn(&T) -> u64) -> ChangeSet<T>
+    where
+        T: Clone,
+    {
+        let items = self
+            .items
+            .iter()
+            .filter(|item| seq(item) >= since)
+            .take(limit)
+            .cloned()
+            .collect();
+        ChangeSet::page(items, limit, self.next_seq, seq)
     }
 }
 

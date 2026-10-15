@@ -127,7 +127,7 @@ a follower forward to the leader invisibly; the expiry sweep and shard
 placement run only on the leader, confirmed by a linearizable check each
 tick. A proposal that cannot commit (no leader, quorum lost) fails after a
 bounded deadline (default 10s) rather than hanging, and the API answers it
-`503` with code `unavailable`: retry once the group has a leader. The write
+`503` with code `unavailable`. The write
 may still have committed after the deadline, so a retried create can answer
 `409`.
 
