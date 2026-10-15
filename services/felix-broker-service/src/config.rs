@@ -255,8 +255,9 @@ pub struct BrokerConfig {
     /// records.
     pub subscriber_queue_max_bytes_total: usize,
     /// Payload bytes one connection's subscriptions may have in the writer
-    /// lanes and connection writer, shared out equally among them. Zero for
-    /// no byte bound there.
+    /// lanes and connection writer, shared out equally among them. Not a hard
+    /// ceiling: a subscription with nothing in the lanes admits one batch
+    /// whatever its size. Zero for no byte bound there.
     pub subscriber_egress_max_bytes: usize,
     /// Payload bytes one stream shard's replay ring keeps. Zero for no byte
     /// bound.

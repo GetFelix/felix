@@ -346,7 +346,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   for its own subscription's frames. A subscription whose QUIC stream stalls stops at its share,
   its broker queue then fills and the queue policy applies, and the other subscriptions on the
   connection carry on. A batch larger than the share still goes once the subscription has nothing
-  else in the lanes. `0` leaves the lanes bounded by entry counts only.
+  else in the lanes. This is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
   bounds the bytes all subscriber queues hold together, including batches in the writer lanes
   until they are written. It caps memory but gives up isolation: once slow subscribers fill it,

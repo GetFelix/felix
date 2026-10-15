@@ -591,7 +591,7 @@ export FELIX_SUB_QUEUE_MAX_BYTES="67108864"
 
 ### `FELIX_SUB_EGRESS_MAX_BYTES`
 
-**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share (this divided by the subscriptions on the connection) and waits only for its own frames, so one whose QUIC stream stalls stops at its share and never holds up the others; its broker queue fills behind it and `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the share still goes once the subscription has nothing else in the lanes. `0` leaves the lanes bounded by entry counts only. `felix_sub_egress_bytes` shows what the lanes hold.
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share (this divided by the subscriptions on the connection) and waits only for its own frames, so one whose QUIC stream stalls stops at its share and never holds up the others; its broker queue fills behind it and `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only. `felix_sub_egress_bytes` shows what the lanes hold.
 
 **Type**: Non-negative integer (bytes)
 

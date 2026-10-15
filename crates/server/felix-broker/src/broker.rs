@@ -297,7 +297,8 @@ impl Broker {
     /// watch that would go over is ended as lagged, as for a full count, and
     /// the client re-watches from where it fell behind. Defaults to 64 MiB
     /// per watch and no broker-wide bound. Applies to watches registered
-    /// after the call.
+    /// after the call. Does nothing over a cache store with no log, which
+    /// serves no watches.
     pub fn with_cache_watch_max_bytes(self, per_watch: usize, total: usize) -> Self {
         if let Some(hub) = &self.cache_watches {
             hub.set_queue_bytes(QueueBytes::new(

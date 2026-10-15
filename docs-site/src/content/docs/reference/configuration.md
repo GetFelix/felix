@@ -459,7 +459,7 @@ subscriber_queue_max_bytes: 67108864
 
 #### `subscriber_egress_max_bytes`
 
-**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share, this divided by the subscriptions on the connection, and its feeder waits only for its own frames to be written. A subscription whose QUIC stream stalls stops at its share and its broker queue fills behind it, while the other subscriptions on the connection carry on. A shared pool would let one stalled subscription take everything. A batch larger than the share still goes once the subscription has nothing else in the lanes. `0` leaves the lanes bounded by entry counts only.
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share, this divided by the subscriptions on the connection, and its feeder waits only for its own frames to be written. A subscription whose QUIC stream stalls stops at its share and its broker queue fills behind it, while the other subscriptions on the connection carry on. A shared pool would let one stalled subscription take everything. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
 
 **Type**: `usize` (bytes)
 
