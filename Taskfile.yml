@@ -80,8 +80,10 @@ tasks:
     cmds:
       # The harness runs the prebuilt broker beside the test binary, which
       # `cargo test -p felix-cluster` does not rebuild; loadgen.rs shells out
-      # to felix-loadgen the same way.
-      - "cargo build -p felix-broker-service --bin felix-broker -p felix-loadgen"
+      # to felix-loadgen the same way. Two commands: a --bin filter would apply
+      # to both packages and skip felix-loadgen.
+      - "cargo build -p felix-broker-service --bin felix-broker"
+      - "cargo build -p felix-loadgen"
       - |
         suite="{{.SUITE}}"
         if [ "$suite" != rest ]; then
