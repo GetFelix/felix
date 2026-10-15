@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792040020162,
+  "lastUpdate": 1792041561579,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -37620,6 +37620,72 @@ window.BENCHMARK_DATA = {
             "range": "461.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2047.00\nmean: 2076.60\nstdev: 461.62\ncv: 22.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cee4a6d90fe1a7f63d6f376eb7f12ddbea329d16",
+          "message": "fix(storage): truncation and reset wait out a background seal (#1222) (#1239)\n\n* fix(storage): never move the durable mark backward (#1220)\n\nA background roll's seal could finish after a flush had covered the new\nsegment and record the mark at that segment's header. On an idle shard no\nlater flush moved it forward, so after a power loss rot in acknowledged\nrecords of the new segment was repaired as a torn tail.\n\nThe mark file now remembers the last mark written and drops writes behind\nit. Truncation and reset remain the only backward moves, and a background\nseal that started before one of them leaves the mark where it put it.\n\n* docs(storage): reflow the durable.mark paragraph\n\n* docs(storage): rolls and seals also write durable.mark\n\n* fix(storage): truncation and reset wait out a background seal (#1222)\n\nA background roll's seal ends with set_len on the retired segment. A\ntruncation into that segment while the seal ran was undone by it, or lost\nthe records appended after it. Truncation, reset and restore now claim the\nroll slot first, which waits for a roll in flight and keeps the next one\nfrom starting until they finish.",
+          "timestamp": "2026-10-14T22:15:06-07:00",
+          "tree_id": "6d94c57c5c1833a20cf76e1813146c426ac784e7",
+          "url": "https://github.com/GetFelix/felix/commit/cee4a6d90fe1a7f63d6f376eb7f12ddbea329d16"
+        },
+        "date": 1792041556608,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.60\nstdev: 1.95\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "21.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 251.00\nstdev: 21.45\ncv: 8.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 313,
+            "range": "673.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 313.00\nmean: 607.80\nstdev: 673.78\ncv: 110.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 217.80\nstdev: 1.30\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 441,
+            "range": "7.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 441.00\nmean: 442.00\nstdev: 7.42\ncv: 1.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 751,
+            "range": "172.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 751.00\nmean: 765.60\nstdev: 172.03\ncv: 22.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
