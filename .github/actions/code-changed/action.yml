@@ -30,14 +30,15 @@ runs:
         if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
           echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
-        if ! files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --jq '.files[].filename'); then
+        if ! files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --jq '.files[] | .filename, (.previous_filename // empty)'); then
           echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
         code=$(python3 -c '
         import os, re, sys
-        files = sys.stdin.read().split()
+        files = sys.stdin.read().splitlines()
         ignore, keep = re.compile(os.environ["IGNORE"]), re.compile(os.environ["KEEP"])
-        # The compare API lists at most 300 files; past that, assume code changed.
+        # Both names of a rename count. The compare API lists at most 300
+        # files; past that, assume code changed.
         print(str(len(files) >= 300 or any(keep.search(f) or not ignore.search(f) for f in files)).lower())
         ' <<< "$files")
         echo "code=$code" >> "$GITHUB_OUTPUT"
