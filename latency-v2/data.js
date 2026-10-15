@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792075183369,
+  "lastUpdate": 1792078720875,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38016,6 +38016,72 @@ window.BENCHMARK_DATA = {
             "range": "85.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 513.00\nmean: 533.20\nstdev: 85.92\ncv: 16.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a39aa0c38db51dd8067078e0fe3a71420c73e7c",
+          "message": "ci: run TLC only when the spec changes, and coverage only on main (#1244)\n\nTLC reads only docs/formal, so a Rust change cannot change its result, yet\nevery code PR ran seven hour-long model-check jobs. The formal job now runs\nwhen the spec, check_tla.sh or ci.yml changes. A pull request checks the\nconfigurations of ten minutes or less (TLA_QUICK); main checks all of them.\nThe spec-pairing check moves to its own job so code PRs still get it.\n\nCoverage reran the whole suite instrumented on every PR, and nothing on a PR\nreads the result (the badge publishes from main). It now runs on main only;\nCoverage ok passes on the skipped job.\n\nFencedAckMoveCancelShort reweighted to 45 minutes (40 on main, 10/12).\n\nSpec-Unaffected: CI and check_tla.sh only; no spec or modelled code changed.",
+          "timestamp": "2026-10-15T15:34:20Z",
+          "tree_id": "4814d4fa13d7d6dbd35618013b32fe8e52a32e92",
+          "url": "https://github.com/GetFelix/felix/commit/7a39aa0c38db51dd8067078e0fe3a71420c73e7c"
+        },
+        "date": 1792078716183,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 183.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "5.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 248.20\nstdev: 5.89\ncv: 2.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "12.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 301.00\nstdev: 12.31\ncv: 4.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "6.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 222.20\nstdev: 6.06\ncv: 2.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 460,
+            "range": "130.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 460.00\nmean: 517.40\nstdev: 130.67\ncv: 25.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1062,
+            "range": "806.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1062.00\nmean: 1317.00\nstdev: 806.52\ncv: 61.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
