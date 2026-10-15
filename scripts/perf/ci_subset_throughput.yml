@@ -1,6 +1,6 @@
 {
   "defaults": {
-    "trials": 5
+    "trials": 15
   },
   "workload": {
     "fanout": [
