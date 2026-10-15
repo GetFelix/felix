@@ -137,5 +137,8 @@ filler that restates what was just said.
 - Keep PRs focused; a bug fix doesn't need an unrelated refactor along for
   the ride.
 - Add tests for new behavior.
+- Record user-visible changes as a fragment in `changelog.d/`, not in
+  `CHANGELOG.md` (see `changelog.d/README.md`). Fragments are merged at release
+  time, so PRs don't conflict on the changelog.
 - `task lint` and `task test` should pass locally before you open a PR. CI
   runs both plus `cargo-deny`.
