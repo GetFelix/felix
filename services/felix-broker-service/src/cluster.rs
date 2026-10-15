@@ -15,6 +15,7 @@ pub(crate) mod client_endpoints;
 pub(crate) mod controlplane_client;
 pub(crate) mod controlplane_http;
 pub mod credential;
+pub(crate) mod feed_cursor;
 pub mod lease;
 pub mod membership;
 pub(crate) mod node_catalog;

@@ -144,6 +144,23 @@ impl DiskLog {
     }
 }
 
+/// Holds the roll slot for [`LogInner::fence_rolls`] and gives it back on drop.
+pub(super) struct RollFence(Option<Arc<LogInner>>);
+
+impl Drop for RollFence {
+    fn drop(&mut self) {
+        if let Some(inner) = self.0.take() {
+            // Not a plain store: a failure recorded meanwhile stays terminal.
+            let _ = inner.roll_state.compare_exchange(
+                RollState::Preparing as u8,
+                RollState::Idle as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+}
+
 /// A batch [`DiskLog::write_batch`] wrote, and its claim if it was asked for
 /// one.
 pub(super) struct Written {
@@ -299,7 +316,7 @@ impl LogInner {
             let plan = { inner.segments.read().roll_plan() };
             let prepared = plan.build()?;
 
-            let (retired, snapshot, active) = {
+            let (retired, snapshot, active, rewinds) = {
                 let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 match segments.commit_roll(prepared)? {
@@ -311,7 +328,10 @@ impl LogInner {
                         // As of the new segment's base: everything it covers
                         // is in segments that are sealed once this roll is.
                         let active = segments.active().id();
-                        (retired, inner.producer_snapshot(&segments), active)
+                        // Read under the lock a rewind holds, so a truncation
+                        // after this point is one the seal will see.
+                        let rewinds = inner.mark.rewinds();
+                        (retired, inner.producer_snapshot(&segments), active, rewinds)
                     }
                     // The tail moved past the offset this segment was built
                     // for. Delete it here — leaving it for recovery to clean up
@@ -336,7 +356,7 @@ impl LogInner {
                     // Only now: these records are on the device, so a flush no
                     // longer has to cover them.
                     *inner.pending_seal.lock() = None;
-                    inner.note_sealed_before(active);
+                    inner.note_sealed_before_since(active, rewinds);
                     // Saved only once they are, so the snapshot never vouches
                     // for a batch a crash could still take away.
                     inner.store_producer_snapshot(snapshot);
@@ -418,6 +438,30 @@ impl LogInner {
             Err(err) => {
                 self.record_roll_failure(&err);
                 Err(err)
+            }
+        }
+    }
+
+    /// Wait out a background roll in flight and keep another from starting
+    /// until the fence is dropped.
+    ///
+    /// For a truncation or reset: a roll's seal ends with `set_len` on the
+    /// segment it retired, which would undo a cut into that segment or cut off
+    /// what was appended after it. A failed roll makes no more changes, so it
+    /// needs no fence.
+    pub(super) async fn fence_rolls(self: &Arc<Self>) -> RollFence {
+        loop {
+            match self.roll_state.compare_exchange(
+                RollState::Idle as u8,
+                RollState::Preparing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return RollFence(Some(Arc::clone(self))),
+                Err(state) if RollState::from_u8(state) == RollState::Failed => {
+                    return RollFence(None);
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
             }
         }
     }

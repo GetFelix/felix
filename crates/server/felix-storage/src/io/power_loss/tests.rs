@@ -162,11 +162,7 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     let root = tempfile::tempdir().expect("dir");
     let observer = PowerLoss::install(root.path()).expect("install");
     let captured = |file: &File| {
-        let meta = file.metadata().expect("stat");
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&file.metadata().expect("stat"), file);
         observer
             .state
             .lock()
@@ -214,6 +210,106 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     rewrite_first_byte("index", 9);
     crate::io::sync_data(&small).expect("sync");
     assert_eq!(captured(&small)[0], 9);
+}
+
+/// A file that gets the inode number of one deleted before it is a new
+/// file: its first capture is read whole, not spliced onto the old file's
+/// bytes, and a crash that brings the old name back gives it the old bytes.
+///
+/// The filesystem decides whether a number is reused, so the test files the
+/// old file's state under the new file's number itself.
+#[test]
+fn a_reused_inode_number_is_a_new_file() {
+    let root = tempfile::tempdir().expect("dir");
+    let observer = PowerLoss::install(root.path()).expect("install");
+    let old_bytes = bytes(WHOLE_FILE_UP_TO as usize + PAGE, 1);
+    let old = File::create(root.path().join("old")).expect("create");
+    if old.metadata().expect("stat").created().is_err() {
+        eprintln!("skipped: this filesystem records no birth time");
+        return;
+    }
+    std::io::Write::write_all(&mut &old, &old_bytes).expect("write");
+    crate::io::sync_data(&old).expect("sync");
+    crate::io::sync_dir(root.path()).expect("sync dir");
+    let old_key = Inode::of(&old.metadata().expect("stat"), &old);
+    drop(old);
+    std::fs::remove_file(root.path().join("old")).expect("unlink");
+
+    let new = File::create(root.path().join("new")).expect("create");
+    let new_key = Inode::of(&new.metadata().expect("stat"), &new);
+    {
+        let reused = Inode {
+            born: old_key.born,
+            ..new_key
+        };
+        let mut state = observer.state.lock();
+        let durable = state.files.remove(&old_key).expect("old file captured");
+        state.files.insert(reused, durable);
+        let canonical = root.path().canonicalize().expect("canonical");
+        let listing = state.dirs.get_mut(&canonical).expect("dir captured");
+        listing.insert("old".into(), Entry::File(reused));
+    }
+    let new_bytes = bytes(WHOLE_FILE_UP_TO as usize + 3 * PAGE, 2);
+    std::io::Write::write_all(&mut &new, &new_bytes).expect("write");
+    crate::io::sync_data(&new).expect("sync");
+
+    let captured = observer
+        .state
+        .lock()
+        .files
+        .get(&new_key)
+        .cloned()
+        .expect("captured");
+    assert_eq!(captured, new_bytes, "spliced onto the old file's bytes");
+
+    for seed in 0..32 {
+        let image = tempfile::tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        if let Ok(after) = std::fs::read(image.path().join("old")) {
+            assert_eq!(
+                after, old_bytes,
+                "seed {seed}: the old name came back with other bytes"
+            );
+        }
+        if let Ok(after) = std::fs::read(image.path().join("new")) {
+            assert_eq!(after, new_bytes, "seed {seed}");
+        }
+    }
+}
+
+/// Two files that differ only in inode generation (same number, same coarse
+/// birth time) are different files, so the second is not spliced onto the first.
+#[test]
+fn a_key_differing_only_in_generation_is_a_new_file() {
+    let root = tempfile::tempdir().expect("dir");
+    let observer = PowerLoss::install(root.path()).expect("install");
+    let new = File::create(root.path().join("new")).expect("create");
+    let new_key = Inode::of(&new.metadata().expect("stat"), &new);
+    let Some(generation) = new_key.generation else {
+        eprintln!("skipped: this filesystem reports no inode generation");
+        return;
+    };
+    let stale = Inode {
+        generation: Some(generation ^ 1),
+        ..new_key
+    };
+    let old_bytes = bytes(WHOLE_FILE_UP_TO as usize + PAGE, 1);
+    observer.state.lock().files.insert(stale, old_bytes);
+
+    let new_bytes = bytes(WHOLE_FILE_UP_TO as usize + 3 * PAGE, 2);
+    std::io::Write::write_all(&mut &new, &new_bytes).expect("write");
+    crate::io::sync_data(&new).expect("sync");
+
+    let captured = observer
+        .state
+        .lock()
+        .files
+        .get(&new_key)
+        .cloned()
+        .expect("captured");
+    assert_eq!(captured, new_bytes, "spliced onto the other generation");
 }
 
 #[test]

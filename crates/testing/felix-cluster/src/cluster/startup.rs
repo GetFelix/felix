@@ -408,19 +408,36 @@ async fn post(
     token: &str,
     body: serde_json::Value,
 ) -> Result<()> {
-    let response = http
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
-    let status = response.status();
+    // `busy` means the write gave up waiting for its feed and wrote nothing.
+    // `unavailable` (Raft) may have committed, so it is not retried.
+    let mut waits = RETRY_WAITS_MS.into_iter();
+    let (status, text) = loop {
+        let response = http
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let busy = status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v["code"] == "busy");
+        match waits.next() {
+            Some(wait) if busy => tokio::time::sleep(Duration::from_millis(wait)).await,
+            _ => break (status, text),
+        }
+    };
     // Idempotent by design: a harness restarted against a warm control plane
     // should not fail because the tenant already exists.
     if status.is_success() || status == reqwest::StatusCode::CONFLICT {
         return Ok(());
     }
-    let detail = response.text().await.unwrap_or_default();
-    bail!("POST {url}: {status}: {detail}")
+    bail!("POST {url}: {status}: {text}")
 }
+
+/// Waits before each retry of a `busy` answer.
+const RETRY_WAITS_MS: [u64; 3] = [250, 500, 1_000];
+
+#[cfg(test)]
+mod tests;
