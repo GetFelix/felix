@@ -224,6 +224,25 @@ entries.
 - The replication design no longer says a lagging non-successor follower is skipped while
   a shard drains: it is not gated on, but the drained pass still ships to it and waits.
 
+### Documentation
+
+- Design for replicas electing a leader while the control plane is down
+  (#1009), not built yet: "Electing without the control plane" in
+  `docs/replication-design.md`, with pre-vote, stickiness, a joint fence on
+  every set change, kept with the set and acknowledged on jointly until the
+  control plane flips to the new set, which it does only after the joint
+  fence; cut-overs that wait for the drain; and the failover bound. The TLA+ model gains `SetCheck`,
+  `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and `PreVote`, the persisted
+  `setGen`, `RefuseStaleSet`, `CpAdopt`, the `Swap` cut-over and the
+  `AdoptedMatchesOpened` and `SetChangesJoint` invariants, and
+  `AckedHeldByLeader` is checked per generation where replicas elect. New
+  configurations: `FelixShardElectSwap.cfg` and its no-joint twin,
+  `FelixShardElectAdopt.cfg` (two writes nightly), `FelixShardElectAdoptPromote.cfg`,
+  `FelixShardElectPreVote.cfg`, `FelixShardElectStepDown.cfg`,
+  `FelixShardElectNoBallotAcks.cfg`, and the `FelixShardWalkElect.cfg` and
+  `FelixShardWalkElectSwap.cfg` walks with their twins.
+  `FelixShardElectHandoff.cfg` now runs with the set check on.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded
