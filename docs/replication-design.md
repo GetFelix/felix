@@ -998,8 +998,8 @@ code. The report and the lease leave the write's path:
   A broker that has not yet taken the enabled set from its registration
   answer does not know whether it is in such a fleet, so it fences nothing
   and opens nothing until it has (`Serving::adopted`;
-  `a_promotion_waits_for_the_fleet_view_before_the_lease`). A broker with no
-  fleet to ask, one running without a control plane, keeps the lease path.
+  `a_promotion_waits_for_the_fleet_view_before_the_lease`). It costs no
+  availability: until registration answers there is no lease to open on either.
 
 Why this is safe without a clock: a newer leader serves only after a majority
 took its generation, and every majority the old leader could count shares a
