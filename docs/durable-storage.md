@@ -1048,7 +1048,10 @@ restart of such a broker has kept nothing.
 The id names the data, not the node. A restart keeps it. A wipe gives a new
 one: anything that removes the file, whether a deleted or reformatted data
 directory, a replaced disk, or a fresh volume mounted at the same path, means
-the next start finds no file and writes a new id. An upgrade from a build
+the next start finds no file and writes a new id. Deleting a shard's
+directory and leaving the rest of the data directory in place keeps the id, so
+that loss is not detected; to give a broker an empty shard, empty its whole
+data directory. An upgrade from a build
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felix-broker restore-point` also writes a
@@ -1093,8 +1096,12 @@ the point still had) with `StorageError::OutsideLog`, rather than padding or
 emptying it. Lowering first makes an interrupted restore safe to run again, and
 running it again on a restored log changes nothing.
 
-Once every log is cut, the restore gives the data directory a new storage id
-(see [Storage identity](#storage-identity)).
+Before it cuts any log, the restore gives the data directory a new storage id
+(see [Storage identity](#storage-identity)), so a restore that fails part way
+does not leave older data under the id peers know. Removing a follower's copy
+of a restored shard is safe only on a broker the restore also ran on, since
+that is what gave it a new id; a missing shard directory alone keeps the old
+one. A broker the restore skipped starts with an empty data directory.
 
 ## Tools
 

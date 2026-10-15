@@ -137,9 +137,10 @@ any log. See
    ```
 
    ```text
+   new storage id 6f1c0a9e2b7d4c3f8a5e1d0b9c2f4a7e
    t1/ns/orders/0 Stream: 918790 -> 918233
    t1/ns/orders/0 GroupCursors: 12 -> 12
-   restored 2 logs to point "nightly-2026-09-27"; start this broker, and start its followers without these shards' directories
+   restored 2 logs to point "nightly-2026-09-27"; start this broker, and start its followers without these shards' directories once restore-point has run on them too
    ```
 
    It cuts each log the point names for that node back to its offset, lowering
@@ -149,6 +150,9 @@ any log. See
    twice is harmless. Without `--node` it restores every shard in the point
    whose directory is present.
 
+   Before cutting anything it gives the broker's data directory a new storage
+   id, so peers stop trusting what it acknowledged before the restore.
+
    It also sets each stream's incarnation on this broker back to the one the
    point names, so the broker takes the restored catalog's streams even if it
    had registered, or seen deleted, a later incarnation after the point. It
@@ -157,7 +161,10 @@ any log. See
    reason, including those that lead nothing in the point.
 5. **Remove the followers' copies** of those shards from every other broker.
    A follower that kept its own copy holds records past the point; one that
-   starts without the directory rebuilds it from the restored leader.
+   starts without the directory rebuilds it from the restored leader. Removing
+   the directories is enough only because step 4 gave every broker a new
+   storage id; a missing shard directory on its own is not detected. Empty the
+   whole `FELIX_DURABLE_STORAGE_DIR` of any broker step 4 did not run on.
 6. **Start the brokers.**
 
 Stopping every broker is also what makes generations safe across a restore.

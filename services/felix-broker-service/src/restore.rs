@@ -55,9 +55,32 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let config = BrokerConfig::from_env_or_yaml().context("load broker configuration")?;
     let (broker, storage, _) = crate::node::storage::open(&config)?;
 
-    let plan = manifest.plan(node.as_deref(), &durable.root)?;
+    let restored = restore(&manifest, node.as_deref(), &durable.root, &broker, storage).await?;
+    println!(
+        "restored {restored} logs to point {:?}; start this broker, and start its followers \
+         without these shards' directories once restore-point has run on them too",
+        manifest.name
+    );
+    Ok(())
+}
+
+/// Cut the logs under `root` back to `manifest` and give the directory a new
+/// storage id. Returns how many logs were cut.
+async fn restore(
+    manifest: &Manifest,
+    node: Option<&str>,
+    root: &Path,
+    broker: &felix_broker::Broker,
+    storage: Option<felix_broker::DurableStorage>,
+) -> Result<usize> {
+    let plan = manifest.plan(node, root)?;
+    // Before the first cut: a restore that fails or crashes part way must not
+    // leave older data under the id peers know. A rotation with nothing cut
+    // only makes peers resync.
+    let id = crate::node::storage::rotate_storage_id(root)?;
+    println!("new storage id {id}");
     if plan.is_empty() {
-        println!("nothing in {} to restore here", point.display());
+        println!("nothing in the point to restore here");
     }
     for cut in &plan {
         let shard = &cut.shard;
@@ -104,16 +127,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     if let Some(storage) = storage {
         storage.shutdown().await?;
     }
-    // The logs are now an older copy than any peer last saw here, so the
-    // directory must not keep the identity those peers know it by.
-    let id = crate::node::storage::rotate_storage_id(&durable.root)?;
-    println!("new storage id {id}");
-    println!(
-        "restored {} logs to point {:?}; start this broker, and start its followers without these shards' directories",
-        plan.len(),
-        manifest.name
-    );
-    Ok(())
+    Ok(plan.len())
 }
 
 /// A backup point as `felix-controlplane admin backup-point` writes it. Only

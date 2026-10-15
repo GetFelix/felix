@@ -22,19 +22,16 @@ const VERSION: u16 = 1;
 pub(crate) const ENCODED_LEN: usize = 26;
 /// The file's name under the durable root. Not a directory, so shard
 /// discovery passes over it.
-pub const FILE_NAME: &str = "storage-id";
+pub(crate) const FILE_NAME: &str = "storage-id";
 
 /// A data directory's identity: 16 random bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StorageId([u8; 16]);
 
 impl StorageId {
+    /// The id these 16 bytes are.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
     }
 
     /// 32 lowercase hex digits.

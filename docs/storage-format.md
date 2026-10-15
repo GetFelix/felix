@@ -829,7 +829,8 @@ directory synced, so a crash leaves the old id or the new one. Shard discovery
 lists only directories, so neither file is read as a shard. A missing file
 gets a new id, logged at info. A file that does not decode (wrong length,
 magic, version or CRC) is replaced with a new id and a warning, rather than
-failing the start: a new id only makes peers treat the directory as one that
+failing the start. That includes a file a newer version wrote, read after a
+downgrade: a new id only makes peers treat the directory as one that
 may have lost data, which is the safe reading of damage. See
 `docs/durable-storage.md`, "Storage identity".
 
