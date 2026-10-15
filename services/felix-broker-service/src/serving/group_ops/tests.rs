@@ -739,10 +739,73 @@ async fn describe_reports_the_tail_and_the_claims() {
     assert_eq!(snapshot.in_flight, 1);
 }
 
-/// Counts the rounds a group write confirms leadership with; every one
-/// succeeds.
+/// Group reads answer from this broker's state, so a broker whose lease
+/// lapsed refuses them rather than answering for a shard a new leader owns.
+#[tokio::test]
+async fn group_reads_after_the_lease_lapses_are_refused() {
+    let (leader, publish_ctx) = claimed_one().await;
+    let lease = leader.hold_lease();
+    lease.surrender();
+
+    let refused = describe_here(&leader, &publish_ctx, DURABLE)
+        .await
+        .expect_err("described without a lease");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+    let refused = dead_letters_here(&leader, &publish_ctx, DURABLE)
+        .await
+        .expect_err("listed dead letters without a lease");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+
+    lease.renew();
+    describe_here(&leader, &publish_ctx, DURABLE)
+        .await
+        .expect("described on a renewed lease");
+    dead_letters_here(&leader, &publish_ctx, DURABLE)
+        .await
+        .expect("listed on a renewed lease");
+}
+
+async fn describe_here(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+    stream: &str,
+) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
+    describe(
+        &leader.broker,
+        publish_ctx,
+        TENANT,
+        NAMESPACE,
+        stream,
+        0,
+        GROUP,
+    )
+    .await
+}
+
+async fn dead_letters_here(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+    stream: &str,
+) -> Result<Vec<u64>, ClientError> {
+    dead_letters(
+        &leader.broker,
+        publish_ctx,
+        TENANT,
+        NAMESPACE,
+        stream,
+        0,
+        GROUP,
+    )
+    .await
+}
+
+/// Counts the rounds a group operation confirms leadership with. Each one
+/// succeeds unless `deposed` is set, as when a newer coordinator has opened.
 #[derive(Default)]
-struct Confirms(std::sync::atomic::AtomicUsize);
+struct Confirms {
+    rounds: std::sync::atomic::AtomicUsize,
+    deposed: std::sync::atomic::AtomicBool,
+}
 
 #[async_trait::async_trait]
 impl felix_replication::quorum::LeadershipCheck for Confirms {
@@ -751,7 +814,14 @@ impl felix_replication::quorum::LeadershipCheck for Confirms {
         _key: &ShardKey,
         _generation: u64,
     ) -> Result<(), felix_replication::quorum::QuorumError> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.rounds
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.deposed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(felix_replication::quorum::QuorumError::LeadershipLost {
+                what: "read",
+                detail: "a newer coordinator opened",
+            });
+        }
         Ok(())
     }
 }
@@ -949,7 +1019,56 @@ async fn a_by_round_pass_confirms_group_writes_by_a_round() {
         1
     );
     assert!(
-        shard.confirms.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        shard
+            .confirms
+            .rounds
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0,
         "the write was not confirmed by a round",
     );
+}
+
+/// **In a fleet that reads by round, a deposed leader refuses group reads.**
+/// Without the lease, only a round shows no newer coordinator has opened, so
+/// describe and dead letters confirm by one and refuse when it fails.
+#[tokio::test]
+async fn a_deposed_leader_refuses_group_reads_in_a_fleet_that_reads_by_round() {
+    let shard = ByRound::start().await;
+    shard.register();
+    let lease = shard.leader.hold_lease();
+    shard.pass().await;
+    lease.surrender();
+    let before = shard
+        .confirms
+        .rounds
+        .load(std::sync::atomic::Ordering::SeqCst);
+
+    describe_here(&shard.leader, &shard.publish_ctx, leader::QUORUM)
+        .await
+        .expect("described by a round without the lease");
+    dead_letters_here(&shard.leader, &shard.publish_ctx, leader::QUORUM)
+        .await
+        .expect("listed by a round without the lease");
+    assert_eq!(
+        shard
+            .confirms
+            .rounds
+            .load(std::sync::atomic::Ordering::SeqCst)
+            - before,
+        2,
+        "each read confirms by a round",
+    );
+
+    shard
+        .confirms
+        .deposed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = describe_here(&shard.leader, &shard.publish_ctx, leader::QUORUM)
+        .await
+        .expect_err("a deposed leader described the group");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::LeadershipLost);
+    let refused = dead_letters_here(&shard.leader, &shard.publish_ctx, leader::QUORUM)
+        .await
+        .expect_err("a deposed leader listed dead letters");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::LeadershipLost);
 }

@@ -503,6 +503,12 @@ offset 0, as with any new group.
 shard's write fence and acknowledged under the same rule as a group ack, and the
 cursor and dead-letter logs they write ship with the shard.
 
+`group_describe` and `group_dead_letters` are reads of the leader's state and
+are checked like a `state_get`: refused with `shard_unavailable` when this
+broker's lease has lapsed, or, in a fleet that reads by round, with
+`leadership_lost` when a round after the read finds a newer leader. A deposed
+leader would otherwise answer from state its successor has moved past.
+
 ### GroupPosition / GroupInfo / GroupDeleted (server -> client)
 ```
 { "type": "group_position", "offset": <number>, "moved": <bool>, "request_id": <number> }

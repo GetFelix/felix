@@ -191,16 +191,8 @@ pub(crate) async fn state_get(
     owned(dispatch(publish_ctx.ingress.as_deref(), &shard), &shard)?;
     // The view holds only what the ring holds, which on a `Quorum` stream is
     // what the committed mark covers, so the answer is never one a failover
-    // takes back. Whether this broker still leads is confirmed after the
-    // value is taken, as for a cache read; on the lease path a lapsed lease
-    // refuses up front as well.
-    let marks = publish_ctx.marks.as_deref();
-    let ingress = publish_ctx.ingress.as_deref();
-    if marks.is_none_or(|marks| marks.reads_by_round().is_none())
-        && ingress.is_some_and(|ingress| !ingress.fence().lease_valid())
-    {
-        return Err(ClientError::from(fence::Fenced::LeaseLapsed));
-    }
+    // takes back.
+    refuse_read_without_lease(publish_ctx)?;
     let handle = broker
         .resolve_stream_handle(tenant_id, namespace, stream, shard.shard)
         .await
@@ -209,10 +201,43 @@ pub(crate) async fn state_get(
         .state_get(&handle, key)
         .await
         .map_err(|err| ClientError::from_broker(&err, "state read not served"))?;
-    felix_replication::quorum::confirm_state_read(&shard, marks, ingress)
-        .await
-        .map_err(|err| ClientError::from_anyhow(&err))?;
+    confirm_read_leader(publish_ctx, &shard).await?;
     Ok(read)
+}
+
+/// Refuse a read of shard-local state up front when the lease decides
+/// leadership and has lapsed. A fleet that reads by round skips this and
+/// relies on [`confirm_read_leader`].
+pub(crate) fn refuse_read_without_lease(publish_ctx: &PublishContext) -> Result<(), ClientError> {
+    let by_round = publish_ctx
+        .marks
+        .as_deref()
+        .is_some_and(|marks| marks.reads_by_round().is_some());
+    if !by_round
+        && publish_ctx
+            .ingress
+            .as_deref()
+            .is_some_and(|ingress| !ingress.fence().lease_valid())
+    {
+        return Err(ClientError::from(fence::Fenced::LeaseLapsed));
+    }
+    Ok(())
+}
+
+/// Confirm, after a read of shard-local state took its value, that this
+/// broker still leads `shard`: by a round where the fleet reads by round,
+/// by the lease otherwise. A deposed leader would answer from stale state.
+pub(crate) async fn confirm_read_leader(
+    publish_ctx: &PublishContext,
+    shard: &ShardKey,
+) -> Result<(), ClientError> {
+    felix_replication::quorum::confirm_state_read(
+        shard,
+        publish_ctx.marks.as_deref(),
+        publish_ctx.ingress.as_deref(),
+    )
+    .await
+    .map_err(|err| ClientError::from_anyhow(&err))
 }
 
 fn shard_key(
