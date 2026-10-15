@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792094704794,
+  "lastUpdate": 1792095720397,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38742,6 +38742,72 @@ window.BENCHMARK_DATA = {
             "range": "130.76",
             "unit": "us",
             "extra": "trials: 5\nmedian: 269.00\nmean: 328.40\nstdev: 130.76\ncv: 39.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "214c0254ce9734ba383b41ade4694f1386049c0b",
+          "message": "fix(storage): retry a failed replica commit-offset write (#1263)\n\n* fix(storage): retry a failed replica commit-offset write (#1248)\n\nadvance_commit_offset returned early when the offset was already raised in\nmemory, so a failed write was never retried. It now compares against the\noffset last written. A follower still acks the batch; the doc says so.\n\nSpec-Unaffected: the TLA spec does not model the commit-offset file write, only a log message changed in felix-replication\n\n* docs(storage): say when a failed commit-offset write is retried\n\nSpec-Unaffected: docs and a log message only.\n\n* test(cluster): land the first waiting record alone in retention_floor\n\nSince every client connects before publishing, the 24 waiting publishes\ncan reach the leader together and start a new segment at the commit\noffset. Retention then correctly deletes the old segment, which lies\nwholly below the commit offset, and the replay from the start waits at\nthe commit offset until the 5 s timeout. Publishing the first waiting\nrecord alone keeps it in the early records' segment.\n\nSpec-Unaffected: test-only change.",
+          "timestamp": "2026-10-15T20:17:41Z",
+          "tree_id": "7c45fb1dde591a6d302ab92d150fa34b79ad362d",
+          "url": "https://github.com/GetFelix/felix/commit/214c0254ce9734ba383b41ade4694f1386049c0b"
+        },
+        "date": 1792095716377,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 183.20\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 247.60\nstdev: 2.30\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 317,
+            "range": "11.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 317.00\nmean: 316.60\nstdev: 11.10\ncv: 3.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 219.80\nstdev: 2.49\ncv: 1.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 445,
+            "range": "4.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 445.00\nmean: 445.20\nstdev: 4.60\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 612,
+            "range": "93.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 612.00\nmean: 678.80\nstdev: 93.69\ncv: 13.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
