@@ -41,6 +41,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
         key: key(stream),
         generation: 4,
         offsets: caught_up
@@ -193,7 +194,7 @@ fn a_stamp_from_a_clock_behind_the_readers_looks_stale_while_it_is_fresh() {
 }
 
 /// Every report the store holds is read, and the store's clock is the instant
-/// they are judged at.
+/// they are judged at. The follower is one the store knows, so it is stamped.
 #[tokio::test]
 async fn load_reads_the_store_on_the_stores_clock() {
     use crate::store::ControlPlaneStore;
@@ -221,10 +222,11 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 stream_incarnation: None,
                 by_round: false,
                 leader_incarnation: None,
+                follower_incarnations: None,
                 key: key.clone(),
                 generation,
-                caught_up: ["broker-b".to_string()].into_iter().collect(),
-                offsets: [("broker-b".to_string(), 7)].into_iter().collect(),
+                caught_up: ["broker-y".to_string()].into_iter().collect(),
+                offsets: [("broker-y".to_string(), 7)].into_iter().collect(),
                 reported_at_millis: now,
                 drained: false,
                 leader_offset: None,
@@ -238,8 +240,8 @@ async fn load_reads_the_store_on_the_stores_clock() {
     let view = ReplicaPositions::load(&store, &liveness())
         .await
         .expect("load");
-    assert!(view.is_caught_up(&key, "broker-b"));
-    assert_eq!(view.reported_offset(&key, "broker-b"), Some(7));
+    assert!(view.is_caught_up(&key, "broker-y"));
+    assert_eq!(view.reported_offset(&key, "broker-y"), Some(7));
 }
 
 /// A drained report counts only at the generation it was made for, and only
@@ -311,6 +313,7 @@ fn leader_report(by_round: bool, reported_at_millis: u64) -> ReplicaReport {
     ReplicaReport {
         by_round,
         leader_incarnation: by_round.then_some(1),
+        follower_incarnations: None,
         ..report("orders", &["broker-b"], reported_at_millis)
     }
 }
@@ -462,6 +465,7 @@ fn a_suspicion_does_not_count_on_a_report_from_before_a_restart() {
     // Nor one that says `by_round` without naming the incarnation.
     let unnamed = ReplicaReport {
         leader_incarnation: None,
+        follower_incarnations: None,
         ..leader_report(true, now)
     };
     assert!(
@@ -497,4 +501,122 @@ fn a_finalize_waits_for_the_leader_to_report_by_round() {
     // Its next report, after the heartbeat that told it.
     let after = positions(vec![leader_report(true, now)]);
     assert!(after.suspects(&key("orders"), 4, "broker-b", "broker-a"));
+}
+
+/// `node` at `incarnation`, down or live, last heard from at `heartbeat`.
+fn node_at(node_id: &str, incarnation: u64, down: bool, heartbeat: u64) -> crate::model::Node {
+    crate::model::Node {
+        node_id: node_id.to_string(),
+        spec: crate::model::NodeSpec {
+            advertise_addr: format!("10.0.0.1:{}", 7000 + node_id.len()),
+            client_addr: None,
+            kafka_addr: None,
+            region: "r".to_string(),
+            zone: None,
+            labels: Default::default(),
+            capacity: Default::default(),
+        },
+        status: crate::model::NodeStatus {
+            lifecycle: if down {
+                crate::model::NodeLifecycle::Down
+            } else {
+                crate::model::NodeLifecycle::Live
+            },
+            last_heartbeat_at_millis: heartbeat,
+            registered_at_millis: 1,
+            incarnation,
+            features: Default::default(),
+        },
+    }
+}
+
+/// `orders` led by broker-a at `generation`.
+fn led_by_a(generation: u64) -> ShardAssignment {
+    ShardAssignment {
+        key: key("orders"),
+        leader: "broker-a".to_string(),
+        replicas: vec!["broker-b".to_string()],
+        generation,
+        state: crate::model::ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    }
+}
+
+/// broker-a down since 1 100, broker-b at incarnation 2.
+fn dead_leader() -> Vec<crate::model::Node> {
+    vec![
+        node_at("broker-a", 1, true, 1_100),
+        node_at("broker-b", 2, false, 1_000),
+    ]
+}
+
+fn stamped(reported_at_millis: u64) -> ReplicaReport {
+    ReplicaReport {
+        follower_incarnations: Some([("broker-b".to_string(), 2)].into()),
+        ..report("orders", &["broker-b"], reported_at_millis)
+    }
+}
+
+/// An unstamped report cannot say whether its followers are the processes it
+/// saw, so it ages against now even once its leader is down.
+#[test]
+fn an_unstamped_report_from_a_dead_leader_still_expires() {
+    let now = 1_000 + TTL_MS * 10;
+    let view = at(vec![report("orders", &["broker-b"], 1_000)], now)
+        .with_nodes(&dead_leader(), &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+
+    let view = at(vec![stamped(1_000)], now).with_nodes(&dead_leader(), &[led_by_a(4)]);
+    assert!(view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.reported_offset(&key("orders"), "broker-b"), Some(10));
+}
+
+/// Once the assignment has moved past the report's generation, the down node
+/// is not the leader that made it, and the report ages against now.
+#[test]
+fn a_report_from_an_earlier_generation_does_not_stop_ageing() {
+    let view =
+        at(vec![stamped(1_000)], 1_000 + TTL_MS * 10).with_nodes(&dead_leader(), &[led_by_a(5)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+}
+
+/// The freeze stops at the leader's last heartbeat: a report already older
+/// than the TTL then is not revived.
+#[test]
+fn a_dead_leaders_report_ages_up_to_its_last_heartbeat() {
+    let nodes = vec![
+        node_at("broker-a", 1, true, 1_000 + TTL_MS + 1),
+        node_at("broker-b", 2, false, 1_000),
+    ];
+    let view = at(vec![stamped(1_000)], 1_000 + TTL_MS * 10).with_nodes(&nodes, &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+}
+
+/// A stamped report vouches only for the incarnations it was stamped with:
+/// not for a node that registered again, one it holds no stamp for, or one
+/// the read does not know.
+#[test]
+fn a_stamped_report_vouches_only_for_the_stamped_incarnation() {
+    let fresh = 1_000;
+    let restarted = vec![
+        node_at("broker-a", 1, false, 1_000),
+        node_at("broker-b", 3, false, 1_000),
+    ];
+    let view = at(vec![stamped(1_000)], fresh).with_nodes(&restarted, &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.reported_offset(&key("orders"), "broker-b"), None);
+    assert_eq!(view.lag_records(&key("orders"), "broker-b"), None);
+
+    let unnamed = ReplicaReport {
+        follower_incarnations: Some(Default::default()),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let view = at(vec![unnamed], fresh).with_nodes(&dead_leader(), &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+
+    assert!(!at(vec![stamped(1_000)], fresh).is_caught_up(&key("orders"), "broker-b"));
 }

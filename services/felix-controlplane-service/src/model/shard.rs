@@ -402,6 +402,15 @@ pub struct ReplicaReport {
     /// replication pass, while its last report still says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_incarnation: Option<u64>,
+    /// Each node the report names, with its node incarnation when the store
+    /// accepted the report. Set by the store from its own node table, never
+    /// by a broker. Placement counts a node from the report only while this
+    /// is still its incarnation: one that registered again since may have
+    /// lost its log. `None` from a store that predates it, and under Raft
+    /// until every member can apply it; placement then judges the report as
+    /// before, by its age alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follower_incarnations: Option<BTreeMap<String, u64>>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.
@@ -459,6 +468,29 @@ impl ReplicaReport {
             .map(|(node, halt)| (node.clone(), halt.clone()))
             .collect();
         self.halted.extend(carried);
+    }
+
+    /// Every node the report says anything about holding: caught up, or at
+    /// an offset.
+    pub(crate) fn named_nodes(&self) -> BTreeSet<&str> {
+        self.caught_up
+            .iter()
+            .chain(self.offsets.keys())
+            .chain(self.counter_offsets.keys())
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Stamp every node the report names with its current incarnation, as
+    /// `incarnation_of` gives it. A node the store does not know is left out,
+    /// so placement never counts it from this report.
+    pub(crate) fn stamp_followers(&mut self, incarnation_of: impl Fn(&str) -> Option<u64>) {
+        let stamps = self
+            .named_nodes()
+            .into_iter()
+            .filter_map(|node| Some((node.to_string(), incarnation_of(node)?)))
+            .collect();
+        self.follower_incarnations = Some(stamps);
     }
 
     /// Whether this report may replace `held` in the store.

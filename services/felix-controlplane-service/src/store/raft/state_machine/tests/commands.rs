@@ -348,6 +348,7 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             .dispatch(MetaCommand::RecordReplicaReport {
                 report,
                 leader: None,
+                stamp_followers: false,
             })
             .await
             .expect("report");

@@ -199,6 +199,7 @@ fn report() -> ReplicaReport {
         stream_incarnation: Some(1),
         by_round: true,
         leader_incarnation: Some(1),
+        follower_incarnations: Some(any_map(1)),
     }
 }
 
@@ -433,6 +434,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RecordReplicaReport {
             report: report(),
             leader: Some(s("b")),
+            stamp_followers: true,
         },
         MetaCommand::SetMovesPaused { paused: true },
         MetaCommand::UpsertIdpIssuer {

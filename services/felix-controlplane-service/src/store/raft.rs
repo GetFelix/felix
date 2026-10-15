@@ -675,6 +675,8 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // Only the apply stamps these, from the replicated node table.
+        report.follower_incarnations = None;
         // The API's own check still stands for a group that cannot apply
         // the field.
         if report.stream_incarnation.is_some()
@@ -692,6 +694,7 @@ impl ControlPlaneStore for RaftStore {
                 ..report.clone()
             },
             leader: None,
+            stamp_followers: false,
         }
         .version();
         if report.by_round && self.handle.cluster_version().await < by_round_level {
@@ -707,6 +710,7 @@ impl ControlPlaneStore for RaftStore {
                 ..report.clone()
             },
             leader: None,
+            stamp_followers: false,
         }
         .version();
         if !report.counter_offsets.is_empty()
@@ -717,14 +721,40 @@ impl ControlPlaneStore for RaftStore {
         let halts_level = MetaCommand::RecordReplicaReport {
             report: report.clone(),
             leader: None,
+            stamp_followers: false,
         }
         .version();
         if !report.halted.is_empty() && self.handle.cluster_version().await < halts_level {
             report.halted.clear();
         }
+        // Unstamped, placement judges the report by its age alone, as before
+        // the stamp existed. Every member must stamp or none may: the stamp
+        // decides what placement believes.
+        let stamp_level = MetaCommand::RecordReplicaReport {
+            report: ReplicaReport {
+                key: report.key.clone(),
+                generation: report.generation,
+                caught_up: Default::default(),
+                offsets: Default::default(),
+                reported_at_millis: report.reported_at_millis,
+                drained: false,
+                leader_offset: None,
+                halted: Default::default(),
+                counter_offsets: Default::default(),
+                stream_incarnation: None,
+                by_round: false,
+                leader_incarnation: None,
+                follower_incarnations: None,
+            },
+            leader: None,
+            stamp_followers: true,
+        }
+        .version();
+        let stamp_followers = self.handle.cluster_version().await >= stamp_level;
         let mut command = MetaCommand::RecordReplicaReport {
             report,
             leader: Some(leader.to_string()),
+            stamp_followers,
         };
         // A member that predates the leadership check would apply the report
         // unchecked while the others refuse it. Until every member has it,

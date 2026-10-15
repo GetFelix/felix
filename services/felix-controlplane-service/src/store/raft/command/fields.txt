@@ -327,6 +327,8 @@
 8 import_state.state.replica_reports[].counter_offsets
 8 import_state.state.replica_reports[].counter_offsets.*
 3 import_state.state.replica_reports[].drained
+12 import_state.state.replica_reports[].follower_incarnations
+12 import_state.state.replica_reports[].follower_incarnations.*
 3 import_state.state.replica_reports[].generation
 4 import_state.state.replica_reports[].halted
 4 import_state.state.replica_reports[].halted.*
@@ -572,6 +574,8 @@
 8 record_replica_report.report.counter_offsets
 8 record_replica_report.report.counter_offsets.*
 0 record_replica_report.report.drained
+12 record_replica_report.report.follower_incarnations
+12 record_replica_report.report.follower_incarnations.*
 0 record_replica_report.report.generation
 4 record_replica_report.report.halted
 4 record_replica_report.report.halted.*
@@ -590,6 +594,7 @@
 0 record_replica_report.report.offsets.*
 0 record_replica_report.report.reported_at_millis
 10 record_replica_report.report.stream_incarnation
+12 record_replica_report.stamp_followers
 0 register_node
 0 register_node.node
 0 register_node.node.node_id
@@ -850,6 +855,8 @@
 8 snapshot.state.replica_reports[].counter_offsets
 8 snapshot.state.replica_reports[].counter_offsets.*
 3 snapshot.state.replica_reports[].drained
+12 snapshot.state.replica_reports[].follower_incarnations
+12 snapshot.state.replica_reports[].follower_incarnations.*
 3 snapshot.state.replica_reports[].generation
 4 snapshot.state.replica_reports[].halted
 4 snapshot.state.replica_reports[].halted.*

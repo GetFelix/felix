@@ -87,6 +87,16 @@ every control-plane instance runs a release that has it, so finish the roll
 before relying on it, and keep catalog writes to a minimum while it is under
 way.
 
+**A dead leader's last replica report during a control-plane roll.** The
+control plane now stamps each replica report with the incarnation of every
+node it names, and keeps a dead leader's last report believed past the usual
+window only when the report is stamped. A Postgres control plane runs
+migration `0030` on start. A report written through an instance still on the
+previous release is unstamped and expires as before, until a current instance
+accepts the leader's next report. A Raft control plane stamps reports only
+once every member is at metadata level 12. Until then a leader that dies while
+placement is slow can leave its shard unplaceable, as on the previous release.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,

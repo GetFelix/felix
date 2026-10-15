@@ -84,6 +84,7 @@ fn a_replica_report_is_restamped() {
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
         key: crate::model::ShardKey {
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
@@ -102,6 +103,7 @@ fn a_replica_report_is_restamped() {
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report: report.clone(),
         leader: Some("broker-a".to_string()),
+        stamp_followers: false,
     });
 
     let restamped = restamp(&encoded, 222).expect("a report carries a clock");
@@ -109,6 +111,7 @@ fn a_replica_report_is_restamped() {
         MetaCommand::RecordReplicaReport {
             report: stamped,
             leader,
+            ..
         } => {
             assert_eq!(leader.as_deref(), Some("broker-a"));
             assert_eq!(stamped.reported_at_millis, 222);
@@ -135,6 +138,7 @@ fn a_report_without_a_leader_is_the_old_wire_form() {
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
         key: crate::model::ShardKey {
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
@@ -153,6 +157,7 @@ fn a_report_without_a_leader_is_the_old_wire_form() {
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report,
         leader: None,
+        stamp_followers: false,
     });
     let json: serde_json::Value = serde_json::from_slice(&encoded).expect("json");
     assert!(json.get("leader").is_none(), "{json}");

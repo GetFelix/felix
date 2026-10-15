@@ -306,6 +306,8 @@ async fn record_one(
         stream_incarnation: Some(shard.stream_incarnation),
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
+        // The store stamps these as it accepts the report.
+        follower_incarnations: None,
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

@@ -154,6 +154,7 @@ fn replica_report(
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
     }
 }
 
@@ -249,6 +250,7 @@ fn script() -> Vec<MetaCommand> {
     commands.push(MetaCommand::RecordReplicaReport {
         report: replica_report("t-a", "ns-1", "orders", 1_000),
         leader: None,
+        stamp_followers: false,
     });
     commands.push(MetaCommand::UpsertIdpIssuer {
         tenant_id: "t-a".to_string(),

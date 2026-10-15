@@ -18,6 +18,7 @@ pub(super) async fn a_replica_report_is_kept_and_read_back(store: &dyn ControlPl
     let recorded = ReplicaReport {
         by_round: true,
         leader_incarnation: Some(1),
+        follower_incarnations: None,
         ..report(shard, generation(store, shard).await, &["broker-b"], 5_000)
     };
     assert_eq!(
@@ -321,6 +322,62 @@ pub(super) async fn halted_copies_are_kept_with_when_they_began(store: &dyn Cont
     assert!(stored(store, shard).await.halted.is_empty());
 }
 
+/// **The store stamps each node a report names with its incarnation as it
+/// accepts the report**, from its own node table and not from the caller.
+/// Placement counts a node from the report only while that is still its
+/// incarnation, so a node that registers again after a report is not vouched
+/// for by it. A node the store does not know gets no stamp.
+pub(super) async fn followers_are_stamped_with_their_incarnations(store: &dyn ControlPlaneStore) {
+    let shard = 3;
+    store
+        .put_shard_assignment(assignment(shard, LEADER))
+        .await
+        .expect("assign");
+    let generation = generation(store, shard).await;
+    let incarnation = |node: crate::model::Node| node.status.incarnation;
+    let first = incarnation(
+        store
+            .register_node(super::nodes::node("broker-y", 7501))
+            .await
+            .expect("register"),
+    );
+    let mut sent = report(shard, generation, &["broker-y", "broker-unknown"], 6_000);
+    sent.follower_incarnations = Some([("broker-y".to_string(), first + 40)].into());
+    assert_eq!(
+        store
+            .record_replica_report(sent, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(
+        stored(store, shard).await.follower_incarnations,
+        Some([("broker-y".to_string(), first)].into()),
+        "the stamp is the store's, for the nodes it knows",
+    );
+
+    let second = incarnation(
+        store
+            .register_node(super::nodes::node("broker-y", 7501))
+            .await
+            .expect("register again"),
+    );
+    assert_ne!(first, second);
+    // The report from before the restart keeps the old stamp.
+    assert_eq!(
+        stored(store, shard).await.follower_incarnations,
+        Some([("broker-y".to_string(), first)].into()),
+    );
+    store
+        .record_replica_report(report(shard, generation, &["broker-y"], 6_100), LEADER)
+        .await
+        .expect("record");
+    assert_eq!(
+        stored(store, shard).await.follower_incarnations,
+        Some([("broker-y".to_string(), second)].into()),
+    );
+}
+
 /// `shard`'s report as held, stamps and all.
 async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
     store
@@ -338,6 +395,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
         key: key(shard),
         generation,
         caught_up: caught_up.iter().map(|n| n.to_string()).collect(),
@@ -358,11 +416,13 @@ async fn generation(store: &dyn ControlPlaneStore, shard: u32) -> u64 {
         .generation
 }
 
-/// The report held for `shard`, with its stamp normalised away.
+/// The report held for `shard`, with the store's stamps normalised away.
 ///
 /// Under Raft the leader replaces `reported_at_millis` with its own clock as
 /// the command enters the log, so the stamp read back is the leader's and not
-/// the caller's; everything else must come back exactly as recorded.
+/// the caller's. The follower incarnations are the store's own, and
+/// [`followers_are_stamped_with_their_incarnations`] checks them. Everything
+/// else must come back exactly as recorded.
 async fn report_for(store: &dyn ControlPlaneStore, shard: u32) -> Option<ReplicaReport> {
     store
         .list_replica_reports()
@@ -370,15 +430,13 @@ async fn report_for(store: &dyn ControlPlaneStore, shard: u32) -> Option<Replica
         .expect("list reports")
         .into_iter()
         .find(|report| report.key == key(shard))
-        .map(|report| ReplicaReport {
-            reported_at_millis: 0,
-            ..report
-        })
+        .map(unstamped)
 }
 
 fn unstamped(report: ReplicaReport) -> ReplicaReport {
     ReplicaReport {
         reported_at_millis: 0,
+        follower_incarnations: None,
         ..report
     }
 }

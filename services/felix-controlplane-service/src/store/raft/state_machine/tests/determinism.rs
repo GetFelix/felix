@@ -208,6 +208,7 @@ async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
         .dispatch(MetaCommand::RecordReplicaReport {
             report: report.clone(),
             leader: Some("broker-0".to_string()),
+            stamp_followers: false,
         })
         .await
         .expect("report");
@@ -390,6 +391,7 @@ async fn a_report_by_round_raises_the_mark_to_11() {
     let plain = MetaCommand::RecordReplicaReport {
         report: replica_report("acme", "ns", "orders", 1),
         leader: None,
+        stamp_followers: false,
     };
     assert!(plain.version() < 11);
     original.apply(&encode_command(&plain)).await;
@@ -403,9 +405,110 @@ async fn a_report_by_round_raises_the_mark_to_11() {
             ..replica_report("acme", "ns", "orders", 2)
         },
         leader: None,
+        stamp_followers: false,
     };
     assert_eq!(by_round.version(), 11);
     original.apply(&encode_command(&by_round)).await;
     assert_eq!(original.levels_used(), 11);
     assert_eq!(original.join_floor(), 11);
+}
+
+/// A machine where `broker-1` registered twice, so it is at incarnation 1,
+/// and `broker-0` leads `orders`, with the report `broker-0` makes at that
+/// generation.
+async fn machine_with_a_restarted_follower() -> (MetadataStateMachine, crate::model::ReplicaReport)
+{
+    let machine = machine();
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+        MetaCommand::CreateStream {
+            stream: stream("t-a", "ns-1", "orders"),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-0", 7_000),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-1", 7_001),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-1", 7_001),
+        },
+        MetaCommand::PutShardAssignmentIf {
+            assignment: shard_assignment("t-a", "ns-1", "orders", "broker-0"),
+            expected_generation: None,
+        },
+    ] {
+        machine.dispatch(command).await.expect("apply");
+    }
+    let key = shard_assignment("t-a", "ns-1", "orders", "broker-0").key;
+    let generation = machine
+        .store()
+        .get_shard_assignment(&key)
+        .await
+        .expect("assignment")
+        .generation;
+    let report = crate::model::ReplicaReport {
+        generation,
+        ..replica_report("t-a", "ns-1", "orders", 1_000)
+    };
+    (machine, report)
+}
+
+/// **The follower stamp is decided by replicated state alone.** Two members
+/// applying the same stamped entry take each node's incarnation from their
+/// node tables, never from the entry or a clock, and serialize the same
+/// bytes. Stamping needs level 12, so the entry raises the mark to it.
+#[tokio::test]
+async fn a_stamped_report_applies_identically_from_the_node_table() {
+    use crate::raft::AppStateMachine;
+    let command = |report: crate::model::ReplicaReport| MetaCommand::RecordReplicaReport {
+        report,
+        leader: Some("broker-0".to_string()),
+        stamp_followers: true,
+    };
+    let (first, report) = machine_with_a_restarted_follower().await;
+    let (second, _) = machine_with_a_restarted_follower().await;
+    assert_eq!(command(report.clone()).version(), 12);
+    for machine in [&first, &second] {
+        machine
+            .apply(&encode_command(&command(report.clone())))
+            .await;
+    }
+    assert_eq!(first.snapshot().await, second.snapshot().await);
+    let held = first.store().list_replica_reports().await.expect("reports");
+    assert_eq!(
+        held[0].follower_incarnations,
+        Some([("broker-1".to_string(), 1)].into()),
+    );
+    assert_eq!(first.levels_used(), 12);
+    assert_eq!(first.join_floor(), 12);
+}
+
+/// An entry from a proposer below level 12 does not stamp, on any member, so
+/// a group where some members would not stamp keeps the report unstamped
+/// everywhere, as a level-11 member applies it.
+#[tokio::test]
+async fn an_unstamped_report_entry_applies_as_before() {
+    use crate::raft::AppStateMachine;
+    let (machine, report) = machine_with_a_restarted_follower().await;
+    let command = MetaCommand::RecordReplicaReport {
+        report,
+        leader: Some("broker-0".to_string()),
+        stamp_followers: false,
+    };
+    assert!(command.version() < 12);
+    machine.apply(&encode_command(&command)).await;
+    let held = machine
+        .store()
+        .list_replica_reports()
+        .await
+        .expect("reports");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].follower_incarnations, None);
+    assert_eq!(machine.levels_used(), 0);
 }

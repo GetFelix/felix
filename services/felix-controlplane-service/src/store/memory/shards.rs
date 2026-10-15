@@ -228,7 +228,15 @@ pub(super) async fn record_replica_report(
     store: &InMemoryStore,
     report: ReplicaReport,
     leader: Option<&str>,
+    stamp: bool,
 ) -> StoreResult<ReportWrite> {
+    // Nodes before shards, the order an assignment write takes them in. Under
+    // Raft this is the apply, so the stamp comes from replicated state.
+    let nodes = if stamp {
+        Some(store.nodes.read().await)
+    } else {
+        None
+    };
     // Held across the leadership check and the write, so a promotion or
     // delete either lands first and is seen, or waits for the report.
     let shards = store.shards.read().await;
@@ -256,6 +264,10 @@ pub(super) async fn record_replica_report(
     let mut reports = store.replica_reports.write().await;
     let mut report = report;
     report.stream_incarnation = None;
+    report.follower_incarnations = None;
+    if let Some(nodes) = &nodes {
+        report.stamp_followers(|node| nodes.records.get(node).map(|node| node.status.incarnation));
+    }
     if let Some(held) = reports.get(&report.key) {
         if !report.supersedes(held) {
             return Ok(ReportWrite::Stale);

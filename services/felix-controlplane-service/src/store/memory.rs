@@ -199,13 +199,15 @@ impl InMemoryStore {
     }
 
     /// [`ControlPlaneStore::record_replica_report`], with the leadership
-    /// check optional for the Raft apply of entries that predate it.
+    /// check optional for the Raft apply of entries that predate it, and the
+    /// follower stamp for entries that predate that.
     pub(crate) async fn apply_replica_report(
         &self,
         report: ReplicaReport,
         leader: Option<&str>,
+        stamp_followers: bool,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, leader).await
+        shards::record_replica_report(self, report, leader, stamp_followers).await
     }
 
     /// [`ControlPlaneStore::register_node`], with the fleet check optional
@@ -581,7 +583,7 @@ impl ControlPlaneStore for InMemoryStore {
         report: ReplicaReport,
         leader: &str,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, Some(leader)).await
+        shards::record_replica_report(self, report, Some(leader), true).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {

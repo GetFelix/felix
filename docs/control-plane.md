@@ -762,6 +762,23 @@ it. Nothing about a report survives the assignment it describes: deleting the
 assignment deletes the report, so a shard removed and recreated does not
 inherit the old one's promotability.
 
+**A dead leader's report stops ageing.** Only the leader reports on its shard,
+so nothing refreshes its last report once it dies, and a report measured
+against now would expire if placement or the control plane was slow around the
+death. The shard would then stay unplaceable until an operator abandoned it.
+So when the store accepts a report it stamps every node the report names with
+that node's current incarnation, from its own node table: under the
+`FOR SHARE` lock in the same Postgres transaction, and in the Raft state
+machine as the command applies. Placement counts a node from a report only
+while that is still its incarnation, since a node that registered again may
+have lost its log. For a stamped report, while the assignment is still at the
+report's generation and its leader is `down` or `left`, the report's age is
+measured to the leader's last heartbeat instead of now. A live leader's report
+keeps ageing, so one that stopped reporting still expires. An unstamped
+report (from a Postgres instance that predates migration 0030, or under Raft
+below metadata level 12) is read as before: by its age against now, and for
+every node it names.
+
 #### How shards get placed
 
 Rendezvous hashing: every eligible node is scored against the shard, and the

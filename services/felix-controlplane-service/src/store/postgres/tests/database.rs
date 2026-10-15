@@ -1657,6 +1657,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         stream_incarnation: None,
         by_round: true,
         leader_incarnation: Some(1),
+        follower_incarnations: None,
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -1699,5 +1700,79 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         again.by_round && again.leader_incarnation == Some(1),
         "{again:?}"
     );
+    Ok(())
+}
+
+/// **A member that predates the follower stamp cannot leave one behind.** Its
+/// upsert updates the report without the new columns (migration 0030), so a
+/// stamp the row still holds came with an earlier report. It reads as
+/// unstamped, so placement judges the report by its age alone, until a
+/// current member's next report stamps it again.
+#[tokio::test]
+#[serial]
+async fn an_older_members_report_does_not_keep_the_follower_stamp() -> anyhow::Result<()> {
+    use crate::store::contract::shards::{assignment, key, seed};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = fleet_store(&url).await?;
+    seed(store.as_ref()).await;
+    store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await?;
+    let generation = store.get_shard_assignment(&key(0)).await?.generation;
+    let incarnation = store.get_node("broker-y").await?.status.incarnation;
+    let report = crate::model::ReplicaReport {
+        key: key(0),
+        generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 10), ("broker-gone".to_string(), 4)].into(),
+        reported_at_millis: 5_000,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        // Never the caller's: the store stamps from its nodes table.
+        follower_incarnations: Some([("broker-y".to_string(), incarnation + 5)].into()),
+    };
+    store
+        .record_replica_report(report.clone(), "broker-x")
+        .await?;
+    let held = || async {
+        let reports = store.list_replica_reports().await.expect("list");
+        reports
+            .into_iter()
+            .find(|held| held.key == key(0))
+            .expect("held")
+    };
+    let stamp = Some([("broker-y".to_string(), incarnation)].into());
+    assert_eq!(held().await.follower_incarnations, stamp);
+
+    // What the previous release's upsert changes: everything but the new
+    // columns.
+    sqlx::query(
+        "UPDATE replica_reports SET reported_at_millis = 6000, leader_offset = 11
+         WHERE shard = 0",
+    )
+    .execute(&pool)
+    .await?;
+    let after = held().await;
+    assert_eq!(after.reported_at_millis, 6_000);
+    assert_eq!(after.follower_incarnations, None, "{after:?}");
+
+    store
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                reported_at_millis: 7_000,
+                leader_offset: Some(12),
+                ..report
+            },
+            "broker-x",
+        )
+        .await?;
+    assert_eq!(held().await.follower_incarnations, stamp);
     Ok(())
 }

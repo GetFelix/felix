@@ -353,6 +353,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// against that same clock by whichever instance runs placement, which
     /// is the whole reason the report is in the store. Under Raft the leader
     /// overwrites the stamp as it accepts the proposal, as for a heartbeat.
+    ///
+    /// The store also sets `follower_incarnations` from its own node table,
+    /// under the same check, and ignores any the caller passed. Under Raft
+    /// only once every member is at the level that applies it.
     async fn record_replica_report(
         &self,
         report: ReplicaReport,

@@ -255,6 +255,7 @@ pub(super) async fn report(
                 stream_incarnation: None,
                 by_round: false,
                 leader_incarnation: None,
+                follower_incarnations: None,
                 key: shard_zero(),
                 generation,
                 caught_up: caught_up.iter().map(|id| id.to_string()).collect(),

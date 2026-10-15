@@ -648,6 +648,15 @@ reports are recorded without it and leaders are failed over on the lease.
 Dropping it is the safe side: a member that applied the field and one that
 dropped it would otherwise disagree on whether a leader may be replaced.
 
+Level 12 is the follower stamp on a replica report. A report command with
+`stamp_followers` set makes each member stamp the nodes the report names with
+their incarnations from its own replicated node table as the entry applies, so
+every member stores the same stamp, and no clock or local state is read. The
+proposer sets it only once every member is at level 12. Until then reports are
+stored unstamped on every member, and placement reads them as before: a dead
+leader's report expires by the clock (see
+[control-plane.md](control-plane.md)).
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -671,6 +680,7 @@ the field itself, on every member alike, or refuses the command:
 | replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
+| report command `stamp_followers`, replica report `follower_incarnations`, snapshot `replica_reports[].follower_incarnations` | 12 | the report is proposed unstamped, which placement reads by its age alone |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

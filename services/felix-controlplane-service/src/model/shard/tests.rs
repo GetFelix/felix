@@ -240,6 +240,7 @@ fn report_at(generation: u64, at: u64) -> ReplicaReport {
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_incarnations: None,
         key: assignment().key,
         generation,
         caught_up: BTreeSet::new(),

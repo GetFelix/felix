@@ -1739,6 +1739,22 @@ stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
 
+Once the leader is marked down, nothing will refresh its last report, so a
+stamped report's age is measured to the leader's last heartbeat instead of now,
+while the assignment is still at the report's generation. Otherwise a slow
+control plane around the death would leave the shard unplaceable for good. The
+stamp is what makes this safe. When the store accepts a report it records each
+named node's current incarnation, and placement counts a node from the report
+only while that is still its incarnation. Without it, a follower wiped and
+registered again under the same id would still look caught up. With RF=5 and
+a record acknowledged by {A,B,C}, A dies and C comes back empty; promoting C
+lets C, D and E form the promotion fence's majority (the new leader's own log
+counts as a vote) without the record. The stamp comes from the store's node
+table, not the broker. A follower that restarts between the leader measuring
+it and the store accepting the report is stamped with its new incarnation; the
+leader's next report corrects it. Details are in
+[control-plane.md](control-plane.md).
+
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.
 Placement does not guess in that case. At a later generation the acknowledged

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 11;
+pub const METADATA_VERSION: u16 = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -190,6 +190,11 @@ pub enum MetaCommand {
         /// that predate the check, which apply unchecked as they did then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         leader: Option<String>,
+        /// Stamp the report's nodes with their incarnations from the
+        /// replicated node table as the entry applies. Level 12: an entry
+        /// without it applies unstamped on every member, as before.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stamp_followers: bool,
     },
     SetMovesPaused {
         paused: bool,

@@ -32,12 +32,31 @@
 //! already say how quickly a dead leader is detected, and a report has to
 //! survive exactly that long to be usable.
 //!
+//! # Why a dead leader's report stops ageing
+//!
+//! Only the leader reports on its shard, so once it dies nothing refreshes
+//! its last report. Measured against now, that report would expire while
+//! placement or the control plane was slow, and the shard would stay
+//! unplaceable for good. So once the leader is down, a stamped report's age
+//! is measured to the leader's last heartbeat instead, while the assignment
+//! is still at the report's generation.
+//!
+//! That is safe only because of the stamp. A frozen report can outlive a
+//! follower's log: the follower may be wiped and register again under the
+//! same node id. The store stamps every node a report names with its node
+//! incarnation when it accepts the report, and placement counts a node from
+//! the report only while that is still its incarnation. An unstamped report
+//! is judged by its age alone, as before the stamp existed.
+//!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{HaltedCopy, NodeSuspicion, ReplicaReport, ShardKey, ShardKind};
+use crate::model::{
+    HaltedCopy, Node, NodeLifecycle, NodeSuspicion, ReplicaReport, ShardAssignment, ShardKey,
+    ShardKind,
+};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -93,6 +112,18 @@ pub struct ReplicaPositions {
     /// When this instance last saw each restore's new copy move; see
     /// `progress`.
     progressed: HashMap<(ShardKey, String), u64>,
+    /// Each node, as the stamps on reports and the age of a dead leader's
+    /// report are judged against.
+    nodes: HashMap<String, NodeView>,
+    /// Each shard's assignment: its generation and leader.
+    assignments: HashMap<ShardKey, (u64, String)>,
+}
+
+/// What reading a report needs of a node.
+struct NodeView {
+    incarnation: u64,
+    down: bool,
+    last_heartbeat_at_millis: u64,
 }
 
 impl ReplicaPositions {
@@ -112,7 +143,40 @@ impl ReplicaPositions {
             incarnations: HashMap::new(),
             followers_decide: false,
             progressed: HashMap::new(),
+            nodes: HashMap::new(),
+            assignments: HashMap::new(),
         }
+    }
+
+    /// With the nodes and assignments from the same read.
+    ///
+    /// Without them a stamped report counts no node and never outlives the
+    /// TTL, which is the safe reading.
+    pub fn with_nodes(mut self, nodes: &[Node], assignments: &[ShardAssignment]) -> Self {
+        self.nodes = nodes
+            .iter()
+            .map(|node| {
+                let view = NodeView {
+                    incarnation: node.status.incarnation,
+                    down: matches!(
+                        node.status.lifecycle,
+                        NodeLifecycle::Down | NodeLifecycle::Left
+                    ),
+                    last_heartbeat_at_millis: node.status.last_heartbeat_at_millis,
+                };
+                (node.node_id.clone(), view)
+            })
+            .collect();
+        self.assignments = assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.key.clone(),
+                    (assignment.generation, assignment.leader.clone()),
+                )
+            })
+            .collect();
+        self
     }
 
     /// With what brokers said about the leaders they cannot reach, and the
@@ -159,16 +223,65 @@ impl ReplicaPositions {
         store: &dyn crate::store::ControlPlaneStore,
         liveness: &NodeLivenessConfig,
     ) -> crate::store::StoreResult<Self> {
+        let nodes = store.list_nodes().await?;
+        let assignments = store.list_shard_assignments().await?;
         let reports = store.list_replica_reports().await?;
         let now_millis = store.now_millis().await?;
-        Ok(Self::new(reports, liveness, now_millis))
+        Ok(Self::new(reports, liveness, now_millis).with_nodes(&nodes, &assignments))
     }
 
     /// The report for `key`, if there is one and it is still believed.
     fn fresh(&self, key: &ShardKey) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
-        (self.now_millis.saturating_sub(report.reported_at_millis) <= self.ttl_millis)
+        (self
+            .aged_to(key, report)
+            .saturating_sub(report.reported_at_millis)
+            <= self.ttl_millis)
             .then_some(report)
+    }
+
+    /// The instant `report`'s age is measured to: now, or the last heartbeat
+    /// of a leader that is down and will not report again.
+    ///
+    /// Only for a stamped report, whose nodes are checked one by one in
+    /// [`Self::vouches_for`], and only while the assignment is at the
+    /// report's generation: the store took the report from that
+    /// generation's leader, so the down node is the one that made it. A
+    /// live leader's report keeps ageing, so one that stopped reporting
+    /// still expires.
+    fn aged_to(&self, key: &ShardKey, report: &ReplicaReport) -> u64 {
+        if report.follower_incarnations.is_none() {
+            return self.now_millis;
+        }
+        let Some((generation, leader)) = self.assignments.get(key) else {
+            return self.now_millis;
+        };
+        match self.nodes.get(leader) {
+            Some(leader) if *generation == report.generation && leader.down => {
+                leader.last_heartbeat_at_millis.min(self.now_millis)
+            }
+            _ => self.now_millis,
+        }
+    }
+
+    /// Whether `report` speaks for `node_id`'s current process. A stamped
+    /// report does only while the node has not registered again since: a new
+    /// incarnation may have lost the log the report saw.
+    fn vouches_for(&self, report: &ReplicaReport, node_id: &str) -> bool {
+        match &report.follower_incarnations {
+            None => true,
+            Some(stamps) => stamps.get(node_id).is_some_and(|stamped| {
+                self.nodes
+                    .get(node_id)
+                    .is_some_and(|node| node.incarnation == *stamped)
+            }),
+        }
+    }
+
+    /// The fresh report for `key`, if it vouches for `node_id`.
+    fn fresh_for(&self, key: &ShardKey, node_id: &str) -> Option<&ReplicaReport> {
+        self.fresh(key)
+            .filter(|report| self.vouches_for(report, node_id))
     }
 }
 
@@ -198,20 +311,23 @@ impl CaughtUp for ReplicaPositions {
     }
 
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
-        self.fresh(key)
+        self.fresh_for(key, node_id)
             .is_some_and(|report| report.caught_up.contains(node_id))
     }
 
     fn reported_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        self.fresh(key)?.offsets.get(node_id).copied()
+        self.fresh_for(key, node_id)?.offsets.get(node_id).copied()
     }
 
     fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        self.fresh(key)?.counter_offsets.get(node_id).copied()
+        self.fresh_for(key, node_id)?
+            .counter_offsets
+            .get(node_id)
+            .copied()
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        let report = self.fresh(key)?;
+        let report = self.fresh_for(key, node_id)?;
         let tail = report.leader_offset?;
         Some(tail.saturating_sub(*report.offsets.get(node_id)?))
     }
