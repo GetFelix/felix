@@ -153,7 +153,7 @@ jobs:
   # never reaches a persistent machine. See docs-site development/building.md.
   test:
     if: github.event_name != 'workflow_dispatch'
-    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
@@ -476,7 +476,8 @@ jobs:
   # that shows a check is load-bearing stays a trace.
   formal:
     name: TLA+ model (${{ matrix.shard }}/7)
-    runs-on: ubuntu-latest
+    # TLC runs a worker per core; see "Larger runners" in docs-site building.md.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || '60') }}
     # Seven shards, filled by each configuration's measured time
     # (scripts/check_tla.sh), keep every job near forty minutes, well under
