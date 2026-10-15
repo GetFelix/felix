@@ -41,9 +41,12 @@ pub struct ReplicaHandler {
     /// batch. See [`unverified_from`].
     verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
-    /// this broker holds as committed, per log. A rebuild from that leader
-    /// would only find the same disagreement again.
-    mismatched: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    /// this broker holds as committed, per log, with the stream incarnation
+    /// it shipped. A rebuild from that leader would only find the same
+    /// disagreement again; a recreated stream at the same generation is
+    /// another log.
+    mismatched:
+        parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), (u64, u64)>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -54,6 +57,9 @@ pub struct ReplicaHandler {
 #[derive(Debug, Clone, Copy)]
 struct Verified {
     generation: u64,
+    /// The stream incarnation whose log was compared; 0 for a cache and
+    /// before incarnations.
+    incarnation: u64,
     through: u64,
 }
 
@@ -198,7 +204,8 @@ impl ReplicaHandler {
         commit: u64,
     ) -> InternalMessage {
         let generation = request.shard.generation;
-        if self.committed_mismatch(key, log_kind) == Some(generation) {
+        let incarnation = request.shard.incarnation.unwrap_or(0);
+        if self.committed_mismatch(key, log_kind) == Some((generation, incarnation)) {
             tracing::error!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -253,13 +260,13 @@ impl ReplicaHandler {
         })
     }
 
-    /// The generation whose leader last disagreed with a committed record of
-    /// this log, if any.
+    /// The generation and incarnation whose leader last disagreed with a
+    /// committed record of this log, if any.
     fn committed_mismatch(
         &self,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         self.mismatched
             .lock()
             .get(&(key.clone(), log_kind))
@@ -531,7 +538,10 @@ impl ReplicaHandler {
             .verified
             .lock()
             .get(&key)
-            .filter(|verified| verified.generation == batch.shard.generation)
+            .filter(|verified| {
+                verified.generation == batch.shard.generation
+                    && verified.incarnation == batch.shard.incarnation.unwrap_or(0)
+            })
             .map(|verified| verified.through);
         let unverified = match log.tail_offset().await {
             Ok(tail) => unverified_from(
@@ -594,9 +604,10 @@ impl ReplicaHandler {
             // one at this generation is refused.
             let below_commit = cuts_committed(&log, diverged_at).await;
             if let Some(commit) = below_commit {
-                self.mismatched
-                    .lock()
-                    .insert((key.clone(), log_kind), batch.shard.generation);
+                self.mismatched.lock().insert(
+                    (key.clone(), log_kind),
+                    (batch.shard.generation, batch.shard.incarnation.unwrap_or(0)),
+                );
                 tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -739,6 +750,7 @@ impl ReplicaHandler {
                         key.clone(),
                         Verified {
                             generation: batch.shard.generation,
+                            incarnation: batch.shard.incarnation.unwrap_or(0),
                             through: applied.durable_offset,
                         },
                     );

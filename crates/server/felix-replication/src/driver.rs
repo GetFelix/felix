@@ -412,7 +412,9 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     release_unreplicated(broker, &alone).await;
     let mut reports = Vec::new();
     for (key, generation) in &unreplicated {
-        let report = alone_report(broker, key, *generation, 0).await;
+        let report = alone_report(broker, key, *generation, 0)
+            .await
+            .at_incarnation(crate::incarnation::of(broker, key));
         if let Some(reporter) = reporter {
             reporter.submit(report.clone());
         }

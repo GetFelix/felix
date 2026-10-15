@@ -681,6 +681,13 @@ predate it leave it out. Requires `node.manage` over
 the reporting node, and the node must lead the shard it reports on; a report
 naming a generation ahead of the assignment is refused, since one claiming
 `u64::MAX` would otherwise block every real report after it.
+`stream_incarnation` names the stream incarnation whose log the report
+measured, and is left out at 0 (a cache, a stream from before incarnations,
+and brokers that predate it). A report naming another incarnation than the
+assignment's is refused as `stale`: after a control-plane restore a recreated
+stream can be at the deleted one's generation, and a broker that has not yet
+seen the recreate would otherwise report the old log, whose longer tail
+would then refuse every real report.
 
 The answer is per shard, in request order: each entry names the shard and
 generation and says `accepted`, `stale`, `not_leader`, `unassigned` or

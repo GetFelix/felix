@@ -75,23 +75,26 @@ impl RaftStore {
         self.machine.store()
     }
 
-    /// The metadata level every member is known to be at. A member that has
-    /// not answered a probe since this process started counts as 0 in
-    /// `cluster_version`, but `stream_incarnations` was finalized only with
-    /// every member at [`INCARNATION_LEVEL`], so once it is, the group is at
-    /// least there. Without that floor, a restarted member with one peer down
-    /// refuses an incarnated create the finalize already allows.
+    /// The metadata level the group can apply, for gating what is proposed.
+    /// A member that has not answered a probe since this process started
+    /// counts as 0 in `cluster_version`. Once `stream_incarnations` is
+    /// finalized it counts at [`INCARNATION_LEVEL`] instead, since the
+    /// finalize needed every member there. A member that answered counts at
+    /// what it said, so a rolled-back member or an old build that joined
+    /// still holds newer commands back. Without the floor, a restarted member
+    /// with a peer down refuses an incarnated create the finalize allows.
     async fn group_level(&self) -> u16 {
-        let level = self.handle.cluster_version().await;
         let finalized = self
             .local()
             .enabled_fleet_features()
             .await
             .is_ok_and(|enabled| enabled.contains(felix_common::fleet::STREAM_INCARNATIONS.name()));
         if finalized {
-            level.max(INCARNATION_LEVEL)
+            self.handle
+                .cluster_version_with_unknown_at(INCARNATION_LEVEL)
+                .await
         } else {
-            level
+            self.handle.cluster_version().await
         }
     }
 

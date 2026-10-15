@@ -283,3 +283,59 @@ async fn a_recreate_between_the_check_and_the_open_is_refused() {
     );
     assert_eq!(log.accepted_generation(), 0, "took the old stream's fence");
 }
+
+/// A leader that disagreed with a committed record is refused a rebuild at
+/// that generation, but only on that log: the stream recreated at the same
+/// generation (after a restore rewinds the change seq) is a new log, and
+/// refusing its rebuild would leave the follower halted for the generation.
+#[tokio::test]
+async fn a_mismatch_on_a_deleted_incarnation_does_not_refuse_the_new_ones_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_on(dir.path());
+    broker.require_registered_streams();
+    register(&broker, 5).await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    let rebuild = |incarnation| {
+        let mut shard = batch(4, 0, &[]).shard;
+        shard.incarnation = Some(incarnation);
+        felix_wire::internal::ReplicateRebuild {
+            correlation_id: 1,
+            shard,
+            log: ReplicaLog::Stream,
+            base_offset: 0,
+        }
+    };
+    let mut committed = incarnated(4, 0, &["a", "b", "c"], Some(5));
+    committed.commit_offset = Some(2);
+    committed.generations = None;
+    handler
+        .apply(SENDER, committed, felix_broker::LogKind::Stream)
+        .await;
+    handler.rebuild(SENDER, rebuild(5)).await;
+    let answer = handler
+        .apply(
+            SENDER,
+            incarnated(4, 0, &["A", "b", "x"], Some(5)),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+    let answer = handler.rebuild(SENDER, rebuild(5)).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+
+    // The new log has committed records of its own, so its rebuild reaches
+    // the committed-mismatch check.
+    register(&broker, 6).await;
+    let mut committed = incarnated(4, 0, &["n", "o", "p"], Some(6));
+    committed.commit_offset = Some(2);
+    committed.generations = None;
+    handler
+        .apply(SENDER, committed, felix_broker::LogKind::Stream)
+        .await;
+    let answer = handler.rebuild(SENDER, rebuild(6)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "the new incarnation's rebuild was refused for the old one's mismatch: {:?}",
+        answer.kind()
+    );
+}

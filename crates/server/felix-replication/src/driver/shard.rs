@@ -698,7 +698,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         acknowledged(tail, &positions),
                         &positions,
                         false,
-                    ),
+                    )
+                    .at_incarnation(incarnation),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -775,7 +776,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         acknowledged(tail, &positions),
                         &positions,
                         false,
-                    ),
+                    )
+                    .at_incarnation(incarnation),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -950,7 +952,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             acknowledged(tail, &entry.followers),
             &entry.followers,
             drained,
-        ),
+        )
+        .at_incarnation(incarnation),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is

@@ -220,6 +220,9 @@ async fn ensure_signing_keys_never_overwrites() {
 /// A peer that answers `standing`, reporting `version` — or, at 0,
 /// nothing, as a build from before metadata versions does. It accepts every
 /// append so the leader has nothing to retry.
+/// A [`stub_member`] level that makes it answer no probe.
+const SILENT: u16 = u16::MAX;
+
 async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -235,11 +238,15 @@ async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
             axum::routing::get(move || {
                 let version = version.load(std::sync::atomic::Ordering::SeqCst);
                 async move {
-                    axum::Json(if version == 0 {
+                    // `SILENT` stands for a member that does not answer.
+                    if version == SILENT {
+                        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    Ok(axum::Json(if version == 0 {
                         serde_json::json!({ "last_log_index": null })
                     } else {
                         serde_json::json!({ "last_log_index": null, "version": version })
-                    })
+                    }))
                 }
             }),
         );
@@ -908,28 +915,23 @@ async fn combined_writes_fall_back_below_their_level() {
 }
 
 /// Once incarnations are finalized, a create proposes the clock even while
-/// this member counts a peer as level 0, as a restarted member does until the
-/// peer answers. Proposing 0 then gives the name tombstone + 1, which can
-/// repeat an incarnation after a restore. Goes through the API's create path.
+/// a peer has not answered since this member restarted. Proposing 0 then
+/// gives the name tombstone + 1, which can repeat an incarnation after a
+/// restore. A peer that answers with a lower level still holds level-10
+/// commands back, as after a rollback. Goes through the API's create path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_finalized_group_proposes_incarnations_with_a_member_at_level_0() {
+async fn a_finalized_group_proposes_incarnations_past_a_peer_that_never_answered() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) =
         store_with_member_at(dir.path(), crate::store::raft::command::METADATA_VERSION).await;
-    let wait_for = |proposes: bool| {
-        let store = Arc::clone(&store);
-        async move {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while store.takes_incarnation_proposals().await != proposes {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the member's level never read as wanted"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    };
-    wait_for(true).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
     store
         .register_node(crate::store::contract::nodes::with_features(
@@ -944,6 +946,11 @@ async fn a_finalized_group_proposes_incarnations_with_a_member_at_level_0() {
         .expect("finalize");
 
     let state = crate::test_support::app_state_ready(store.clone());
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+    };
     let create = || async {
         let body = serde_json::from_value(serde_json::json!({
             "stream": "orders", "kind": "Stream", "shards": 1, "retention": {},
@@ -957,22 +964,29 @@ async fn a_finalized_group_proposes_incarnations_with_a_member_at_level_0() {
     };
     let first = create().await.expect("create");
     assert_ne!(first.incarnation, 0);
-    store
-        .delete_stream(&crate::model::StreamKey {
-            tenant_id: "t1".to_string(),
-            namespace: "ns".to_string(),
-            stream: "orders".to_string(),
-        })
-        .await
-        .expect("delete");
+    store.delete_stream(&key).await.expect("delete");
 
-    version.store(0, std::sync::atomic::Ordering::SeqCst);
-    wait_for(false).await;
-    let again = create().await.expect("create with a member at level 0");
+    // As after a restart with the peer down: it has never answered.
+    version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    assert!(!store.takes_incarnation_proposals().await);
+    let again = create()
+        .await
+        .expect("create with a peer that never answered");
     assert!(
         again.incarnation > first.incarnation + 1,
         "proposed nothing: incarnation {} after {}",
         again.incarnation,
         first.incarnation
+    );
+    store.delete_stream(&key).await.expect("delete again");
+
+    // A peer that says it is at level 0 holds the incarnated create back.
+    version.store(0, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    let refused = create().await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 10")),
+        "a peer that reported level 0 was overridden: {refused:?}"
     );
 }

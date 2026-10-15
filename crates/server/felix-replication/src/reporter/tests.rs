@@ -69,6 +69,7 @@ fn report(stream: &str) -> ShardReport {
         tail: 0,
         halted: Vec::new(),
         counter_offsets: Vec::new(),
+        incarnation: 0,
     }
 }
 

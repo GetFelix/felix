@@ -927,9 +927,13 @@ A promotion fence taken on the old incarnation's logs does not open the new
 one. A broker leading the shard also starts a new, fenced term whenever the
 assignment names another incarnation, whatever the generations say.
 
-Replica reports to the control plane name only the generation, so the leader
-drops a report from a pass that began on the old log, and deleting a stream
-deletes its shards' reports with their assignments in every store.
+Replica reports name the incarnation they measured (`stream_incarnation`),
+and the control plane refuses one naming another than the assignment's. The
+leader also drops a report from a pass that began on the old log, keeps the
+tail it reports for a shard led alone per incarnation, and deleting a stream
+deletes its shards' reports with their assignments in every store. A
+follower's record of a leader that disagreed with a committed record, which
+refuses that leader's rebuilds, is kept per incarnation too.
 
 **A delete is applied once.** A delete names the incarnation through which the
 name is gone, so a delete delivered again after the create that followed it

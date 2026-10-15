@@ -21,8 +21,10 @@
   The first assignment of an incarnated stream's shard takes its change's
   sequence number as its generation. A control-plane restore can still make
   that equal to a deleted incarnation's, so leaders keep follower positions
-  and quorum marks per incarnation too, and a stream delete takes its shards'
-  replica reports in the in-memory and Raft stores as Postgres already did.
+  and quorum marks per incarnation too, replica reports carry an optional
+  `stream_incarnation` that the control plane checks against the
+  assignment's, and a stream delete takes its shards' replica reports in the
+  in-memory and Raft stores as Postgres already did.
   A follower refuses replication for an
   incarnation it does not hold (the new internal `Incarnated` frame, kind
   40). The catalog sync moves past each change it applies, a shard assigned
@@ -36,7 +38,8 @@
   tombstones with one flush, and `POST /v1/resources` answers with the
   incarnation the store gave each stream. Once incarnations are finalized, a
   create proposes the clock even while a Raft member has not yet heard from a
-  peer since it restarted.
+  peer since it restarted. Such a peer counts at level 10 then; a peer that
+  answers with a lower level still holds level-10 commands back.
 - Upgrade notes for `stream_incarnations` (#1208): it needs every Raft
   control-plane member at metadata level 10 and every broker on this release
   before it can be finalized. A Postgres control plane runs migration `0028`

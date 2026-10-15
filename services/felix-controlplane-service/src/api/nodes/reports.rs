@@ -231,6 +231,21 @@ async fn record_one(
     if shard.generation < assignment.generation {
         return Ok(ReportOutcome::Stale);
     }
+    // Another incarnation's log, from a broker whose catalog has not caught
+    // up with a recreate. After a restore the new stream can be at the old
+    // one's generation, and the old log's longer tail would then refuse
+    // every real report as behind it.
+    if shard.stream_incarnation != assignment.incarnation {
+        tracing::warn!(
+            node_id = %node_id,
+            reported = shard.stream_incarnation,
+            assigned = assignment.incarnation,
+            stream = %key.stream,
+            shard = key.shard,
+            "a broker reported another incarnation of the stream than the assignment's",
+        );
+        return Ok(ReportOutcome::Stale);
+    }
 
     let advances = advances_move(
         &assignment,

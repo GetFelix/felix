@@ -80,12 +80,16 @@ pub(super) enum Event<'a> {
 pub(super) struct Reported {
     key: ShardKey,
     generation: u64,
+    incarnation: u64,
     tail: u64,
 }
 
-/// The last report sent for a shard led here alone.
+/// The last report sent for a shard led here alone. The tail is a floor only
+/// for the same log, so it is kept per incarnation too: a stream recreated at
+/// the deleted one's generation starts a new log.
 struct Alone {
     generation: u64,
+    incarnation: u64,
     tail: u64,
     at: tokio::time::Instant,
 }
@@ -414,8 +418,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         };
         let now = tokio::time::Instant::now();
+        let incarnation = crate::incarnation::of(self.cx.broker, key);
         let floor = match self.alone.get(key) {
-            Some(last) if last.generation == generation => {
+            Some(last) if last.generation == generation && last.incarnation == incarnation => {
                 // Half, so a tick landing a moment early does not skip one.
                 if now.duration_since(last.at) < self.cx.refresh / 2 {
                     return;
@@ -428,6 +433,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             key.clone(),
             Alone {
                 generation,
+                incarnation,
                 tail: floor,
                 at: now,
             },
@@ -435,12 +441,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let broker = self.cx.broker;
         let key = key.clone();
         self.reports.push(Box::pin(async move {
-            let report = alone_report(broker, &key, generation, floor).await;
+            let report = alone_report(broker, &key, generation, floor)
+                .await
+                .at_incarnation(incarnation);
             let tail = report.tail;
             reporter.submit(report);
             Reported {
                 key,
                 generation,
+                incarnation,
                 tail,
             }
         }));
@@ -450,6 +459,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     pub(super) fn reported(&mut self, reported: Reported) {
         if let Some(last) = self.alone.get_mut(&reported.key)
             && last.generation == reported.generation
+            && last.incarnation == reported.incarnation
         {
             last.tail = last.tail.max(reported.tail);
         }

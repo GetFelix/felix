@@ -190,6 +190,67 @@ async fn the_driver_reports_a_shard_led_alone() {
     assert_eq!(report.leader_offset, Some(0));
 }
 
+/// A shard led alone keeps its reported tail as a floor, but only for the
+/// same log: a stream recreated at the deleted one's generation (after a
+/// restore rewinds the change seq) starts empty, and reporting the old tail
+/// for it would claim records the new log does not have.
+#[tokio::test]
+async fn a_shard_led_alone_drops_its_floor_for_a_new_incarnation() {
+    let (broker, _dir) = incarnated_leader(5, 10).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        Arc::clone(&broker),
+        router(LOCAL, &[], 4),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let of = |incarnation: u64| {
+        let received = Arc::clone(&received);
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let found = received
+                        .lock()
+                        .expect("lock")
+                        .iter()
+                        .find(|report| report.stream_incarnation == incarnation)
+                        .cloned();
+                    if let Some(report) = found {
+                        return report;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .ok()
+        }
+    };
+
+    let old = of(5)
+        .await
+        .expect("the first incarnation was never reported");
+    assert_eq!(old.leader_offset, Some(10));
+    reincarnate(&broker, 6, 0).await;
+    let new = of(6).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let new = new.expect("the new incarnation was never reported");
+    assert_eq!(
+        (new.generation, new.leader_offset),
+        (4, Some(0)),
+        "the new log was reported at the old log's tail",
+    );
+}
+
 /// **A promoted shard led alone reports nothing until its fence opens it.**
 /// The report is what lets placement grow the set, and a set written while
 /// the leader is still fencing would be the set it fences.
@@ -439,6 +500,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
                 node_id: "broker-b".to_string(),
                 durable_offset: 7,
             }],
+            stream_incarnation: 0,
         }],
     };
 
