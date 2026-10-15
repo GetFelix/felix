@@ -296,8 +296,9 @@ impl ClusterClient {
         loop {
             // The entry broker may be the dead one, and after a failed attempt
             // it may have died too; `connect_any` moves on to one that answers.
-            if (attempt > 0 || Arc::ptr_eq(&self.client().await, lost_client))
-                && let Err(err) = self.reconnect().await
+            let current = self.client().await;
+            if (attempt > 0 || Arc::ptr_eq(&current, lost_client))
+                && let Err(err) = self.reconnect(&current).await
             {
                 tracing::debug!(error = %err, "no broker answered while resubscribing");
             }
@@ -381,7 +382,7 @@ impl ClusterClient {
                 },
                 (None, None) => (self.client().await, true),
             };
-            let error = match open(first).await {
+            let error = match open(Arc::clone(&first)).await {
                 Ok(opened) => return Ok(opened),
                 Err(err) => err,
             };
@@ -397,7 +398,7 @@ impl ClusterClient {
             // its way down, so asking it again only waits out the deadline.
             if via_entry
                 && wants_reconnect(&error)
-                && let Err(err) = self.reconnect().await
+                && let Err(err) = self.reconnect(&first).await
             {
                 tracing::debug!(error = %err, "no broker answered while following a moved shard");
             }
