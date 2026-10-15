@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792042983621,
+  "lastUpdate": 1792046198048,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -37818,6 +37818,72 @@ window.BENCHMARK_DATA = {
             "range": "713.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2368.00\nmean: 2096.60\nstdev: 713.51\ncv: 34.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77c5be4560b3d31a8a08e002fd2feeb7594f7f34",
+          "message": "fix(storage): refuse truncation and reset on a failed log (#1222) (#1241)\n\nA flush that fails to sync a retired segment marks the roll failed while\nits seal can still be running. The roll fence let a truncation through on\na failed roll, so it could cut that segment and return Ok before the\nseal's set_len padded it back with zeros. fence_rolls now checks health\nfirst and refuses.\n\nWith that, no rewind can overlap a background seal, so the mark's rewind\ncounter and the test written for it go.",
+          "timestamp": "2026-10-14T23:32:16-07:00",
+          "tree_id": "3a13b28dd5caf9e342f748bf80618b071d170e5e",
+          "url": "https://github.com/GetFelix/felix/commit/77c5be4560b3d31a8a08e002fd2feeb7594f7f34"
+        },
+        "date": 1792046194165,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 183.40\nstdev: 1.14\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 251,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 251.00\nmean: 249.80\nstdev: 2.68\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 308,
+            "range": "9.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 308.00\nmean: 308.00\nstdev: 9.72\ncv: 3.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "7.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 222.40\nstdev: 7.09\ncv: 3.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "187.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 533.00\nstdev: 187.42\ncv: 35.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 641,
+            "range": "718.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 641.00\nmean: 945.00\nstdev: 718.33\ncv: 76.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
