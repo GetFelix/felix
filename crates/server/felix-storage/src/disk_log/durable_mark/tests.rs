@@ -5,6 +5,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::disk_log::DiskLog;
+use crate::disk_log::tests::park_a_seal;
 use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, ReadRange};
 use crate::segment::segment_file_name;
 use crate::{Result, StorageError};
@@ -161,33 +162,6 @@ async fn a_truncation_moves_the_mark_back_durably() {
     assert_eq!(read_all(&log).await.len(), 4);
 }
 
-/// Start a roll and hold it at its seal. Returns the roll and the sender
-/// that lets the seal go.
-async fn park_a_seal(
-    log: &DiskLog,
-) -> (
-    tokio::task::JoinHandle<Result<crate::log::Offset>>,
-    std::sync::mpsc::Sender<()>,
-) {
-    use std::sync::atomic::Ordering;
-
-    use crate::disk_log::append::RollState;
-
-    let (release, held) = std::sync::mpsc::channel();
-    *log.inner.hold_next_seal.lock() = Some(held);
-    let roller = log.clone();
-    let roll = tokio::spawn(async move { roller.roll_now().await });
-    for _ in 0..5_000 {
-        if log.inner.hold_next_seal.lock().is_none()
-            && log.inner.roll_state.load(Ordering::Acquire) == RollState::Sealing as u8
-        {
-            return (roll, release);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
-    panic!("the roll never reached its seal");
-}
-
 /// A background seal that finishes after a flush covered the new segment
 /// must not pull the mark back to that segment's header. An idle shard never
 /// flushes again to fix it, so acknowledged records in the new segment would
@@ -230,10 +204,20 @@ async fn a_seal_from_before_a_truncation_leaves_the_mark_alone() {
     log.append(&batch("a", 10)).await.expect("append");
     let (roll, release) = park_a_seal(&log).await;
 
-    log.truncate(4).await.expect("truncate");
-    let rewound = load(dir.path()).expect("mark");
-
+    let truncating = {
+        let log = log.clone();
+        tokio::spawn(async move { log.truncate(4).await })
+    };
     release.send(()).expect("release the seal");
-    let _ = roll.await.expect("join");
-    assert_eq!(load(dir.path()), Some(rewound));
+    roll.await.expect("join").expect("roll");
+    truncating.await.expect("join").expect("truncate");
+
+    let active = {
+        let segments = log.inner.segments.read();
+        DurableMark {
+            segment: segments.active().id(),
+            synced_bytes: segments.active().size_bytes(),
+        }
+    };
+    assert_eq!(load(dir.path()), Some(active));
 }
