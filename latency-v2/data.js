@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792088957505,
+  "lastUpdate": 1792090162718,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38478,6 +38478,72 @@ window.BENCHMARK_DATA = {
             "range": "373.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 629.00\nmean: 784.80\nstdev: 373.57\ncv: 47.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "595eb0cb1ac43433e6605ed05525674720e82c29",
+          "message": "fix(perf): mark large unconfirmed slowdowns inconclusive, not passing (#1257) (#1259)\n\nThe PR comparison passed any row the t-test could not confirm, so a noisy\ncell could double its latency and still get a green mark. A worse change of\n10% or more that misses significance is now inconclusive, and each row shows\nthe trials' coefficient of variation.",
+          "timestamp": "2026-10-15T18:44:57Z",
+          "tree_id": "f50845caabe18d891f335d7c6c859d4d169da4d3",
+          "url": "https://github.com/GetFelix/felix/commit/595eb0cb1ac43433e6605ed05525674720e82c29"
+        },
+        "date": 1792090157268,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "2.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.00\nstdev: 2.92\ncv: 1.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "4.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 246.00\nstdev: 4.53\ncv: 1.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "57.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 334.80\nstdev: 57.06\ncv: 17.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 221.40\nstdev: 0.55\ncv: 0.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 452,
+            "range": "9.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 452.00\nmean: 452.60\nstdev: 9.61\ncv: 2.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 620,
+            "range": "305.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 620.00\nmean: 818.80\nstdev: 305.74\ncv: 37.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
