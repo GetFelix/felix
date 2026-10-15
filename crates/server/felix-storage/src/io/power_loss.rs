@@ -31,7 +31,7 @@ pub(crate) mod trigger;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -115,22 +115,62 @@ impl Durable {
 /// a filesystem hands a freed number to the next file it creates, and the
 /// model still needs the old file's bytes for a name whose unlink was not
 /// flushed. The birth time tells the two apart wherever the filesystem
-/// records one (ext4, xfs, btrfs).
+/// records one (ext4, xfs, btrfs), but it comes from a coarse clock, so an
+/// unlink and create within a few milliseconds can share it. The inode
+/// generation, which ext4 and others bump on reuse, covers that case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Inode {
     dev: u64,
     ino: u64,
     born: Option<std::time::SystemTime>,
+    /// `None` where the filesystem does not answer `FS_IOC_GETVERSION`.
+    generation: Option<u32>,
 }
 
 impl Inode {
-    fn of(meta: &std::fs::Metadata) -> Self {
+    fn of(meta: &std::fs::Metadata, file: &File) -> Self {
         Self {
             dev: meta.dev(),
             ino: meta.ino(),
             born: meta.created().ok(),
+            generation: generation(file),
         }
     }
+
+    /// For a directory listing, where no descriptor is held.
+    fn at(path: &Path, meta: &std::fs::Metadata) -> Self {
+        // O_NONBLOCK so a fifo or similar cannot stall the open.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .ok();
+        match file {
+            Some(file) => Self::of(meta, &file),
+            None => Self {
+                dev: meta.dev(),
+                ino: meta.ino(),
+                born: meta.created().ok(),
+                generation: None,
+            },
+        }
+    }
+}
+
+/// `FS_IOC_GETVERSION`, i.e. `_IOR('v', 1, long)`.
+const FS_IOC_GETVERSION: u64 = 0x8008_7601;
+
+fn generation(file: &File) -> Option<u32> {
+    let mut value: libc::c_long = 0;
+    // SAFETY: the request writes at most one `long` through the pointer.
+    let rc = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            FS_IOC_GETVERSION as _,
+            &mut value as *mut libc::c_long,
+        )
+    };
+    (rc == 0).then_some(value as u32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +258,7 @@ impl PowerLoss {
 
     fn capture_file(&self, file: &File, kind: SyncKind) {
         let Ok(meta) = file.metadata() else { return };
-        let inode = Inode::of(&meta);
+        let inode = Inode::of(&meta, file);
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
         let path = format!("/proc/self/fd/{}", file.as_raw_fd());
@@ -395,7 +435,7 @@ fn list(dir: &Path) -> std::io::Result<BTreeMap<OsString, Entry>> {
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
-        let inode = Inode::of(&meta);
+        let inode = Inode::at(&entry.path(), &meta);
         if meta.is_dir() {
             listing.insert(entry.file_name(), Entry::Dir(inode));
         } else if meta.is_file() {
