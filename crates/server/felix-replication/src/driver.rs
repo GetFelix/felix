@@ -606,8 +606,7 @@ async fn open_fenced(
                 caught_up_from = ?caught_up_from,
                 "a majority took the fence; opening the shard for writes",
             );
-            metrics::record_promotion_opened(metrics::PATH_FENCED);
-            gate.open(&watch_key(key), generation).await
+            opened(gate, key, generation, metrics::PATH_FENCED).await
         }
         Outcome::Lease { lacking } => {
             tracing::info!(
@@ -617,8 +616,7 @@ async fn open_fenced(
                 lacking = %lacking,
                 "a replica does not offer the fence; opening the shard on the lease",
             );
-            metrics::record_promotion_opened(metrics::PATH_LEASE);
-            gate.open(&watch_key(key), generation).await
+            opened(gate, key, generation, metrics::PATH_LEASE).await
         }
         Outcome::Pending { why, .. } => {
             tracing::warn!(
@@ -660,6 +658,23 @@ async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
 }
 
 type OpenCaches = HashSet<(String, String, String, u32)>;
+
+/// Counted when the gate lets the shard go, not when the fence finished, so a
+/// refused open that is retried counts once. The gate also lets go of a shard
+/// no longer fencing at `generation`, which a newer assignment superseded, and
+/// that is counted too.
+async fn opened(
+    gate: &dyn PromotionGate,
+    key: &ShardKey,
+    generation: u64,
+    path: &'static str,
+) -> bool {
+    let opened = gate.open(&watch_key(key), generation).await;
+    if opened {
+        metrics::record_promotion_opened(path);
+    }
+    opened
+}
 
 fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
     if keys

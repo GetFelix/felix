@@ -460,7 +460,8 @@ When the fence applies:
 - A stream shard's consumer-group state as well, as one pair. See
   [Group state at promotion](#group-state-at-promotion) below.
   `felix_broker_promotions_opened_total{path}` says which path each new
-  leadership took, promoted or not.
+  leadership took, promoted or not. It counts a leadership when the shard
+  is let go to serve, so a refused open that is retried is counted once.
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;

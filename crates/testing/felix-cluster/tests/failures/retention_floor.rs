@@ -73,11 +73,15 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     for follower in &followers {
         cluster.stop_node(follower).await.expect("stop a follower");
     }
-    // Each on its own connection, so none waits behind another's ack.
+    // Each on its own connection, so none waits behind another's ack. All
+    // connect first, so the quorum timeout covers only the outage.
+    let mut clients = Vec::new();
+    for _ in 0..24 {
+        clients.push(cluster.client_on(&leader).await.expect("connect"));
+    }
     let filler = "x".repeat(1024);
     let mut waiting = tokio::task::JoinSet::new();
-    for i in 0..24 {
-        let client = cluster.client_on(&leader).await.expect("connect");
+    for (i, client) in clients.into_iter().enumerate() {
         let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
         let payload = format!("{i}-{filler}").into_bytes();
         waiting.spawn(async move {
