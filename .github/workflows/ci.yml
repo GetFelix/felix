@@ -286,6 +286,9 @@ jobs:
       - name: Documentation evidence
         run: task docs:evidence
 
+      - name: Changelog fragments
+        run: task changelog:check
+
       # Without a tag this only asserts the version fields agree with each
       # other. That is the half a pull request can be wrong about: a bump that
       # misses the npm package or the chart looks fine until the release job
