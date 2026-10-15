@@ -190,6 +190,11 @@ majority of the shard's replicas, never one from one replica and one from
 another. Group writes are acknowledged once they are durable on the
 leader, so a failover can still lose the newest ack and redeliver that record.
 
+Reading group state, with `group_describe` or the dead-letter list, is checked
+the same way: a broker answers only while its lease holds or, in a fleet that
+reads by round, after a majority confirms it still leads. A deposed leader
+refuses instead of answering from state its successor has moved past.
+
 ## Long work, backoff, and giving up yourself
 
 The visibility timeout and the attempt bound are the broker's defaults. A

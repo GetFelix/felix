@@ -18,6 +18,7 @@ use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
+use crate::serving::commit_ops;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
@@ -213,10 +214,13 @@ pub(crate) async fn dead_letters(
     shard: u32,
     group: &str,
 ) -> Result<Vec<u64>, ClientError> {
-    let (reader, _log, _owned) =
+    let (reader, _log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
-    reader.dead_lettered(&key).await.map_err(storage)
+    commit_ops::refuse_read_without_lease(publish_ctx)?;
+    let listed = reader.dead_lettered(&key).await.map_err(storage)?;
+    commit_ops::confirm_read_leader(publish_ctx, &owned.key).await?;
+    Ok(listed)
 }
 
 /// Drop a dead letter, or put it back in the queue.
@@ -312,8 +316,10 @@ pub(crate) async fn describe(
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
+    commit_ops::refuse_read_without_lease(publish_ctx)?;
     let snapshot = reader.describe(&key).await.map_err(storage)?;
     let tail = read_end(broker, publish_ctx, &owned, &log).await?;
+    commit_ops::confirm_read_leader(publish_ctx, &owned.key).await?;
     Ok((snapshot, tail))
 }
 
