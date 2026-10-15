@@ -281,7 +281,9 @@ broker kept running across a restore to an earlier point refuses a stream
 whose restored incarnation is below the one it holds, since it never moves a
 name back; run `felix-broker restore-point` with the matching backup point, or
 delete and recreate the stream (see `docs/durable-storage.md`, "Deleting a
-stream").
+stream"). A restore also rewinds node incarnations and replica reports
+together, which lets placement replace a running leader on an old report while
+it still serves on its lease, so stop every broker before the import.
 
 Two things to know before relying on an export as a backup:
 

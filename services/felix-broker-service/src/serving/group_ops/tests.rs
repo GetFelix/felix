@@ -738,3 +738,86 @@ async fn describe_reports_the_tail_and_the_claims() {
     assert_eq!(snapshot.committed, None);
     assert_eq!(snapshot.in_flight, 1);
 }
+
+struct Confirms;
+
+#[async_trait::async_trait]
+impl felix_replication::quorum::LeadershipCheck for Confirms {
+    async fn confirm(
+        &self,
+        _key: &ShardKey,
+        _generation: u64,
+    ) -> Result<(), felix_replication::quorum::QuorumError> {
+        Ok(())
+    }
+}
+
+/// A restarted leader holds a lease before its first replication pass, while
+/// placement may still promote a follower on the report its previous process
+/// left. In a fleet that reads by round, group state on the lease alone would
+/// then be acknowledged and lost, so it waits for the pass.
+#[tokio::test]
+async fn group_state_waits_for_the_first_pass_in_a_fleet_that_reads_by_round() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    use felix_replication::driver::WriteFence;
+
+    let leader = Leader::start().await;
+    let _lease = leader.hold_lease();
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            &[Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+        )
+        .await
+        .expect("publish");
+    let fleet = FleetGate::for_this_build();
+    fleet.observe(
+        [GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS]
+            .iter()
+            .map(|feature| feature.name()),
+    );
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
+        Arc::new(fleet),
+    ));
+    marks.set_read_check(Arc::new(Confirms), false);
+    let key = leader::stream_key(leader::QUORUM);
+    marks.publish(&key, leader::GENERATION, 2);
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(&marks)),
+            ..ClusterContext::default()
+        },
+    );
+    let take = || {
+        poll(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            GROUP,
+            1,
+            Duration::ZERO,
+            None,
+            None,
+        )
+    };
+
+    let refused = take()
+        .await
+        .expect_err("claimed on the lease before the first pass");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+
+    // A pass that left the shard on the lease: the lease serves it again.
+    WriteFence::passed(leader.ingress.fence().as_ref(), &key, leader::GENERATION);
+    assert_eq!(take().await.expect("claimed on the lease").len(), 1);
+}

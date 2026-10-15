@@ -398,6 +398,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // Placement replaces a leader on its followers' word only when this
     // says nothing it serves rests on its lease.
     let by_round = by_followers && reads_by_round;
+    fence.passed(mark_key, route.generation);
     // Read from the cursors the last pass left: a follower halted this way
     // stays halted until the assignment changes.
     if entry

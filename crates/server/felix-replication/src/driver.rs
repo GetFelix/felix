@@ -283,6 +283,10 @@ pub trait WriteFence: Send + Sync {
     /// ([`crate::quorum::QuorumMarks::reads_by_round`]).
     fn sessions_without_lease(&self, _key: &crate::ShardKey, _generation: u64) {}
 
+    /// A pass over `key` at `generation` has decided how the shard serves:
+    /// the two calls above, if they apply, came before this one.
+    fn passed(&self, _key: &crate::ShardKey, _generation: u64) {}
+
     /// A follower refused `key`'s ships at `generation` because it accepted a
     /// newer leader. Called on every pass while the refusal stands.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}

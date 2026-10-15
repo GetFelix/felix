@@ -281,11 +281,18 @@ followers and its `Quorum` reads go by a round. Placement acts on suspicion
 against a leader only when its latest report at the current generation says
 so (`suspects` in `placement/replica_positions.rs`), and only if that report
 came from the node's current incarnation. A broker that restarts within a
-report's lifetime can lead again at the same generation, and it serves on its
-lease until its first replication pass; its last report, from the process
-that is gone, still says `by_round`. Registration moves the node to a new
-incarnation before the new process can hold a lease, so the old report stops
-counting first. Reports carry the incarnation the broker last registered,
+report's lifetime can lead again at the same generation, and its last report,
+from the process that is gone, still says `by_round`. Registration moves the
+node to a new incarnation before the new process can hold a lease, so a
+placement pass that reads incarnations after it no longer counts the old
+report. A pass that read them before can still promote on it once the new
+process holds a lease, so that process serves nothing on the lease alone
+until its first replication pass. It takes the enabled set from its
+registration answer, before the heartbeat that grants the lease, and in a
+fleet that reads by round it refuses group writes, the one thing it would
+acknowledge on the lease alone, until replication has passed over the shard
+at its generation. Its writes wait for a mark its followers decide and its
+`Quorum` reads for a round, and a promotion's fence ends both. Reports carry the incarnation the broker last registered,
 and the control plane stamps `leader_incarnation` only when it matches. A
 Postgres member that predates the column updates a report without it, so the
 flag is read as true only while `by_round_at` matches the row's

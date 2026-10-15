@@ -352,6 +352,11 @@ database backups are taken, with two caveats:
   can pair records from different moments (an assignment for a stream the same
   file no longer lists, a change-feed head behind a record). Only an export of a
   frozen database is a state the cluster has actually been in.
+- **Restore under stopped brokers.** A restore rewinds node incarnations and
+  replica reports together, so an old report can again name the incarnation a
+  running broker's later process holds, and placement may replace that leader
+  on its followers' word while it still serves on its lease. Stop every broker
+  before the import, as the backup-and-restore steps do.
 - **The file is a credential.** It holds every tenant's Ed25519 signing-key
   seeds, current and previous, as plaintext JSON: whoever reads it can mint a
   valid token for any tenant. Store and transfer it the way you would the
