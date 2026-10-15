@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792090166770,
+  "lastUpdate": 1792092521720,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30368,6 +30368,58 @@ window.BENCHMARK_DATA = {
             "range": "41012.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805638.77\nmean: 786776.25\nstdev: 41012.45\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7ec40326bb8a8a83c02c4c0a618c57177b459c01",
+          "message": "fix(replication): keep a promoted shard closed until the fleet view is adopted (#1261) (#1262)\n\n* fix(replication): keep a promoted shard closed until the fleet view is adopted (#1261)\n\nfence_one chose the lease fallback from the fleet view without checking\nthat it came from a registration answer. Shard tasks start before\nregistration answers, so a broker promoted early read every fleet feature\nas off: on a fleet that finalized generation_start and majority_ack, an\nunreachable old leader looked like a peer without the fence and the shard\nopened on the lease without fencing a majority.\n\nfence_one now returns Pending until the view is adopted, as group writes\nalready wait in driver/shard.rs. A broker with no fleet (no control\nplane) reads as adopted and keeps the lease path.\n\nSpec-Unaffected: the spec already models a promoted leader under follower acks as always fencing; this makes the broker match it rather than changing the protocol.\n\n* docs(replication): say why waiting for the fleet view costs no availability\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-10-15T19:24:32Z",
+          "tree_id": "c3ef6c11431add504c3af291f8f6136bc6ac79ba",
+          "url": "https://github.com/GetFelix/felix/commit/7ec40326bb8a8a83c02c4c0a618c57177b459c01"
+        },
+        "date": 1792092521021,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 439689.72,
+            "range": "15376.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 439689.72\nmean: 441814.60\nstdev: 15376.36\ncv: 3.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 439689.72,
+            "range": "15376.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 439689.72\nmean: 441814.60\nstdev: 15376.36\ncv: 3.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97541.8,
+            "range": "87.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97541.80\nmean: 97547.89\nstdev: 87.16\ncv: 0.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 975418.02,
+            "range": "871.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 975418.02\nmean: 975478.90\nstdev: 871.58\ncv: 0.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
