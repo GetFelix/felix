@@ -144,6 +144,9 @@ impl DiskLog {
                     hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
                 };
                 replica_state::store(&inner.dir, &state)?;
+                inner
+                    .commit_persisted
+                    .store(state.commit_offset, Ordering::Release);
                 *persisted = (state, Some(std::time::Instant::now()));
             }
             *inner.ballot.write() = (generation, leader);

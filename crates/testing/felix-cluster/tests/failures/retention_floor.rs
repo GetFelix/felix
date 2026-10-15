@@ -82,6 +82,14 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     let filler = "x".repeat(1024);
     let mut waiting = tokio::task::JoinSet::new();
     for (i, client) in clients.into_iter().enumerate() {
+        if i == 1 {
+            // The first waiting record lands alone, in the segment that holds
+            // the early ones. Arriving together, the rest can start a new
+            // segment there, leaving one wholly below the commit offset that
+            // retention may delete, and a replay from the start then waits for
+            // the commit offset to move.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
         let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
         let payload = format!("{i}-{filler}").into_bytes();
         waiting.spawn(async move {

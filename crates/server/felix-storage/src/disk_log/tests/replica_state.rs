@@ -239,3 +239,26 @@ async fn without_on_commit_the_commit_offset_is_written_behind() {
     drop(log);
     assert_eq!(open(&dir, periodic).commit_offset(), 3);
 }
+
+#[tokio::test]
+async fn a_failed_commit_offset_write_is_retried_with_the_same_offset() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b", "c"]))
+        .await
+        .expect("append");
+
+    // A directory where the temporary goes makes the write fail.
+    let blocker = dir.path().join("replica.tmp");
+    std::fs::create_dir(&blocker).expect("block the write");
+    log.advance_commit_offset(2)
+        .await
+        .expect_err("injected write failure");
+    assert_eq!(log.commit_offset(), 2, "the offset holds in memory");
+    std::fs::remove_dir(&blocker).expect("unblock");
+
+    log.advance_commit_offset(2).await.expect("retry");
+    drop(log);
+    let reopened = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(reopened.commit_offset(), 2, "the retry reached disk");
+}
