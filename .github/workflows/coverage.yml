@@ -24,9 +24,11 @@ jobs:
 
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
+  # Only main publishes the badge and nothing on a pull request reads the
+  # numbers, so a pull request skips the second, instrumented run of the suite.
   coverage:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:

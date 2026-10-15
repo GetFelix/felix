@@ -905,10 +905,17 @@ refuses a leader older than one it accepted.
 
 ## Which configurations run where
 
-Every configuration registered in `scripts/check_tla.sh` runs on every push
-and pull request that touches the code or the spec: the `formal` job in
-`.github/workflows/ci.yml`, split across seven jobs by each configuration's
-measured time so that each stays well under its hour.
+TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
+runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
+changes. A pull request checks the registered configurations that take ten
+minutes or less (`TLA_QUICK=1`); a push to main checks every registered
+configuration. Both are split across seven jobs by each configuration's
+measured time. A slow configuration that a spec change breaks therefore shows
+up on main, not on the pull request; run it on the branch through the
+workflow's dispatch (`tla_configs`) when the change is risky.
+
+Whether a code change still matches the spec is a separate, quick check on
+every pull request that touches code (`scripts/check_spec_pairing.py`).
 
 Six configurations are too big for that hour, and run nightly instead, each in
 its own job with a two-and-a-half-hour limit (the `exhaustive` job in

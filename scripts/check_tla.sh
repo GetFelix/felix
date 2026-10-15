@@ -14,7 +14,7 @@
 # `TLC_WORKERS=4` caps TLC's worker threads; the default is one per core.
 # `TLA_SHARD=1/3` checks the second of three shards, balanced by the time each
 # configuration takes (`weights` below), so CI can split the set across
-# parallel jobs.
+# parallel jobs. `TLA_QUICK=1` checks only the shorter ones (see below).
 #
 # `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
 # below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
@@ -234,7 +234,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
-  "FelixShardFencedAckMoveCancelShort 30"
+  "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
   "FelixShardFencedCache 22"
@@ -273,6 +273,17 @@ weight_of() {
   done
   echo 1
 }
+
+# `TLA_QUICK=1` leaves out the registered configurations weighing more than
+# ten minutes. Pull requests check that tier; the rest run when the spec
+# changes on main. Configurations named on the command line always run.
+if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
+  quick=()
+  for entry in "${selected[@]}"; do
+    if [ "$(weight_of "${entry%% *}")" -le 10 ]; then quick+=("$entry"); fi
+  done
+  selected=(${quick[@]+"${quick[@]}"})
+fi
 
 # Print the shard for each selected configuration, in order.
 assign_shards() {
