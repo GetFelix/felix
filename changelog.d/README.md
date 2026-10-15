@@ -14,7 +14,8 @@ stop conflicting on the same lines.
 ## Body
 
 Markdown bullets, written exactly as they should read under the heading. A change
-that belongs in two sections gets two files.
+that belongs in two sections gets two files. No headings: the file name sets the
+section, and `--check` refuses a `#`, `##` or `###` line.
 
 `changelog.d/1220-durable-mark.fixed.md`:
 

@@ -69,6 +69,10 @@ def load_fragments(directory: Path) -> tuple[dict[str, list[str]], list[str]]:
         if not body:
             errors.append(f"{path.name}: empty")
             continue
+        # A heading would end the section early in the assembled file.
+        if re.search(r"^#{1,3} ", body, re.MULTILINE):
+            errors.append(f"{path.name}: has a heading; the file name sets the section")
+            continue
         by_section[parsed[1]].append(body)
     return by_section, errors
 

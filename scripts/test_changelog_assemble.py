@@ -68,8 +68,10 @@ class Assemble(unittest.TestCase):
         self.frag("x.bogus.md", "- y")
         self.frag("e.added.md", "  \n")
         self.frag("noext.md", "- y")
+        self.frag("h.fixed.md", "- y\n## Oops")
+        self.frag("ok.fixed.md", "- y\n  ## indented is fine")
         _, errors = ca.load_fragments(ca.FRAGMENT_DIR)
-        self.assertEqual(len(errors), 3)
+        self.assertEqual(len(errors), 4)
         self.assertEqual(ca.check(), 1)
 
 
