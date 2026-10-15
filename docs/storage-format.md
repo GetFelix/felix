@@ -720,7 +720,7 @@ It shortens an open, not memory: the index is still held whole in memory.
 
 ## `durable.mark`: how far the log was synced
 
-A 32-byte file, rewritten in place after every flush that moves it forward:
+A 32-byte file, rewritten in place whenever a flush, roll or seal moves it forward:
 
 ```text
  0   4  magic         u32  "FLSM"
