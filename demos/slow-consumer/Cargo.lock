@@ -939,6 +939,7 @@ dependencies = [
  "parking_lot",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

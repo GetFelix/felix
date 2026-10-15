@@ -44,6 +44,7 @@ pub mod peer;
 pub mod driver;
 mod follower;
 pub mod halted;
+mod incarnation;
 pub mod leadership;
 pub mod metrics;
 pub mod promotion;

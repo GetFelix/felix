@@ -355,6 +355,7 @@ pub(super) fn move_step<'a>(
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                incarnation: 0,
             },
         );
     }
@@ -588,6 +589,7 @@ pub(super) fn start(
         joining: None,
         move_started_at_millis: started,
         move_reason: Some(reason),
+        incarnation: 0,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

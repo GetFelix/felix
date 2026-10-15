@@ -42,6 +42,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -60,6 +61,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                                 tenant: Some(Tenant {
                                     tenant_id: "t1".to_string(),
                                 }),
+                                seq: None,
                             }]
                         };
                         Json(TenantChangesResponse { items, next_seq: 2 })
@@ -80,6 +82,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                                 tenant_id: "t1".to_string(),
                                 namespace: "ns1".to_string(),
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })

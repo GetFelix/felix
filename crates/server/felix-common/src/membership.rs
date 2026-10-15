@@ -123,6 +123,17 @@ pub struct ShardReplicaStatus {
     /// when empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replica_counter_offsets: Vec<ReplicaOffset>,
+    /// The stream incarnation whose log the report measured. The control
+    /// plane refuses a report naming another than the assignment's: after a
+    /// restore a recreated stream can be at the deleted one's generation.
+    /// Omitted at 0, for a cache, a stream from before incarnations, and by
+    /// brokers that predate it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stream_incarnation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// What a leader tells the control plane about the shards it leads.

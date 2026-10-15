@@ -17,6 +17,7 @@ publish = false
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 metrics = { workspace = true }
 felix-storage = { path = "../felix-storage", version = "0.6.0-preview.7" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.7" }

@@ -52,6 +52,11 @@ pub struct StreamMetadata {
     /// (`FELIX_DURABLE_RETENTION_BYTES`, `FELIX_DURABLE_RETENTION_SECONDS`).
     /// Ignored for a stream that is not durable.
     pub retention: felix_storage::log::Retention,
+    /// Which stream of this name this is. The control plane gives each
+    /// creation its own, so a stream deleted and created again is a new
+    /// stream with logs of its own. 0 is a stream from before incarnations,
+    /// whose logs keep the directory names they always had.
+    pub incarnation: u64,
 }
 
 impl Default for StreamMetadata {
@@ -61,6 +66,7 @@ impl Default for StreamMetadata {
             shards: 1,
             consistency: ConsistencyLevel::Leader,
             retention: felix_storage::log::Retention::default(),
+            incarnation: 0,
         }
     }
 }

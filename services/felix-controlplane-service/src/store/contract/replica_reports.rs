@@ -26,6 +26,48 @@ pub(super) async fn a_replica_report_is_kept_and_read_back(store: &dyn ControlPl
     assert_eq!(report_for(store, shard).await, Some(unstamped(recorded)));
 }
 
+/// **A report measured against another incarnation is refused by the write
+/// itself.** The API checks against a read from before the write, and a
+/// delete and recreate can land in between; the store sees the assignment as
+/// it is now.
+pub(super) async fn a_report_on_another_incarnation_is_refused_at_the_write(
+    store: &dyn ControlPlaneStore,
+) {
+    let shard = 3;
+    store
+        .put_shard_assignment(assignment(shard, LEADER))
+        .await
+        .expect("assign");
+    let current = store
+        .get_shard_assignment(&key(shard))
+        .await
+        .expect("assignment");
+    let held = report_for(store, shard).await;
+    let mut other = report(shard, current.generation, &["broker-b"], 5_500);
+    other.stream_incarnation = Some(current.incarnation + 1);
+    assert_eq!(
+        store
+            .record_replica_report(other, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stale
+    );
+    assert_eq!(report_for(store, shard).await, held);
+
+    let mut own = report(shard, current.generation, &["broker-b"], 5_600);
+    own.stream_incarnation = Some(current.incarnation);
+    assert_eq!(
+        store
+            .record_replica_report(own.clone(), LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    // The check is not stored.
+    own.stream_incarnation = None;
+    assert_eq!(report_for(store, shard).await, Some(unstamped(own)));
+}
+
 /// **An older generation's report is dropped**, silently: leadership moved on,
 /// and the old leader's view is about a replica set that may no longer exist.
 pub(super) async fn a_report_from_a_superseded_leader_is_dropped(store: &dyn ControlPlaneStore) {
@@ -288,6 +330,7 @@ async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
 fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
         counter_offsets: Default::default(),
+        stream_incarnation: None,
         key: key(shard),
         generation,
         caught_up: caught_up.iter().map(|n| n.to_string()).collect(),

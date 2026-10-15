@@ -67,6 +67,7 @@ async fn harness() -> Harness {
                 durable: false,
                 region: None,
                 routing: Default::default(),
+                incarnation: 0,
             })
             .await
             .expect("stream");

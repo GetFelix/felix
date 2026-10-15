@@ -512,7 +512,9 @@ defaults: a cache's `shards: 0` and an omitted `shards` both mean one. A
 stream's `routing` counts only when the request names it, because when left
 to the server it depends on whether the fleet has finalized
 `jump_hash_routing`, and a retry across a finalize would otherwise conflict
-with the stream its first attempt made. The single create endpoints use the
+with the stream its first attempt made. A stream's `incarnation` never counts:
+a retry proposes another one, and the stream it would create is the existing
+one. The single create endpoints use the
 same comparison, so creating a stream or cache that already exists as asked
 answers `200` with it, and `409` only when it differs.
 
@@ -679,6 +681,13 @@ predate it leave it out. Requires `node.manage` over
 the reporting node, and the node must lead the shard it reports on; a report
 naming a generation ahead of the assignment is refused, since one claiming
 `u64::MAX` would otherwise block every real report after it.
+`stream_incarnation` names the stream incarnation whose log the report
+measured, and is left out at 0 (a cache, a stream from before incarnations,
+and brokers that predate it). A report naming another incarnation than the
+assignment's is refused as `stale`: after a control-plane restore a recreated
+stream can be at the deleted one's generation, and a broker that has not yet
+seen the recreate would otherwise report the old log, whose longer tail
+would then refuse every real report.
 
 The answer is per shard, in request order: each entry names the shard and
 generation and says `accepted`, `stale`, `not_leader`, `unassigned` or
@@ -1416,6 +1425,104 @@ finalized and `modulo` before. The create request may pin `"routing":
 a finalize landing in between only leaves the stream on modulo, which every
 broker serves. Finalizing never changes an existing stream, so no key of a
 live stream ever moves. A stream answer omits `routing` when it is `modulo`.
+
+A new stream also gets an `incarnation` once the `stream_incarnations` fleet
+feature is finalized. Brokers keep each incarnation's data in directories of
+its own, so a stream deleted and created again starts empty (see
+`docs/durable-storage.md`, "Deleting a stream"). Finalizing it needs every
+Raft member at metadata level 10 and every serving broker reporting it, and
+like every finalize it is one-way. A stream created before is incarnation 0,
+which every answer leaves out.
+
+A name's incarnations only increase. The creating request proposes one, the
+control plane's clock in microseconds (kept below 2^53), whenever the store can
+carry one: always on memory and Postgres, and on Raft once every member is at
+metadata level 10, whether or not the instance handling the request has seen
+the finalize yet. The store decides inside the write that
+creates the stream: the memory store under its locks, Raft in the applied
+command, which carries the proposal so every member decides alike, and
+Postgres in a trigger. Before the finalize the stream gets 0 whatever was
+proposed. After it, the stream gets the proposal or one above the name's
+tombstone, whichever is higher, and never 0, so a create that read the fleet
+just before the finalize still gets an incarnation. The clock is what keeps a
+create after a restore of the control plane to an earlier point, which rewinds
+tombstones and change sequences, above every incarnation given before the
+restore. A clock stepped back or skewed across a restore can only give a lower
+incarnation than one a broker holds, which the broker refuses: the stream is
+unavailable there until it is created again, and no data is reused or lost.
+A request cannot set the incarnation.
+
+Brokers compare an assignment's incarnation before its generation: a higher
+one opens the shard anew whatever its generation, a lower one is stale. The
+first generation of an incarnated shard is the change seq, which a restore
+can rewind below the deleted stream's generations
+(`a_new_incarnation_opens_at_a_lower_generation`).
+
+**Tombstones.** After the finalize every stream delete records a tombstone,
+including the deletes a namespace or tenant delete cascades to. There is one
+per name, holding the highest incarnation deleted: every incarnation of the
+name up to and including it is gone. That is sound because a name has at most
+one live incarnation and its incarnations only increase. Tombstones are kept
+for good. A broker that was down for any length of time must still learn of
+the delete, and they are small, one per name ever deleted, overwritten by a
+later delete of the same name; a later create of the name leaves it in place.
+Nothing writes them before the finalize. They are part of the exported and
+imported state (the Raft snapshot, `migrate export` and `import`), and
+`GET /v1/streams/snapshot` serves them as `tombstones`, left out while empty;
+a broker applies them before the snapshot's streams.
+
+A stream's `Deleted` change carries `deleted_through`, the name's tombstone,
+once the feature is finalized, and leaves it out before. Its `stream` payload
+is as it was: a single delete carries the stream when its incarnation is not
+0, and a cascade always carried it. A broker deletes data only on
+`deleted_through` or a tombstone; a delete without either, from before the
+finalize, keeps the data, as it always did.
+
+Each shard assignment stores the incarnation of its stream, which the store
+reads from the stream when the assignment is written whatever the writer
+passed, so a change replayed after the stream was created anew still names
+the stream it was written for. The first assignment of an incarnated stream's
+shard takes the shard change's sequence number as its generation, so a
+recreated stream never repeats a generation of the deleted one.
+
+**On Postgres** migration 0028 adds `streams.incarnation`,
+`shard_assignments.incarnation`, the `stream_tombstones` table and
+`stream_changes.deleted_through`, and puts the rules in triggers, so they hold
+for every instance writing the database, one from before the migration's
+release included:
+
+- a `BEFORE INSERT` trigger on `streams` decides the incarnation as above, and
+  refuses a 0 after the finalize with `check_violation`, so an instance that
+  predates incarnations, which inserts the column's default 0, cannot create
+  streams after the finalize;
+- an `AFTER DELETE` trigger on `streams` writes the tombstone, which covers
+  cascades and older instances;
+- a `BEFORE INSERT` trigger on `stream_changes` fills a `Deleted` change's
+  `deleted_through` from the tombstone;
+- a `BEFORE INSERT` trigger on `shard_assignments` gives a new stream shard's
+  assignment written without an incarnation (by an older instance) its
+  stream's incarnation and, as generation, the seq of the shard change the
+  writer records next, and one on `shard_assignment_changes` copies both into
+  that change's payload
+  (`an_instance_before_incarnations_assigns_the_live_incarnation`);
+- the triggers read whether the feature is finalized under a shared advisory
+  lock that an `AFTER INSERT` trigger on `fleet_features` takes exclusively
+  for `stream_incarnations`, so a create that read "not finalized" commits
+  before the finalize does
+  (`a_create_waits_for_a_finalize_in_flight`).
+
+The migration runs once per database, when the first upgraded instance
+starts, so it is in place for the finalize. Instances still on an older
+release may keep running across it: their stream creates fail
+(`an_instance_before_incarnations_cannot_create_at_0_after_the_finalize`),
+their deletes still write tombstones, and their assignments get the
+incarnation and generation from the triggers. Their catalog reads leave
+incarnations out, though, and brokers refuse those records rather than misread
+them, so a broker polling an older instance serves no incarnated stream until
+it reaches an upgraded one. Finish upgrading every instance before the
+finalize to avoid that. The rules are checked for every
+store by one contract (`run_incarnation_contract` in
+`store/contract/incarnations.rs`).
 
 Brokers learn the mapping from the shard assignments, not from the stream
 catalog: the snapshot, changes and list responses stamp each stream shard's

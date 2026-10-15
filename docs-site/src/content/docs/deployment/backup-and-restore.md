@@ -148,10 +148,23 @@ any log. See
    or begins after it, is refused rather than padded or emptied. Running it
    twice is harmless. Without `--node` it restores every shard in the point
    whose directory is present.
+
+   It also sets each stream's incarnation on this broker back to the one the
+   point names, so the broker takes the restored catalog's streams even if it
+   had registered, or seen deleted, a later incarnation after the point. It
+   deletes nothing; directories of streams created after the point stay until
+   a later delete of the name covers them. Run it on every broker for that
+   reason, including those that lead nothing in the point.
 5. **Remove the followers' copies** of those shards from every other broker.
    A follower that kept its own copy holds records past the point; one that
    starts without the directory rebuilds it from the restored leader.
 6. **Start the brokers.**
+
+Stopping every broker is also what makes generations safe across a restore.
+The restored control plane hands out change sequence numbers, and so first
+generations of new incarnated streams, it had already used before the
+restore. A broker that kept running would still hold quorum marks and
+follower positions under those generations; one that restarts holds none.
 
 ## See also
 

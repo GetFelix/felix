@@ -13,6 +13,7 @@ fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> Re
             shard: 0,
             kind: ShardKind::Stream,
         },
+        stream_incarnation: None,
         generation: 2,
         caught_up: caught_up
             .iter()

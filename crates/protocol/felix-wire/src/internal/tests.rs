@@ -23,6 +23,7 @@ fn shard() -> ShardRef {
         stream: "orders".to_string(),
         shard: 3,
         generation: 7,
+        incarnation: None,
     }
 }
 

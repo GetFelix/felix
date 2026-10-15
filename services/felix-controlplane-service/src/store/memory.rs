@@ -95,6 +95,9 @@ pub struct InMemoryStore {
     namespaces: Arc<RwLock<HashMap<NamespaceKey, Namespace>>>,
     /// Authoritative streams keyed by `(tenant_id, namespace, stream)`.
     streams: Arc<RwLock<HashMap<StreamKey, Stream>>>,
+    /// For each deleted stream name, the incarnation through which it is
+    /// deleted. Written only once the fleet finalized `stream_incarnations`.
+    stream_tombstones: Arc<RwLock<HashMap<StreamKey, u64>>>,
     /// Authoritative caches keyed by `(tenant_id, namespace, cache)`.
     caches: Arc<RwLock<HashMap<CacheKey, Cache>>>,
     /// Broker membership keyed by `node_id`, with its change log.
@@ -190,6 +193,7 @@ impl InMemoryStore {
             tenants: Arc::new(RwLock::new(HashMap::new())),
             namespaces: Arc::new(RwLock::new(HashMap::new())),
             streams: Arc::new(RwLock::new(HashMap::new())),
+            stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
             caches: Arc::new(RwLock::new(HashMap::new())),
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::new(),
@@ -242,13 +246,21 @@ impl InMemoryStore {
         namespace: &str,
         name: &str,
     ) {
-        let mut state = self.shards.write().await;
-        state.records.retain(|key, _| {
-            !(key.kind == kind
+        let of_it = |key: &ShardKey| {
+            key.kind == kind
                 && key.tenant_id == tenant_id
                 && key.namespace == namespace
-                && key.stream == name)
-        });
+                && key.stream == name
+        };
+        let mut state = self.shards.write().await;
+        state.records.retain(|key, _| !of_it(key));
+        // The reports go with the assignments, as Postgres cascades them: a
+        // name created again can start at the same generation after a
+        // restore, and the old log's report would read as the new one's.
+        self.replica_reports
+            .write()
+            .await
+            .retain(|key, _| !of_it(key));
     }
 
     fn limit(&self) -> usize {
@@ -349,6 +361,10 @@ impl ControlPlaneStore for InMemoryStore {
         streams::stream_snapshot(self).await
     }
 
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        Ok(streams::stream_tombstones(self).await)
+    }
+
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
         streams::stream_changes(self, since).await
     }
@@ -390,7 +406,11 @@ impl ControlPlaneStore for InMemoryStore {
         caches::cache_changes(self, since).await
     }
 
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>> {
         resources::create_resources(self, streams, caches).await
     }
 

@@ -64,6 +64,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     ATOMIC_COMMIT,
     PUBLISHER_PRINCIPAL,
     FENCED_CACHES,
+    STREAM_INCARNATIONS,
     GROUP_CURSOR_DEPENDENCIES,
 ];
 
@@ -114,6 +115,14 @@ pub const ATOMIC_COMMIT: FleetFeature = FleetFeature::new("atomic_commit");
 /// older build refuses, so it waits for the whole fleet. See
 /// `docs/protocol.md` ("Publisher").
 pub const PUBLISHER_PRINCIPAL: FleetFeature = FleetFeature::new("publisher_principal");
+
+/// Streams created once this is enabled carry an incarnation, and a broker
+/// keeps each incarnation's logs in directories of their own, so a stream
+/// deleted and created again under the same name starts empty. A broker that
+/// predates it would keep a new stream's records in the directory the deleted
+/// one used, so the control plane gives incarnations only once every broker
+/// reports it. See `docs/durable-storage.md` ("Deleting a stream").
+pub const STREAM_INCARNATIONS: FleetFeature = FleetFeature::new("stream_incarnations");
 
 /// A consumer group's cursor records the dead-letter log it needs beneath it,
 /// so a cursor left without its dead letters is put back rather than served.

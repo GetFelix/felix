@@ -274,6 +274,7 @@ fn forwarded_with(credential: String) -> ForwardPublish {
             stream: STREAM.to_string(),
             shard: 0,
             generation: GENERATION,
+            incarnation: None,
         },
         ack: AckMode::OnCommit,
         payloads: vec![Bytes::from_static(b"forwarded")],
@@ -290,6 +291,7 @@ fn forwarded_cache_op(op: CacheOpKind, credential: String) -> ForwardCacheOp {
             stream: CACHE.to_string(),
             shard: 0,
             generation: GENERATION,
+            incarnation: None,
         },
         op,
         key: "session:abc".to_string(),
@@ -729,6 +731,7 @@ mod fence {
             stream: name.to_string(),
             shard: 0,
             generation: GENERATION,
+            incarnation: None,
         }
     }
 

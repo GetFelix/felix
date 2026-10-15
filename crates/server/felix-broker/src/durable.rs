@@ -37,20 +37,31 @@ use crate::error::{BrokerError, Result};
 #[derive(Debug, Clone)]
 pub struct DurableStorage {
     provider: Arc<DiskLogProvider>,
+    /// Set once a broker learns its streams from the control plane. Until
+    /// then a stream nobody registered opens at incarnation 0 without
+    /// waiting, as a tool or a test expects.
+    registration_required: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DurableStorage {
     /// Open (and recover) durable storage rooted at `root`.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
         let provider = DiskLogProvider::new(root, config).map_err(BrokerError::from)?;
-        Ok(Self {
-            provider: Arc::new(provider),
-        })
+        Ok(Self::from_provider(Arc::new(provider)))
     }
 
     /// Wrap an already constructed provider, for callers that build their own.
     pub fn from_provider(provider: Arc<DiskLogProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            registration_required: Default::default(),
+        }
+    }
+
+    pub(crate) fn require_registration(&self) {
+        self.registration_required
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.provider.require_registration();
     }
 
     pub fn root(&self) -> &std::path::Path {
@@ -90,6 +101,67 @@ impl DurableStorage {
         self.provider.config()
     }
 
+    /// Open one stream's logs at `incarnation` from here on, or none of them
+    /// with `None`. See `DiskLogProvider::set_stream_incarnation`.
+    pub fn set_stream_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        self.provider
+            .set_stream_incarnation(tenant, namespace, stream, incarnation);
+    }
+
+    /// The incarnation set for a stream, or `None` when the broker has not
+    /// registered it or is deleting it.
+    pub fn stream_incarnation(&self, tenant: &str, namespace: &str, stream: &str) -> Option<u64> {
+        self.provider.stream_incarnation(tenant, namespace, stream)
+    }
+
+    /// Whether a stream's logs open only once the broker has registered it.
+    /// See `Broker::require_registered_streams`.
+    pub fn registration_required(&self) -> bool {
+        self.registration_required
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Close one incarnation of a stream's logs, keeping them. See
+    /// `DiskLogProvider::close_incarnation`.
+    pub async fn close_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.provider
+            .close_incarnation(tenant, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Close one incarnation of a stream's logs and delete them. See
+    /// `DiskLogProvider::retire_stream`.
+    pub async fn retire_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.provider
+            .retire_stream(tenant, namespace, stream, incarnation)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// The provider underneath, for the stream markers.
+    pub(crate) fn provider(&self) -> &DiskLogProvider {
+        &self.provider
+    }
+
     /// Open the log for one stream shard, recovering whatever is on disk.
     ///
     /// Repeated calls for the same shard return the same log, so re-registering
@@ -118,6 +190,32 @@ impl DurableStorage {
         let log = self
             .provider
             .open_shard_at(&key, base_offset)
+            .map_err(BrokerError::from)?;
+        Ok(StreamLog { log })
+    }
+
+    /// [`DurableStorage::open_stream`], or [`DurableStorage::open_stream_at`]
+    /// with a base, only when `incarnation` is the one registered for the
+    /// stream; refused before anything is created otherwise. See
+    /// `DiskLogProvider::open_incarnation`.
+    pub fn open_stream_for(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        base_offset: Option<felix_storage::log::Offset>,
+        incarnation: u64,
+    ) -> Result<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self
+            .provider
+            .open_incarnation(&key, base_offset, incarnation)
             .map_err(BrokerError::from)?;
         Ok(StreamLog { log })
     }

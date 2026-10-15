@@ -148,18 +148,20 @@ pub async fn fence_shard<R: PeerRequester>(
         }
     }
 
-    let shard = ShardRef {
-        tenant_id: key.tenant_id.clone(),
-        namespace: key.namespace.clone(),
-        stream: key.stream.clone(),
-        shard: key.shard,
-        generation: route.generation,
-    };
+    let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
             let Some(log) = broker
-                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .shard_log_for(
+                    kind,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    None,
+                    crate::incarnation::expected(broker, key.kind, &shard),
+                )
                 .await
             else {
                 // A log that should be here and could not be opened is not a
@@ -373,8 +375,18 @@ async fn fence_groups<R: PeerRequester>(
     if broker.group_reader().is_none() {
         return Ok(None);
     }
-    let open =
-        |kind| broker.shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard);
+    let expected = crate::incarnation::expected(broker, key.kind, shard);
+    let open = |kind| {
+        broker.shard_log_for(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+            expected,
+        )
+    };
     let (Some(dead_letters), Some(cursors)) = (
         open(LogKind::GroupDeadLetters).await,
         open(LogKind::GroupCursors).await,

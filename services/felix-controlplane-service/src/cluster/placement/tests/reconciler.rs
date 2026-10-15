@@ -252,6 +252,7 @@ pub(super) async fn report(
         .record_replica_report(
             crate::model::ReplicaReport {
                 counter_offsets: Default::default(),
+                stream_incarnation: None,
                 key: shard_zero(),
                 generation,
                 caught_up: caught_up.iter().map(|id| id.to_string()).collect(),
@@ -297,6 +298,7 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("staged move");
@@ -434,6 +436,7 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("placed");

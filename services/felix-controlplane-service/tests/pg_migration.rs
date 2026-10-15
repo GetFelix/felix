@@ -163,6 +163,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("stream");
@@ -208,6 +209,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("assignment");

@@ -101,8 +101,7 @@ pub(crate) async fn create_stream(
     validate_stream_request(&body)?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let asked = body.routing;
-    let finalized = jump_hash_finalized(&state).await?;
-    let stream = new_stream(tenant_id, namespace, body, finalized)?;
+    let stream = stream_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
@@ -142,6 +141,7 @@ pub(crate) fn new_stream(
     namespace: String,
     body: StreamCreateRequest,
     jump_hash_finalized: bool,
+    propose_incarnation: bool,
 ) -> Result<Stream, ApiError> {
     Ok(Stream {
         tenant_id,
@@ -156,6 +156,15 @@ pub(crate) fn new_stream(
         durable: body.durable,
         region: body.region,
         routing: creation_routing(body.routing, jump_hash_finalized)?,
+        // A proposal: the store gives the incarnation, from its own view of
+        // the finalize and the name's tombstone, in the same write. Proposed
+        // whether or not this member has seen the finalize, so one that has
+        // not still sends the clock rather than 0.
+        incarnation: if propose_incarnation {
+            crate::model::proposed_incarnation()
+        } else {
+            0
+        },
     })
 }
 
@@ -174,9 +183,12 @@ pub(crate) fn same_stream(
         Some(_) => wanted.routing,
         None => existing.routing,
     };
+    // A retry proposes another incarnation; the stream it would create is
+    // the existing one all the same.
     *existing
         == Stream {
             routing,
+            incarnation: existing.incarnation,
             ..wanted.clone()
         }
 }
@@ -189,6 +201,29 @@ pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
     }
 }
 
+/// The stream a create request asks for, routed and with the incarnation it
+/// proposes as of now.
+pub(crate) async fn stream_to_create(
+    state: &AppState,
+    tenant_id: String,
+    namespace: String,
+    body: StreamCreateRequest,
+) -> Result<Stream, ApiError> {
+    let finalized = jump_hash_finalized(state).await?;
+    let incarnations = proposes_incarnation(state).await?;
+    new_stream(tenant_id, namespace, body, finalized, incarnations)
+}
+
+/// Whether a create proposes the clock as the stream's incarnation: when the
+/// store can carry it, or once incarnations are finalized. The second is not
+/// implied by the first: a restarted Raft member counts a peer that has not
+/// answered yet as level 0, and proposing 0 after the finalize gives the
+/// name tombstone + 1, which a restore can repeat.
+pub(crate) async fn proposes_incarnation(state: &AppState) -> Result<bool, ApiError> {
+    Ok(state.store.takes_incarnation_proposals().await
+        || fleet_finalized(state, felix_common::fleet::STREAM_INCARNATIONS).await?)
+}
+
 /// Whether the fleet has finalized `jump_hash_routing`.
 ///
 /// Read before the create rather than in the same transaction. A finalize that
@@ -196,7 +231,14 @@ pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
 /// serves; the reverse cannot happen because finalizing is one-way and, once
 /// done, refuses any broker that could not serve jump hash.
 pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiError> {
-    let feature = felix_common::fleet::JUMP_HASH_ROUTING.name();
+    fleet_finalized(state, felix_common::fleet::JUMP_HASH_ROUTING).await
+}
+
+async fn fleet_finalized(
+    state: &AppState,
+    feature: felix_common::fleet::FleetFeature,
+) -> Result<bool, ApiError> {
+    let feature = feature.name();
     Ok(state
         .store
         .enabled_fleet_features()
@@ -371,9 +413,15 @@ pub(crate) async fn stream_snapshot(
         .stream_snapshot()
         .await
         .map_err(|err| api_internal("failed to load stream snapshot", &err))?;
+    let tombstones = state
+        .store
+        .stream_tombstones()
+        .await
+        .map_err(|err| api_internal("failed to load stream tombstones", &err))?;
     Ok(Json(StreamSnapshotResponse {
         items: snapshot.items,
         next_seq: snapshot.next_seq,
+        tombstones,
     }))
 }
 

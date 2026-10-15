@@ -41,9 +41,11 @@ fn a_report_that_is_not_drained_omits_the_field() {
         leader_offset: None,
         halted: Vec::new(),
         replica_counter_offsets: Vec::new(),
+        stream_incarnation: 0,
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
+    assert!(!json.contains("incarnation"), "{json}");
     // Nor does one with nothing halted, or a stream's.
     assert!(!json.contains("halted"), "{json}");
     assert!(!json.contains("counter"), "{json}");
@@ -85,6 +87,7 @@ fn a_report_round_trips() {
                 node_id: "broker-b".into(),
                 durable_offset: 9,
             }],
+            stream_incarnation: 5,
         }],
     };
     let json = serde_json::to_string(&report).expect("write");
