@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792039248456,
+  "lastUpdate": 1792040023645,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29588,6 +29588,58 @@ window.BENCHMARK_DATA = {
             "range": "4786.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812010.25\nmean: 810810.76\nstdev: 4786.39\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9dddc5d38704f0bcc679d0669b2acb8a68ade3ad",
+          "message": "ci: one required check per workflow so auto-merge waits for green (#1240)\n\n* ci: always run CI and coverage, skip their jobs for docs alone, and end each with one required check\n\n* ci: count both names of a renamed file when deciding whether code changed",
+          "timestamp": "2026-10-14T21:49:28-07:00",
+          "tree_id": "6de800670418fd2c2de1e52c1a8d42383b6f7ea3",
+          "url": "https://github.com/GetFelix/felix/commit/9dddc5d38704f0bcc679d0669b2acb8a68ade3ad"
+        },
+        "date": 1792040022779,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342715.22,
+            "range": "3390.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342715.22\nmean: 341027.98\nstdev: 3390.00\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342715.22,
+            "range": "3390.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342715.22\nmean: 341027.98\nstdev: 3390.00\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81196.75,
+            "range": "452.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81196.75\nmean: 81056.15\nstdev: 452.13\ncv: 0.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811967.46,
+            "range": "4521.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811967.46\nmean: 810561.49\nstdev: 4521.33\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
