@@ -651,6 +651,13 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // The API's own check still stands for a group that cannot apply
+        // the field.
+        if report.stream_incarnation.is_some()
+            && self.handle.cluster_version().await < INCARNATION_LEVEL
+        {
+            report.stream_incarnation = None;
+        }
         // Halts and counter positions are advisory: a group with a member that
         // would drop them records the rest of the report, which placement
         // needs.

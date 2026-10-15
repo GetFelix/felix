@@ -474,8 +474,8 @@ pub(super) async fn record_replica_report(
     let mut tx = store.pool.begin().await?;
     // `FOR SHARE` holds the assignment row until commit, so a promotion
     // either committed before this read and is seen, or waits for the report.
-    let assignment: Option<(String, i64)> = sqlx::query_as(
-        r#"SELECT leader, generation FROM shard_assignments
+    let assignment: Option<(String, i64, i64)> = sqlx::query_as(
+        r#"SELECT leader, generation, incarnation FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR SHARE"#,
     )
@@ -486,13 +486,20 @@ pub(super) async fn record_replica_report(
     .bind(report.key.kind.as_str())
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((current_leader, generation)) = assignment else {
+    let Some((current_leader, generation, incarnation)) = assignment else {
         return Err(StoreError::NotFound("shard assignment".into()));
     };
     if current_leader != leader {
         return Ok(ReportWrite::NotLeader);
     }
     if generation as u64 != report.generation {
+        return Ok(ReportWrite::Stale);
+    }
+    // Under the same row lock: a recreate cannot land between this and the write.
+    if report
+        .stream_incarnation
+        .is_some_and(|reported| reported != incarnation as u64)
+    {
         return Ok(ReportWrite::Stale);
     }
     // Locked, so a concurrent report cannot carry halts from a row this one
@@ -631,6 +638,7 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             .map_err(|err| StoreError::Unexpected(anyhow!("decode halted: {err}")))?,
         counter_offsets: serde_json::from_value(row.counter_offsets)
             .map_err(|err| StoreError::Unexpected(anyhow!("decode counter_offsets: {err}")))?,
+        stream_incarnation: None,
     })
 }
 

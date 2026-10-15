@@ -196,6 +196,7 @@ fn report() -> ReplicaReport {
             since_millis: 1,
         }),
         counter_offsets: any_map(1),
+        stream_incarnation: Some(1),
     }
 }
 

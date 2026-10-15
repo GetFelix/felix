@@ -384,6 +384,12 @@ pub struct ReplicaReport {
     /// predate it, and for streams.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub counter_offsets: BTreeMap<String, u64>,
+    /// The stream incarnation this report was measured against. Only a
+    /// write-time check: the store compares it with the assignment's under
+    /// the lock or apply that checks leader and generation, then drops it,
+    /// so a stored report never carries one. `None` skips the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_incarnation: Option<u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

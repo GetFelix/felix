@@ -143,6 +143,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(store).await;
     replica_reports::a_replica_report_is_kept_and_read_back(store).await;
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
+    replica_reports::a_report_on_another_incarnation_is_refused_at_the_write(store).await;
     replica_reports::a_report_at_the_same_generation_is_an_update(store).await;
     replica_reports::a_report_behind_the_held_one_is_dropped(store).await;
     replica_reports::a_report_from_a_deposed_leader_is_refused(store).await;
@@ -1153,6 +1154,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
     assert_eq!(owned(&before, ShardKind::Cache), 2);
     let doomed_report = crate::model::ReplicaReport {
         counter_offsets: Default::default(),
+        stream_incarnation: None,
         key: doomed(0, ShardKind::Stream).key,
         generation: before
             .iter()

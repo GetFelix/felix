@@ -648,6 +648,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         .expect("assign");
     let report = ReplicaReport {
         counter_offsets: [("broker-y".to_string(), 7)].into(),
+        stream_incarnation: None,
         key: key.clone(),
         generation: assigned.generation,
         caught_up: Default::default(),

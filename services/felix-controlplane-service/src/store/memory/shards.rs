@@ -245,8 +245,17 @@ pub(super) async fn record_replica_report(
             return Ok(ReportWrite::Stale);
         }
     }
+    // The API checked this against a read from before the lock; a recreate
+    // can land in between.
+    if report
+        .stream_incarnation
+        .is_some_and(|incarnation| incarnation != assignment.incarnation)
+    {
+        return Ok(ReportWrite::Stale);
+    }
     let mut reports = store.replica_reports.write().await;
     let mut report = report;
+    report.stream_incarnation = None;
     if let Some(held) = reports.get(&report.key) {
         if !report.supersedes(held) {
             return Ok(ReportWrite::Stale);

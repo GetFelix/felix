@@ -151,6 +151,7 @@ fn replica_report(
         drained: false,
         leader_offset: Some(42),
         halted: Default::default(),
+        stream_incarnation: None,
     }
 }
 

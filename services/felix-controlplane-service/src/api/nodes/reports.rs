@@ -284,6 +284,7 @@ async fn record_one(
             .iter()
             .map(|replica| (replica.node_id.clone(), replica.durable_offset))
             .collect(),
+        stream_incarnation: Some(shard.stream_incarnation),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
