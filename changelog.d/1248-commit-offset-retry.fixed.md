@@ -1,1 +1,1 @@
-- A replica commit-offset write that failed is now retried by the next call with the same offset (#1248). The storage-format doc says a follower still acknowledges the batch when it fails.
+- A replica commit-offset write that failed was not retried until the offset rose. The next batch carrying the same offset now writes it again. The follower still acknowledges the batch when the write fails, since no acknowledged record depends on the offset (#1248).

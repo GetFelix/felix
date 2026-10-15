@@ -570,13 +570,17 @@ acknowledged, and whether retention is held at that offset.
 Written through a temporary, an fsync, a rename and a directory sync. A raised
 generation is on disk before the batch that raised it is stored or
 acknowledged, so a leader this broker has seen replaced is refused after a
-restart too, whatever the routing view says by then. Under `FsyncMode::OnCommit`
-the commit offset is written through on every advance, and the call
-returns an error if the write fails. A follower still acknowledges the batch in
-that case: the offset only guards truncation, so no acknowledged record depends
-on it, and the next call with the same offset writes it again. Under `Periodic` and `None` it is written
-at most once a second and at shutdown, as its records are written behind too;
-read back behind after a crash, it permits *more* truncation than it should:
+restart too, whatever the routing view says by then.
+
+Under `FsyncMode::OnCommit` the commit offset is written through on every
+advance, and the call returns an error if the write fails. A follower still
+acknowledges the batch in that case: the offset only guards truncation, so no
+acknowledged record depends on it. The next batch that carries the offset
+writes it again.
+
+Under `Periodic` and `None` it is written at most once a second and at
+shutdown, as its records are written behind too. Read back behind after a
+crash, it permits *more* truncation than it should:
 records committed since are unguarded until the leader's next batch carries the
 offset again.
 

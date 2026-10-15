@@ -712,7 +712,7 @@ impl ReplicaHandler {
                     tracing::warn!(
                         stream = %key.stream,
                         error = %err,
-                        "could not write the commit offset through; it holds in memory and the next batch writes it again",
+                        "could not write the commit offset through; it holds in memory and the next batch that carries it writes it again",
                     );
                 }
                 // Past the durable offset nothing has been compared, so what
