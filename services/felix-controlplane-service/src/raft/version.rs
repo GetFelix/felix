@@ -26,10 +26,10 @@ use super::{NodeId, RaftHandle};
 /// How long a computed level is served without asking again. The level
 /// rises within about this long of the last member upgrading.
 const FRESH_FOR: Duration = Duration::from_secs(2);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-/// Bound on the probe that settles one member's fresh mark ([`super::hold`]).
-/// Well under the election timeout, so a member at the floor is fed again
-/// long before anything could time out on it.
+pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bound on the first probe that settles one member's fresh mark
+/// ([`super::hold`]). Well under the election timeout, so a member at the
+/// floor that answers promptly is fed again before it could time out.
 pub(super) const ASK_TIMEOUT: Duration = Duration::from_millis(200);
 /// How often a leader asks every member its level again, for the
 /// replication hold ([`super::hold`]).

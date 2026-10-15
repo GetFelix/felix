@@ -231,9 +231,12 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
             if !rpc.entries.is_empty() {
                 return Err(RPCError::Unreachable(held));
             }
-            // A heartbeat still goes, so a held member does not time out and
-            // depose the leader. Without the commit index it applies nothing,
-            // not even entries it was fed before the hold.
+            // An empty append is a heartbeat, which openraft sends only while
+            // nothing else is queued for this member: it is caught up and
+            // nothing new has been written. Once entries are held, openraft
+            // retries them and sends no heartbeat. Without the commit index
+            // the member applies nothing, not even entries it was fed before
+            // the hold.
             rpc.leader_commit = None;
         }
         let response = self.send("append-entries", &rpc).await;

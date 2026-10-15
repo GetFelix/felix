@@ -493,9 +493,16 @@ that restarts on an older build under its old id would otherwise be sent
 the log and a snapshot it cannot apply. So the leader holds a member when
 it has evidence the member is below the floor (`raft/hold.rs`): an append
 carrying entries, or a snapshot, fails as unreachable and nothing is written
-to it. Heartbeats still go, with the commit index removed, so the member
-applies nothing, not even entries it was sent before the hold, and does not
-time out and call an election. The check reads only
+to it. A heartbeat still goes while openraft has nothing else queued for
+the member (it is caught up and nothing new has been written), with the
+commit index removed so the member applies
+nothing, not even entries it was sent before the hold. A held member that is
+behind gets nothing at all: openraft 0.9 retries the held append or snapshot
+with backoff, up to a second apart, and never sends a heartbeat in its place.
+It may time out and call elections, which the others refuse while they hear
+from the leader, and once it is released its first append can come back with
+a higher vote and depose the leader. That is one extra election per long
+hold. The check reads only
 cached state, the floor from an atomic the state machine updates on apply
 and restore and each member's last reported level; a send never waits on a
 probe. The leader keeps those levels fresh in the background
@@ -526,9 +533,12 @@ client's first conflict, with whatever level it reported before the wipe
 still cached. So a conflict a client sees before any
 acknowledgement holds that member until one probe sent after it settles:
 a level at the floor or no answer releases it, a level below keeps it
-held. The probe goes to that member alone and gives up after 200 ms, well
-under the election timeout, so it never waits on a pass over the other
-members. Each such conflict asks again once the last probe settled, since
+held. The probe goes to that member alone, so it never waits on a pass over
+the other members. It gives up after 200 ms and then asks once more for up
+to a second, the bound the watch uses, so a member that is slow to answer is
+not released by silence. Only the held member waits on that; the others are
+fed as usual. One probe per member is in flight at a time. Each such
+conflict asks again once the last probe settled, since
 the member can be wiped between two of them. Up-to-date members answer the
 first append with success and are never asked. A member that is behind pays,
 for each conflict while the leader searches for where their logs match, a
@@ -546,7 +556,11 @@ group can survive until that member is upgraded. Two cases are not caught: a mem
 restarted on an older build with its log intact, which is a rollback,
 covered below; and a member wiped and restarted on an older build whose
 probe fails even though it just answered an append, which is fed because
-silence never holds.
+silence never holds. And while the leader's log is shorter than 16 entries
+and has never been purged, openraft sends a new client's first append from
+the start of the log, which an empty member accepts without a conflict; a
+member wiped and restarted on an older build then is caught only by the
+watch's next pass, up to 10 seconds later.
 
 Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 `remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,

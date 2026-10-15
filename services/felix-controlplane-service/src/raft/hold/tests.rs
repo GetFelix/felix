@@ -205,10 +205,10 @@ async fn a_member_below_the_floor_is_held_until_it_reports_it() {
     assert!(!hold.any_held());
 }
 
-/// A held member still gets heartbeats, so it does not call an election,
-/// but without the commit index, so it applies nothing it holds.
+/// An empty append openraft sends a held member goes, but without the
+/// commit index, so it applies nothing it holds.
 #[tokio::test]
-async fn a_held_member_gets_heartbeats_without_the_commit_index() {
+async fn an_empty_append_to_a_held_member_carries_no_commit_index() {
     let member = member(8).await;
     let versions = Arc::<std::sync::Mutex<Versions>>::default();
     let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(&versions));
@@ -411,10 +411,69 @@ async fn a_first_conflict_is_settled_by_its_own_probe() {
         waited < crate::raft::version::ASK_TIMEOUT,
         "held for {waited:?}"
     );
-    // A member that does not answer is released once its ask times out.
-    let waited = until_fed(&mut other, Duration::from_secs(1)).await;
-    assert!(waited < Duration::from_millis(400), "held for {waited:?}");
+    // A member that does not answer is released once its ask and the one
+    // retry time out.
+    let waited = until_fed(&mut other, Duration::from_secs(2)).await;
+    assert!(
+        waited
+            < crate::raft::version::ASK_TIMEOUT
+                + crate::raft::version::PROBE_TIMEOUT
+                + Duration::from_millis(200),
+        "held for {waited:?}"
+    );
     assert!(!hold.any_held());
+}
+
+/// A member that answers slower than the first ask is not released by that
+/// silence: the retry hears it below the floor and it stays held.
+#[tokio::test]
+async fn a_slow_answer_below_the_floor_keeps_a_first_conflict_held() {
+    let member = member(8).await;
+    member.delay_ms.store(400, Ordering::SeqCst);
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let (_hold, mut network) = first_conflict(&member, &versions).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let held = append(&mut network).await.expect_err("released by silence");
+        if held.contains("supports metadata version 8") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "still asking: {held}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        member.appends.load(Ordering::SeqCst),
+        1,
+        "a member below the floor was fed"
+    );
+}
+
+/// Repeated lost-log conflicts while a probe is out send no second probe.
+#[tokio::test]
+async fn one_probe_in_flight_per_member() {
+    let member = member(10).await;
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(&versions));
+    let mut network = network(&member.addr, Arc::clone(&hold));
+    append_at(&mut network, None, Some(5)).await.expect("fed");
+    member.delay_ms.store(300, Ordering::SeqCst);
+
+    // Each round acknowledges 5 with an empty append, which a hold lets
+    // through, then conflicts at it.
+    for _ in 0..5 {
+        member.conflict.store(false, Ordering::SeqCst);
+        append_at(&mut network, Some(5), None)
+            .await
+            .expect("answered");
+        member.conflict.store(true, Ordering::SeqCst);
+        append_at(&mut network, Some(5), None)
+            .await
+            .expect("answered");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(versions.lock().expect("versions lock").is_stale(2));
+    assert_eq!(member.probes.load(Ordering::SeqCst), 1);
 }
 
 /// A member released after a first-append conflict, then wiped and

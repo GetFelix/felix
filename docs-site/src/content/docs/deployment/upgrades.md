@@ -389,12 +389,13 @@ member only on evidence: the member reported an older version, or it lost
 the log it had acknowledged and has not reported a version since. A member
 that answers with a conflict before it has accepted anything from the
 current leader, as an empty one does, is held only until a probe of that
-member alone answers or gives up after 200 ms: a version at the group's or
-no answer releases it. After a leader change, a member that is behind can be
+member alone answers, or gives up after 200 ms and a second try of up to a
+second: a version at the group's or no answer releases it. After a leader change, a member that is behind can be
 held that briefly for each conflict while the leader finds where their logs
 match. A member that is slow to answer or cannot be asked is otherwise not
-held, and a held member still gets heartbeats, so it does not call an
-election. The group keeps committing with the other members, but a held
+held. A held member that is behind gets no heartbeats either, so it may
+call elections; the others refuse them while they hear from the leader, but
+once it is released it can cost one extra election. The group keeps committing with the other members, but a held
 voter is one fewer failure the group can survive. Upgrade that member; replication to it resumes within about a
 second of it starting on a build at the group's version.
 
