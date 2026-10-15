@@ -108,11 +108,14 @@ jobs:
     name: Check ${{ matrix.config }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # FelixShardElectSwap has never finished a run, so the limit is the most a
+    # hosted runner allows.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         config:
+          - FelixShardElectSwap
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
           - FelixShardFencedAckTwoPromotions

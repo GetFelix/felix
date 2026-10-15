@@ -183,7 +183,6 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectAdoptPromote pass"
-  "FelixShardElectSwap pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
@@ -240,6 +239,9 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
+# FelixShardElectSwap is not registered: it has never finished a run, and
+# the nightly exhaustive job (tla-walk.yml) checks it by name instead.
+
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
 # run); anything not listed is taken as one. Shards are filled longest first, each
@@ -247,6 +249,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
+  "FelixShardWipe 35"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
@@ -263,7 +266,6 @@ weights=(
   "FelixShardFigure8FollowerAcks 6"
   "FelixShardCancel 6"
   "FelixShardReportFloor 5"
-  "FelixShardWipe 5"
   "FelixShardAckWithoutLease 4"
   "FelixShardFigure8 4"
   "FelixShardRealMargins 4"
@@ -277,7 +279,6 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardElectHandoffLeaders 6"
   "FelixShardElectAdopt 11"
-  "FelixShardElectSwap 20"
   "FelixShardElectPreVote 5"
   "FelixShardElectAdoptPromote 3"
   "FelixShardSessionsSubscriber 2"
