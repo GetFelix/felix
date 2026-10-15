@@ -460,7 +460,8 @@ When the fence applies:
 - A stream shard's consumer-group state as well, as one pair. See
   [Group state at promotion](#group-state-at-promotion) below.
   `felix_broker_promotions_opened_total{path}` says which path each new
-  leadership took, promoted or not.
+  leadership took, promoted or not. It counts a leadership once the shard
+  opens, so a refused open that is retried is not counted twice.
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
@@ -1732,6 +1733,16 @@ follower *was* caught up; the leader kept writing afterwards, and promoting on a
 stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
+
+The age is measured up to the reporting leader's last heartbeat, not up to
+now. A live leader heartbeats, so its report ages as before and an old one
+from a leader that stopped reporting still expires. A dead leader's heartbeats
+stop, and so does the age of its last report. Without that, a placement pass
+that ran more than the window after the last report, through a control-plane
+outage or a slow pass, would find no replica to promote, and the shard would
+wait for an operator to abandon it. A report is tied to a heartbeat only while
+the assignment is still at the report's generation, since only that
+generation's leader can have made it; any other ages against now.
 
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.

@@ -32,12 +32,20 @@
 //! already say how quickly a dead leader is detected, and a report has to
 //! survive exactly that long to be usable.
 //!
+//! The age is measured up to the reporting leader's last heartbeat, not up to
+//! now. A leader that keeps heartbeating but stops reporting ages its report
+//! out as before. A dead leader's last report stops ageing when it does:
+//! nothing else will ever report on its shards, so letting that report expire
+//! leaves them with no leader the control plane will promote.
+//!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{HaltedCopy, NodeSuspicion, ReplicaReport, ShardKey, ShardKind};
+use crate::model::{
+    HaltedCopy, Node, NodeSuspicion, ReplicaReport, ShardAssignment, ShardKey, ShardKind,
+};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -81,6 +89,9 @@ pub struct ReplicaPositions {
     reports: HashMap<ShardKey, ReplicaReport>,
     ttl_millis: u64,
     now_millis: u64,
+    /// When each report's leader was last heard from, where it is known; a
+    /// report is aged up to this rather than up to `now_millis`.
+    heard_at: HashMap<ShardKey, u64>,
     /// The fresh suspicions, by the broker that holds them.
     suspicions: HashMap<String, NodeSuspicion>,
     /// Each node's current incarnation, which a leader's `by_round` must
@@ -108,6 +119,7 @@ impl ReplicaPositions {
                 .collect(),
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
+            heard_at: HashMap::new(),
             suspicions: HashMap::new(),
             incarnations: HashMap::new(),
             followers_decide: false,
@@ -149,6 +161,32 @@ impl ReplicaPositions {
         self
     }
 
+    /// With who made each report and when they last heartbeated.
+    ///
+    /// A report is attributed to the assignment's leader only while the
+    /// assignment is still at the report's generation: the store holds a
+    /// report only from the leader of that generation. A report that cannot
+    /// be attributed keeps ageing against now.
+    pub fn with_reporters(mut self, existing: &[ShardAssignment], nodes: &[Node]) -> Self {
+        let heartbeats: HashMap<&str, u64> = nodes
+            .iter()
+            .map(|node| (node.node_id.as_str(), node.status.last_heartbeat_at_millis))
+            .collect();
+        self.heard_at = existing
+            .iter()
+            .filter(|assignment| {
+                self.reports
+                    .get(&assignment.key)
+                    .is_some_and(|report| report.generation == assignment.generation)
+            })
+            .filter_map(|assignment| {
+                let heard = *heartbeats.get(assignment.leader.as_str())?;
+                Some((assignment.key.clone(), heard.min(self.now_millis)))
+            })
+            .collect();
+        self
+    }
+
     /// With when this instance last saw each restore's new copy move.
     pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
         self.progressed = progressed;
@@ -160,15 +198,17 @@ impl ReplicaPositions {
         liveness: &NodeLivenessConfig,
     ) -> crate::store::StoreResult<Self> {
         let reports = store.list_replica_reports().await?;
+        let nodes = store.list_nodes().await?;
+        let existing = store.list_shard_assignments().await?;
         let now_millis = store.now_millis().await?;
-        Ok(Self::new(reports, liveness, now_millis))
+        Ok(Self::new(reports, liveness, now_millis).with_reporters(&existing, &nodes))
     }
 
     /// The report for `key`, if there is one and it is still believed.
     fn fresh(&self, key: &ShardKey) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
-        (self.now_millis.saturating_sub(report.reported_at_millis) <= self.ttl_millis)
-            .then_some(report)
+        let as_of = self.heard_at.get(key).copied().unwrap_or(self.now_millis);
+        (as_of.saturating_sub(report.reported_at_millis) <= self.ttl_millis).then_some(report)
     }
 }
 

@@ -498,3 +498,92 @@ fn a_finalize_waits_for_the_leader_to_report_by_round() {
     let after = positions(vec![leader_report(true, now)]);
     assert!(after.suspects(&key("orders"), 4, "broker-b", "broker-a"));
 }
+
+fn reporter(id: &str, last_heartbeat_at_millis: u64) -> crate::model::Node {
+    crate::model::Node {
+        node_id: id.to_string(),
+        spec: crate::model::NodeSpec {
+            advertise_addr: "10.0.0.4:7000".to_string(),
+            client_addr: None,
+            kafka_addr: None,
+            region: "us-west-2".to_string(),
+            zone: None,
+            labels: Default::default(),
+            capacity: crate::model::NodeCapacity {
+                max_shards: None,
+                weight: 1,
+            },
+        },
+        status: crate::model::NodeStatus {
+            lifecycle: crate::model::NodeLifecycle::Down,
+            last_heartbeat_at_millis,
+            registered_at_millis: 1,
+            incarnation: 0,
+            features: Default::default(),
+        },
+    }
+}
+
+fn led_by(stream: &str, leader: &str, generation: u64) -> ShardAssignment {
+    ShardAssignment {
+        key: key(stream),
+        leader: leader.to_string(),
+        replicas: vec!["broker-b".to_string()],
+        generation,
+        state: crate::model::ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    }
+}
+
+/// **A report ages only while its leader is heard from.** Measured against
+/// now, a dead leader's last report would expire and leave its shard with
+/// nothing to promote, since nobody else reports on it.
+#[test]
+fn a_dead_leaders_report_stops_ageing_at_its_last_heartbeat() {
+    let reported_at = 1_000;
+    let now = reported_at + TTL_MS * 100;
+    let report = report("orders", &["broker-b"], reported_at);
+    let existing = [led_by("orders", "broker-a", report.generation)];
+
+    let heard_within = at(vec![report.clone()], now)
+        .with_reporters(&existing, &[reporter("broker-a", reported_at + TTL_MS)]);
+    assert!(heard_within.is_caught_up(&key("orders"), "broker-b"));
+
+    let heard_after = at(vec![report], now)
+        .with_reporters(&existing, &[reporter("broker-a", reported_at + TTL_MS + 1)]);
+    assert!(
+        !heard_after.is_caught_up(&key("orders"), "broker-b"),
+        "a report made a TTL before the leader's last heartbeat was believed",
+    );
+}
+
+/// **A leader that heartbeats but stops reporting still ages its report out.**
+/// Its heartbeat keeps up with now, so the report is measured as before.
+#[test]
+fn a_live_leaders_old_report_still_expires() {
+    let reported_at = 1_000;
+    let now = reported_at + TTL_MS + 1;
+    let report = report("orders", &["broker-b"], reported_at);
+    let existing = [led_by("orders", "broker-a", report.generation)];
+
+    let view = at(vec![report], now).with_reporters(&existing, &[reporter("broker-a", now)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+}
+
+/// A report from another generation may be from another leader, so it is not
+/// aged against this one's heartbeat.
+#[test]
+fn a_report_from_another_generation_ages_against_now() {
+    let reported_at = 1_000;
+    let now = reported_at + TTL_MS + 1;
+    let report = report("orders", &["broker-b"], reported_at);
+    let existing = [led_by("orders", "broker-a", report.generation + 1)];
+
+    let view =
+        at(vec![report], now).with_reporters(&existing, &[reporter("broker-a", reported_at)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+}

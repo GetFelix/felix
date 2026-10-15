@@ -210,12 +210,9 @@ impl PlacementRead {
             .iter()
             .map(|node| (node.node_id.clone(), node.status.incarnation))
             .collect();
-        let positions = ReplicaPositions::new(reports, liveness, now_millis).with_suspicions(
-            suspicions,
-            incarnations,
-            liveness,
-            &enabled,
-        );
+        let positions = ReplicaPositions::new(reports, liveness, now_millis)
+            .with_reporters(&existing, &nodes)
+            .with_suspicions(suspicions, incarnations, liveness, &enabled);
         let nodes = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {

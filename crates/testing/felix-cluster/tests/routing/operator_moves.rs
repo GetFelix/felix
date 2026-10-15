@@ -404,6 +404,19 @@ async fn cut_short_move(
         .inject(&unheard)
         .await
         .expect("keep the destination from its followers");
+    // Both directions: a follower's suspicion ping dialing in would tell the
+    // destination its followers offer the fence, and it would wait for one
+    // instead of opening on its lease. The old leader still ships to it.
+    for follower in &before.replicas {
+        let unheard_from = Fault::Refuse {
+            node: follower.clone(),
+            peers: vec![destination.clone()],
+        };
+        cluster
+            .inject(&unheard_from)
+            .await
+            .expect("keep the followers from the destination");
+    }
     cluster
         .start_move(STREAM, 0, &destination)
         .await

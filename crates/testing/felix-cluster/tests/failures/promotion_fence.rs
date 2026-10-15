@@ -311,10 +311,18 @@ async fn a_mixed_fleet_fails_over_on_the_lease() {
         }
     }
 
-    let (_client, mut replay) = cluster
-        .replay_on(&promoted, STREAM)
-        .await
-        .expect("replay on the new leader");
+    // A subscribe can still be refused as NotReady for a moment after the
+    // shard opens; that refusal is transient, so retry it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (_client, mut replay) = loop {
+        match cluster.replay_on(&promoted, STREAM).await {
+            Ok(replay) => break replay,
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => panic!("replay on the new leader: {err:#}"),
+        }
+    };
     let mut held = Vec::new();
     while let Ok(Ok(Some(event))) =
         tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await

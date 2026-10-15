@@ -754,11 +754,14 @@ so finish the roll before relying on the check.
 **One clock on both sides.** A report is stamped with the store's clock and its
 freshness is judged, by whichever instance plans, against the store's clock
 (`clock_timestamp()` under Postgres, the leader's process clock under Raft). A
-report is believed for twice the expiry timeout plus one heartbeat interval:
+report is believed for twice the expiry timeout plus one heartbeat interval,
+measured up to the reporting leader's last heartbeat rather than up to now:
 long enough to outlive the detection of the leader that made it, since a
 report that expired sooner would leave a shard unpromotable forever, and no
 longer, since a stale one is how a failover loses the records written after
-it. Nothing about a report survives the assignment it describes: deleting the
+it. A leader that keeps heartbeating but stops reporting ages its report out;
+a dead leader's last report stops ageing when its heartbeats stop, so a slow
+pass or a control-plane outage after the death still finds it. Nothing about a report survives the assignment it describes: deleting the
 assignment deletes the report, so a shard removed and recreated does not
 inherit the old one's promotability.
 
