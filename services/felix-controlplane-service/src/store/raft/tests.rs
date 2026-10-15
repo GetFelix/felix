@@ -562,6 +562,150 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A member before level 10 leaves a deleted stream's replica reports, and
+/// leaves every shard of a deleted namespace or tenant. While one is in the
+/// group, deletes are proposed that way on every member; once every member
+/// has the level, they take both.
+#[tokio::test]
+async fn deletes_take_shard_state_only_once_every_member_does() {
+    use crate::model::{NamespaceKey, ReplicaReport, ShardAssignment, ShardKey, ShardKind};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 8).await;
+    store
+        .register_node(crate::store::contract::nodes::node("broker-x", 7101))
+        .await
+        .expect("register");
+    let key = |namespace: &str, stream: &str| ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    // A stream with its shard 0 assigned and reported on.
+    let reported = |namespace: &'static str, name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            let mut stream = routed_stream(name, Default::default());
+            stream.namespace = namespace.to_string();
+            store.create_stream(stream).await.expect("stream");
+            let assigned = store
+                .put_shard_assignment(ShardAssignment {
+                    key: key(namespace, name),
+                    leader: "broker-x".to_string(),
+                    replicas: Vec::new(),
+                    generation: 0,
+                    state: crate::model::ShardState::Active,
+                    successor: None,
+                    joining: None,
+                    move_started_at_millis: None,
+                    move_reason: None,
+                    incarnation: 0,
+                })
+                .await
+                .expect("assign");
+            store
+                .record_replica_report(
+                    ReplicaReport {
+                        key: key(namespace, name),
+                        generation: assigned.generation,
+                        caught_up: Default::default(),
+                        offsets: Default::default(),
+                        reported_at_millis: 1,
+                        drained: false,
+                        leader_offset: Some(5),
+                        halted: Default::default(),
+                        counter_offsets: Default::default(),
+                        stream_incarnation: None,
+                        by_round: false,
+                        leader_incarnation: None,
+                    },
+                    "broker-x",
+                )
+                .await
+                .expect("report");
+        }
+    };
+    let left = |namespace: &'static str, name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            let target = key(namespace, name);
+            let assignments = store.list_shard_assignments().await.expect("list");
+            let reports = store.list_replica_reports().await.expect("reports");
+            (
+                assignments.iter().any(|a| a.key == target),
+                reports.iter().any(|r| r.key == target),
+            )
+        }
+    };
+    let delete_stream = |namespace: &str, name: &str| crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: namespace.to_string(),
+        stream: name.to_string(),
+    };
+    let doomed = |namespace: &str| {
+        let store = Arc::clone(&store);
+        let namespace = namespace.to_string();
+        async move {
+            store
+                .create_namespace(crate::model::Namespace {
+                    tenant_id: "t1".to_string(),
+                    namespace: namespace.clone(),
+                    display_name: "Doomed".to_string(),
+                })
+                .await
+                .expect("namespace");
+        }
+    };
+
+    assert!(!store.deletes_take_shards().await);
+    reported("ns", "old-single").await;
+    store
+        .delete_stream(&delete_stream("ns", "old-single"))
+        .await
+        .expect("delete");
+    assert_eq!(left("ns", "old-single").await, (false, true));
+    doomed("old-ns").await;
+    reported("old-ns", "cascaded").await;
+    store
+        .delete_namespace(&NamespaceKey {
+            tenant_id: "t1".to_string(),
+            namespace: "old-ns".to_string(),
+        })
+        .await
+        .expect("delete");
+    assert_eq!(left("old-ns", "cascaded").await, (true, true));
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.deletes_take_shards().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deletes still leave shard state after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    reported("ns", "new-single").await;
+    store
+        .delete_stream(&delete_stream("ns", "new-single"))
+        .await
+        .expect("delete");
+    assert_eq!(left("ns", "new-single").await, (false, false));
+    doomed("new-ns").await;
+    reported("new-ns", "cascaded").await;
+    store
+        .delete_namespace(&NamespaceKey {
+            tenant_id: "t1".to_string(),
+            namespace: "new-ns".to_string(),
+        })
+        .await
+        .expect("delete");
+    assert_eq!(left("new-ns", "cascaded").await, (false, false));
+}
+
 /// A member before zones would store a node without its zone. Below that
 /// level the node is registered without one on every member, rather than
 /// with one on some.
@@ -1099,5 +1243,223 @@ async fn a_finalized_group_proposes_incarnations_past_a_peer_that_never_answered
     assert!(
         matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 10")),
         "a peer that reported level 0 was overridden: {refused:?}"
+    );
+}
+
+/// Before anything level-gated is finalized, a member on an older build may
+/// join: that is a rolling upgrade in progress, and the group's level drops
+/// to the newcomer's.
+#[tokio::test]
+async fn an_older_member_joins_a_group_with_nothing_finalized() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    for (id, level) in [(2, 8), (3, 0)] {
+        let addr = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(level))).await;
+        store
+            .handle
+            .add_learner_without_waiting(id, addr)
+            .await
+            .unwrap_or_else(|err| panic!("member at level {level} refused: {err:#}"));
+    }
+}
+
+/// Once `stream_incarnations` is finalized, a member below level 10 would
+/// refuse the incarnated entries the others apply, so it is refused before
+/// the membership changes: at a lower level, without a reported level, and
+/// without an answer. One at the group's level joins.
+#[tokio::test]
+async fn a_member_below_a_finalized_level_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
+    let addr = stub_member(Arc::clone(&version)).await;
+    for (level, expected) in [
+        (8, "supports metadata version 8, but the group is at 10"),
+        (0, "supports metadata version 0, but the group is at 10"),
+        (
+            SILENT,
+            "did not report its metadata version, and the group is at 10",
+        ),
+    ] {
+        version.store(level, std::sync::atomic::Ordering::SeqCst);
+        let before = store.handle.status().last_applied_index;
+        let refused = store
+            .handle
+            .add_learner_without_waiting(2, addr.clone())
+            .await;
+        assert!(
+            matches!(&refused, Err(err) if err.to_string().contains(expected)),
+            "member at level {level}: {refused:?}"
+        );
+        assert_eq!(
+            store.handle.status().last_applied_index,
+            before,
+            "the refused join reached the log"
+        );
+    }
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the group's level joins");
+}
+
+/// With nothing finalized, a delete that takes shard state still carries a
+/// level-10 field. A member below 10 would refuse it on replay, so once one
+/// is in the log an older member is refused too.
+#[tokio::test]
+async fn an_older_member_is_refused_after_a_flagged_delete() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "T1".to_string(),
+        })
+        .await
+        .expect("tenant");
+    assert!(store.deletes_take_shards().await);
+    store.delete_tenant("t1").await.expect("delete");
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("features")
+            .is_empty(),
+        "nothing is finalized"
+    );
+
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
+    let addr = stub_member(Arc::clone(&version)).await;
+    let refused = store
+        .handle
+        .add_learner_without_waiting(2, addr.clone())
+        .await;
+    assert!(
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 10")),
+        "{refused:?}"
+    );
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the group's level joins");
+}
+
+/// A member already in the group that comes back on an older build (a wiped
+/// volume, the same id) answers the next append with a conflict below what
+/// it acknowledged. The leader asks its level again and sends it nothing
+/// while it is below the floor, then feeds it again once it reports the
+/// floor.
+#[tokio::test]
+async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "T1".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store.delete_tenant("t1").await.expect("delete");
+
+    let version = Arc::new(AtomicU16::new(
+        crate::store::raft::command::METADATA_VERSION,
+    ));
+    let conflict = Arc::new(AtomicBool::new(false));
+    let appends = Arc::new(AtomicUsize::new(0));
+    let app = {
+        let (version, conflict, appends) = (
+            Arc::clone(&version),
+            Arc::clone(&conflict),
+            Arc::clone(&appends),
+        );
+        axum::Router::new()
+            .route(
+                "/internal/raft/append-entries",
+                axum::routing::post(move || {
+                    appends.fetch_add(1, Ordering::SeqCst);
+                    let reply = if conflict.load(Ordering::SeqCst) {
+                        "Conflict"
+                    } else {
+                        "Success"
+                    };
+                    async move { axum::Json(serde_json::json!({ "Ok": reply })) }
+                }),
+            )
+            .route(
+                "/internal/raft/standing",
+                axum::routing::get(move || {
+                    let version = version.load(Ordering::SeqCst);
+                    async move {
+                        axum::Json(
+                            serde_json::json!({ "last_log_index": null, "version": version }),
+                        )
+                    }
+                }),
+            )
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the floor joins");
+
+    let fed_within = |within: Duration| {
+        let appends = Arc::clone(&appends);
+        async move {
+            let before = appends.load(Ordering::SeqCst);
+            tokio::time::sleep(within).await;
+            appends.load(Ordering::SeqCst) > before
+        }
+    };
+    assert!(fed_within(Duration::from_secs(2)).await, "never fed");
+
+    version.store(8, Ordering::SeqCst);
+    conflict.store(true, Ordering::SeqCst);
+    // The conflict lands, the member is asked again and held.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !fed_within(Duration::from_secs(2)).await,
+        "the leader kept replicating to a member below the floor"
+    );
+
+    conflict.store(false, Ordering::SeqCst);
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        Ordering::SeqCst,
+    );
+    assert!(
+        fed_within(Duration::from_secs(3)).await,
+        "the member was not fed again after reporting the floor"
     );
 }

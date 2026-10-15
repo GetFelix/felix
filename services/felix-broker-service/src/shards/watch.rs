@@ -106,11 +106,17 @@ impl ShardOwnership {
     /// Returns whether anything changed. A duplicate delivery is therefore
     /// harmless, and a stale generation — from a retry, a reordered poll, or a
     /// control plane that was behind — cannot roll ownership back.
+    ///
+    /// Assignments are ordered by stream incarnation first, as the lifecycle
+    /// orders them: a recreated stream's shard is a new one, and its first
+    /// generation can be below the deleted stream's after a control-plane
+    /// restore rewound the change seq it starts at.
     pub fn apply(&mut self, key: &ShardKey, assignment: Option<ShardAssignment>) -> bool {
         match assignment {
             Some(next) => {
                 if let Some(current) = self.assignments.get(key)
-                    && next.generation <= current.generation
+                    && (next.incarnation, next.generation)
+                        <= (current.incarnation, current.generation)
                 {
                     mm::record_stale_change();
                     return false;

@@ -64,14 +64,24 @@ pub enum MetaCommand {
     CreateTenant {
         tenant: Tenant,
     },
+    /// `take_shards`: also take the tenant's streams' and caches' shard
+    /// assignments and replica reports, as Postgres's cascade does. Level 10,
+    /// and set only once every member is there: a member that ignored it
+    /// would keep what the others dropped, so the field decides the delete on
+    /// every member, and an older member refuses an entry carrying it.
     DeleteTenant {
         tenant_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        take_shards: bool,
     },
     CreateNamespace {
         namespace: Namespace,
     },
+    /// `take_shards` as for [`MetaCommand::DeleteTenant`].
     DeleteNamespace {
         key: NamespaceKey,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        take_shards: bool,
     },
     CreateStream {
         stream: Stream,
@@ -80,8 +90,13 @@ pub enum MetaCommand {
         key: StreamKey,
         patch: StreamPatchRequest,
     },
+    /// The shards' assignments always go. `take_reports` also takes their
+    /// replica reports; level 10, for the reason given on
+    /// [`MetaCommand::DeleteTenant`].
     DeleteStream {
         key: StreamKey,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        take_reports: bool,
     },
     CreateCache {
         cache: Cache,
@@ -90,8 +105,11 @@ pub enum MetaCommand {
         key: CacheKey,
         patch: CachePatchRequest,
     },
+    /// `take_reports` as for [`MetaCommand::DeleteStream`].
     DeleteCache {
         key: CacheKey,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        take_reports: bool,
     },
     /// Registers without fleet features: the entry predates them, and an
     /// older member applies it that way, so this build does too.
@@ -702,6 +720,12 @@ pub fn restamp(command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
 /// way. Applying the rest would store something other than what the leader
 /// stored, with nothing to show for it.
 pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
+    decode_command_with_level(bytes).map(|(command, _)| command)
+}
+
+/// [`decode_command`], with the command's [`MetaCommand::version`] worked
+/// out from the same decoding rather than serializing it again.
+pub(crate) fn decode_command_with_level(bytes: &[u8]) -> Result<(MetaCommand, u16), MetaError> {
     let envelope: Envelope = serde_json::from_slice(bytes)
         .map_err(|err| MetaError::Unsupported(format!("undecodable command: {err}")))?;
     if envelope.v > COMMAND_VERSION {
@@ -720,7 +744,13 @@ pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
             dropped.join(", ")
         )));
     }
-    Ok(envelope.command)
+    // The envelope's own keys (`v`, `rid`) are in no command's table, so
+    // they count as 0.
+    let level = envelope
+        .command
+        .variant_level()
+        .max(fields::level_of(&decoded));
+    Ok((envelope.command, level))
 }
 
 /// Serialize a command's outcome for the Raft response channel.

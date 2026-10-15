@@ -347,6 +347,7 @@ fn script() -> Vec<MetaCommand> {
     // whose delete events take seqs inside one apply.
     commands.push(MetaCommand::DeleteTenant {
         tenant_id: "t-c".to_string(),
+        take_shards: true,
     });
     commands.push(MetaCommand::DeleteStream {
         key: StreamKey {
@@ -354,12 +355,14 @@ fn script() -> Vec<MetaCommand> {
             namespace: "ns-1".to_string(),
             stream: "events".to_string(),
         },
+        take_reports: true,
     });
     commands.push(MetaCommand::DeleteNamespace {
         key: NamespaceKey {
             tenant_id: "t-b".to_string(),
             namespace: "ns-2".to_string(),
         },
+        take_shards: false,
     });
     commands
 }

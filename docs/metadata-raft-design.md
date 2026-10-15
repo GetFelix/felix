@@ -468,6 +468,100 @@ recomputed at most every two seconds, so it rises shortly after the last
 member restarts on the new build. The rollout order therefore does not
 matter: a StatefulSet can upgrade the leader first.
 
+**A member below the group's floor is not added.** The floor is the
+higher of two levels. One is the highest level a finalized fleet feature
+needed (`stream_incarnations` needs 10, `jump_hash_routing` 3, any other 2),
+since the entries after a finalize rely on it. The other is a mark the state
+machine keeps: applying an entry whose variant or fields
+(`store/raft/command/fields.txt`) need a level above 8, the last released
+one, raises it to that level, whether or not the entry succeeds. Before any
+finalize, a delete carrying `take_shards` raises it to 10. The mark comes
+from the entries alone, so every member holds the same one, and it rides
+the snapshot as `levels_used`, left out while it is 0. A
+v0.6.0-preview.7 member, at level 8, refuses a snapshot with a non-empty
+field it does not know; it never sees the mark, because the mark is only
+set by entries it could not apply either. Once the floor is above 0, the
+leader asks a new member its level on the `standing` route before adding it
+as a learner, and refuses the join when it is below the floor, reports
+none, or does not answer, naming both versions. At floor 0 any build may
+join: the group's level drops to the newcomer's, as during a rolling
+upgrade.
+
+**A member below the floor is held, not fed.** A member already in the
+membership is never asked to join again: one whose volume was wiped and
+that restarts on an older build under its old id would otherwise be sent
+the log and a snapshot it cannot apply. So the leader holds a member when
+it has evidence the member is below the floor (`raft/hold.rs`): an append
+carrying entries, or a snapshot, fails as unreachable and nothing is written
+to it. A heartbeat still goes while openraft has nothing else queued for
+the member (it is caught up and nothing new has been written), with the
+commit index removed so the member applies
+nothing, not even entries it was sent before the hold. A held member that is
+behind gets nothing at all: openraft 0.9 retries the held append or snapshot
+with backoff, up to a second apart, and never sends a heartbeat in its place.
+It may time out and call elections, which the others refuse while they hear
+from the leader, and once it is released its first append can come back with
+a higher vote and depose the leader. That is one extra election per long
+hold. The check reads only
+cached state, the floor from an atomic the state machine updates on apply
+and restore and each member's last reported level; a send never waits on a
+probe. The leader keeps those levels fresh in the background
+(`watch_versions` in `raft/version.rs`): it asks every member on the
+`standing` route when it takes the lead, every 10 seconds after that, and
+every 500 ms while a member is held.
+
+The evidence is one of two things. Either the member reported a level
+below the floor (every released build that runs Raft answers `standing`
+with its level, 8 for v0.6.0-preview.7), or it answered an append with a
+conflict at or below an entry it had acknowledged to the same replication
+client. A client lives at most one leader's term, during which the
+leader's log only grows, so that conflict means the member lost its log,
+possibly to a restart on another build. It alone is held, and asked at
+once by a probe of it alone, until it reports a level at the floor; an answer to a probe sent
+before the conflict does not count. A member whose level is unknown,
+because it has not been asked yet or did not answer, is fed, and a failed
+probe keeps the last level it reported. Holding on silence would hold
+healthy voters after every leader change or slow probe and cost the group
+its quorum. The conflicts a lagging member answers while the leader
+searches for where their logs match are above what it acknowledged, so
+they hold nothing.
+
+A new client has nothing acknowledged to compare with. openraft builds one
+for each follower when a leader takes over and again on every membership
+change, and a member that lost its log would otherwise be fed on that
+client's first conflict, with whatever level it reported before the wipe
+still cached. So a conflict a client sees before any
+acknowledgement holds that member until one probe sent after it settles:
+a level at the floor or no answer releases it, a level below keeps it
+held. The probe goes to that member alone, so it never waits on a pass over
+the other members. It gives up after 200 ms and then asks once more for up
+to a second, the bound the watch uses, so a member that is slow to answer is
+not released by silence. Only the held member waits on that; the others are
+fed as usual. One probe per member is in flight at a time. Each such
+conflict asks again once the last probe settled, since
+the member can be wiped between two of them. Up-to-date members answer the
+first append with success and are never asked. A member that is behind pays,
+for each conflict while the leader searches for where their logs match, a
+probe round trip and openraft's retry delay of one heartbeat interval.
+
+Marks and holds belong to the leader that made them. The watch drops a
+member's state once it leaves the membership and clears all of it,
+resetting the gauges, when this member stops leading.
+
+The leader logs the hold once and sets
+`felix_meta_raft_member_below_floor{member}` to 1 until it ends. To openraft
+a held member is a follower that stopped taking entries, so commits still
+need only a majority, but holding a voter takes one failure off what the
+group can survive until that member is upgraded. Two cases are not caught: a member
+restarted on an older build with its log intact, which is a rollback,
+covered below; and a member wiped and restarted on an older build whose
+probe fails even though it just answered an append, which is fed because
+silence never holds. And while the leader's log is shorter than 16 entries
+and has never been purged, openraft sends a new client's first append from
+the start of the log, which an empty member accepts without a conflict; a
+member wiped and restarted on an older build then is caught only by the
+watch's next pass, up to 10 seconds later.
+
 Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 `remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,
 `retire_signing_key`) and leader soft-state liveness (`expire_nodes`,
@@ -532,6 +626,16 @@ stream's and a shard assignment's `incarnation`, a stream change's
 carries the proposed incarnation and the applying member decides the final one
 against its tombstones, so every member decides alike.
 
+Level 10 also decides what a delete takes of a stream's or cache's shard state.
+`delete_stream` and `delete_cache` carry `take_reports`, and `delete_namespace`
+and `delete_tenant` carry `take_shards`. With the flag, the delete takes the
+shards' assignments and replica reports, as Postgres's cascade does. Without
+it, the delete applies as a member below level 10 applies it: a stream or cache
+delete takes the assignments and keeps the reports, and a namespace or tenant
+delete keeps both. The proposer sets the flag only once every member is at level
+10, so a mixed group applies every delete alike. Until then a stream created
+again under a deleted name can find what the delete kept, as before.
+
 Level 11 is a replica report's `by_round`, the leader's word that it serves
 the shard without its lease, and the `leader_incarnation` it was said from. Placement takes a follower's suspicion against a
 leader only when its report says so, so until every member is at level 11
@@ -559,6 +663,8 @@ the field itself, on every member alike, or refuses the command:
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
 | stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
+| delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 
 **A member refuses what it would drop.** From level 3 on, a member that
@@ -578,7 +684,7 @@ replicated type from full struct literals and compares the paths they
 serialize with `fields.txt`, so a new field does not compile until it has a
 sample value, and the test fails until it has a level. If `felix_meta_raft_unsupported_commands_total` still
 moves on a member (something proposed through the raw peer `propose`
-route, or a member added on an older build after the level was computed),
+route, or a member on an older build that joined before any finalize),
 upgrade it, then wipe its volume and let it rejoin: it rebuilds from the
 leader's snapshot as in
 [rejoining after a lost volume](#rejoining-after-a-lost-volume).

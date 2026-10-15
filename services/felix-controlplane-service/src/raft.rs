@@ -30,6 +30,7 @@
 //!   state machine (#338 gives them theirs).
 mod handle;
 mod health;
+mod hold;
 mod http;
 mod join;
 mod leader;
@@ -166,6 +167,14 @@ pub trait AppStateMachine: Send + Sync + 'static {
     /// ([`RaftHandle::cluster_version`]). A member that reports nothing is
     /// at 0.
     fn version(&self) -> u16 {
+        0
+    }
+
+    /// The lowest level a member must report to be added to the group: the
+    /// level the applied state already depends on. A member below it would
+    /// refuse entries the others apply. 0 admits any member. Read on every
+    /// replication send, so it must not wait on anything.
+    fn join_floor(&self) -> u16 {
         0
     }
 }

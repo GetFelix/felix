@@ -304,3 +304,108 @@ async fn a_snapshot_with_a_field_this_build_does_not_know_is_refused() {
 
     crate::raft::AppStateMachine::restore(&machine(), &newer).await;
 }
+
+/// An entry carrying a level-10 field raises the mark, whether or not it
+/// succeeds; the mark rides the snapshot and sets the join floor. Entries at
+/// a released level leave it at 0 and out of the snapshot, which a
+/// v0.6.0-preview.7 member would refuse.
+#[tokio::test]
+async fn a_level_10_field_raises_the_mark_and_survives_a_snapshot() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    original
+        .apply(&encode_command(&MetaCommand::CreateTenant {
+            tenant: tenant("acme"),
+        }))
+        .await;
+    assert_eq!(original.levels_used(), 0);
+    assert_eq!(original.join_floor(), 0);
+    let unmarked = original.snapshot().await;
+    assert!(
+        !String::from_utf8_lossy(&unmarked).contains("levels_used"),
+        "a released-level snapshot carries the mark"
+    );
+
+    // `acme` has no namespaces; the entry's field is what counts.
+    let flagged = MetaCommand::DeleteTenant {
+        tenant_id: "missing".to_string(),
+        take_shards: true,
+    };
+    assert_eq!(flagged.version(), 10);
+    original.apply(&encode_command(&flagged)).await;
+    assert_eq!(original.levels_used(), 10);
+    assert_eq!(original.join_floor(), 10);
+
+    let restored = machine();
+    restored.restore(&original.snapshot().await).await;
+    assert_eq!(restored.levels_used(), 10);
+    assert_eq!(restored.join_floor(), 10);
+    assert_eq!(restored.snapshot().await, original.snapshot().await);
+
+    restored.restore(&unmarked).await;
+    assert_eq!(restored.levels_used(), 0, "a restore replaces the mark");
+    assert_eq!(restored.join_floor(), 0, "a restore replaces the floor");
+}
+
+/// The join floor is cached for the replication path; it follows a
+/// finalized feature on apply and the restored state on restore.
+#[tokio::test]
+async fn the_join_floor_follows_apply_and_restore() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    let empty = original.snapshot().await;
+    let jump_hash = felix_common::fleet::JUMP_HASH_ROUTING.name().to_string();
+    let mut broker = node("broker-a", 7001);
+    broker.status.features.insert(jump_hash.clone());
+    original
+        .apply(&encode_command(&MetaCommand::RegisterNodeInFleet {
+            node: broker,
+        }))
+        .await;
+    assert_eq!(original.join_floor(), 0);
+    original
+        .apply(&encode_command(&MetaCommand::FinalizeFleetFeature {
+            feature: jump_hash,
+        }))
+        .await;
+
+    assert_eq!(original.levels_used(), 0);
+    assert_eq!(original.join_floor(), 3);
+
+    let restored = machine();
+    restored.restore(&original.snapshot().await).await;
+    assert_eq!(restored.join_floor(), 3);
+    restored.restore(&empty).await;
+    assert_eq!(restored.join_floor(), 0);
+}
+
+/// A report carrying `by_round` needs level 11, so applying it raises the
+/// mark and the join floor to 11; one without it leaves both alone. The
+/// proposer strips it below 11 (`record_replica_report`), so only a group
+/// already at 11 ever applies one.
+#[tokio::test]
+async fn a_report_by_round_raises_the_mark_to_11() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    let plain = MetaCommand::RecordReplicaReport {
+        report: replica_report("acme", "ns", "orders", 1),
+        leader: None,
+    };
+    assert!(plain.version() < 11);
+    original.apply(&encode_command(&plain)).await;
+    assert_eq!(original.levels_used(), 0);
+    assert_eq!(original.join_floor(), 0);
+
+    let by_round = MetaCommand::RecordReplicaReport {
+        report: crate::model::ReplicaReport {
+            by_round: true,
+            leader_incarnation: Some(2),
+            ..replica_report("acme", "ns", "orders", 2)
+        },
+        leader: None,
+    };
+    assert_eq!(by_round.version(), 11);
+    original.apply(&encode_command(&by_round)).await;
+    assert_eq!(original.levels_used(), 11);
+    assert_eq!(original.join_floor(), 11);
+}
