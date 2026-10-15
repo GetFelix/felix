@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792041876903,
+  "lastUpdate": 1792042986286,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29744,6 +29744,58 @@ window.BENCHMARK_DATA = {
             "range": "14435.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 796472.85\nmean: 792893.65\nstdev: 14435.58\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "278fc450255b3aefb28906909138092baa717090",
+          "message": "test(storage): tell a reused inode number apart in the power-loss model (#1221) (#1231)\n\n* test(storage): tell a reused inode number apart in the power-loss model (#1221)\n\nThe model keyed what the device holds by device and inode number, which\noutlive an unlink. A file that got a deleted file's number was spliced onto\nthe old bytes, and a crash that brought the deleted name back gave it the\nnew file's bytes. Key by birth time as well.\n\n* test(storage): make the inode-reuse test independent of the filesystem's choice\n\n* fix(storage): tell power-loss model files apart by inode generation too\n\n* fix(storage): key power-loss files from one descriptor; read generation as int",
+          "timestamp": "2026-10-14T22:38:58-07:00",
+          "tree_id": "1b38148407a9c9ab8d0a370e976863d0e55e584b",
+          "url": "https://github.com/GetFelix/felix/commit/278fc450255b3aefb28906909138092baa717090"
+        },
+        "date": 1792042985840,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350141.16,
+            "range": "11912.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350141.16\nmean: 344577.80\nstdev: 11912.54\ncv: 3.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350141.16,
+            "range": "11912.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350141.16\nmean: 344577.80\nstdev: 11912.54\ncv: 3.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81043.23,
+            "range": "249.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81043.23\nmean: 80952.06\nstdev: 249.06\ncv: 0.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810432.34,
+            "range": "2490.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810432.34\nmean: 809520.63\nstdev: 2490.62\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
