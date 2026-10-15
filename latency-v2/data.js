@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792084586079,
+  "lastUpdate": 1792085278611,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38214,6 +38214,72 @@ window.BENCHMARK_DATA = {
             "range": "2401.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 346.00\nmean: 1559.80\nstdev: 2401.91\ncv: 153.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55b4b84046be9c0d72b2b2031e7cba62f769e47a",
+          "message": "docs(formal): model replica self-election without the control plane (#1009) (#1204)\n\n* docs(formal): model replica self-election without the control plane (#1009)\n\nAdds the set check (SetCheck, setGen, RefuseStaleSet), the joint fence on\nset changes (JointFence) and control-plane adoption (Adopt, CpAdopt,\nAdoptedMatchesOpened) to FelixShard.tla, with pass configurations and\nnegative twins, a walk family, and the design section in\ndocs/replication-design.md. No product code.\n\n* docs(formal): one set per generation, and Newest counts promises\n\nFelixShardElectAdopt.cfg found two leaders at one generation: a candidate\nanswered a newer leader's fence, learned a newer set there, and opened at\nits own generation on that set. A refused candidate now stops instead of\nfencing on, and under the set check a leader opens only while it still\nholds its own promise.\n\nFelixShardWalkElect.cfg found AckedHeldByLeader holding a deposed leader to\na record after an elected leader above it stepped down on its own lease.\nNewest now counts promises; FelixShardElectStepDown.cfg covers it.\n\n* docs(formal): a leader that answers a newer fence stops leading\n\nFelixShardElectAdopt.cfg found a deposed leader answering the adopted\nleader's seat fence, learning the new set there, and acknowledging a record\nby counting a majority of that set (AckedOnMajority). Answering a fence at a\nnewer generation now ends the broker's own leadership or candidacy, which\nalso covers the promise guard on opening.\n\nThe set and adoption configurations outgrow the per-push hour: they move to\nthe nightly exhaustive job, with FelixShardElectAdoptLeaders.cfg per push.\n\n* docs(formal): a per-push adoption config that fits the hour\n\nFelixShardElectAdoptLeaders.cfg did not finish in 43 minutes even without a\nwrite. FelixShardElectAdoptPromote.cfg checks adoption beside promotion on\nsuspicion with three brokers and one write instead; replacements under an\nadopted leader stay in the nightly FelixShardElectAdopt.cfg.\n\n* docs(formal): no joint fence; per-push election configs that fit\n\nFelixShardElectSetNoJoint.cfg passed (235.7M distinct states): a set changes\none replica at a time, so a fence on the new set is enough and the design\ndrops the joint fence (decision 2). FelixShardElectSet.cfg is now that\nconfiguration and runs nightly, whose job limit goes to five hours.\n\nFelixShardElectStepDown.cfg and FelixShardElectAdoptPromote.cfg did not\nfinish within the per-push hour: the first no longer promotes and runs\nwithout the set check, which would hide its case; the second drops its\nwrite.\n\n* docs(formal): Adopt bounds elections too\n\nWith adoption the control plane's generation follows elections up, and\nFelixShardElectAdopt.cfg ran past six hours. Replicas now stand only up to\ngeneration Adopt; the control plane's own changes go on past it.\n\n* docs(formal): ElectAdopt fits per push; measured numbers\n\nWith elections bounded by Adopt, FelixShardElectAdopt.cfg takes 10.7 min\n(7.90M distinct states) and runs on every push again, and\nFelixShardElectAdoptPromote.cfg gets its write back.\n\n* docs(formal): joint fence on every set change, per-generation acks, pre-vote\n\nReview findings on the self-election spec:\n\n- A move's cut-over can change several members of the set at once\n  (replicas_after_cut_over), so majorities of consecutive sets need not\n  overlap. Swap models it; FelixShardElectSwap.cfg passes with the joint\n  fence and FelixShardElectSwapNoJoint.cfg loses a record without it. The\n  joint fence is the default again (decision 2), with SetChangesJoint as a\n  history invariant over consecutive sets.\n- AckedHeldByLeader is checked per generation where opens are tracked,\n  from a record of the generation each write was acknowledged at, instead\n  of the newest generation, which a candidate's unanswered self-promise\n  could hide behind.\n- PreVote models pre-vote and stickiness; a broker that takes a newer\n  leader's batch stops leading, as it does for a newer fence; adoption is a\n  conditional write from a planner's read; AdoptMatch can drop the\n  control plane's set comparison alone.\n- The design section gains pre-vote, stickiness, rank delays with a node-id\n  tie-break and randomised backoff, an honest failover bound, and fenced\n  set changes and cut-overs as a gate on finalizing replica_election.\n\n* docs(formal): record a set change by its set's generation; NoBallotAcks needs the set check\n\nSetChangesJoint compared setGen against the generation a set change opened\nat, which is higher than the set's own when a leader stands again mid change.\nFelixShardElectNoBallotAcks could not reach its violation: with time frozen\nthe first leader never stepped down, so neither candidate had a follower.\n\n* docs(formal): a swapping cut-over waits for the drain\n\nSwap let the old leader go on acknowledging on the old set after the\ncontrol plane had moved to the new one, which FelixShardWalkElectSwap\nfound as AckedOnMajority. The cut-over now waits for the drain as a move's\ndoes: the old leader stops with nothing in flight, and the destination and\nthe copies joining hold its log. The no-joint twin now loses its record\nthrough a replica left on the old set standing at the new generation.\n\n* docs(formal): a pending set change travels with the set\n\nOnly the leader that started a set change remembered the old set, so a\nreplica that learned the new set from it, standing after it was deposed,\nfenced the new set alone while a replica of the old set opened beside it at\nthe same generation (FelixShardWalkElectSwap, OneLeaderPerGeneration). The\nold set is now kept with the new one until a leader opens on it: a fence\ncarries it, step-down keeps it, and whoever stands next fences both.\n\n* docs: note the pending set change and drained cut-over; drop a renamed config from a comment\n\n* docs(formal): copies joining at a swap hold the destination's log\n\nFelixShardElectSwap found a destination that had been elected past the\ndrained leader: the copies took the old leader's log and missed the record\nthe destination had acknowledged (AckedOnMajority).\n\n* docs(formal): focus the swap walk's twin on cut-overs and elections\n\nWith the pending set change kept with the set, the no-joint walk took up to\n17 minutes to reach its violation and once ran out its 25. It now runs\nwithout promotion on suspicion or adoption.\n\n* docs(formal): the control plane flips a cut-over's set only after the joint fence\n\nA swap flipped the control plane's set at once, so a replica the cut-over\nremoved, which never heard of it, could stand and acknowledge on a majority\nof the old set the control plane had already dropped (FelixShardWalkElectSwap,\nAckedOnMajority). The control plane now records the new set as pending and\nkeeps the old one until a leader on the new set has its start record\nacknowledged on a majority of both (CpFlip). Until then a leader ships to and\nacknowledges on both sets; it drops the old one once the control plane holds\nits set (FinishChange). A failover or adopting a leader on the old set\nabandons the pending change. The maintainer chose this over counting the\noutgoing set in AckedOnMajority.\n\n* docs(formal): keep a pending set change through adoption; seed cpNext in Figure 8\n\nCpAdopt no longer adopts a leader on the old set while a cut-over is\npending: it takes only that leader's generation, since the new set's\nhigher set generation deposes it. A leader on the pending set is adopted\nand the change stays pending until CpFlip. AdoptedMatchesOpened is\nchecked only while the leader still holds the control plane's\ngeneration. Placement changes other than a failover wait for a pending\nchange. The Figure 8 seeded inits set cpNext and cpNextGen.\n\nDocs: renumber the adoption rule, add the old set, the pending set and\nthe flip to the upgrade plan, and note liveness while the control plane\nis down.\n\n* docs(formal): note a lost destination keeps the change pending; tidy adoption docs",
+          "timestamp": "2026-10-15T17:23:29Z",
+          "tree_id": "67a784358ad574600b5af4a1f54854f3644c18e9",
+          "url": "https://github.com/GetFelix/felix/commit/55b4b84046be9c0d72b2b2031e7cba62f769e47a"
+        },
+        "date": 1792085274669,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.20\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 248,
+            "range": "11.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 253.20\nstdev: 11.19\ncv: 4.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "91.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 368.00\nstdev: 91.41\ncv: 24.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 218.80\nstdev: 1.30\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "11.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 451.80\nstdev: 11.84\ncv: 2.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 682,
+            "range": "248.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 682.00\nmean: 751.60\nstdev: 248.89\ncv: 33.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
