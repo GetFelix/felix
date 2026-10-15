@@ -120,10 +120,6 @@ pub struct Broker {
     registration_required: std::sync::atomic::AtomicBool,
     /// See [`Broker::request_catalog_refresh`].
     catalog_wanted: Arc<tokio::sync::Notify>,
-    /// See [`Broker::keep_unincarnated_streams_on_delete`].
-    keeps_unincarnated: std::sync::atomic::AtomicBool,
-    /// See [`Broker::note_catalog_position`].
-    catalog_positions: parking_lot::Mutex<HashMap<keys::StreamKey, u64>>,
     /// Serves consumer groups, when this broker keeps their positions.
     group_reader: Option<Arc<GroupReader>>,
     /// Consumer-group positions, when this broker has somewhere to keep them.
@@ -210,8 +206,6 @@ impl Broker {
             durable_storage: None,
             registration_required: Default::default(),
             catalog_wanted: Default::default(),
-            keeps_unincarnated: Default::default(),
-            catalog_positions: Default::default(),
             consumer_groups: None,
             group_reader: None,
             counters: None,

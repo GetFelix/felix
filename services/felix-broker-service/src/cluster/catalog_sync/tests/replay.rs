@@ -37,24 +37,31 @@ fn key() -> StreamKey {
 
 /// The stream deleted, created again, and then a change no pass can apply.
 fn feed(since: u64) -> StreamChangesResponse {
+    let at = |incarnation, consistency| Stream {
+        incarnation,
+        ..stream(consistency)
+    };
     let items = vec![
         StreamChange {
             seq: Some(1),
             op: StreamChangeOp::Deleted,
             key: key(),
-            stream: None,
+            stream: Some(at(5, None)),
+            deleted_through: Some(5),
         },
         StreamChange {
             seq: Some(2),
             op: StreamChangeOp::Created,
             key: key(),
-            stream: Some(stream(None)),
+            stream: Some(at(6, None)),
+            deleted_through: None,
         },
         StreamChange {
             seq: Some(3),
             op: StreamChangeOp::Updated,
             key: key(),
-            stream: Some(stream(Some("Unheard-of"))),
+            stream: Some(at(6, Some("Unheard-of"))),
+            deleted_through: None,
         },
     ];
     StreamChangesResponse {
@@ -69,8 +76,12 @@ fn feed(since: u64) -> StreamChangesResponse {
 fn router() -> Router {
     router_with(
         || StreamSnapshotResponse {
-            items: vec![stream(None)],
+            items: vec![Stream {
+                incarnation: 5,
+                ..stream(None)
+            }],
             next_seq: 1,
+            tombstones: Vec::new(),
         },
         feed,
     )
@@ -183,6 +194,7 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
             "orders",
             StreamMetadata {
                 durable: true,
+                incarnation: 5,
                 ..Default::default()
             },
         )
@@ -204,7 +216,7 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
 
     // The first pass deletes the old stream and creates the new one.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while tail(&broker).await != Some(0) {
+    while broker.stream_incarnation("t1", "ns", "orders") != Some(6) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the delete was never applied"
@@ -244,6 +256,7 @@ fn legacy_delete(since: u64) -> StreamChangesResponse {
             op: StreamChangeOp::Deleted,
             key: key(),
             stream: None,
+            deleted_through: None,
         }]
         .into_iter()
         .filter(|change| change.seq.is_some_and(|seq| seq >= since))
@@ -271,6 +284,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
             ..stream(None)
         }],
         next_seq: 1,
+        tombstones: Vec::new(),
     };
 
     let (addr, shutdown_tx, handle) = serve_router(router_with(recreated, legacy_delete)).await?;
@@ -303,36 +317,22 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
     Ok(())
 }
 
-/// The changes that created an older incarnation, deleted it and created the
-/// live one, served again by a control plane member behind the one the
-/// snapshot came from.
+/// The create of an older incarnation, served again by a control-plane
+/// member behind the one the snapshot came from: it has not applied the
+/// delete and the create that followed.
 fn lagging_member(_since: u64) -> StreamChangesResponse {
-    let at = |incarnation| Stream {
-        incarnation,
-        ..stream(None)
-    };
     StreamChangesResponse {
-        items: vec![
-            StreamChange {
-                seq: Some(3),
-                op: StreamChangeOp::Created,
-                key: key(),
-                stream: Some(at(7)),
-            },
-            StreamChange {
-                seq: Some(4),
-                op: StreamChangeOp::Deleted,
-                key: key(),
-                stream: Some(at(7)),
-            },
-            StreamChange {
-                seq: Some(5),
-                op: StreamChangeOp::Created,
-                key: key(),
-                stream: Some(at(8)),
-            },
-        ],
-        next_seq: 6,
+        items: vec![StreamChange {
+            seq: Some(3),
+            op: StreamChangeOp::Created,
+            key: key(),
+            stream: Some(Stream {
+                incarnation: 7,
+                ..stream(None)
+            }),
+            deleted_through: None,
+        }],
+        next_seq: 4,
     }
 }
 
@@ -343,11 +343,12 @@ fn live() -> StreamSnapshotResponse {
             ..stream(None)
         }],
         next_seq: 10,
+        tombstones: Vec::new(),
     }
 }
 
-/// An older incarnation's create delivered again is not a delete this broker
-/// missed: the live stream keeps its data.
+/// An older incarnation's create delivered again neither replaces the live
+/// stream nor takes its data.
 #[tokio::test]
 async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -401,29 +402,81 @@ async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Re
     Ok(())
 }
 
-/// A stream feed whose head stays behind what the broker applied, as after a
-/// control plane restored to an earlier point, resets the broker's positions
-/// so registrations below them are taken again; a head behind for less time,
-/// a member catching up, does not.
-#[test]
-fn a_feed_behind_for_long_forgets_the_positions() {
-    let broker = Broker::new(EphemeralCache::new().into());
-    broker.note_catalog_position("t1", "ns", "orders", 20);
+/// A broker that was down while the stream was deleted and created again
+/// learns of the delete from the snapshot's tombstone, and deletes the old
+/// incarnation's data rather than keeping it for good.
+#[tokio::test]
+async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let storage = felix_broker::DurableStorage::open(dir.path(), config)?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "ns").await?;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "orders",
+            StreamMetadata {
+                durable: true,
+                incarnation: 5,
+                ..Default::default()
+            },
+        )
+        .await?;
+    broker
+        .publish("t1", "ns", "orders", Bytes::from_static(b"old"))
+        .await?;
+    let old = felix_storage::disk_log::layout::incarnation_dir(
+        dir.path(),
+        &felix_storage::log::ShardKey {
+            tenant: "t1".into(),
+            namespace: "ns".into(),
+            stream: "orders".into(),
+            shard: 0,
+        },
+        5,
+    );
+    assert!(old.exists());
+
+    let recreated = || StreamSnapshotResponse {
+        items: vec![Stream {
+            incarnation: 9,
+            ..stream(None)
+        }],
+        next_seq: 12,
+        tombstones: vec![StreamTombstone {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            incarnation: 5,
+        }],
+    };
+    let (addr, shutdown_tx, handle) =
+        serve_router(router_with(recreated, |_| StreamChangesResponse {
+            items: vec![],
+            next_seq: 12,
+        }))
+        .await?;
     let mut state = SyncState::new();
-
-    state.watch_stream_head(&broker, 10);
-    assert_eq!(
-        broker.catalog_position(),
-        Some(20),
-        "a lagging member reset them"
-    );
-
-    state.stream_head_behind_since =
-        Some(std::time::Instant::now() - super::super::HEAD_BEHIND_RESET);
-    state.watch_stream_head(&broker, 10);
-    assert_eq!(
-        broker.catalog_position(),
+    sync_into(
+        &broker,
+        &reqwest::Client::new(),
+        &format!("http://{addr}"),
         None,
-        "a restored control plane kept them"
-    );
+        &mut state,
+    )
+    .await?;
+    let _ = shutdown_tx.send(());
+    let _ = handle.await;
+
+    assert_eq!(broker.stream_incarnation("t1", "ns", "orders"), Some(9));
+    assert!(!old.exists(), "the deleted incarnation's data was kept");
+    assert_eq!(tail(&broker).await, Some(0));
+    Ok(())
 }

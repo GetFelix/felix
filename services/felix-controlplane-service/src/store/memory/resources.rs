@@ -54,15 +54,20 @@ pub(super) async fn create_resources(
     }
 
     if !streams.is_empty() {
+        // Held until every stream is in, as for a single create.
+        let nodes = store.nodes.read().await;
         let mut changes = store.stream_changes.write().await;
-        for stream in streams {
+        for mut stream in streams {
             let key = stream_key(&stream);
+            stream.incarnation =
+                super::streams::incarnation_for(store, &nodes, &key, stream.incarnation).await;
             stream_map.insert(key.clone(), stream.clone());
             changes.record(|seq| StreamChange {
                 seq,
                 op: StreamChangeOp::Created,
                 key,
                 stream: Some(stream),
+                deleted_through: None,
             });
             metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
         }

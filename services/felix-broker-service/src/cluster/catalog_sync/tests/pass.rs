@@ -69,6 +69,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -175,6 +176,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -278,6 +280,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -345,6 +348,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                 get(|| async {
                     Json(StreamChangesResponse {
                         items: vec![StreamChange {
+                            deleted_through: None,
                             op: StreamChangeOp::Created,
                             key: StreamKey {
                                 tenant_id: "t1".to_string(),

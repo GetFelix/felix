@@ -85,6 +85,9 @@ pub trait ControlPlaneStore: Send + Sync {
     -> StoreResult<Stream>;
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()>;
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>>;
+    /// Every stream tombstone. Each records a delete for good, so it may be
+    /// read apart from the snapshot it is served with.
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>>;
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>>;
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>>;

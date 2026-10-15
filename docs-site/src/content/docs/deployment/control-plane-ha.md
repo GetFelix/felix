@@ -54,10 +54,11 @@ suggestion.
   is in. A partial restore leaves instances refusing readiness or misreading
   rows. Point-in-time recovery is fine. Any consistent point is a state
   Felix has actually been in. A broker kept running across a restore to an
-  earlier point refuses stream changes from before what it had applied for a
-  minute, until the feed's head has stayed behind and it forgets those
-  positions; for a backup point, stop the brokers as
-  [Backup and restore](/deployment/backup-and-restore/#restoring) says.
+  earlier point refuses a stream whose restored incarnation is below the one
+  it holds, since it never moves a name back. Restore a backup point with the
+  brokers stopped, as
+  [Backup and restore](/deployment/backup-and-restore/#restoring) says, or
+  delete and recreate the stream: the new create gets a higher incarnation.
 
 ## Supported topologies
 

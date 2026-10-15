@@ -61,11 +61,11 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     producers                                ← producer snapshot, when any producer wrote here
     offload.manifest                         ← segments copied to the object store, once offload has run
     keys.idx                                 ← a cache shard's key index, once compaction has run
-  acme_default_orders_0-0d3aed4b998d2798-0000a51f02c4e7b3/
-                                             ← the same shard of a stream with incarnation 0xa51f02c4e7b3
+  acme_default_orders_0-0d3aed4b998d2798-0006411a0ccf2e40/
+                                             ← the same shard of a stream with incarnation 0x6411a0ccf2e40
   .deleted/                                  ← directories of deleted streams, waiting to be removed
   .streams/
-    acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation this broker holds of a durable stream
+    acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation of a stream this broker holds
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -75,17 +75,19 @@ uniqueness. Dots are excluded deliberately: with no dots in the name, a
 component like `..` is not merely escaped but unrepresentable.
 
 A stream created once the fleet finalized `stream_incarnations` has an
-incarnation, a number the control plane gives each creation of a name. Its
-shard directories end in `-` and the incarnation as 16 hex digits, so a stream
-deleted and created again under the same name never opens the old one's
-directories. A stream from before incarnations is incarnation 0 and keeps the
-name above. The same naming applies under `groups/` and `dead-letters/`, which
-belong to a stream shard; caches and counters stay at 0.
+incarnation, a number the control plane gives each creation of a name and that
+only increases for the name. Its shard directories end in `-` and the
+incarnation as 16 hex digits, so a stream deleted and created again under the
+same name never opens the old one's directories. A stream from before the
+finalize is incarnation 0 and keeps the name above. The same naming applies
+under `groups/` and `dead-letters/`, which belong to a stream shard; caches and
+counters stay at 0.
 
-`.streams/` holds one marker per durable stream, and one for any stream being
-deleted, named like a shard directory without the shard. It is text, replaced
-whole by writing a sibling, flushing it, renaming it over the old one and
-flushing the directory, so a crash leaves the old marker or the new one:
+`.streams/` holds one marker per durable stream, and per ephemeral stream once
+it has an incarnation, named like a shard directory without the shard. It is
+text, replaced whole by writing a sibling, flushing it, renaming it over the
+old one and flushing the directory, so a crash leaves the old marker or the
+new one:
 
 ```text
 felix-stream-marker 1
@@ -94,24 +96,21 @@ retiring <0|1>
 tenant <hex of the UTF-8 bytes>
 namespace <hex>
 stream <hex>
-kept 1                 (only on a kept stream)
 shards <decimal>       (optional)
-seen <decimal>         (optional)
+deleted <decimal>      (optional)
 ```
 
-`retiring 1` is a delete that started and has not finished; startup finishes
-it before anything registers. `kept 1` marks a stream at incarnation 0
-deleted in a cluster before this broker saw incarnations, whose data was kept
-until its name is registered again (see `docs/durable-storage.md`, "Deleting
-a stream"). `shards` is the stream's shard count, which a delete finished
-after a crash reads to find the dead letters the layout before 0.6 kept per
-group. `seen` is the catalog position the incarnation was registered at,
-read back at start so a catalog served from an earlier point cannot replace
-it. The optional lines appear at most once each, in this order. A marker that does not parse (damage) is
-logged and read as "not known", as a missing one is: nothing is deleted on its
-account, the broker takes the incarnation the catalog names, and when the
-catalog leaves it out while an incarnated stream of the name is on disk, the
-stream is not served until the catalog names it. It never stops a start.
+`incarnation` is the one last registered here. `retiring 1` is a delete that
+started and has not finished; startup finishes it before anything registers.
+`shards` is the most shards the stream had here, which a delete of
+incarnation 0 reads to find the dead letters the layout before 0.6 kept per
+group. `deleted` records that the control plane said every incarnation of the
+name up to and including this one is deleted: their data goes, and none of
+them is registered again. The optional lines appear at most once each, in this
+order. A marker that does not parse (damage) is logged and read as unknown:
+nothing is deleted on its account, and a record without an incarnation is
+refused while an incarnated stream of the name has directories here. It never
+stops a start. See `docs/durable-storage.md`, "Deleting a stream".
 
 `.streams/.incarnations` records, written the same way, that this broker has
 seen a stream with an incarnation; from then on, and from the start after a

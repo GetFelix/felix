@@ -83,8 +83,12 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
     stream_keys.sort_by(|a, b| {
         (&a.tenant_id, &a.namespace, &a.stream).cmp(&(&b.tenant_id, &b.namespace, &b.stream))
     });
+    let nodes = store.nodes.read().await;
     for stream_key in &stream_keys {
         if let Some(stream) = streams.remove(stream_key) {
+            let deleted_through =
+                super::streams::record_tombstone(store, &nodes, stream_key, stream.incarnation)
+                    .await;
             store
                 .stream_changes
                 .write()
@@ -94,9 +98,11 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
                     op: StreamChangeOp::Deleted,
                     key: stream_key.clone(),
                     stream: Some(stream),
+                    deleted_through,
                 });
         }
     }
+    drop(nodes);
     metrics::gauge!("felix_streams_total").set(streams.len() as f64);
 
     let mut caches = store.caches.write().await;

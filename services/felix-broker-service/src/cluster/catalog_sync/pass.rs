@@ -120,6 +120,18 @@ pub(super) async fn sync_into(
     if !state.seeded.streams {
         match fetch_snapshot(client, base_url, bearer).await {
             Ok(snapshot) => {
+                // Deletes first: the data of every incarnation a tombstone
+                // covers goes, whether or not this broker heard of it.
+                for tombstone in snapshot.tombstones {
+                    broker
+                        .delete_stream_through(
+                            &tombstone.tenant_id,
+                            &tombstone.namespace,
+                            &tombstone.stream,
+                            tombstone.incarnation,
+                        )
+                        .await?;
+                }
                 for stream in snapshot.items {
                     let metadata = stream.metadata()?;
                     apply_stream_upsert(
@@ -128,7 +140,6 @@ pub(super) async fn sync_into(
                         stream.namespace,
                         stream.stream,
                         metadata,
-                        Some(snapshot.next_seq),
                     )
                     .await?;
                 }
@@ -274,7 +285,6 @@ pub(super) async fn sync_into(
     // 4. Apply stream changes last so existence checks have up-to-date scopes.
     match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
         Ok(changes) => {
-            state.watch_stream_head(broker, changes.next_seq);
             for change in changes.items {
                 let applied = change.seq;
                 match change.op {
@@ -287,29 +297,27 @@ pub(super) async fn sync_into(
                                 stream.namespace,
                                 stream.stream,
                                 metadata,
-                                applied.map(|seq| seq + 1),
                             )
                             .await?;
                         }
                     }
                     StreamChangeOp::Deleted => {
-                        // The incarnation deleted: a stream registered at
-                        // another one was created after this delete and stays.
-                        // A delete without one is of a stream from before
-                        // incarnations, and must not remove one that has one.
-                        let incarnation = Some(
-                            change
-                                .stream
-                                .as_ref()
-                                .map_or(0, |stream| stream.incarnation),
-                        );
+                        // From the finalize of incarnations on, the change
+                        // says through which incarnation the name is
+                        // deleted. One that says nothing is of a stream from
+                        // before them, whose data stays; its payload, when it
+                        // has one, names incarnation 0 either way.
+                        let incarnation = change.deleted_through.or(change
+                            .stream
+                            .as_ref()
+                            .map(|stream| stream.incarnation)
+                            .filter(|incarnation| *incarnation != 0));
                         match broker
-                            .remove_stream_incarnation(
+                            .remove_stream_from_catalog(
                                 &change.key.tenant_id,
                                 &change.key.namespace,
                                 &change.key.stream,
                                 incarnation,
-                                applied.map(|seq| seq + 1),
                             )
                             .await
                         {
@@ -321,12 +329,6 @@ pub(super) async fn sync_into(
                     }
                 }
                 if let Some(seq) = applied {
-                    broker.note_catalog_position(
-                        &change.key.tenant_id,
-                        &change.key.namespace,
-                        &change.key.stream,
-                        seq + 1,
-                    );
                     state.next_stream_seq = seq + 1;
                 }
             }

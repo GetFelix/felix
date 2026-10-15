@@ -42,6 +42,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )

@@ -262,6 +262,10 @@ impl ControlPlaneStore for PostgresStore {
         streams::stream_snapshot(self).await
     }
 
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        streams::stream_tombstones(self).await
+    }
+
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
         streams::stream_changes(self, since).await
     }

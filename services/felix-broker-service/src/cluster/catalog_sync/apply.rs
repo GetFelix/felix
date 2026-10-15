@@ -70,15 +70,13 @@ pub(super) async fn apply_stream_upsert(
     namespace: String,
     stream: String,
     metadata: StreamMetadata,
-    position: Option<u64>,
 ) -> Result<()> {
     let outcome = match broker
-        .register_stream_at(
+        .register_stream(
             tenant_id.clone(),
             namespace.clone(),
             stream.clone(),
             metadata.clone(),
-            position,
         )
         .await
     {
@@ -90,12 +88,11 @@ pub(super) async fn apply_stream_upsert(
                 .register_namespace(tenant_id.clone(), namespace.clone())
                 .await?;
             broker
-                .register_stream_at(
+                .register_stream(
                     tenant_id.clone(),
                     namespace.clone(),
                     stream.clone(),
                     metadata,
-                    position,
                 )
                 .await
         }
@@ -104,12 +101,11 @@ pub(super) async fn apply_stream_upsert(
                 .register_namespace(tenant_id.clone(), namespace.clone())
                 .await?;
             broker
-                .register_stream_at(
+                .register_stream(
                     tenant_id.clone(),
                     namespace.clone(),
                     stream.clone(),
                     metadata,
-                    position,
                 )
                 .await
         }

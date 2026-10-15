@@ -517,6 +517,17 @@ async fn shard_assignments_list_and_filter_by_leader() {
 async fn shard_assignments_carry_the_streams_routing() {
     let (app, store, keys) = setup().await;
     seed_shards(&store).await;
+    // Incarnations are given only once the fleet finalized them.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-a", "broker-b"].iter().enumerate() {
+        let mut broker = node(id, 7100 + i as u16, "us-west-2", "a1");
+        broker.status.features = [feature.to_string()].into();
+        store.register_node(broker).await.expect("node");
+    }
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
     store
         .create_stream(Stream {
             tenant_id: "t1".to_string(),

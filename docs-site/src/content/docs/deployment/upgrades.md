@@ -306,21 +306,25 @@ fences caches.
 #### `stream_incarnations`
 
 Once finalized, every stream the control plane creates gets an incarnation,
-and brokers keep each incarnation's logs, group positions and dead letters in
-directories of their own. A stream deleted and created again under the same
-name then starts empty on every broker, including one that was down for the
-delete. Until a broker in a cluster has seen a stream with an incarnation, it
-keeps a deleted stream's data and a stream created again under the name
-reopens it, as before: its shards restart at generation 0, where a new, empty
-log would be judged by what the brokers kept for the old one. The kept data
-goes when the name is given an incarnation. A single broker deletes it at
-once.
+higher for every creation of its name, and brokers keep each incarnation's
+logs, group positions and dead letters in directories of their own. A stream
+deleted and created again under the same name then starts empty on every
+broker, including one that was down for the delete: the control plane keeps a
+tombstone per deleted name and serves it in the catalog snapshot.
 
-- **Upgrade every control-plane instance first.** The incarnation is a new
-  replicated field, so under the Raft backend the finalize is refused with
-  409 until every member is at metadata version 10. With Postgres, nothing
-  checks: an older instance would start a recreated stream's shards at
-  generation 0 instead of above the deleted one's.
+Before the finalize nothing changes: a deleted stream's data stays on the
+brokers, and a stream created again under the name reopens it, as before. Its
+shards restart at the generations the old one used, where a new, empty log
+would be judged by what the brokers kept for the old one. That data goes once
+the name is deleted again after the finalize.
+
+- **Upgrade every control-plane instance first.** Under the Raft backend the
+  finalize is refused with 409 until every member is at metadata version 10.
+  With Postgres, every instance must have run migration 0028 before the
+  finalize. After it, an instance from before this release cannot create
+  streams (the database refuses a stream without an incarnation), its deletes
+  still record tombstones, and its catalog answers leave incarnations out,
+  which brokers refuse rather than misread.
 - **Every broker must report it.** A broker that predates it would keep a new
   stream's records in the directory a deleted stream of that name used.
 - **Nothing moves on disk.** Existing streams keep incarnation 0 and their
@@ -331,10 +335,12 @@ once.
   records that on disk, and from then on, and from the start after a restart,
   opens a stream's logs only at the incarnation the catalog registered; a
   follower refuses records for an incarnation it does not hold until its
-  catalog catches up, which it polls for at once. Nothing changes before the
-  finalize. A catalog record without the
-  incarnation for a stream that has one is never taken as a new stream, with
-  `felix_broker_stream_incarnation_missing_total` counting it.
+  catalog catches up, which it polls for at once. A broker never moves a name
+  to a lower incarnation or to one the control plane deleted, and refuses a
+  catalog record without the incarnation for a name it has seen incarnated;
+  `felix_broker_stream_incarnation_refused_total` counts both.
+- **The finalize is one-way.** As with every fleet feature, it cannot be
+  undone, and a broker that does not report it is refused from then on.
 - **What clients see.** Nothing. Stream answers carry `incarnation` once it
   is not 0.
 

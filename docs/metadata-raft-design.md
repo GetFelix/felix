@@ -524,6 +524,14 @@ replacement. Until every member is at level 9, the proposer writes each as the
 two older entries it combines, so a failure between them can leave the first
 without the second, as before.
 
+Level 10 is stream incarnations (the rules are in
+[control-plane.md](control-plane.md#broker-side-lifecycle)): a
+stream's and a shard assignment's `incarnation`, a stream change's
+`deleted_through`, and the snapshot's `stream_tombstones`. Finalizing
+`stream_incarnations` needs every member at level 10. The create command
+carries the proposed incarnation and the applying member decides the final one
+against its tombstones, so every member decides alike.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -543,7 +551,7 @@ the field itself, on every member alike, or refuses the command:
 | node `features`, snapshot `fleet_enabled` | 2 | as above |
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
-| stream `incarnation` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0, which leaves the field out |
+| stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

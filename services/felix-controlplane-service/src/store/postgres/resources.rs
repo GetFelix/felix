@@ -28,7 +28,7 @@ pub(super) async fn create_resources(
         ensure_namespace(&mut tx, tenant_id, namespace).await?;
     }
     for stream in &streams {
-        insert_stream(&mut tx, stream).await?;
+        insert_stream(&mut tx, &mut stream.clone()).await?;
     }
     for cache in &caches {
         insert_cache(&mut tx, cache).await?;

@@ -95,6 +95,9 @@ pub struct InMemoryStore {
     namespaces: Arc<RwLock<HashMap<NamespaceKey, Namespace>>>,
     /// Authoritative streams keyed by `(tenant_id, namespace, stream)`.
     streams: Arc<RwLock<HashMap<StreamKey, Stream>>>,
+    /// For each deleted stream name, the incarnation through which it is
+    /// deleted. Written only once the fleet finalized `stream_incarnations`.
+    stream_tombstones: Arc<RwLock<HashMap<StreamKey, u64>>>,
     /// Authoritative caches keyed by `(tenant_id, namespace, cache)`.
     caches: Arc<RwLock<HashMap<CacheKey, Cache>>>,
     /// Broker membership keyed by `node_id`, with its change log.
@@ -190,6 +193,7 @@ impl InMemoryStore {
             tenants: Arc::new(RwLock::new(HashMap::new())),
             namespaces: Arc::new(RwLock::new(HashMap::new())),
             streams: Arc::new(RwLock::new(HashMap::new())),
+            stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
             caches: Arc::new(RwLock::new(HashMap::new())),
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::new(),
@@ -347,6 +351,10 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
         streams::stream_snapshot(self).await
+    }
+
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        Ok(streams::stream_tombstones(self).await)
     }
 
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {

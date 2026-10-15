@@ -52,9 +52,8 @@ fn a_marker_reads_back_as_written() {
         stream: "s".into(),
         incarnation: 42,
         retiring: false,
-        kept: false,
         shards: None,
-        seen_at: None,
+        deleted: None,
     };
     marker::write(root.path(), &written).expect("write");
     assert_eq!(
@@ -69,23 +68,16 @@ fn a_marker_reads_back_as_written() {
         marker::retiring(root.path()).expect("list"),
         vec![written.clone()]
     );
-    assert!(
-        marker::all(root.path())
-            .expect("list")
-            .iter()
-            .all(|marker| !marker.kept)
-    );
 
-    let kept = StreamMarker {
+    let deleted = StreamMarker {
         incarnation: 0,
         retiring: false,
-        kept: true,
         shards: Some(3),
-        seen_at: Some(17),
+        deleted: Some(17),
         ..written
     };
-    marker::write(root.path(), &kept).expect("keep");
-    assert_eq!(marker::all(root.path()).expect("list"), vec![kept]);
+    marker::write(root.path(), &deleted).expect("record the delete");
+    assert_eq!(marker::all(root.path()).expect("list"), vec![deleted]);
     assert!(marker::retiring(root.path()).expect("list").is_empty());
     marker::remove(root.path(), "t", "n\nwith a line break", "s").expect("remove");
     assert!(marker::retiring(root.path()).expect("list").is_empty());
@@ -129,9 +121,8 @@ fn a_damaged_marker_reads_as_unreadable_and_is_never_taken_as_a_delete() {
         stream: "s".into(),
         incarnation: 42,
         retiring: true,
-        kept: false,
         shards: None,
-        seen_at: None,
+        deleted: None,
     };
     marker::write(root.path(), &marker).expect("write");
     let path = marker::path(root.path(), "t", "n", "s");
@@ -169,9 +160,8 @@ fn markers_and_retired_directories_survive_a_power_loss() {
         stream: "s".into(),
         incarnation: 5,
         retiring: false,
-        kept: false,
         shards: None,
-        seen_at: None,
+        deleted: None,
     };
     marker::write(root.path(), &marker).expect("write");
     marker.retiring = true;

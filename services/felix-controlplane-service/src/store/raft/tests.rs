@@ -73,6 +73,13 @@ async fn satisfies_the_signing_key_contract() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_incarnation_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::incarnations::run_incarnation_contract(store).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_resources_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
@@ -517,12 +524,31 @@ async fn an_incarnated_stream_waits_for_every_member() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    assert_eq!(created.incarnation, 7);
+    // Not finalized yet, so the stream is at 0 whatever the command carried.
+    assert_eq!(created.incarnation, 0);
     let key = crate::model::StreamKey {
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "again".to_string(),
     };
+    store.delete_stream(&key).await.expect("delete");
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let created = store
+        .create_stream(incarnated.clone())
+        .await
+        .expect("create");
+    assert_eq!(created.incarnation, 7);
     assert_eq!(
         store.get_stream(&key).await.expect("read back").incarnation,
         7

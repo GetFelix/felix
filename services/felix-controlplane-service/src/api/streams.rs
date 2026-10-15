@@ -157,18 +157,14 @@ pub(crate) fn new_stream(
         durable: body.durable,
         region: body.region,
         routing: creation_routing(body.routing, jump_hash_finalized)?,
+        // A proposal: the store gives the incarnation, from its own view of
+        // the finalize and the name's tombstone, in the same write.
         incarnation: if incarnations_finalized {
-            new_incarnation()
+            crate::model::proposed_incarnation()
         } else {
             0
         },
     })
-}
-
-/// A fresh incarnation for a stream being created: random, never 0, and
-/// under 2^53 so it reads back exactly as a JSON number anywhere.
-fn new_incarnation() -> u64 {
-    (rand::random::<u64>() >> 11).max(1)
 }
 
 /// Whether creating `wanted` again would leave `existing` as it is, which
@@ -186,7 +182,7 @@ pub(crate) fn same_stream(
         Some(_) => wanted.routing,
         None => existing.routing,
     };
-    // A retry's incarnation is a fresh draw; the stream it would create is
+    // A retry proposes another incarnation; the stream it would create is
     // the existing one all the same.
     *existing
         == Stream {
@@ -214,9 +210,11 @@ pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiErr
     fleet_finalized(state, felix_common::fleet::JUMP_HASH_ROUTING).await
 }
 
-/// Whether the fleet has finalized `stream_incarnations`. Until it has, a
-/// new stream gets incarnation 0, which an older broker also serves; read
-/// before the create for the same reason as [`jump_hash_finalized`].
+/// Whether the fleet has finalized `stream_incarnations`, to propose an
+/// incarnation with the create. Only a proposal: the store decides inside the
+/// write, against the finalize as it stands there, so a finalize landing in
+/// between cannot leave a stream at 0. Not proposing before the finalize
+/// keeps the field out of a Raft command that members without it would read.
 pub(crate) async fn incarnations_finalized(state: &AppState) -> Result<bool, ApiError> {
     fleet_finalized(state, felix_common::fleet::STREAM_INCARNATIONS).await
 }
@@ -398,9 +396,15 @@ pub(crate) async fn stream_snapshot(
         .stream_snapshot()
         .await
         .map_err(|err| api_internal("failed to load stream snapshot", &err))?;
+    let tombstones = state
+        .store
+        .stream_tombstones()
+        .await
+        .map_err(|err| api_internal("failed to load stream tombstones", &err))?;
     Ok(Json(StreamSnapshotResponse {
         items: snapshot.items,
         next_seq: snapshot.next_seq,
+        tombstones,
     }))
 }
 

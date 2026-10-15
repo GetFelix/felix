@@ -471,13 +471,26 @@ move. Stream answers and shard assignments omit `routing` when it is
 `modulo`.
 
 Once the fleet has finalized `stream_incarnations`, a created stream also
-carries an `incarnation`: a number given at creation, different for every
-creation of the same name. Brokers keep each incarnation's data apart, so a
-stream deleted and created again starts empty. It is left out when 0, which is
-every stream created before the finalize, and a request cannot set it. Shard
-assignments carry the `incarnation` of the stream they were written for, and a stream's
-`Deleted` change carries the deleted stream when it had one, so a broker
-removes only that incarnation.
+carries an `incarnation`, higher for every creation of the same name. Brokers
+keep each incarnation's data apart, so a stream deleted and created again
+starts empty. It is left out when 0, which is every stream created before the
+finalize, and a request cannot set it. Shard assignments carry the
+`incarnation` of the stream they were written for.
+
+After the finalize, deleting a stream (directly or through its namespace or
+tenant) records a tombstone for its name: every incarnation up to the one it
+holds is deleted. Tombstones are kept for good. `GET /v1/streams/snapshot`
+lists them as `tombstones`, left out while empty:
+
+```json
+{ "items": [], "next_seq": 42,
+  "tombstones": [
+    { "tenant_id": "acme", "namespace": "default", "stream": "orders",
+      "incarnation": 1760430000123456 } ] }
+```
+
+and a stream's `Deleted` change carries the same value as `deleted_through`.
+Brokers delete a stream's data only on one of these.
 
 A cache takes `consistency` the same way, `"Leader"` when omitted. Under
 `"Quorum"`, puts, deletes and counter adds are acknowledged only once a

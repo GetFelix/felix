@@ -70,6 +70,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(StreamSnapshotResponse {
                     items: vec![],
                     next_seq: 1,
+                    tombstones: Vec::new(),
                 })
             }),
         )
@@ -117,6 +118,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                                     stream: "orders".to_string(),
                                 },
                                 stream: Some(stream()),
+                                deleted_through: None,
                             }]
                         } else {
                             vec![]

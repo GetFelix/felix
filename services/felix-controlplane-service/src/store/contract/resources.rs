@@ -30,7 +30,6 @@ pub(crate) async fn run_resources_contract(store: Arc<dyn ControlPlaneStore>) {
     an_existing_item_fails_the_whole_batch(store.as_ref()).await;
     a_name_given_twice_fails_the_whole_batch(store.as_ref()).await;
     a_missing_namespace_fails_the_whole_batch(store.as_ref()).await;
-    a_stream_created_again_keeps_its_new_incarnation(store.as_ref()).await;
 }
 
 /// A batch racing single creates of one of its names: whichever wins, the
@@ -167,52 +166,6 @@ async fn a_missing_namespace_fails_the_whole_batch(store: &dyn ControlPlaneStore
     assert!(!exists(store, "homed").await);
 }
 
-/// The incarnation is what tells the second stream of a name from the first,
-/// in the store and in the change the brokers read.
-async fn a_stream_created_again_keeps_its_new_incarnation(store: &dyn ControlPlaneStore) {
-    let first = Stream {
-        incarnation: 1,
-        ..stream("again")
-    };
-    let second = Stream {
-        incarnation: 2,
-        ..stream("again")
-    };
-    store.create_stream(first).await.expect("create");
-    let deleted_at = store.stream_snapshot().await.unwrap().next_seq;
-    store
-        .delete_stream(&stream_key("again"))
-        .await
-        .expect("delete");
-    // The delete names the incarnation it removed, so a broker replaying it
-    // after the create below leaves the new stream alone.
-    let deleted = store.stream_changes(deleted_at).await.unwrap();
-    let deleted = deleted
-        .items
-        .iter()
-        .find(|change| change.key == stream_key("again"))
-        .expect("deleted change");
-    assert!(matches!(deleted.op, crate::model::StreamChangeOp::Deleted));
-    assert_eq!(deleted.stream.as_ref().map(|s| s.incarnation), Some(1));
-    let since = store.stream_snapshot().await.unwrap().next_seq;
-    store.create_stream(second).await.expect("create again");
-    assert_eq!(
-        store
-            .get_stream(&stream_key("again"))
-            .await
-            .unwrap()
-            .incarnation,
-        2
-    );
-    let created = store.stream_changes(since).await.unwrap();
-    let change = created
-        .items
-        .iter()
-        .find(|change| change.key == stream_key("again"))
-        .expect("created change");
-    assert_eq!(change.stream.as_ref().map(|s| s.incarnation), Some(2));
-}
-
 async fn exists(store: &dyn ControlPlaneStore, name: &str) -> bool {
     store.get_stream(&stream_key(name)).await.is_ok()
 }
@@ -234,8 +187,7 @@ fn stream(name: &str) -> Stream {
         durable: true,
         region: None,
         routing: Default::default(),
-        // Not 0, so every backend is seen to keep it.
-        incarnation: 1000 + name.len() as u64,
+        incarnation: 0,
     }
 }
 

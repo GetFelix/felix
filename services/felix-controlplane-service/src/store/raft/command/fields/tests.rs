@@ -314,6 +314,7 @@ fn exported() -> ExportedState {
             op: StreamChangeOp::Created,
             key: stream_key(),
             stream: Some(stream()),
+            deleted_through: Some(1),
         }),
         cache_changes: log(CacheChange {
             seq: 1,
@@ -337,6 +338,12 @@ fn exported() -> ExportedState {
             tenant_id: s("t"),
             principal_id: s("p"),
             revoked_at: 1,
+        }],
+        stream_tombstones: vec![crate::model::StreamTombstone {
+            tenant_id: s("t"),
+            namespace: s("n"),
+            stream: s("s"),
+            incarnation: 1,
         }],
     }
 }

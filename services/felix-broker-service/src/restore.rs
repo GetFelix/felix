@@ -93,6 +93,14 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             cut.offset
         );
     }
+    // The control plane is back at the point, so each stream's incarnation is
+    // the point's again, even below one this broker registered or saw
+    // deleted since; without this it would refuse the point's.
+    for (tenant_id, namespace, name, incarnation) in manifest.streams() {
+        broker
+            .restore_stream_marker(tenant_id, namespace, name, incarnation)
+            .with_context(|| format!("record the incarnation of {tenant_id}/{namespace}/{name}"))?;
+    }
     if let Some(storage) = storage {
         storage.shutdown().await?;
     }
@@ -114,6 +122,22 @@ pub(crate) struct Manifest {
 }
 
 impl Manifest {
+    /// Each stream the point names, with its incarnation, once.
+    fn streams(&self) -> std::collections::BTreeSet<(&str, &str, &str, u64)> {
+        self.shards
+            .iter()
+            .filter(|shard| shard.kind == PointKind::Stream)
+            .map(|shard| {
+                (
+                    shard.tenant_id.as_str(),
+                    shard.namespace.as_str(),
+                    shard.name.as_str(),
+                    shard.incarnation,
+                )
+            })
+            .collect()
+    }
+
     fn read(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("read the backup point {}", path.display()))?;

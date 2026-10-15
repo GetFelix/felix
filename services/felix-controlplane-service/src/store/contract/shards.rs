@@ -141,8 +141,6 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
     an_unknown_cache_is_rejected(store).await;
     deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(store).await;
-    an_assignment_names_the_incarnation_it_was_written_for(store).await;
-    a_recreated_stream_never_repeats_a_generation(store).await;
     replica_reports::a_replica_report_is_kept_and_read_back(store).await;
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
     replica_reports::a_report_at_the_same_generation_is_an_update(store).await;
@@ -242,14 +240,13 @@ async fn an_unknown_cache_is_rejected(store: &dyn ControlPlaneStore) {
 pub(crate) async fn run_shard_concurrency_contract(store: Arc<dyn ControlPlaneStore>) {
     seed(store.as_ref()).await;
     concurrent_writes_to_one_shard_serialise(Arc::clone(&store)).await;
-    concurrent_conditional_writes_have_one_winner(Arc::clone(&store)).await;
-    an_assignment_racing_a_recreate_names_the_stream_it_landed_on(store).await;
+    concurrent_conditional_writes_have_one_winner(store).await;
 }
 
 /// An assignment written while its stream is deleted and created again names
 /// the incarnation of the stream it ended up attached to, or is gone with the
 /// deleted one: never the old incarnation on an assignment of the new stream.
-async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_on(
+pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_on(
     store: Arc<dyn ControlPlaneStore>,
 ) {
     const RACED: &str = "raced";
@@ -1189,7 +1186,9 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
 /// whatever the writer passed, and its change keeps it after the stream is
 /// created anew: a broker replaying the old change must not take it for the
 /// new stream's.
-async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn ControlPlaneStore) {
+pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
+    store: &dyn ControlPlaneStore,
+) {
     const AGAIN: &str = "again";
     let stream = |incarnation| Stream {
         tenant_id: TENANT.to_string(),
@@ -1234,7 +1233,11 @@ async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn Cont
         stream: AGAIN.to_string(),
     };
 
-    store.create_stream(stream(1)).await.expect("create");
+    let first = store
+        .create_stream(stream(1))
+        .await
+        .expect("create")
+        .incarnation;
     let since = store
         .shard_assignment_snapshot()
         .await
@@ -1250,11 +1253,16 @@ async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn Cont
             .await
             .expect("read")
             .incarnation,
-        1
+        first
     );
 
     store.delete_stream(&key).await.expect("delete");
-    store.create_stream(stream(2)).await.expect("create again");
+    let second = store
+        .create_stream(stream(2))
+        .await
+        .expect("create again")
+        .incarnation;
+    assert!(second > first, "{second} after {first}");
     store
         .put_shard_assignment(assignment.clone())
         .await
@@ -1265,7 +1273,7 @@ async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn Cont
             .await
             .expect("read")
             .incarnation,
-        2
+        second
     );
 
     let changes = store
@@ -1280,7 +1288,7 @@ async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn Cont
         .collect();
     assert_eq!(
         written,
-        vec![1, 2],
+        vec![first, second],
         "a change took the incarnation of a later stream"
     );
     store.delete_stream(&key).await.expect("clean up");
@@ -1290,7 +1298,7 @@ async fn an_assignment_names_the_incarnation_it_was_written_for(store: &dyn Cont
 /// above every generation the deleted one reached. Brokers keep quorum marks,
 /// follower positions and reports per shard and generation; at a repeated
 /// generation the deleted stream's would count for the new one's records.
-async fn a_recreated_stream_never_repeats_a_generation(store: &dyn ControlPlaneStore) {
+pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn ControlPlaneStore) {
     const REUSED: &str = "reused";
     let stream = |incarnation| Stream {
         tenant_id: TENANT.to_string(),

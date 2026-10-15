@@ -21,6 +21,7 @@ struct StreamChangeRow {
     namespace: String,
     stream: String,
     payload: Option<Value>,
+    deleted_through: Option<i64>,
 }
 
 pub(super) async fn list_streams(
@@ -130,10 +131,13 @@ pub(super) async fn stream_routings(
     Ok(routings)
 }
 
-pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> StoreResult<Stream> {
+pub(super) async fn create_stream(
+    store: &PostgresStore,
+    mut stream: Stream,
+) -> StoreResult<Stream> {
     let mut tx = store.pool.begin().await?;
     super::ensure_namespace(&mut tx, &stream.tenant_id, &stream.namespace).await?;
-    insert_stream(&mut tx, &stream).await?;
+    insert_stream(&mut tx, &mut stream).await?;
     tx.commit().await?;
     metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
     store.refresh_counts().await?;
@@ -142,13 +146,21 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
 
 /// The row and its `Created` change, inside the caller's transaction.
 /// `Conflict` when the stream exists.
+///
+/// The stream's incarnation is decided by the row's insert trigger (migration
+/// 0028), against the finalize and the name's tombstone as they stand inside
+/// this transaction, and read back into `stream`. This side only proposes one.
 pub(super) async fn insert_stream(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    stream: &Stream,
+    stream: &mut Stream,
 ) -> StoreResult<()> {
-    let insert = sqlx::query(
+    if stream.incarnation == 0 {
+        stream.incarnation = crate::model::proposed_incarnation();
+    }
+    let insert = sqlx::query_scalar::<_, i64>(
         r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               RETURNING incarnation"#,
     )
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
@@ -164,16 +176,17 @@ pub(super) async fn insert_stream(
     .bind(stream.region.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
     .bind(stream.incarnation as i64)
-    .execute(&mut **tx)
+    .fetch_one(&mut **tx)
     .await;
-    if let Err(err) = insert {
-        if is_unique_violation(&err) {
+    match insert {
+        Ok(incarnation) => stream.incarnation = incarnation as u64,
+        Err(err) if is_unique_violation(&err) => {
             return Err(StoreError::Conflict(format!(
                 "stream {} exists",
                 stream.stream
             )));
         }
-        return Err(StoreError::Unexpected(err.into()));
+        Err(err) => return Err(StoreError::Unexpected(err.into())),
     }
 
     sqlx::query(
@@ -183,7 +196,7 @@ pub(super) async fn insert_stream(
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
     .bind(&stream.stream)
-    .bind(serde_json::to_value(stream).ok())
+    .bind(serde_json::to_value(&*stream).ok())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -318,7 +331,7 @@ pub(super) async fn stream_changes(
     since: u64,
 ) -> StoreResult<ChangeSet<StreamChange>> {
     let rows = sqlx::query_as::<_, StreamChangeRow>(
-        r#"SELECT seq, op, tenant_id, namespace, stream, payload FROM stream_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
+        r#"SELECT seq, op, tenant_id, namespace, stream, payload, deleted_through FROM stream_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
@@ -344,6 +357,7 @@ pub(super) async fn stream_changes(
                 stream: row.stream,
             },
             stream,
+            deleted_through: row.deleted_through.map(|through| through as u64),
         });
     }
     let next_seq =
@@ -351,4 +365,26 @@ pub(super) async fn stream_changes(
             .fetch_one(&store.pool)
             .await? as u64;
     Ok(ChangeSet { items, next_seq })
+}
+
+pub(super) async fn stream_tombstones(
+    store: &PostgresStore,
+) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        r#"SELECT tenant_id, namespace, stream, incarnation FROM stream_tombstones
+               ORDER BY tenant_id, namespace, stream"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(tenant_id, namespace, stream, incarnation)| crate::model::StreamTombstone {
+                tenant_id,
+                namespace,
+                stream,
+                incarnation: incarnation as u64,
+            },
+        )
+        .collect())
 }

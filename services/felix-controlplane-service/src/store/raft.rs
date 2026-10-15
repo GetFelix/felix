@@ -241,6 +241,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().stream_snapshot().await
     }
 
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        self.local().stream_tombstones().await
+    }
+
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
         self.local().stream_changes(since).await
     }

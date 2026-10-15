@@ -500,6 +500,19 @@ impl ConsumerGroups {
         Ok(groups)
     }
 
+    /// The shard and incarnation of every directory of a stream's cursors
+    /// here.
+    pub fn dirs_on_disk(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<Vec<(u32, u64)>> {
+        self.cursors
+            .dirs_on_disk(tenant_id, namespace, stream)
+            .map_err(BrokerError::from)
+    }
+
     /// Close one incarnation of a stream's logs, keeping them. See
     /// `LogCache::close_incarnation`.
     pub async fn close_incarnation(

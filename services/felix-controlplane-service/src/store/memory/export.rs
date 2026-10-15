@@ -123,6 +123,7 @@ impl InMemoryStore {
             placement_holder,
             refresh_tokens,
             principal_revocations: self.revocations.read().await.sorted_rows(),
+            stream_tombstones: super::streams::stream_tombstones(self).await,
         }
     }
 
@@ -145,6 +146,20 @@ impl InMemoryStore {
         *self.tenants.write().await = state.tenants.into_iter().collect();
         *self.namespaces.write().await = state.namespaces.into_iter().collect();
         *self.streams.write().await = state.streams.into_iter().collect();
+        *self.stream_tombstones.write().await = state
+            .stream_tombstones
+            .into_iter()
+            .map(|tombstone| {
+                (
+                    StreamKey {
+                        tenant_id: tombstone.tenant_id,
+                        namespace: tombstone.namespace,
+                        stream: tombstone.stream,
+                    },
+                    tombstone.incarnation,
+                )
+            })
+            .collect();
         *self.caches.write().await = state.caches.into_iter().collect();
         *self.nodes.write().await = NodeState {
             records: state.nodes.into_iter().collect(),

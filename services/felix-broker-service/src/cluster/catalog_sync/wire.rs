@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 pub(super) struct StreamSnapshotResponse {
     pub(super) items: Vec<Stream>,
     pub(super) next_seq: u64,
+    /// For each deleted name, the incarnation through which it is deleted.
+    /// Absent from a control plane that predates them.
+    #[serde(default)]
+    pub(super) tombstones: Vec<StreamTombstone>,
+}
+
+/// Every incarnation of a stream up to and including `incarnation` is
+/// deleted.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct StreamTombstone {
+    pub(super) tenant_id: String,
+    pub(super) namespace: String,
+    pub(super) stream: String,
+    pub(super) incarnation: u64,
 }
 
 /// Full snapshot response for caches; used to seed a cold-start broker.
@@ -102,6 +116,10 @@ pub(super) struct StreamChange {
     pub(super) op: StreamChangeOp,
     pub(super) key: StreamKey,
     pub(super) stream: Option<Stream>,
+    /// On a `Deleted` change once incarnations are finalized: every
+    /// incarnation of the name up to this one is deleted.
+    #[serde(default)]
+    pub(super) deleted_through: Option<u64>,
 }
 
 /// Represents a single change-feed event for a cache.

@@ -34,25 +34,20 @@ pub struct StreamMarker {
     pub tenant: String,
     pub namespace: String,
     pub stream: String,
-    /// The incarnation the stream's directories here belong to.
+    /// The incarnation last registered here under the name. Its data stays
+    /// until `deleted` covers it.
     pub incarnation: u64,
-    /// Set before a delete starts moving the directories away and cleared, by
-    /// removing the marker, once every store has. A marker left set is a
-    /// delete to finish.
+    /// Set before a delete starts moving directories away and cleared once
+    /// every store has. A marker left set is a delete to finish.
     pub retiring: bool,
-    /// Deleted at incarnation 0 before this broker saw incarnations, and kept
-    /// as brokers did before them. See
-    /// `Broker::keep_unincarnated_streams_on_delete`.
-    pub kept: bool,
-    /// The stream's shard count, on a kept or retiring marker: finishing the
-    /// delete reads it to find the dead letters the layout before 0.6 kept
-    /// per group.
+    /// The most shards the stream had here: finishing a delete of
+    /// incarnation 0 reads it to find the dead letters the layout before 0.6
+    /// kept per group.
     pub shards: Option<u32>,
-    /// How far the control plane's stream feed had got when this broker
-    /// registered the incarnation (one past the change, or a snapshot's
-    /// `next_seq`), so a feed served again from an earlier point after a
-    /// restart cannot replace it. See `Broker::register_stream_at`.
-    pub seen_at: Option<u64>,
+    /// The control plane said every incarnation of the name up to and
+    /// including this one is deleted. Their data goes, and none of them is
+    /// registered again.
+    pub deleted: Option<u64>,
 }
 
 pub(crate) fn path(root: &Path, tenant: &str, namespace: &str, stream: &str) -> PathBuf {
@@ -202,14 +197,11 @@ fn encode(marker: &StreamMarker) -> String {
         hex(&marker.namespace),
         hex(&marker.stream),
     );
-    if marker.kept {
-        text.push_str("kept 1\n");
-    }
     if let Some(shards) = marker.shards {
         text.push_str(&format!("shards {shards}\n"));
     }
-    if let Some(seen_at) = marker.seen_at {
-        text.push_str(&format!("seen {seen_at}\n"));
+    if let Some(deleted) = marker.deleted {
+        text.push_str(&format!("deleted {deleted}\n"));
     }
     text
 }
@@ -235,24 +227,19 @@ fn decode(text: &str) -> Option<StreamMarker> {
     let namespace = unhex(&field("namespace")?)?;
     let stream = unhex(&field("stream")?)?;
     // Optional lines, each at most once and in this order.
-    let mut kept = false;
     let mut shards = None;
-    let mut seen_at = None;
+    let mut deleted = None;
     let mut order = 0;
     for line in lines {
         let (name, value) = line.split_once(' ')?;
         let at = match name {
-            "kept" if value == "1" => {
-                kept = true;
-                1
-            }
             "shards" => {
                 shards = Some(value.parse().ok()?);
-                2
+                1
             }
-            "seen" => {
-                seen_at = Some(value.parse().ok()?);
-                3
+            "deleted" => {
+                deleted = Some(value.parse().ok()?);
+                2
             }
             _ => return None,
         };
@@ -267,9 +254,8 @@ fn decode(text: &str) -> Option<StreamMarker> {
         stream,
         incarnation,
         retiring,
-        kept,
         shards,
-        seen_at,
+        deleted,
     })
 }
 

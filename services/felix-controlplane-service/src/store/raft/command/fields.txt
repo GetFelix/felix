@@ -381,6 +381,7 @@
 0 import_state.state.shards[][].tenant_id
 0 import_state.state.stream_changes
 0 import_state.state.stream_changes.items
+10 import_state.state.stream_changes.items[].deleted_through
 0 import_state.state.stream_changes.items[].key
 0 import_state.state.stream_changes.items[].key.namespace
 0 import_state.state.stream_changes.items[].key.stream
@@ -404,6 +405,11 @@
 0 import_state.state.stream_changes.items[].stream.stream
 0 import_state.state.stream_changes.items[].stream.tenant_id
 0 import_state.state.stream_changes.next_seq
+10 import_state.state.stream_tombstones
+10 import_state.state.stream_tombstones[].incarnation
+10 import_state.state.stream_tombstones[].namespace
+10 import_state.state.stream_tombstones[].stream
+10 import_state.state.stream_tombstones[].tenant_id
 0 import_state.state.streams
 0 import_state.state.streams[][].consistency
 0 import_state.state.streams[][].delivery
@@ -891,6 +897,7 @@
 0 snapshot.state.shards[][].tenant_id
 0 snapshot.state.stream_changes
 0 snapshot.state.stream_changes.items
+10 snapshot.state.stream_changes.items[].deleted_through
 0 snapshot.state.stream_changes.items[].key
 0 snapshot.state.stream_changes.items[].key.namespace
 0 snapshot.state.stream_changes.items[].key.stream
@@ -914,6 +921,11 @@
 0 snapshot.state.stream_changes.items[].stream.stream
 0 snapshot.state.stream_changes.items[].stream.tenant_id
 0 snapshot.state.stream_changes.next_seq
+10 snapshot.state.stream_tombstones
+10 snapshot.state.stream_tombstones[].incarnation
+10 snapshot.state.stream_tombstones[].namespace
+10 snapshot.state.stream_tombstones[].stream
+10 snapshot.state.stream_tombstones[].tenant_id
 0 snapshot.state.streams
 0 snapshot.state.streams[][].consistency
 0 snapshot.state.streams[][].delivery

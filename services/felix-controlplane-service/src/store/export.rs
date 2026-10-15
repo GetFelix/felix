@@ -81,6 +81,12 @@ pub struct ExportedState {
     /// for `moves_paused`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) principal_revocations: Vec<crate::auth::revocation::PrincipalRevocation>,
+    /// Stream tombstones, ordered by name. Kept across a restore or
+    /// migration, or a broker that missed a delete would keep the deleted
+    /// stream's data. Absent from older snapshots and left out while empty,
+    /// as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) stream_tombstones: Vec<crate::model::StreamTombstone>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -298,6 +304,7 @@ pub async fn export_state_from(
         fleet_enabled: store.enabled_fleet_features().await?,
         replica_reports: store.list_replica_reports().await?,
         principal_revocations: all_principal_revocations(store).await?,
+        stream_tombstones: store.stream_tombstones().await?,
     })
 }
 

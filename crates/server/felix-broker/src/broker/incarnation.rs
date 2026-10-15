@@ -3,11 +3,17 @@
 //!
 //! A stream deleted and created again under the same name is a new stream
 //! with directories of its own (see `docs/durable-storage.md`, "Deleting a
-//! stream"). Each stream's incarnation is kept in a marker beside the logs, so
-//! a restart, or a catalog record that leaves the incarnation out, cannot
-//! point the stream at another incarnation's data. A delete marks the marker
-//! retiring before it moves anything, so one that stops part-way is finished
-//! by the next registration, the next delete or the next start.
+//! stream"). A marker beside the logs records the incarnation registered here
+//! and how far the control plane said the name's incarnations are deleted.
+//!
+//! Two rules keep a stale catalog from costing data. A name never moves to an
+//! incarnation below one held here or one the catalog deleted: the control
+//! plane gives a name increasing incarnations, so a lower one can only come
+//! from a view older than one already applied. And data goes only on the
+//! control plane's word that its incarnation is deleted (a `Deleted` change
+//! naming it, or a tombstone in the snapshot), or on an operator's removal. A
+//! later incarnation replacing the one held here closes the old one and keeps
+//! its data until that word arrives.
 
 use felix_storage::{MarkerRead, StreamMarker};
 
@@ -31,14 +37,7 @@ impl Broker {
         if let Some(storage) = &self.durable_storage {
             storage.set_stream_incarnation(tenant_id, namespace, stream, incarnation);
         }
-        if let Some(groups) = &self.consumer_groups {
-            groups.set_incarnation(tenant_id, namespace, stream, incarnation);
-        }
-        if let Some(reader) = &self.group_reader {
-            reader
-                .dead_letters()
-                .set_incarnation(tenant_id, namespace, stream, incarnation);
-        }
+        self.set_group_incarnation(&StreamKey::new(tenant_id, namespace, stream), incarnation);
     }
 
     /// The incarnation a stream's logs open at on this broker: the registered
@@ -59,85 +58,31 @@ impl Broker {
         None
     }
 
-    /// Keep a deleted stream's data while it is at incarnation 0 and this
-    /// broker has not seen a stream with an incarnation, as brokers did before
-    /// incarnations. For a broker in a cluster: the control plane starts a
-    /// stream created again at incarnation 0 at the generations the deleted
-    /// one had, so a new, empty log would be judged by the quorum marks and
-    /// follower positions this broker and its peers kept for the old one, and
-    /// acknowledge writes no follower holds.
-    ///
-    /// The stream's logs open again only if the name is registered again, and
-    /// its marker records that it was kept. The data goes when the name is
-    /// registered at an incarnation: incarnations are given only once the
-    /// fleet finalized them, and nothing is created at 0 after that, so the
-    /// name's incarnation 0 is gone for good.
-    pub fn keep_unincarnated_streams_on_delete(&self) {
-        self.keeps_unincarnated
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Read the catalog positions this broker's markers recorded, so that
-    /// after a restart a catalog served from an earlier point cannot replace
-    /// an incarnation registered here. Call once at start, before the catalog
-    /// registers anything.
-    pub fn load_catalog_positions(&self) -> Result<()> {
-        let Some(storage) = &self.durable_storage else {
-            return Ok(());
-        };
-        for marker in storage
-            .provider()
-            .stream_markers()
-            .map_err(BrokerError::from)?
-        {
-            if let Some(seen_at) = marker.seen_at {
-                self.note_catalog_position(
-                    &marker.tenant,
-                    &marker.namespace,
-                    &marker.stream,
-                    seen_at,
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Record that this broker's view of a stream includes every catalog
-    /// change before `position`. See [`Broker::register_stream_at`].
-    pub fn note_catalog_position(
+    /// Make the stream's marker name `incarnation` and nothing deleted, as a
+    /// restore to a backup point does: the control plane was put back to the
+    /// point, so the incarnation the point names is the stream's again, even
+    /// below one this broker registered or saw deleted since. For an
+    /// operator's tool on a stopped broker; nothing is deleted.
+    pub fn restore_stream_marker(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        position: u64,
-    ) {
+        incarnation: u64,
+    ) -> Result<()> {
         let key = StreamKey::new(tenant_id, namespace, stream);
-        let mut positions = self.catalog_positions.lock();
-        let held = positions.entry(key).or_default();
-        *held = (*held).max(position);
-    }
-
-    /// The furthest catalog position recorded for any stream, to tell when
-    /// the control plane's stream feed has gone back behind it.
-    pub fn catalog_position(&self) -> Option<u64> {
-        self.catalog_positions.lock().values().copied().max()
-    }
-
-    /// Forget every catalog position: the control plane's stream feed went
-    /// back and stayed back, as a restore to an earlier point does, and a
-    /// position from before can no longer tell a change served again from a
-    /// new one. Until then, registrations from behind them are refused.
-    pub fn reset_catalog_positions(&self) {
-        self.catalog_positions.lock().clear();
-    }
-
-    /// Whether `position` is before what this broker applied for `key`.
-    pub(super) fn is_behind(&self, key: &StreamKey, position: Option<u64>) -> bool {
-        position.is_some_and(|position| {
-            self.catalog_positions
-                .lock()
-                .get(key)
-                .is_some_and(|applied| position < *applied)
+        let shards = match self.stream_marker(&key)? {
+            MarkerRead::Valid(marker) => marker.shards,
+            _ => None,
+        };
+        self.write_marker(&StreamMarker {
+            tenant: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation,
+            retiring: false,
+            shards,
+            deleted: None,
         })
     }
 
@@ -159,46 +104,188 @@ impl Broker {
                 marker.namespace.clone(),
                 marker.stream.clone(),
             );
-            // Logged by `retire_everywhere`, and finished by the next delete
-            // or registration of the name; a failure must not stop the start.
-            let _ = self.finish_retiring(&key, &marker).await;
+            // Logged where it failed, and finished by the next delete or
+            // registration of the name; a failure must not stop the start.
+            let _ = self.finish_delete(&key, &marker).await;
         }
         Ok(())
     }
 
+    /// The control plane's word that every incarnation of a stream up to and
+    /// including `through` is deleted: a `Deleted` change naming `through`, or
+    /// a tombstone in its snapshot. The registered stream goes if it is one of
+    /// them, and so does every one of them this broker has data for. Safe to
+    /// repeat; one already applied costs a marker read.
+    ///
+    /// Returns whether a registered stream was removed.
+    pub async fn delete_stream_through(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        through: u64,
+    ) -> Result<bool> {
+        let key = StreamKey::new(tenant_id, namespace, stream);
+        let marker = match self.stream_marker(&key)? {
+            MarkerRead::Valid(marker) => Some(marker),
+            MarkerRead::Absent | MarkerRead::Unreadable => None,
+        };
+        let registered = self
+            .streams
+            .read()
+            .await
+            .get(&key)
+            .map(|existing| (existing.incarnation, existing.shards));
+        let covered = registered
+            .map(|(incarnation, _)| incarnation)
+            .filter(|incarnation| *incarnation <= through);
+        if covered.is_none()
+            && let Some(marker) = &marker
+            && !marker.retiring
+            && marker.deleted.is_some_and(|deleted| deleted >= through)
+        {
+            return Ok(false);
+        }
+        // Recorded first: from here no registration of these incarnations is
+        // taken, and a delete cut short is finished from the marker.
+        let pending = StreamMarker {
+            tenant: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation: registered
+                .map(|(incarnation, _)| incarnation)
+                .or(marker.as_ref().map(|marker| marker.incarnation))
+                .unwrap_or(through),
+            retiring: true,
+            shards: max_shards(
+                marker.as_ref().and_then(|marker| marker.shards),
+                registered.map(|(_, shards)| shards),
+            ),
+            deleted: Some(
+                marker
+                    .as_ref()
+                    .and_then(|marker| marker.deleted)
+                    .map_or(through, |deleted| deleted.max(through)),
+            ),
+        };
+        self.write_marker(&pending)?;
+        if let Some(incarnation) = covered {
+            self.drop_stream(&key).await;
+            // Nothing opens the stream from here on, so nothing recreates
+            // what is about to be deleted.
+            self.set_stream_incarnation(tenant_id, namespace, stream, None);
+            self.close_incarnation(&key, incarnation).await?;
+        }
+        self.finish_delete(&key, &pending).await?;
+        Ok(covered.is_some())
+    }
+
+    /// The control plane's delete of a stream that names no incarnation: a
+    /// stream from before incarnations, deleted before the fleet finalized
+    /// them. Its data stays, as it did before incarnations, because the name
+    /// may still be created again at incarnation 0 and reopen it: a new,
+    /// empty log there would be judged by quorum marks and follower positions
+    /// kept for the old one. A tombstone for incarnation 0, which only comes
+    /// after the finalize, deletes it.
+    ///
+    /// An incarnated stream is never removed by such a delete.
+    pub(super) async fn close_unincarnated(&self, key: &StreamKey) -> Result<bool> {
+        let registered = self
+            .streams
+            .read()
+            .await
+            .get(key)
+            .map(|existing| existing.incarnation);
+        match registered {
+            None => Ok(false),
+            Some(0) => {
+                self.drop_stream(key).await;
+                self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, None);
+                self.close_incarnation(key, 0).await?;
+                Ok(true)
+            }
+            Some(incarnation) => {
+                tracing::warn!(
+                    tenant_id = %key.tenant_id,
+                    namespace = %key.namespace,
+                    stream = %key.stream,
+                    incarnation,
+                    "a delete naming no incarnation; keeping the incarnated stream registered",
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Delete the registered stream for an operator or a tool: the caller is
+    /// the evidence. An incarnated stream is recorded as deleted, as a
+    /// tombstone would; one at incarnation 0 is not, so a broker that
+    /// registers its streams itself can create the name again.
+    pub(super) async fn remove_registered(&self, key: &StreamKey) -> Result<bool> {
+        let marker = match self.stream_marker(key)? {
+            MarkerRead::Valid(marker) => Some(marker),
+            _ => None,
+        };
+        let registered = self
+            .streams
+            .read()
+            .await
+            .get(key)
+            .map(|existing| (existing.incarnation, existing.shards));
+        let Some((incarnation, shards)) = registered else {
+            // A delete that stopped part-way, asked again.
+            if let Some(marker) = marker.filter(|marker| marker.retiring) {
+                self.finish_delete(key, &marker).await?;
+            }
+            return Ok(false);
+        };
+        if incarnation != 0 {
+            return self
+                .delete_stream_through(&key.tenant_id, &key.namespace, &key.stream, incarnation)
+                .await;
+        }
+        let pending = StreamMarker {
+            tenant: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation: 0,
+            retiring: true,
+            shards: max_shards(marker.and_then(|marker| marker.shards), Some(shards)),
+            deleted: None,
+        };
+        self.write_marker(&pending)?;
+        self.drop_stream(key).await;
+        self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, None);
+        self.close_incarnation(key, 0).await?;
+        self.finish_delete(key, &pending).await?;
+        Ok(true)
+    }
+
     /// The incarnation to register `metadata` of `key` at, given the one
-    /// registered now (`previous`) and the catalog's `position` for it. `None`
-    /// when the registration is refused and the stream left as it is.
+    /// registered now (`previous`). `None` when the registration is refused
+    /// and the stream left as it is.
     ///
-    /// Another incarnation held here stops serving. Its data is deleted only
-    /// when it is incarnation 0 and the new one is not, which proves it gone:
-    /// nothing is created at 0 once incarnations are given. Otherwise it stays
-    /// until the catalog's delete naming it arrives; inferring a delete from a
-    /// registration could take a live stream's data, if the registration was
-    /// served from a catalog behind the one this broker read before.
-    ///
-    /// An incoming 0 is a record that may have left the field out (a control
-    /// plane before incarnations, or one rolled back); an incarnated stream is
-    /// never recreated at 0. So it is never taken as a new stream:
-    ///
-    /// - for a stream registered here at another incarnation it is refused;
-    /// - for one whose marker names an incarnation, that one is registered;
-    /// - for one this broker cannot place (no marker, or one that does not
-    ///   parse) while an incarnated stream of the name is on disk, it is
-    ///   refused, and the stream is not served until the catalog names its
-    ///   incarnation. Guessing could serve a deleted stream's records.
+    /// Refused: an incarnation the catalog deleted, one below the incarnation
+    /// held here, and a record without the incarnation (0) for a name this
+    /// broker has seen incarnated. Each can only come from a catalog view
+    /// older than one already applied (a control-plane member behind, or a
+    /// restart seeded from one), and taking it could serve a deleted stream's
+    /// records. A later incarnation replaces the held one, which stops serving
+    /// and keeps its data until the catalog deletes it.
     pub(super) async fn settle_incarnation(
         &self,
         key: &StreamKey,
         previous: Option<u64>,
         metadata: &crate::broker::metadata::StreamMetadata,
-        position: Option<u64>,
     ) -> Result<Option<u64>> {
         let incoming = metadata.incarnation;
         let (marker, damaged) = match self.stream_marker(key)? {
             MarkerRead::Valid(pending) if pending.retiring => {
-                self.finish_retiring(key, &pending).await?;
-                (None, false)
+                self.finish_delete(key, &pending).await?;
+                match self.stream_marker(key)? {
+                    MarkerRead::Valid(marker) => (Some(marker), false),
+                    _ => (None, false),
+                }
             }
             MarkerRead::Valid(marker) => (Some(marker), false),
             MarkerRead::Absent => (None, false),
@@ -207,195 +294,81 @@ impl Broker {
         if incoming != 0 {
             self.require_registered_streams();
         }
-        let held = previous.or(marker.as_ref().map(|marker| marker.incarnation));
-        if incoming == 0 {
-            let refuse = match held {
-                Some(held) => held != 0 && previous.is_some(),
-                None => self
-                    .incarnations_on_disk(key)?
-                    .iter()
-                    .any(|held| *held != 0),
+        let deleted = marker.as_ref().and_then(|marker| marker.deleted);
+        let held = previous.or(marker
+            .as_ref()
+            .map(|marker| marker.incarnation)
+            .filter(|held| deleted.is_none_or(|deleted| *held > deleted)));
+        let refusal = if deleted.is_some_and(|deleted| incoming <= deleted) {
+            Some("the catalog deleted this incarnation")
+        } else if incoming == 0 {
+            let incarnated = match held {
+                Some(held) => held != 0,
+                None => {
+                    damaged
+                        || self
+                            .incarnations_on_disk(key)?
+                            .iter()
+                            .any(|held| *held != 0)
+                }
             };
-            if held.is_some_and(|held| held != 0) || refuse {
-                tracing::error!(
-                    tenant_id = %key.tenant_id,
-                    namespace = %key.namespace,
-                    stream = %key.stream,
-                    held,
-                    refused = refuse,
-                    "the catalog sent a stream without its incarnation; keeping what this broker holds",
-                );
-                metrics::counter!("felix_broker_stream_incarnation_missing_total").increment(1);
-            }
-            if refuse {
-                return Ok(None);
-            }
-        }
-        let incarnation = match held {
-            Some(held) if incoming == 0 => held,
-            _ => incoming,
+            incarnated.then_some("the catalog sent a stream without its incarnation")
+        } else if held.is_some_and(|held| incoming < held) {
+            Some("a later incarnation is held here")
+        } else {
+            None
         };
-        if held != Some(incarnation) && self.is_behind(key, position) {
+        if let Some(reason) = refusal {
             tracing::warn!(
                 tenant_id = %key.tenant_id,
                 namespace = %key.namespace,
                 stream = %key.stream,
+                incoming,
                 held,
-                incarnation,
-                position,
-                "ignoring a stream change older than one already applied",
+                deleted,
+                reason,
+                "refusing a stream registration from an older catalog; keeping what this broker holds",
             );
+            metrics::counter!("felix_broker_stream_incarnation_refused_total").increment(1);
             return Ok(None);
         }
         if let Some(held) = held
-            && held != incarnation
+            && held != incoming
         {
-            // Incarnation 0 cannot come back once one is given, so its data
-            // goes. Any other stays until the catalog's delete of it.
-            let gone = held == 0;
+            // Stops serving; its data stays until the catalog deletes it.
             if previous.is_some() {
-                self.drop_stream(key, Some(held), gone).await?;
-            } else if gone {
-                let shards = marker
-                    .as_ref()
-                    .and_then(|marker| marker.shards)
-                    .unwrap_or(0);
-                self.delete_incarnation(key, held, shards).await?;
+                self.drop_stream(key).await;
             }
-            if !gone {
-                tracing::warn!(
-                    tenant_id = %key.tenant_id,
-                    namespace = %key.namespace,
-                    stream = %key.stream,
-                    held,
-                    incarnation,
-                    "another incarnation registered; keeping the one held here until the catalog deletes it",
-                );
-            }
-        }
-        // Only a durable stream keeps one: an ephemeral one writes nothing to
-        // disk until a consumer group does. A kept stream's marker is taken
-        // over by the stream registered at its incarnation.
-        let was_kept = marker.as_ref().is_some_and(|marker| marker.kept);
-        if metadata.durable {
-            self.write_marker(
-                key,
-                StreamMarkerState {
-                    incarnation,
-                    retiring: false,
-                    kept: false,
-                    shards: metadata.shards,
-                    seen_at: position,
-                },
-            )?;
-        } else if was_kept && held == Some(incarnation) {
-            self.remove_marker(key)?;
-        }
-        self.set_stream_incarnation(
-            &key.tenant_id,
-            &key.namespace,
-            &key.stream,
-            Some(incarnation),
-        );
-        // Data from before incarnations under an incarnated stream's name can
-        // only be a deleted stream's, for the same reason. Not when the marker
-        // is damaged: what it held is unknown, and nothing is deleted on its
-        // account.
-        if incarnation != 0 && held.is_none() && !damaged {
-            self.retire_everywhere(key, 0, &[]).await?;
-        }
-        if let Some(position) = position {
-            self.note_catalog_position(&key.tenant_id, &key.namespace, &key.stream, position);
-        }
-        Ok(Some(incarnation))
-    }
-
-    /// Delete one incarnation of a stream that is no longer registered.
-    /// `shards` bounds the search for its consumer groups, whose dead letters
-    /// the layout before 0.6 kept per group. The delete is recorded in the
-    /// stream's marker first, durable or not, since an ephemeral stream's
-    /// group state is on disk too, so one that stops part-way is finished.
-    pub(super) async fn delete_incarnation(
-        &self,
-        key: &StreamKey,
-        incarnation: u64,
-        shards: u32,
-    ) -> Result<()> {
-        if incarnation == 0
-            && self
-                .keeps_unincarnated
-                .load(std::sync::atomic::Ordering::Relaxed)
-            && !self.registration_required()
-        {
+            self.close_incarnation(key, held).await?;
             tracing::info!(
                 tenant_id = %key.tenant_id,
                 namespace = %key.namespace,
                 stream = %key.stream,
-                "keeping a deleted stream's data until its name is given an incarnation",
-            );
-            // Nothing opens it until the name is registered again.
-            self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, None);
-            let seen_at = match self.stream_marker(key)? {
-                MarkerRead::Valid(marker) => marker.seen_at,
-                _ => None,
-            };
-            return self.write_marker(
-                key,
-                StreamMarkerState {
-                    incarnation: 0,
-                    retiring: false,
-                    kept: true,
-                    shards,
-                    seen_at,
-                },
+                held,
+                incarnation = incoming,
+                "a later incarnation registered; keeping the earlier one's data until the catalog deletes it",
             );
         }
-        // Read before the stream stops opening: they are in its cursor logs.
-        let legacy_groups = self.legacy_groups(key, incarnation, shards).await;
-        // Nothing opens the stream from here on, so nothing recreates what is
-        // about to be deleted.
-        self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, None);
-        self.write_marker(
-            key,
-            StreamMarkerState {
-                incarnation,
-                retiring: true,
-                kept: false,
-                shards,
-                seen_at: None,
-            },
-        )?;
-        self.retire_everywhere(key, incarnation, &legacy_groups)
-            .await
-    }
-
-    /// Delete what this broker kept of `incarnation` of `key` after it stopped
-    /// serving it without a delete, on the catalog's delete naming it. The
-    /// registered incarnation's marker and logs are not touched.
-    pub(super) async fn delete_kept_incarnation(
-        &self,
-        key: &StreamKey,
-        incarnation: u64,
-    ) -> Result<()> {
-        // Safe to repeat, and finds nothing where nothing was kept.
-        self.retire_everywhere(key, incarnation, &[]).await?;
-        // Its marker, when nothing registered since wrote one of its own.
-        if let MarkerRead::Valid(marker) = self.stream_marker(key)?
-            && marker.incarnation == incarnation
-        {
-            self.remove_marker(key)?;
+        let wanted = StreamMarker {
+            tenant: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation: incoming,
+            retiring: false,
+            shards: max_shards(
+                marker.as_ref().and_then(|marker| marker.shards),
+                Some(metadata.shards),
+            ),
+            deleted,
+        };
+        // An ephemeral stream from before incarnations keeps nothing a marker
+        // would protect, and writes nothing to disk until a group does.
+        let needed = metadata.durable || incoming != 0 || marker.is_some();
+        if needed && marker.as_ref() != Some(&wanted) {
+            self.write_marker(&wanted)?;
         }
-        Ok(())
-    }
-
-    /// Finish a delete of `key` that stopped part-way, if there is one.
-    pub(super) async fn finish_delete(&self, key: &StreamKey) -> Result<()> {
-        if let MarkerRead::Valid(marker) = self.stream_marker(key)?
-            && marker.retiring
-        {
-            self.finish_retiring(key, &marker).await?;
-        }
-        Ok(())
+        self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, Some(incoming));
+        Ok(Some(incoming))
     }
 
     /// Stop serving one incarnation of `key` and close its logs, keeping its
@@ -421,39 +394,161 @@ impl Broker {
         Ok(())
     }
 
-    /// Finish the delete a retiring marker records, finding the per-group
-    /// dead letters of the layout before 0.6 from its shard count.
-    async fn finish_retiring(&self, key: &StreamKey, marker: &StreamMarker) -> Result<()> {
-        // The cursors are read to find them, so the group stores open the
-        // incarnation for that and stop again before anything moves.
-        let shards = marker.shards.unwrap_or(0);
-        let legacy_groups = if marker.incarnation == 0 && shards > 0 {
-            self.set_group_incarnation(key, Some(0));
-            let groups = self.legacy_groups(key, 0, shards).await;
-            self.set_group_incarnation(key, None);
-            groups
-        } else {
-            Vec::new()
+    /// Delete what `marker` records: every incarnation up to its `deleted`,
+    /// or with none, its own incarnation. Every store is tried even when one
+    /// fails, and the first failure returned; the marker then stays retiring,
+    /// so the delete is finished later. Safe to repeat.
+    async fn finish_delete(&self, key: &StreamKey, marker: &StreamMarker) -> Result<()> {
+        let through = marker.deleted.unwrap_or(marker.incarnation);
+        let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+        let mut first_error = None;
+        let mut note = |outcome: Result<()>| {
+            if let Err(err) = outcome {
+                tracing::error!(
+                    tenant_id = %tenant_id,
+                    namespace = %namespace,
+                    stream = %stream,
+                    through,
+                    error = %err,
+                    "could not delete a stream's data; it will be retried",
+                );
+                first_error.get_or_insert(err);
+            }
         };
-        self.retire_everywhere(key, marker.incarnation, &legacy_groups)
-            .await
+        // The per-group dead letters of the layout before 0.6 first: they
+        // are found through the cursors, so the cursors stay until they are
+        // gone.
+        let legacy = self.retire_legacy_dead_letters(key, marker).await;
+        let legacy_done = legacy.is_ok();
+        note(legacy);
+        if let Some(storage) = &self.durable_storage {
+            note(
+                self.retire_through(key, through, Store::Records(storage))
+                    .await,
+            );
+        }
+        if let Some(groups) = &self.consumer_groups
+            && legacy_done
+        {
+            note(
+                self.retire_through(key, through, Store::Cursors(groups))
+                    .await,
+            );
+        }
+        if let Some(reader) = &self.group_reader {
+            note(
+                self.retire_through(key, through, Store::DeadLetters(reader.dead_letters()))
+                    .await,
+            );
+        }
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+        // Only the marker this delete wrote: a registration since rewrote it.
+        if let MarkerRead::Valid(current) = self.stream_marker(key)?
+            && current == *marker
+        {
+            if marker.deleted.is_some() {
+                self.write_marker(&StreamMarker {
+                    retiring: false,
+                    ..marker.clone()
+                })?;
+            } else {
+                self.remove_marker(key)?;
+            }
+        }
+        Ok(())
     }
 
-    /// Every group with a position on shards `0..shards` of incarnation 0 of
-    /// `key`, whose dead letters the layout before 0.6 kept per group.
-    async fn legacy_groups(
+    /// Retire every incarnation of `key` up to `through` that `store` has
+    /// directories for.
+    async fn retire_through(&self, key: &StreamKey, through: u64, store: Store<'_>) -> Result<()> {
+        let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+        let held: std::collections::BTreeSet<u64> = match store {
+            Store::Records(storage) => storage
+                .provider()
+                .stream_incarnations_on_disk(tenant_id, namespace, stream)
+                .map_err(BrokerError::from)?,
+            Store::Cursors(groups) => groups
+                .dirs_on_disk(tenant_id, namespace, stream)?
+                .into_iter()
+                .map(|(_, incarnation)| incarnation)
+                .collect(),
+            Store::DeadLetters(letters) => letters
+                .dirs_on_disk(tenant_id, namespace, stream)?
+                .into_iter()
+                .map(|(_, incarnation)| incarnation)
+                .collect(),
+        };
+        for incarnation in held.into_iter().filter(|held| *held <= through) {
+            match store {
+                Store::Records(storage) => {
+                    storage
+                        .retire_stream(tenant_id, namespace, stream, incarnation)
+                        .await?
+                }
+                Store::Cursors(groups) => {
+                    groups
+                        .retire(tenant_id, namespace, stream, incarnation)
+                        .await?
+                }
+                Store::DeadLetters(letters) => {
+                    letters
+                        .retire(tenant_id, namespace, stream, incarnation)
+                        .await?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete the dead letters the layout before 0.6 kept per group, for a
+    /// delete that covers incarnation 0. They are found from the groups with
+    /// a position in incarnation 0's cursors.
+    async fn retire_legacy_dead_letters(
         &self,
         key: &StreamKey,
-        incarnation: u64,
-        shards: u32,
-    ) -> Vec<(u32, String)> {
-        match (&self.consumer_groups, incarnation) {
-            (Some(groups), 0) => groups
-                .legacy_groups(&key.tenant_id, &key.namespace, &key.stream, shards)
-                .await
-                .unwrap_or_default(),
-            _ => Vec::new(),
+        marker: &StreamMarker,
+    ) -> Result<()> {
+        let (Some(groups), Some(reader)) = (&self.consumer_groups, &self.group_reader) else {
+            return Ok(());
+        };
+        let on_disk = groups.dirs_on_disk(&key.tenant_id, &key.namespace, &key.stream)?;
+        let Some(shards) = on_disk
+            .iter()
+            .filter(|(_, incarnation)| *incarnation == 0)
+            .map(|(shard, _)| shard + 1)
+            .max()
+        else {
+            return Ok(());
+        };
+        let shards = shards.max(marker.shards.unwrap_or(0));
+        if self
+            .stream_incarnation(&key.tenant_id, &key.namespace, &key.stream)
+            .is_some()
+        {
+            // Opening incarnation 0's cursors would take the registered
+            // stream's away. Not reached in practice: the catalog deletes
+            // incarnation 0 before it creates a later one.
+            tracing::warn!(
+                tenant_id = %key.tenant_id,
+                namespace = %key.namespace,
+                stream = %key.stream,
+                "keeping per-group dead letters of a deleted stream while the name is registered",
+            );
+            return Ok(());
         }
+        // The group stores open incarnation 0 to read them, and stop again
+        // before anything moves.
+        self.set_group_incarnation(key, Some(0));
+        let found = groups
+            .legacy_groups(&key.tenant_id, &key.namespace, &key.stream, shards)
+            .await;
+        self.set_group_incarnation(key, None);
+        reader
+            .dead_letters()
+            .retire_legacy(&key.tenant_id, &key.namespace, &key.stream, &found?)
+            .await
     }
 
     fn set_group_incarnation(&self, key: &StreamKey, incarnation: Option<u64>) {
@@ -468,84 +563,6 @@ impl Broker {
                 incarnation,
             );
         }
-    }
-
-    /// Move one incarnation of a stream out of service in every store, and
-    /// then drop its marker. Every store is tried even when one fails, and the
-    /// first failure returned; the marker then stays, so the delete is
-    /// finished later. Safe to repeat.
-    async fn retire_everywhere(
-        &self,
-        key: &StreamKey,
-        incarnation: u64,
-        legacy_groups: &[(u32, String)],
-    ) -> Result<()> {
-        let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
-        let mut first_error = None;
-        let mut note = |outcome: Result<()>| {
-            if let Err(err) = outcome {
-                tracing::error!(
-                    tenant_id = %tenant_id,
-                    namespace = %namespace,
-                    stream = %stream,
-                    incarnation,
-                    error = %err,
-                    "could not delete a stream's data; it will be retried",
-                );
-                first_error.get_or_insert(err);
-            }
-        };
-        // The per-group dead letters first: they are found through the
-        // cursors, so the cursors stay until they are gone.
-        let mut legacy_done = true;
-        if let Some(reader) = &self.group_reader {
-            let legacy = reader
-                .dead_letters()
-                .retire_legacy(tenant_id, namespace, stream, legacy_groups)
-                .await;
-            legacy_done = legacy.is_ok();
-            note(legacy);
-        }
-        if let Some(storage) = &self.durable_storage {
-            note(
-                storage
-                    .retire_stream(tenant_id, namespace, stream, incarnation)
-                    .await,
-            );
-        }
-        if let Some(groups) = &self.consumer_groups
-            && legacy_done
-        {
-            note(
-                groups
-                    .retire(tenant_id, namespace, stream, incarnation)
-                    .await,
-            );
-        }
-        if let Some(reader) = &self.group_reader {
-            note(
-                reader
-                    .dead_letters()
-                    .retire(tenant_id, namespace, stream, incarnation)
-                    .await,
-            );
-        }
-        if let Some(err) = first_error {
-            return Err(err);
-        }
-        // Only a marker for the incarnation just deleted: one written since
-        // for a newer incarnation stays.
-        if let MarkerRead::Valid(marker) = self.stream_marker(key)?
-            && marker.retiring
-            && marker.incarnation == incarnation
-            && let Some(storage) = &self.durable_storage
-        {
-            storage
-                .provider()
-                .remove_stream_marker(tenant_id, namespace, stream)
-                .map_err(BrokerError::from)?;
-        }
-        Ok(())
     }
 
     fn stream_marker(&self, key: &StreamKey) -> Result<MarkerRead> {
@@ -568,22 +585,13 @@ impl Broker {
             .map_err(BrokerError::from)
     }
 
-    fn write_marker(&self, key: &StreamKey, state: StreamMarkerState) -> Result<()> {
+    fn write_marker(&self, marker: &StreamMarker) -> Result<()> {
         let Some(storage) = &self.durable_storage else {
             return Ok(());
         };
         storage
             .provider()
-            .write_stream_marker(&StreamMarker {
-                tenant: key.tenant_id.clone(),
-                namespace: key.namespace.clone(),
-                stream: key.stream.clone(),
-                incarnation: state.incarnation,
-                retiring: state.retiring,
-                kept: state.kept,
-                shards: Some(state.shards),
-                seen_at: state.seen_at,
-            })
+            .write_stream_marker(marker)
             .map_err(BrokerError::from)
     }
 
@@ -598,11 +606,17 @@ impl Broker {
     }
 }
 
-/// A marker's contents apart from the stream's name.
-struct StreamMarkerState {
-    incarnation: u64,
-    retiring: bool,
-    kept: bool,
-    shards: u32,
-    seen_at: Option<u64>,
+/// One of the stores a stream keeps directories in.
+#[derive(Clone, Copy)]
+enum Store<'a> {
+    Records(&'a crate::DurableStorage),
+    Cursors(&'a crate::queue::ConsumerGroups),
+    DeadLetters(&'a crate::queue::DeadLetters),
+}
+
+fn max_shards(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }

@@ -50,7 +50,6 @@ async fn apply_stream_upsert_recovers_from_missing_parents() -> Result<()> {
             shards: 2,
             ..Default::default()
         },
-        None,
     )
     .await?;
     assert!(broker.stream_exists("t1", "ns1", "orders").await);
@@ -67,7 +66,6 @@ async fn apply_stream_upsert_recovers_from_missing_parents() -> Result<()> {
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await?;
     assert!(broker.stream_exists("t2", "ns2", "events").await);
@@ -91,7 +89,6 @@ async fn apply_stream_upsert_skips_durable_streams_without_storage() -> Result<(
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await?;
     assert!(!broker.stream_exists("t1", "ns1", "orders").await);
@@ -107,7 +104,6 @@ async fn apply_stream_upsert_skips_durable_streams_without_storage() -> Result<(
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await?;
     assert!(broker.stream_exists("t1", "ns1", "telemetry").await);
@@ -138,7 +134,6 @@ async fn apply_stream_upsert_registers_durable_streams_when_storage_exists() -> 
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await?;
     assert!(broker.stream_exists("t1", "ns1", "orders").await);
@@ -183,7 +178,6 @@ async fn apply_stream_upsert_propagates_storage_failures() -> Result<()> {
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await
     .expect_err("storage failure must not be skipped");
@@ -220,7 +214,6 @@ async fn apply_stream_upsert_rejects_live_durability_changes() -> Result<()> {
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await?;
     let err = apply_stream_upsert(
@@ -233,7 +226,6 @@ async fn apply_stream_upsert_rejects_live_durability_changes() -> Result<()> {
             shards: 1,
             ..Default::default()
         },
-        None,
     )
     .await
     .expect_err("live durability change");

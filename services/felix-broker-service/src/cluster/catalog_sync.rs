@@ -62,11 +62,6 @@ pub async fn start_sync(
 /// that brings something resets it.
 const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
 
-/// How long the stream feed's head may stay behind what this broker applied
-/// before it is taken for a control plane restored to an earlier point. A
-/// member that is behind catches up well inside it.
-const HEAD_BEHIND_RESET: Duration = Duration::from_secs(60);
-
 /// Starts the control-plane sync loop as a background task.
 ///
 /// This function runs forever, periodically fetching control-plane snapshots and change feeds,
@@ -177,9 +172,6 @@ struct SyncState {
     next_cache_seq: u64,
     /// Next sequence cursor for the streams change feed.
     next_stream_seq: u64,
-    /// Since when the stream feed's head has been behind a catalog position
-    /// the broker recorded. See [`SyncState::watch_stream_head`].
-    stream_head_behind_since: Option<std::time::Instant>,
     /// Which cold-start snapshots have actually been fetched and applied.
     ///
     /// Deliberately separate from the cursors. A cursor cannot answer "was this
@@ -223,35 +215,7 @@ impl SyncState {
             next_namespace_seq: 0,
             next_cache_seq: 0,
             next_stream_seq: 0,
-            stream_head_behind_since: None,
             seeded: SeededSnapshots::default(),
-        }
-    }
-
-    /// Note where the stream feed's head is. A head behind what the broker
-    /// already applied is a control-plane member that is behind, which
-    /// catches up, or a control plane restored to an earlier point, which
-    /// does not. Once it has stayed behind for [`HEAD_BEHIND_RESET`] the
-    /// broker's catalog positions are reset, or it would refuse every
-    /// registration below them for good.
-    fn watch_stream_head(&mut self, broker: &Broker, head: u64) {
-        let behind = broker
-            .catalog_position()
-            .is_some_and(|applied| head < applied);
-        if !behind {
-            self.stream_head_behind_since = None;
-            return;
-        }
-        let since = *self
-            .stream_head_behind_since
-            .get_or_insert_with(std::time::Instant::now);
-        if since.elapsed() >= HEAD_BEHIND_RESET {
-            tracing::warn!(
-                head,
-                "the control plane's stream feed stayed behind what this broker applied; forgetting its positions",
-            );
-            broker.reset_catalog_positions();
-            self.stream_head_behind_since = None;
         }
     }
 }

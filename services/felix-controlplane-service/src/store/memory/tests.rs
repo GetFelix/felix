@@ -270,6 +270,13 @@ async fn backend_health_and_identity() {
 
 /// The same suite Postgres runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_incarnation_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::incarnations::run_incarnation_contract(store).await;
+}
+
+/// The same suite Postgres runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_resources_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::resources::run_resources_contract(store.clone()).await;

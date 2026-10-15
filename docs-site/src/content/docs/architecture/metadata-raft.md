@@ -264,9 +264,11 @@ which is the ordinary signal it already honours.
 artifact, and `migrate import … --overwrite` onto a fresh group is the
 restore. `--overwrite` discards whatever the target holds, checkpoints
 included, so it belongs in a runbook and should only be run deliberately. A
-broker kept running across it refuses stream changes from before what it had
-applied for a minute, until the feed's head has stayed behind and it forgets
-those positions (see `docs/durable-storage.md`, "Deleting a stream").
+broker kept running across a restore to an earlier point refuses a stream
+whose restored incarnation is below the one it holds, since it never moves a
+name back; run `felix-broker restore-point` with the matching backup point, or
+delete and recreate the stream (see `docs/durable-storage.md`, "Deleting a
+stream").
 
 Two things to know before relying on an export as a backup:
 

@@ -280,7 +280,7 @@ async fn a_new_incarnation_replaces_the_registered_one() {
     );
 
     broker
-        .remove_stream_incarnation("t1", "default", "orders", Some(5), None)
+        .remove_stream_from_catalog("t1", "default", "orders", Some(5))
         .await
         .expect("the catalog's delete");
     assert!(!old.exists(), "the delete naming it kept it");
@@ -315,9 +315,11 @@ async fn a_restart_into_a_new_incarnation_starts_empty() {
 }
 
 /// A stream from before incarnations, deleted while the broker was down and
-/// created again by a control plane that gives incarnations.
+/// created again by a control plane that gives incarnations. The new stream
+/// starts empty, and the old one's data stays until a tombstone covers it: the
+/// registration alone is no word that incarnation 0 is deleted.
 #[tokio::test]
-async fn an_incarnated_stream_drops_data_from_before_incarnations() {
+async fn an_incarnated_stream_keeps_data_from_before_incarnations_until_a_tombstone() {
     let dir = tempdir().expect("dir");
     {
         let (broker, storage) = broker(&dir).await;
@@ -336,6 +338,19 @@ async fn an_incarnated_stream_drops_data_from_before_incarnations() {
         .expect("register");
     assert_eq!(next_offset(&broker, "orders").await, 0);
     assert_no_group_state(&broker, 0).await;
+    let old = felix_storage::disk_log::layout::shard_dir(dir.path(), &shard_key(0));
+    assert!(old.exists(), "a registration took incarnation 0's data");
+
+    broker
+        .delete_stream_through("t1", "default", "orders", 0)
+        .await
+        .expect("the tombstone");
+    assert!(!old.exists(), "the tombstone kept incarnation 0's data");
+    assert_eq!(
+        next_offset(&broker, "orders").await,
+        1,
+        "the live stream changed"
+    );
 }
 
 /// Upgrading keeps a stream from before incarnations exactly as it was.
@@ -451,7 +466,7 @@ async fn a_replayed_delete_keeps_the_stream_created_after_it() {
         .await
         .expect("register");
     broker
-        .remove_stream_incarnation("t1", "default", "orders", Some(5), None)
+        .remove_stream_from_catalog("t1", "default", "orders", Some(5))
         .await
         .expect("remove");
     broker
@@ -462,7 +477,7 @@ async fn a_replayed_delete_keeps_the_stream_created_after_it() {
 
     assert!(
         !broker
-            .remove_stream_incarnation("t1", "default", "orders", Some(5), None)
+            .remove_stream_from_catalog("t1", "default", "orders", Some(5))
             .await
             .expect("replayed remove")
     );
@@ -470,7 +485,8 @@ async fn a_replayed_delete_keeps_the_stream_created_after_it() {
 }
 
 /// A catalog record without the incarnation, from a control plane before
-/// incarnations, is not a new stream.
+/// incarnations, is not a new stream, and does not say which incarnation it
+/// means: it is refused, before and after a restart, and the data stays.
 #[tokio::test]
 async fn a_record_without_the_incarnation_keeps_the_streams_data() {
     let dir = tempdir().expect("dir");
@@ -489,13 +505,16 @@ async fn a_record_without_the_incarnation_keeps_the_streams_data() {
         assert_eq!(next_offset(&broker, "orders").await, 3);
         storage.shutdown().await.expect("shutdown");
     }
-    // A restart seeded by the same control plane: the broker's own marker
-    // says which incarnation its data is.
     let (broker, _storage) = broker(&dir).await;
     broker
         .register_stream("t1", "default", "orders", durable(1))
         .await
         .expect("register without the incarnation");
+    assert!(!broker.stream_exists("t1", "default", "orders").await);
+    broker
+        .register_stream("t1", "default", "orders", incarnation(1, 5))
+        .await
+        .expect("register with it");
     assert_eq!(next_offset(&broker, "orders").await, 4);
 }
 
@@ -526,7 +545,7 @@ async fn a_delete_missed_while_down_waits_for_the_delete_naming_it() {
         "a registration deleted the incarnation it replaced"
     );
     broker
-        .remove_stream_incarnation("t1", "default", "orders", Some(5), None)
+        .remove_stream_from_catalog("t1", "default", "orders", Some(5))
         .await
         .expect("the catalog's delete");
     assert!(!old.exists(), "the deleted stream's shard 3 was kept");
@@ -588,9 +607,8 @@ async fn a_delete_cut_short_by_a_crash_is_finished_at_start() {
                 stream: "orders".into(),
                 incarnation: 0,
                 retiring: true,
-                kept: false,
                 shards: None,
-                seen_at: None,
+                deleted: None,
             })
             .expect("marker");
     }
@@ -708,7 +726,7 @@ async fn a_lost_marker_and_a_record_without_the_incarnation_serve_nothing() {
 
 /// Deleted and created again as an ephemeral stream while this broker was
 /// down: the deleted durable stream's data stays until the catalog's delete
-/// names it, then goes, and does not leave its marker behind.
+/// names it, then goes, and the marker keeps serving the ephemeral one.
 #[tokio::test]
 async fn a_stream_recreated_ephemeral_still_deletes_the_durable_one() {
     let dir = tempdir().expect("dir");
@@ -741,17 +759,25 @@ async fn a_stream_recreated_ephemeral_still_deletes_the_durable_one() {
         "a registration deleted the incarnation it replaced"
     );
     broker
-        .remove_stream_incarnation("t1", "default", "orders", Some(5), None)
+        .remove_stream_from_catalog("t1", "default", "orders", Some(5))
         .await
         .expect("the catalog's delete");
     assert!(!old.exists(), "the deleted stream's records were kept");
     let provider = felix_storage::DiskLogProvider::new(dir.path(), log_config()).expect("provider");
+    match provider
+        .stream_marker("t1", "default", "orders")
+        .expect("marker")
+    {
+        felix_storage::MarkerRead::Valid(marker) => {
+            assert_eq!(marker.incarnation, 6);
+            assert_eq!(marker.deleted, Some(5));
+            assert!(!marker.retiring, "the finished delete left it retiring");
+        }
+        other => panic!("marker {other:?}"),
+    }
     assert_eq!(
-        provider
-            .stream_marker("t1", "default", "orders")
-            .expect("marker"),
-        felix_storage::MarkerRead::Absent,
-        "the finished delete left its marker"
+        broker.stream_incarnation("t1", "default", "orders"),
+        Some(6)
     );
 }
 
@@ -795,128 +821,123 @@ async fn an_ephemeral_streams_cut_short_delete_finishes_at_start() {
     assert!(!cursors.exists(), "the delete was not finished");
 }
 
-/// In a cluster that has not given streams incarnations, a stream created
-/// again at incarnation 0 starts at the generations the deleted one had, so
-/// its data stays, as it did before incarnations: a new, empty log would be
-/// judged by quorum marks and follower positions kept for the old one. Once
-/// an incarnation is in play, the delete takes the data.
+/// Before the fleet finalizes incarnations the control plane's delete names
+/// none. The data stays and a stream created again at 0 reopens it, as before
+/// incarnations: a new, empty log would be judged by the quorum marks and
+/// follower positions kept for the old one, which share its generations. A
+/// delete replayed after that create removes nothing either.
 #[tokio::test]
-async fn a_cluster_keeps_a_deleted_streams_data_until_incarnations_are_in_play() {
+async fn a_delete_naming_no_incarnation_keeps_the_data_for_a_create_at_0() {
     let dir = tempdir().expect("dir");
-    let storage = DurableStorage::open(dir.path(), log_config()).expect("storage");
-    let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
-    broker.keep_unincarnated_streams_on_delete();
-    broker.register_tenant("t1").await.expect("tenant");
-    broker
-        .register_namespace("t1", "default")
-        .await
-        .expect("namespace");
+    let (broker, _storage) = broker(&dir).await;
     broker
         .register_stream("t1", "default", "orders", durable(1))
         .await
         .expect("register");
     publish_three(&broker, "orders").await;
 
-    broker
-        .remove_stream("t1", "default", "orders")
-        .await
-        .expect("remove");
+    assert!(
+        broker
+            .remove_stream_from_catalog("t1", "default", "orders", None)
+            .await
+            .expect("the catalog's delete")
+    );
+    assert!(!broker.stream_exists("t1", "default", "orders").await);
+    assert!(
+        broker
+            .shard_log(felix_broker::LogKind::Stream, "t1", "default", "orders", 0)
+            .await
+            .is_none(),
+        "a deleted stream's log opened"
+    );
     broker
         .register_stream("t1", "default", "orders", durable(1))
         .await
-        .expect("register again");
+        .expect("created again at 0");
+    // The delete delivered again, after the create.
+    broker
+        .remove_stream_from_catalog("t1", "default", "orders", None)
+        .await
+        .expect("replayed");
+    broker
+        .register_stream("t1", "default", "orders", durable(1))
+        .await
+        .expect("created again at 0");
     assert_eq!(next_offset(&broker, "orders").await, 3, "the data went");
-
-    broker.require_registered_streams();
-    broker
-        .remove_stream("t1", "default", "orders")
-        .await
-        .expect("remove once incarnations are in play");
-    broker
-        .register_stream("t1", "default", "orders", durable(1))
-        .await
-        .expect("register after");
-    assert_eq!(next_offset(&broker, "orders").await, 0, "the data stayed");
 }
 
-async fn clustered(dir: &TempDir) -> Broker {
-    let storage = DurableStorage::open(dir.path(), log_config()).expect("storage");
-    let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
-    broker.keep_unincarnated_streams_on_delete();
-    broker
-        .require_registration_if_in_play()
-        .expect("read what is in play");
-    broker.register_tenant("t1").await.expect("tenant");
-    broker
-        .register_namespace("t1", "default")
-        .await
-        .expect("namespace");
-    broker
-}
-
-/// A kept stream opens nothing, and its data goes only when its own name is
-/// registered at an incarnation, at once or after a restart: incarnation 0
-/// of the name is then gone for good. Another stream's incarnation is no
-/// such evidence, since the kept name may have been created again at 0 in a
-/// change this broker has not read yet.
+/// Once incarnations are finalized, deleting a stream from before them
+/// writes a tombstone for incarnation 0, and that deletes everything kept
+/// for it: records, group positions and the per-group dead letters of the
+/// layout before 0.6, whether the stream is registered, was kept after an
+/// earlier delete, or was left by a broker that never wrote a marker.
 #[tokio::test]
-async fn a_kept_stream_goes_when_its_name_is_given_an_incarnation() {
-    for restart in [false, true] {
+async fn a_tombstone_for_0_takes_kept_data_and_legacy_dead_letters() {
+    for case in ["registered", "kept", "no marker"] {
         let dir = tempdir().expect("dir");
         let shard = felix_storage::disk_log::layout::shard_dir(dir.path(), &shard_key(0));
+        let legacy = felix_storage::disk_log::layout::shard_dir(
+            &dir.path().join("dead-letters"),
+            &felix_storage::log::ShardKey {
+                stream: "orders\u{1f}workers".into(),
+                ..shard_key(0)
+            },
+        );
         {
-            let broker = clustered(&dir).await;
+            let (broker, storage) = broker(&dir).await;
             broker
                 .register_stream("t1", "default", "orders", durable(1))
                 .await
                 .expect("register");
             publish_three(&broker, "orders").await;
-            broker
-                .remove_stream("t1", "default", "orders")
-                .await
-                .expect("remove");
-            assert!(shard.exists(), "the kept data went");
-            assert!(
+            group_state(&broker, 0).await;
+            std::fs::create_dir_all(&legacy).expect("legacy dir");
+            if case == "kept" {
                 broker
-                    .shard_log(felix_broker::LogKind::Stream, "t1", "default", "orders", 0)
+                    .remove_stream_from_catalog("t1", "default", "orders", None)
                     .await
-                    .is_none(),
-                "a deleted stream's log opened"
-            );
-
-            // Another stream shows this broker an incarnation.
-            broker
-                .register_stream("t1", "default", "other", incarnation(1, 9))
-                .await
-                .expect("register an incarnated stream");
-            assert!(
-                shard.exists(),
-                "another stream's incarnation took the kept data"
-            );
-            if restart {
-                broker
-                    .durable_storage()
-                    .expect("storage")
-                    .shutdown()
-                    .await
-                    .expect("shutdown");
-            } else {
-                broker
-                    .register_stream("t1", "default", "orders", incarnation(1, 10))
-                    .await
-                    .expect("the name given an incarnation");
-                assert!(!shard.exists(), "the kept data stayed");
-                continue;
+                    .expect("delete naming none");
             }
+            storage.shutdown().await.expect("shutdown");
         }
-        let broker = clustered(&dir).await;
-        broker.finish_pending_deletes().await.expect("finish");
-        assert!(shard.exists(), "a start took the kept data");
+        if case == "no marker" {
+            std::fs::remove_dir_all(dir.path().join(".streams")).expect("no marker");
+        }
+        let (broker, _storage) = broker(&dir).await;
+        if case == "registered" {
+            broker
+                .register_stream("t1", "default", "orders", durable(1))
+                .await
+                .expect("register");
+        }
+        assert!(shard.exists() && legacy.exists(), "{case}: went early");
         broker
-            .register_stream("t1", "default", "orders", incarnation(1, 10))
+            .remove_stream_from_catalog("t1", "default", "orders", Some(0))
             .await
-            .expect("the name given an incarnation");
-        assert!(!shard.exists(), "the kept data stayed across a restart");
+            .expect("the tombstone");
+        assert!(!shard.exists(), "{case}: the records were kept");
+        assert!(
+            !legacy.exists(),
+            "{case}: the legacy dead letters were kept"
+        );
+        assert_no_group_state_on_disk(&dir, case);
+        // Nothing comes back at 0.
+        broker
+            .register_stream("t1", "default", "orders", durable(1))
+            .await
+            .expect("register at 0");
+        assert!(
+            !broker.stream_exists("t1", "default", "orders").await,
+            "{case}: a deleted incarnation was registered again"
+        );
+    }
+}
+
+fn assert_no_group_state_on_disk(dir: &TempDir, case: &str) {
+    for store in ["groups", "dead-letters"] {
+        let cursors =
+            felix_storage::disk_log::layout::shard_dir(&dir.path().join(store), &shard_key(0));
+        assert!(!cursors.exists(), "{case}: {store} kept");
     }
 }
 
@@ -951,9 +972,8 @@ async fn a_delete_cut_short_still_takes_the_legacy_dead_letters() {
                 stream: "orders".into(),
                 incarnation: 0,
                 retiring: true,
-                kept: false,
                 shards: Some(1),
-                seen_at: None,
+                deleted: None,
             })
             .expect("marker");
     }
@@ -962,51 +982,141 @@ async fn a_delete_cut_short_still_takes_the_legacy_dead_letters() {
     assert!(!legacy.exists(), "the legacy dead letters were kept");
 }
 
-/// After a restart, a catalog served from before the position this broker
-/// registered its incarnation at cannot replace it, and even once positions
-/// are forgotten a registration of another incarnation deletes nothing.
+/// A catalog view older than one already applied (a control-plane member
+/// behind, or a restart seeded from one) names a lower incarnation than the
+/// one held here. It does not replace it, before or after a restart, and
+/// nothing is deleted.
 #[tokio::test]
-async fn a_restart_fed_an_older_catalog_keeps_the_live_incarnation() {
+async fn an_older_catalog_never_replaces_the_live_incarnation() {
     let dir = tempdir().expect("dir");
     {
         let (broker, storage) = broker(&dir).await;
         broker
-            .register_stream_at("t1", "default", "orders", incarnation(1, 8), Some(20))
+            .register_stream("t1", "default", "orders", incarnation(1, 8))
             .await
             .expect("register");
         publish_three(&broker, "orders").await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 7))
+            .await
+            .expect("an older create");
+        assert_eq!(
+            broker.stream_incarnation("t1", "default", "orders"),
+            Some(8)
+        );
         storage.shutdown().await.expect("shutdown");
     }
     let (broker, _storage) = broker(&dir).await;
-    broker.load_catalog_positions().expect("positions");
     broker
-        .register_stream_at("t1", "default", "orders", incarnation(1, 7), Some(15))
+        .register_stream("t1", "default", "orders", incarnation(1, 7))
         .await
         .expect("an older snapshot");
     assert_eq!(
         broker.stream_incarnation("t1", "default", "orders"),
         None,
-        "a catalog from before the live incarnation replaced it"
-    );
-
-    // The control plane went back for good: positions are forgotten, and the
-    // older incarnation registers, but the live one's data stays.
-    broker.reset_catalog_positions();
-    broker
-        .register_stream_at("t1", "default", "orders", incarnation(1, 7), Some(15))
-        .await
-        .expect("registered after the reset");
-    assert_eq!(
-        broker.stream_incarnation("t1", "default", "orders"),
-        Some(7)
+        "a catalog naming 7 replaced the live incarnation"
     );
     broker
-        .register_stream_at("t1", "default", "orders", incarnation(1, 8), Some(30))
+        .register_stream("t1", "default", "orders", incarnation(1, 8))
         .await
-        .expect("the live one again");
+        .expect("the live one");
     assert_eq!(
         next_offset(&broker, "orders").await,
         3,
         "the live data went"
     );
+}
+
+/// An incarnation the catalog deleted is never registered again, even by a
+/// broker that holds nothing of the name any more: a restart seeded by a
+/// member that has not applied the delete yet would otherwise serve a deleted
+/// stream, and take writes the delete then throws away.
+#[tokio::test]
+async fn a_deleted_incarnation_is_never_registered_again() {
+    let dir = tempdir().expect("dir");
+    {
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 7))
+            .await
+            .expect("register");
+        broker
+            .remove_stream_from_catalog("t1", "default", "orders", Some(7))
+            .await
+            .expect("delete");
+        storage.shutdown().await.expect("shutdown");
+    }
+    for older in [7, 6] {
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, older))
+            .await
+            .expect("an older snapshot");
+        assert_eq!(
+            broker.stream_incarnation("t1", "default", "orders"),
+            None,
+            "the deleted incarnation {older} was registered again"
+        );
+        storage.shutdown().await.expect("shutdown");
+    }
+    let (broker, _storage) = broker(&dir).await;
+    broker
+        .register_stream("t1", "default", "orders", incarnation(1, 9))
+        .await
+        .expect("a later one");
+    assert_eq!(
+        broker.stream_incarnation("t1", "default", "orders"),
+        Some(9)
+    );
+}
+
+/// A restore to a backup point puts the control plane back, and with it the
+/// incarnation the point names, below one this broker registered or saw
+/// deleted since. `restore-point` records the point's incarnation, so the
+/// broker takes it rather than refusing it for good, and deletes nothing.
+#[tokio::test]
+async fn a_restore_to_a_backup_point_takes_the_points_incarnation() {
+    let dir = tempdir().expect("dir");
+    {
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 5))
+            .await
+            .expect("register");
+        publish_three(&broker, "orders").await;
+        // After the point: deleted and created again.
+        broker
+            .remove_stream_from_catalog("t1", "default", "orders", Some(4))
+            .await
+            .expect("an earlier tombstone");
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 8))
+            .await
+            .expect("register");
+        storage.shutdown().await.expect("shutdown");
+    }
+    {
+        // `restore-point`, on the stopped broker.
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .restore_stream_marker("t1", "default", "orders", 5)
+            .expect("restore the marker");
+        storage.shutdown().await.expect("shutdown");
+    }
+    let (broker, _storage) = broker(&dir).await;
+    broker
+        .register_stream("t1", "default", "orders", incarnation(1, 5))
+        .await
+        .expect("the point's incarnation");
+    assert_eq!(
+        broker.stream_incarnation("t1", "default", "orders"),
+        Some(5)
+    );
+    assert_eq!(
+        next_offset(&broker, "orders").await,
+        3,
+        "the point's data went"
+    );
+    let later = felix_storage::disk_log::layout::incarnation_dir(dir.path(), &shard_key(0), 8);
+    assert!(later.exists(), "the restore deleted data");
 }

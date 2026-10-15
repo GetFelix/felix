@@ -26,9 +26,9 @@ pub use shard::{
     ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;
-pub(crate) use stream::deleted_stream_payload;
 pub use stream::{
     ConsistencyLevel, DeliveryGuarantee, RetentionPolicy, Stream, StreamChange, StreamChangeOp,
-    StreamKey, StreamKind, StreamPatchRequest, StreamRouting,
+    StreamKey, StreamKind, StreamPatchRequest, StreamRouting, StreamTombstone,
 };
+pub(crate) use stream::{deleted_stream_payload, next_incarnation, proposed_incarnation};
 pub use tenant::{Tenant, TenantChange, TenantChangeOp};

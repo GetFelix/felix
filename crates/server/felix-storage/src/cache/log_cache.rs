@@ -742,6 +742,21 @@ impl LogCache {
             .retire_stream(&self.root, tenant, namespace, name, incarnation)
     }
 
+    /// The shard and incarnation of every directory of `name` here.
+    pub fn dirs_on_disk(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<(u32, u64)>> {
+        Ok(self
+            .dirs
+            .stream_dirs(&self.root, tenant, namespace, name)?
+            .into_iter()
+            .map(|(shard, incarnation, _)| (shard, incarnation))
+            .collect())
+    }
+
     /// Close every shard of one incarnation of `name`, keeping its
     /// directories. See [`crate::DiskLogProvider::close_incarnation`].
     pub async fn close_incarnation(
