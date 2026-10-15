@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792092519072,
+  "lastUpdate": 1792092761995,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38610,6 +38610,72 @@ window.BENCHMARK_DATA = {
             "range": "383.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 512.00\nmean: 646.40\nstdev: 383.33\ncv: 59.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aeec0b70e9fc03bf057d2c0b57e39ae8b08feb8d",
+          "message": "fix(cluster): close three cluster test races and count lease promotions once opened (#1260)\n\n* fix(placement): age a replica report up to its leader's last heartbeat\n\nA dead leader's last report is the only one its shard will ever get, and\nmeasuring its age against now let it expire, leaving the shard with no\nfollower to promote. Measure up to the reporting leader's last heartbeat\ninstead; a live leader that stops reporting still ages out.\n\nAlso count promotions_opened_total only once gate.open succeeds, and fix\nthe test races found alongside: retention_floor connects every client\nbefore the outage, promotion_fence retries a transient NotReady replay,\nand operator_moves keeps the followers from dialing the destination.\n\nCloses #1250, closes #1256\n\n* fix(placement): freeze a dead leader's report only where promotion fences\n\nA follower named in a frozen report may since have lost its log and\nregistered again, and the control plane cannot tell: registered_at dates\nthe identity, not the incarnation. Freeze the report only once the fleet\nhas finalized generation_start and majority_ack (and fenced_caches for\ncaches), where a promoted shard never opens on the lease and fences a\nmajority before it serves. Elsewhere the report expires as before.\n\nAlso retry only the not_ready refusal in promotion_fence, and say what\nthe promotions-opened counter counts.\n\n* revert(placement): drop the replica report freeze\n\nThe promotion fence counts the promoted node's own log as a vote, so a\nfollower that lost its log after the report can form a majority without\nan acknowledged record. Freezing the report is not safe without knowing\neach follower's incarnation, which needs its own change (#1250).\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: only where promotions_opened_total is recorded moves, after gate.open instead of before; no protocol state or transition changes.",
+          "timestamp": "2026-10-15T19:29:40Z",
+          "tree_id": "81285ff3e8d03ad7c7b67cc383d852eb847d5668",
+          "url": "https://github.com/GetFelix/felix/commit/aeec0b70e9fc03bf057d2c0b57e39ae8b08feb8d"
+        },
+        "date": 1792092758289,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 74.00\nstdev: 1.22\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.80\nstdev: 1.64\ncv: 1.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 117,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 115.80\nstdev: 3.03\ncv: 2.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.00\nstdev: 1.00\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "15.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 223.40\nstdev: 15.88\ncv: 7.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 469,
+            "range": "699.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 469.00\nmean: 790.40\nstdev: 699.44\ncv: 88.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
