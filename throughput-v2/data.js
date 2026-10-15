@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792092521720,
+  "lastUpdate": 1792092764475,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30420,6 +30420,58 @@ window.BENCHMARK_DATA = {
             "range": "871.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 975418.02\nmean: 975478.90\nstdev: 871.58\ncv: 0.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aeec0b70e9fc03bf057d2c0b57e39ae8b08feb8d",
+          "message": "fix(cluster): close three cluster test races and count lease promotions once opened (#1260)\n\n* fix(placement): age a replica report up to its leader's last heartbeat\n\nA dead leader's last report is the only one its shard will ever get, and\nmeasuring its age against now let it expire, leaving the shard with no\nfollower to promote. Measure up to the reporting leader's last heartbeat\ninstead; a live leader that stops reporting still ages out.\n\nAlso count promotions_opened_total only once gate.open succeeds, and fix\nthe test races found alongside: retention_floor connects every client\nbefore the outage, promotion_fence retries a transient NotReady replay,\nand operator_moves keeps the followers from dialing the destination.\n\nCloses #1250, closes #1256\n\n* fix(placement): freeze a dead leader's report only where promotion fences\n\nA follower named in a frozen report may since have lost its log and\nregistered again, and the control plane cannot tell: registered_at dates\nthe identity, not the incarnation. Freeze the report only once the fleet\nhas finalized generation_start and majority_ack (and fenced_caches for\ncaches), where a promoted shard never opens on the lease and fences a\nmajority before it serves. Elsewhere the report expires as before.\n\nAlso retry only the not_ready refusal in promotion_fence, and say what\nthe promotions-opened counter counts.\n\n* revert(placement): drop the replica report freeze\n\nThe promotion fence counts the promoted node's own log as a vote, so a\nfollower that lost its log after the report can form a majority without\nan acknowledged record. Freezing the report is not safe without knowing\neach follower's incarnation, which needs its own change (#1250).\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: only where promotions_opened_total is recorded moves, after gate.open instead of before; no protocol state or transition changes.",
+          "timestamp": "2026-10-15T19:29:40Z",
+          "tree_id": "81285ff3e8d03ad7c7b67cc383d852eb847d5668",
+          "url": "https://github.com/GetFelix/felix/commit/aeec0b70e9fc03bf057d2c0b57e39ae8b08feb8d"
+        },
+        "date": 1792092763848,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 636150.64,
+            "range": "61873.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636150.64\nmean: 656854.35\nstdev: 61873.47\ncv: 9.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 636150.64,
+            "range": "61873.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636150.64\nmean: 656854.35\nstdev: 61873.47\ncv: 9.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 164202.32,
+            "range": "1399.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 164202.32\nmean: 164867.76\nstdev: 1399.41\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1642023.21,
+            "range": "13994.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1642023.21\nmean: 1648677.62\nstdev: 13994.10\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
