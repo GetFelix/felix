@@ -327,7 +327,11 @@ to re-run the harness by hand:
   (`scripts/perf/compare_benchmarks.py`). Running both sides on the same
   runner controls for GitHub Actions' shared/virtualized runner noise far
   better than comparing against a historical stored value. It is advisory
-  only and does not block merging.
+  only and does not block merging. A row is a regression when it is worse by
+  at least 3% with p < 0.05. A row worse by 10% or more that misses
+  significance is marked inconclusive, not passed: at five trials a wide spread
+  hides even a doubling, so rerun that cell with more trials before trusting
+  it. Each row shows the trials' coefficient of variation on both sides.
 - `.github/workflows/perf-publish.yml` runs on every merge to `main`. It runs
   the fast subset, without the large-payload cell, once and publishes it as a historical time series
   (via `benchmark-action/github-action-benchmark`, stored on the
