@@ -222,11 +222,12 @@ break. The breaking ones remove one piece of the design, such as the fence, the
 start record or the read round, and exist to show that piece is load-bearing.
 If one of them stopped finding its violation, the check would fail.
 
-CI runs TLC over every configuration on each code change (`task tla:check`,
-about half an hour on a four-core runner; it needs Java, Docker or Podman). Model
+CI runs TLC when the spec changes (`task tla:check`; it needs Java, Docker or
+Podman): a pull request checks the configurations of ten minutes or less, and
+main checks all of them, about an hour across seven four-core runners. Model
 checking shows the spec is consistent, not that it still describes the code,
 so CI also runs
-`scripts/check_spec_pairing.py`: a change to code the model covers must change
+`scripts/check_spec_pairing.py` on every pull request that changes code: a change to code the model covers must change
 the spec too, or carry a `Spec-Unaffected:` line in a commit message or the PR
 description saying why not. `task tla:pairing` runs that check locally, and
 `scripts/check_spec_evidence.py`, part of `task docs:evidence`, checks that
