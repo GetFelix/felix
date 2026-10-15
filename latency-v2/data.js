@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792090162718,
+  "lastUpdate": 1792092519072,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38544,6 +38544,72 @@ window.BENCHMARK_DATA = {
             "range": "305.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 620.00\nmean: 818.80\nstdev: 305.74\ncv: 37.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7ec40326bb8a8a83c02c4c0a618c57177b459c01",
+          "message": "fix(replication): keep a promoted shard closed until the fleet view is adopted (#1261) (#1262)\n\n* fix(replication): keep a promoted shard closed until the fleet view is adopted (#1261)\n\nfence_one chose the lease fallback from the fleet view without checking\nthat it came from a registration answer. Shard tasks start before\nregistration answers, so a broker promoted early read every fleet feature\nas off: on a fleet that finalized generation_start and majority_ack, an\nunreachable old leader looked like a peer without the fence and the shard\nopened on the lease without fencing a majority.\n\nfence_one now returns Pending until the view is adopted, as group writes\nalready wait in driver/shard.rs. A broker with no fleet (no control\nplane) reads as adopted and keeps the lease path.\n\nSpec-Unaffected: the spec already models a promoted leader under follower acks as always fencing; this makes the broker match it rather than changing the protocol.\n\n* docs(replication): say why waiting for the fleet view costs no availability\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-10-15T19:24:32Z",
+          "tree_id": "c3ef6c11431add504c3af291f8f6136bc6ac79ba",
+          "url": "https://github.com/GetFelix/felix/commit/7ec40326bb8a8a83c02c4c0a618c57177b459c01"
+        },
+        "date": 1792092513906,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 114.60\nstdev: 0.55\ncv: 0.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 153,
+            "range": "3.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.60\nstdev: 3.51\ncv: 2.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "7.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 189.80\nstdev: 7.82\ncv: 4.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 148,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 148.00\nstdev: 1.00\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 312,
+            "range": "7.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 313.40\nstdev: 7.33\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 512,
+            "range": "383.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 512.00\nmean: 646.40\nstdev: 383.33\ncv: 59.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
