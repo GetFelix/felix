@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792092764475,
+  "lastUpdate": 1792094707345,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30472,6 +30472,58 @@ window.BENCHMARK_DATA = {
             "range": "13994.10",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1642023.21\nmean: 1648677.62\nstdev: 13994.10\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b38418f72737934f684b0da737b0023b7c8c5ae6",
+          "message": "fix(groups): check leadership before answering describe and dead letters (#1252) (#1264)\n\ngroup_describe and group_dead_letters read the leader's group state without\nchecking the lease or confirming by a round, so a deposed leader could answer\nfrom stale state. They now use the same check as state_get: a lapsed lease\nrefuses up front where the fleet does not read by round, and the read is\nconfirmed afterwards by a round or the lease. The check moves into two\nhelpers in commit_ops shared by all three reads.\n\nSpec-Unaffected: adds a read-side leadership check in the broker service; the spec models group writes, which are unchanged.",
+          "timestamp": "2026-10-15T20:01:59Z",
+          "tree_id": "7e6c022e789bd57783599afa439e9a24c93302e3",
+          "url": "https://github.com/GetFelix/felix/commit/b38418f72737934f684b0da737b0023b7c8c5ae6"
+        },
+        "date": 1792094706684,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 747686.81,
+            "range": "39271.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 747686.81\nmean: 755108.14\nstdev: 39271.67\ncv: 5.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 747686.81,
+            "range": "39271.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 747686.81\nmean: 755108.14\nstdev: 39271.67\ncv: 5.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 174277.52,
+            "range": "1776.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 174277.52\nmean: 174532.02\nstdev: 1776.01\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1742775.17,
+            "range": "17760.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1742775.17\nmean: 1745320.18\nstdev: 17760.14\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
