@@ -521,6 +521,20 @@ async fn fence_one<R: PeerRequester>(
     route: felix_router::Route,
     marks: &QuorumMarks,
 ) -> (ShardKey, u64, Outcome) {
+    // Before registration answers, the fleet view is empty for want of an
+    // answer and every feature reads as off, so the lease would stand in for
+    // a fence the fleet may already require.
+    if !marks.serving().adopted {
+        let why = "this broker has not yet learned which fleet features are enabled";
+        return (
+            key,
+            route.generation,
+            Outcome::Pending {
+                why: why.into(),
+                took: Vec::new(),
+            },
+        );
+    }
     // Once the followers decide acknowledgements, a shard never opens on the
     // lease alone: the old leader no longer stops writing when its lease does.
     let lease_fallback = !match key.kind {

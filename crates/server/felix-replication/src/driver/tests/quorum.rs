@@ -833,3 +833,53 @@ async fn a_recreate_at_the_same_generation_does_not_inherit_the_mark() {
         "the new log's records were acknowledged at mark {mark} with no follower holding them",
     );
 }
+
+/// **A promoted shard does not open on the lease before the fleet view is
+/// adopted.** Until registration answers, the view is empty and every fleet
+/// feature reads as off, so the old leader's silence would look like a peer
+/// that predates the fence. On a fleet that finalized follower acks that
+/// opens without fencing a majority (#1261).
+#[tokio::test(start_paused = true)]
+async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
+
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let route = router
+        .snapshot()
+        .iter()
+        .find(|(shard, _)| **shard == key())
+        .map(|(_, route)| route.clone())
+        .expect("routed");
+    let dead = UnreachableFollowers {
+        handshake: Duration::from_millis(1),
+    };
+    let fence = |marks: QuorumMarks| {
+        let broker = Arc::clone(&broker);
+        let route = route.clone();
+        let dead = &dead;
+        async move {
+            let (_, _, outcome) = fence_one(dead, &broker, LOCAL, key(), route, &marks).await;
+            outcome
+        }
+    };
+
+    // Finalized on the fleet, not yet adopted here.
+    let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
+    let unadopted = FleetGate::new(names);
+    let outcome = fence(QuorumMarks::with_fleet(Arc::new(unadopted))).await;
+    assert!(
+        matches!(outcome, Outcome::Pending { .. }),
+        "opened before the fleet view was adopted: {outcome:?}",
+    );
+
+    // Adopted, the features keep it off the lease.
+    let adopted = FleetGate::new(names);
+    adopted.restart(names);
+    let outcome = fence(QuorumMarks::with_fleet(Arc::new(adopted))).await;
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+
+    // No fleet at all (no control plane): the lease is still the fallback.
+    let outcome = fence(QuorumMarks::new()).await;
+    assert!(matches!(outcome, Outcome::Lease { .. }), "{outcome:?}");
+}

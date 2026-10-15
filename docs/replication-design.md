@@ -995,6 +995,11 @@ code. The report and the lease leave the write's path:
   shard, or under `fenced_caches` a cache shard, on the lease: a replica that does not offer the fence, or cannot be
   asked, is one that has not answered, and the shard waits for a majority that
   has. An old leader no longer stops at its lease, so a new one must fence.
+  A broker that has not yet taken the enabled set from its registration
+  answer does not know whether it is in such a fleet, so it fences nothing
+  and opens nothing until it has (`Serving::adopted`;
+  `a_promotion_waits_for_the_fleet_view_before_the_lease`). It costs no
+  availability: until registration answers there is no lease to open on either.
 
 Why this is safe without a clock: a newer leader serves only after a majority
 took its generation, and every majority the old leader could count shares a
