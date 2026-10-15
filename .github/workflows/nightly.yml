@@ -268,7 +268,9 @@ jobs:
             echo
             echo "## Unreleased changes"
             echo
-            python3 scripts/changelog_section.py Unreleased
+            # Fold the fragments into a throwaway section so the notes include them.
+            python3 scripts/changelog_assemble.py nightly > /dev/null
+            python3 scripts/changelog_section.py nightly
           } > notes.md
           cat notes.md
 
