@@ -195,7 +195,17 @@ felix_broker_lease_refusals_total           # writes and reads refused after a l
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
 felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
+felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations (start time until one succeeds)
+felix_revocation_feed_poll_errors_total     # failed polls of that feed
 ```
+
+**Alert on `time() - felix_revocation_feed_last_success_seconds`** growing past
+a few sync intervals. While a broker cannot poll the revocation feed it does not
+learn of revocations: a revoked token is still accepted for new sessions until
+it expires (at most one access TTL), and streams it already opened keep running
+until the feed is back. The broker also logs a warning when polls start
+failing and every minute after. See
+[Revocation](/features/security/#revocation).
 
 **Are Kafka clients being served?** Only when the Kafka listener is on
 (`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/features/kafka/)):

@@ -267,23 +267,94 @@ async fn a_fence_behind_the_routing_view_is_refused() {
     );
 }
 
-/// The fence is kept on the shard's own log; naming one of its other logs is
-/// a malformed request, not a smaller fence.
+/// **A stream shard's dead-letter log answers the fence and the fetch**, with
+/// its own end, and only for the leader that fenced it. The new leader takes
+/// the furthest-ahead copy of each group log by these answers.
 #[tokio::test]
-async fn a_fence_names_the_shards_own_log() {
-    let (broker, _dir) = broker_with_storage().await;
+async fn a_group_log_answers_the_fence_and_the_fetch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(
+                felix_broker::DurableStorage::open(dir.path().join("streams"), config.clone())
+                    .expect("storage"),
+            )
+            .with_consumer_groups(
+                Arc::new(
+                    felix_broker::ConsumerGroups::open(dir.path().join("groups"), config.clone())
+                        .expect("groups"),
+                ),
+                Arc::new(
+                    felix_broker::DeadLetters::open(dir.path().join("dead-letters"), config)
+                        .expect("dead letters"),
+                ),
+                std::time::Duration::from_secs(30),
+                3,
+            ),
+    );
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
-
-    let answer = handler
-        .fence(
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let stored = handler
+        .apply(
             SENDER,
-            Fence {
-                log: ReplicaLog::GroupCursors,
-                ..fence(5)
-            },
+            batch(4, 0, &["dl1", "dl2"]),
+            felix_broker::LogKind::GroupDeadLetters,
         )
         .await;
-    assert_eq!(refusal(&answer).code, ErrorCode::Malformed);
+    assert!(
+        matches!(stored, InternalMessage::ReplicateOk(_)),
+        "{stored:?}"
+    );
+    let dead_letters = |generation| Fence {
+        log: ReplicaLog::GroupDeadLetters,
+        ..fence(generation)
+    };
+
+    taken(&handler.fence(SENDER, fence(5)).await);
+    let ok = taken(&handler.fence(SENDER, dead_letters(5)).await);
+    assert_eq!((ok.log_end, ok.last_generation), (2, 4));
+
+    let InternalMessage::ReplicateDeadLetterRecords(records) = handler
+        .fetch(
+            SENDER,
+            felix_wire::internal::ReplicateFetch {
+                log: ReplicaLog::GroupDeadLetters,
+                ..fetch(5, 1)
+            },
+        )
+        .await
+    else {
+        panic!("expected the dead-letter log's records");
+    };
+    assert_eq!(records.payloads, vec![Bytes::from_static(b"dl2")]);
+    assert_eq!(
+        refusal(
+            &handler
+                .fetch(
+                    SENDER,
+                    felix_wire::internal::ReplicateFetch {
+                        log: ReplicaLog::GroupDeadLetters,
+                        ..fetch(4, 1)
+                    }
+                )
+                .await
+        )
+        .code,
+        ErrorCode::FencedEpoch
+    );
+    // A group fence older than the stream's is refused: the stream's log is
+    // where the shard's fence is kept.
+    assert_eq!(
+        refusal(&handler.fence(SENDER, dead_letters(4)).await).code,
+        ErrorCode::FencedEpoch
+    );
 }
 
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {

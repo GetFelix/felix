@@ -64,6 +64,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     ATOMIC_COMMIT,
     PUBLISHER_PRINCIPAL,
     FENCED_CACHES,
+    GROUP_CURSOR_DEPENDENCIES,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -113,6 +114,12 @@ pub const ATOMIC_COMMIT: FleetFeature = FleetFeature::new("atomic_commit");
 /// older build refuses, so it waits for the whole fleet. See
 /// `docs/protocol.md` ("Publisher").
 pub const PUBLISHER_PRINCIPAL: FleetFeature = FleetFeature::new("publisher_principal");
+
+/// A consumer group's cursor records the dead-letter log it needs beneath it,
+/// so a cursor left without its dead letters is put back rather than served.
+/// An older build refuses such a cursor value, so it waits for the whole
+/// fleet. See `docs/storage-format.md` ("Consumer-group cursor values").
+pub const GROUP_CURSOR_DEPENDENCIES: FleetFeature = FleetFeature::new("group_cursor_dependencies");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

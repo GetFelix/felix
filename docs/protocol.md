@@ -980,6 +980,41 @@ answer is byte-identical to what a broker sent before the field existed. A
 client that routes keyed publishes itself must use it, or it computes a
 different shard than the broker does.
 
+### PublishWidth
+```
+{ "type": "publish_width", "tenant_id": "<string>", "namespace": "<string>",
+  "stream": "<string>", "shards": <u32>, "routing": "jump_hash" }
+```
+
+Sent only to a broker that advertised `FEATURE_PUBLISH_WIDTH`, on a control
+stream that carries publishes. No answer.
+
+The width the client routed the keyed batches that follow to `stream` by: the
+`stream_shards_view` it holds. `routing` is absent for `modulo`, as there.
+
+A client picks the publish stream for each key from that width, one writer per
+shard. If the stream is deleted and created again at another width, a client
+that has not heard keeps the old one, and two keys that now share a shard can
+go out on two writers, reaching the shard in either order. So the broker holds
+the last `publish_width` per control stream and checks every keyed batch to
+the stream it names (`publish_batch`, `publish_idempotent` and the binary batch
+frames) against its own routing snapshot. A batch whose declared width or
+mapping differs is not written: refused with `stale_width` when acknowledged,
+dropped when not. Unkeyed batches, single `publish` messages and batches to
+other streams are not checked, and neither is a stream the snapshot does not
+know (a deleted one is answered `not_found` as before) or any stream on a
+broker with no cluster, where every stream is one shard.
+
+A client sends one ahead of a keyed batch whenever the width differs from the
+last one that control stream carried, so a stream with one shard's publishes
+on it sends one once. It does not send one for a width it could not learn: it
+then keeps the stream on one writer, which needs no check. Because a
+fire-and-forget publish hears no refusal, the Rust client also asks
+`stream_shards` again every 5 seconds (plus up to a second of jitter) while it
+publishes to a stream, pipelined over one long-lived control stream per
+client and matched by `request_id`, and gives up a re-ask after 2 seconds. Only a broker that advertised the bit on
+that very control stream is sent `publish_width`.
+
 ### CacheShards
 ```
 { "type": "cache_shards", "tenant_id": "<string>", "namespace": "<string>",
@@ -1828,6 +1863,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 |---|---|---|
 | `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info` and `subscriptions_list` with `subscriptions_list_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) and [SubscriptionsList](#subscriptionslist) |
 | `0x2` | `FEATURE_STREAM_DELETED` | The client reads `stream_deleted` at the end of an event stream. See [StreamDeleted](#streamdeleted-server---client) |
+| `0x4` | `FEATURE_PUBLISH_WIDTH` | The broker takes `publish_width` and refuses a keyed batch routed by a width the stream does not have with `stale_width`. See [PublishWidth](#publishwidth) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1914,8 +1950,8 @@ would fail the whole `auth`, which a client cannot avoid because it does not
 know the broker's age until the answer comes back. An unknown field it simply
 ignores.
 
-`FEATURE_INSPECT` is the first feature in the second word and
-`FEATURE_STREAM_DELETED` the second. The Rust constants are
+`FEATURE_INSPECT` is the first feature in the second word,
+`FEATURE_STREAM_DELETED` the second and `FEATURE_PUBLISH_WIDTH` the third. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.
@@ -1973,6 +2009,8 @@ client MUST act on the class it received, not on this table.
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
 | `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. Also sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. A client that does not know the code sees an unknown code with `retry`. |
 | `revoked` | `fatal` | 16 | The credential was revoked: its principal, or the actor of a delegated token, was revoked after the token was issued. | In answer to `auth` with such a token. Also as the last frame of an open stream when the revocation reaches the broker: an `error` on a control stream, which is then closed, and on the event stream of a subscription or cache watch. A token minted after the revocation may still be accepted, so a client with a token provider can authenticate again. A client that does not know the code sees an unknown code with `fatal`; a client without `FEATURE_ERROR_CODES` gets the `error` with the text `credential revoked`. |
+
+| `stale_width` | `retry` | 17 | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | A keyed batch to the stream named by the client's last `publish_width` on that control stream, when the width or mapping it names differs from the broker's routing snapshot: the stream was most likely deleted and created again. Ask `stream_shards` again before retrying. Only a client that sent `publish_width` can get it. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 

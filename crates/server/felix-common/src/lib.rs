@@ -22,6 +22,8 @@
 //!   shared by the broker's listeners and the control plane's. Behind the
 //!   `tls` feature.
 //! - [`ids`] and [`Error`] — the region id and its parse error.
+//! - [`yaml`] — the rules both services read their config files by. Behind
+//!   the `yaml` feature.
 
 pub mod clock;
 pub mod env_registry;
@@ -37,5 +39,9 @@ pub mod lifecycle;
 pub mod membership;
 #[cfg(feature = "tls")]
 pub mod tls;
+// Also under `test`, so `cargo test -p felix-common` runs its tests without
+// the feature; the dev-dependency supplies serde-saphyr.
+#[cfg(any(feature = "yaml", test))]
+pub mod yaml;
 
 pub use error::{Error, Result};

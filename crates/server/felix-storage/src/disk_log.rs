@@ -462,9 +462,11 @@ impl DiskLog {
     /// loss this log can prevent.
     pub async fn reset_to(&self, base_offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
@@ -507,9 +509,11 @@ impl DiskLog {
     /// it again is a no-op.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
@@ -1016,9 +1020,11 @@ impl AppendOnlyLog for DiskLog {
     fn truncate(&self, offset: Offset) -> BoxFuture<'_, Result<()>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            let fence = inner.fence_rolls().await?;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {
+                let _fence = fence;
                 // Before the append lock: an offload pass takes it before
                 // the segment lock, and so must everything else.
                 let mut manifest = operation.manifest.lock();

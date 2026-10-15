@@ -293,12 +293,13 @@ impl ClusterClient {
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let err = match request(self.client().await).await {
+        let client = self.client().await;
+        let err = match request(Arc::clone(&client)).await {
             Ok(answer) => return Ok(answer),
             Err(err) if !wants_reconnect(&err) => return Err(err),
             Err(err) => err,
         };
-        if let Err(reconnect_err) = self.reconnect().await {
+        if let Err(reconnect_err) = self.reconnect(&client).await {
             return Err(err.context(format!(
                 "request failed and no other broker answered: {reconnect_err:#}"
             )));

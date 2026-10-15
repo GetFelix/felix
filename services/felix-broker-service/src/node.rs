@@ -187,6 +187,17 @@ where
     } else if config.record_publishers {
         broker.record_publishers_when(|| true);
     }
+    // A cursor that carries its dependency is a value an older build refuses,
+    // so a cluster waits for its fleet. A lone broker writes them from the
+    // start: it has no older replica to read them.
+    if config.membership.is_some()
+        && let Some(groups) = broker.consumer_groups()
+    {
+        let fleet = Arc::clone(&fleet);
+        groups.record_dependencies_when(move || {
+            fleet.supports(felix_common::fleet::GROUP_CURSOR_DEPENDENCIES)
+        });
+    }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
     // has passed; see `replication::quorum::committed_bound`.
     if let Some(ingress) = &ingress_router {

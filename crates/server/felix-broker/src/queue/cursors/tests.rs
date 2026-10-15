@@ -198,3 +198,75 @@ async fn a_commit_cancelled_before_its_write_started_is_not_overwritten() {
         Some(100)
     );
 }
+
+/// The raw value stored for `G`.
+async fn raw(groups: &ConsumerGroups) -> bytes::Bytes {
+    groups
+        .cursors
+        .get_settled_checked(T, NS, S, 0, G)
+        .await
+        .expect("read")
+        .expect("a value")
+}
+
+/// **A cursor written before the dependency, eight bytes of offset, is read
+/// as needing no dead letter**, and keeps its offset as its origin.
+#[test]
+fn a_cursor_from_before_the_dependency_needs_nothing() {
+    let stored = Stored::decode(&42u64.to_be_bytes()).expect("decode");
+
+    assert_eq!(stored, Stored::placed(42));
+    assert_eq!(stored.requires.end, 0);
+}
+
+/// **The dependency round-trips, and any other length is refused** rather
+/// than read as an offset nobody chose.
+#[test]
+fn a_cursor_value_round_trips_and_a_stray_length_is_refused() {
+    let stored = Stored {
+        offset: 7,
+        requires: DeadLetterMark {
+            end: 3,
+            generation: 5,
+        },
+        origin: 2,
+    };
+
+    assert_eq!(
+        Stored::decode(&stored.encode(true)).expect("decode"),
+        stored
+    );
+    assert_eq!(stored.encode(true).len(), 33);
+    assert!(Stored::decode(&[0; 12]).is_err());
+    let mut wrong_tag = stored.encode(true).to_vec();
+    wrong_tag[0] = 9;
+    assert!(Stored::decode(&wrong_tag).is_err());
+}
+
+/// **Until the fleet allows it, a cursor is written as an older build reads
+/// it**: the offset alone.
+#[tokio::test]
+async fn without_dependencies_a_cursor_is_eight_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let groups = groups(dir.path());
+    groups.record_dependencies_when(|| false);
+
+    groups.commit(T, NS, S, 0, G, 42).await.expect("commit");
+
+    assert_eq!(&raw(&groups).await[..], &42u64.to_be_bytes());
+}
+
+/// **With them, a commit carries what it needs**, here nothing, and the
+/// group's origin moves with a commit that needs nothing.
+#[tokio::test]
+async fn with_dependencies_a_cursor_carries_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let groups = groups(dir.path());
+
+    groups.commit(T, NS, S, 0, G, 42).await.expect("commit");
+
+    assert_eq!(
+        Stored::decode(&raw(&groups).await).expect("decode"),
+        Stored::placed(42)
+    );
+}

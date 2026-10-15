@@ -9,7 +9,9 @@
 //! Durable, and written before the group's cursor moves past the record. The
 //! other order would let a crash in between leave the cursor beyond a record
 //! nothing says was ever attempted, which is a silent skip rather than a
-//! dead letter.
+//! dead letter. The two logs flush separately, so the cursor also records
+//! how far this log reached (see `cursors`), and is put back before it is
+//! served if this log no longer reaches that far.
 //!
 //! A key → latest-value projection again, like the cursors themselves. **One
 //! log per stream shard**, exactly as the cursors are shaped, with the group
@@ -317,6 +319,29 @@ impl DeadLetters {
             .map_err(BrokerError::from)
     }
 
+    /// Where this shard's dead-letter log ends and the generations that wrote
+    /// it, synced first: what a cursor written next may need beneath it, or
+    /// what a stored cursor is checked against.
+    pub(crate) async fn synced_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<super::cursors::DeadLetterLog> {
+        let log = crate::durable::StreamLog::from_log(
+            self.shard_log(tenant_id, namespace, stream, shard).await?,
+        );
+        let end = log.tail_offset().await?;
+        if log.unsynced_bytes() > 0 {
+            log.sync().await?;
+        }
+        Ok(super::cursors::DeadLetterLog {
+            end,
+            epochs: log.generations(),
+        })
+    }
+
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent.
     pub async fn shard_log_at(
         &self,
@@ -328,6 +353,21 @@ impl DeadLetters {
     ) -> Result<felix_storage::disk_log::DiskLog> {
         self.entries
             .shard_log_at(tenant_id, namespace, stream, shard, base_offset)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Forget what was read from a shard's log, for replication after it cut
+    /// records from it. The next read replays the log.
+    pub(crate) async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        self.entries
+            .forget_index(tenant_id, namespace, stream, shard)
             .await
             .map_err(BrokerError::from)
     }

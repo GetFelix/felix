@@ -844,6 +844,64 @@ impl AuthStore for RaftStore {
         .map(|_| ())
     }
 
+    async fn change_auth(
+        &self,
+        tenant_id: &str,
+        change: crate::store::AuthChange,
+        revocation: Option<crate::store::Revocation>,
+    ) -> StoreResult<()> {
+        use crate::store::AuthChange;
+        let Some(revocation) = revocation else {
+            return match change {
+                AuthChange::RemovePolicy(policy) => {
+                    self.remove_rbac_policy(tenant_id, policy).await
+                }
+                AuthChange::RemoveGrouping(grouping) => {
+                    self.remove_rbac_grouping(tenant_id, grouping).await
+                }
+                AuthChange::UpsertIssuer(issuer) => self.upsert_idp_issuer(tenant_id, issuer).await,
+                AuthChange::DeleteIssuer(issuer) => {
+                    self.delete_idp_issuer(tenant_id, &issuer).await
+                }
+            };
+        };
+        let command = MetaCommand::ChangeAuthAndRevoke {
+            tenant_id: tenant_id.to_string(),
+            change,
+            revocation,
+        };
+        if self.handle.cluster_version().await < command.version() {
+            // Some member predates the combined entry: the change, then the
+            // revocation, as that member's build does.
+            let MetaCommand::ChangeAuthAndRevoke {
+                change, revocation, ..
+            } = command
+            else {
+                unreachable!("built above")
+            };
+            self.change_auth(tenant_id, change, None).await?;
+            return match self
+                .revoke_principals(tenant_id, revocation.principal_ids, revocation.revoked_at)
+                .await
+            {
+                // Below level 7 nothing can record a revocation; the change
+                // stands, as it did before revocations existed.
+                Err(StoreError::Conflict(what)) => {
+                    tracing::warn!(
+                        tenant_id,
+                        reason = %what,
+                        "made an auth change but cannot record its revocation until every \
+                         member is upgraded; the sessions it reached keep their rights \
+                         until their tokens expire",
+                    );
+                    Ok(())
+                }
+                other => other,
+            };
+        }
+        self.propose(command).await.map(|_| ())
+    }
+
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
         self.local().get_tenant_signing_keys(tenant_id).await
     }
@@ -995,6 +1053,59 @@ impl AuthStore for RaftStore {
         }
     }
 
+    async fn peek_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+    ) -> StoreResult<Option<RefreshToken>> {
+        // On the leader: a token minted through another member a moment ago
+        // may not be applied here yet.
+        match self
+            .ask_leader(LeaderRequest::PeekRefreshToken {
+                tenant_id: tenant_id.to_string(),
+                token_id: token_id.to_string(),
+            })
+            .await?
+        {
+            Some(MetaResponse::RefreshToken { token }) => Ok(token),
+            Some(_) => Err(unexpected_shape("refresh token")),
+            None => self.local().peek_refresh_token(tenant_id, token_id).await,
+        }
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+        now_secs: i64,
+        next: RefreshToken,
+    ) -> StoreResult<RefreshTokenTake> {
+        let command = MetaCommand::RotateRefreshToken {
+            tenant_id: tenant_id.to_string(),
+            token_id: token_id.to_string(),
+            now_secs,
+            next,
+        };
+        if self.handle.cluster_version().await < command.version() {
+            // Some member predates the combined entry: spend, then insert, as
+            // that member's build does.
+            let MetaCommand::RotateRefreshToken { next, .. } = command else {
+                unreachable!("built above")
+            };
+            let take = self
+                .take_refresh_token(tenant_id, token_id, now_secs)
+                .await?;
+            if matches!(take, RefreshTokenTake::Taken(_)) {
+                self.insert_refresh_token(next).await?;
+            }
+            return Ok(take);
+        }
+        match self.propose(command).await? {
+            MetaResponse::RefreshTokenTake { take } => Ok(take),
+            _ => Err(unexpected_shape("refresh token take")),
+        }
+    }
+
     async fn revoke_refresh_family(&self, tenant_id: &str, family_id: &str) -> StoreResult<u64> {
         match self
             .propose(MetaCommand::RevokeRefreshFamily {
@@ -1062,9 +1173,38 @@ impl AuthStore for RaftStore {
         tenant_id: &str,
         principal_id: &str,
     ) -> StoreResult<Option<i64>> {
-        self.local()
-            .principal_revoked_at(tenant_id, principal_id)
-            .await
+        Ok(self
+            .principals_revoked_at(tenant_id, &[principal_id.to_string()])
+            .await?
+            .pop()
+            .flatten())
+    }
+
+    /// Read on the leader, so the answer includes every revocation already
+    /// acknowledged, not only those this member has applied. Falls back to
+    /// the local state while the leader predates the request.
+    async fn principals_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_ids: &[String],
+    ) -> StoreResult<Vec<Option<i64>>> {
+        match self
+            .ask_leader(LeaderRequest::RevocationCutoffs {
+                tenant_id: tenant_id.to_string(),
+                principal_ids: principal_ids.to_vec(),
+            })
+            .await?
+        {
+            Some(MetaResponse::RevokedAt { cutoffs }) if cutoffs.len() == principal_ids.len() => {
+                Ok(cutoffs)
+            }
+            Some(_) => Err(unexpected_shape("revocation cutoffs")),
+            None => {
+                self.local()
+                    .principals_revoked_at(tenant_id, principal_ids)
+                    .await
+            }
+        }
     }
 }
 

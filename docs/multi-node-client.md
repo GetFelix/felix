@@ -32,10 +32,10 @@ config.auth_token = Some(std::env::var("FELIX_TOKEN")?);
 // For a long-running client, set `config.token_provider` so reconnects get a
 // fresh token. See docs/auth.md.
 
-// Every broker you know of. One is enough; see "Discovery" below.
-let seeds = ["10.0.0.4:5000".parse()?, "10.0.0.5:5000".parse()?];
+// A name, or every broker you know of. One is enough; see "Discovery" below.
+let seeds = ["felix.prod.svc.cluster.local:5000".parse()?];
 
-let client = ClusterClient::connect_with_policy(
+let client = ClusterClient::connect_seeds(
     &seeds,
     "broker.internal",
     config,
@@ -56,8 +56,10 @@ client
 # }
 ```
 
-`ClusterClient::connect` uses the default policy, which is the same thing
-without the `deadline`.
+A seed is a `Seed`: an address, or a `host:port` name, which `"...".parse()`
+tells apart. `ClusterClient::connect` and `connect_with_policy` take plain
+`SocketAddr`s and the default policy, which is the same thing without the
+`deadline`. Prefer names: see "When every broker moves" below.
 
 ## Connections
 
@@ -102,9 +104,10 @@ them to what it will try.
 - An empty answer is normal on a single-node deployment. It is not an error.
 - A broker may advertise a DNS name. The client resolves it when it is
   handed it, at discovery, in a redirect, or as a shard or cache owner, so a
-  reconnect picks up a broker that moved to a new IP. It checks that broker's
-  certificate against the name rather than the seeds' server name. A name
-  that does not resolve is logged and left out.
+  broker that moved to a new IP is found at its new one the next time any
+  broker that still answers names it. It checks that broker's certificate
+  against the name rather than the seeds' server name. A name that does not
+  resolve is logged and left out.
 
 `ClusterClient::endpoints()` returns everywhere the client would try, seeds
 included. `refresh_topology()` asks again on demand; you do not normally need
@@ -112,6 +115,55 @@ it, because reconnecting already does.
 
 Still configure more than one seed if you can. Discovery needs *some* broker to
 answer before it can tell you about the others.
+
+### When every broker moves
+
+Discovery only helps while some broker the client knows still answers. A
+rollout that restarts every pod at once gives every broker a new IP, and then
+no address the client holds will answer again.
+
+So when a reconnect has tried every address in hand and none answered, the
+client resolves names again and dials whatever is new:
+
+- every seed given as a `host:port` name, keeping every address it resolves to,
+  so a headless service name stands for all of its pods;
+- every name brokers advertised in the last discovery answer.
+
+The addresses that just failed are dropped and the new ones kept, beside any
+seed given as an IP. Discovery then runs against the broker that answered, as
+after any reconnect.
+
+Resolution runs at most once a second for a client and every identity derived
+from it with `with_identity`. A reconnect that needs one while another is
+running waits for that answer, and a caller that gives up waiting does not
+cancel it. So a client whose cluster is down asks DNS at most once a second
+however many operations are failing or being cancelled. The reconnect
+policy's backoff paces each operation as usual.
+
+Every name is looked up at the same time, and each gets 2 s before it counts
+as not resolving. The lookups run without holding the lock every operation
+takes to read the client in use, so other operations are not stalled
+meanwhile. A resolver that has stopped answering costs a reconnect at most 2 s
+for this resolution and 2 s more for resolving the names in the discovery
+answer that follows, which are also looked up at the same time. A system
+lookup that has timed out keeps its thread until the resolver answers. Each
+name has at most one system lookup running: a later caller for the same name
+waits on it instead of starting another, and a name whose lookup hangs never
+stops another name resolving.
+
+A seed name that stops resolving keeps the addresses it last resolved to, as
+seeds, while the other names move on.
+
+A reconnect replaces the client only if it is still the one the failing
+operation used. When several operations fail on the same broker at once, the
+first replaces it and the rest find the replacement and use it.
+
+The addresses are tried in order, one after another, with the broker that just
+failed last. A refusal moves on at once; an address that drops packets costs
+the QUIC idle timeout (6 s by default) before the next is tried.
+
+A client given only IP seeds, against brokers that advertise only IPs, has
+nothing to resolve and stays stranded until it is rebuilt. Give it a name.
 
 ## Failover
 
@@ -396,7 +448,7 @@ it (see "Error codes" in `docs/protocol.md`):
 | Class | Codes (usually) | `publish_at_least_once`, idempotent producer | `publish` |
 | --- | --- | --- | --- |
 | `fatal` | `unauthenticated`, `forbidden`, `invalid_request`, `limit_exceeded` | Returned at once, marked "not retried" | Returned |
-| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_claim` (group acks only; never reroutes) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
+| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_claim` (group acks only; never reroutes), `stale_width` (never reroutes; the client and the `ClusterClient` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
 | `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | Returned |
 | `outcome_unknown` | `quorum_timeout`, `leadership_lost`, `unacknowledged`, `internal`, `storage` | Sent again: that is what at-least-once means, and the idempotent producer's sequence makes it safe | **Returned, never sent again** |
 

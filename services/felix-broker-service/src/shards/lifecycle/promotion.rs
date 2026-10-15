@@ -98,6 +98,26 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                 logs
             }
         };
+        // The group logs carry the generation too, so the next promotion
+        // ranks their copies as it ranks the records. No start record: no
+        // mark counts on them.
+        if key.kind == crate::shards::ShardKind::Stream && self.broker.group_reader().is_some() {
+            for kind in super::GROUP_LOGS {
+                let recorded = match self
+                    .broker
+                    .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+                {
+                    Some(log) => record_term_start(&log, key, generation, true).await,
+                    None => Err(anyhow::anyhow!("could not open the {kind:?} log")),
+                };
+                if let Err(err) = recorded {
+                    tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
+                        "could not record where this leadership begins on a group log; not serving yet");
+                    return false;
+                }
+            }
+        }
         for log in &logs {
             if let Err(err) = record_term_start(log, key, generation, start_record).await {
                 tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,

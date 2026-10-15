@@ -8,6 +8,7 @@ mod commit_ack;
 mod control_batch;
 mod control_binary;
 mod control_message;
+mod declared_width;
 mod group_commit;
 mod idempotent_acks;
 mod ingress;

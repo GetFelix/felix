@@ -11,6 +11,219 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Security
+- A revoked gateway can no longer delegate with a `felix-controlplane` token
+  it got before the revocation (#1205). `/token/delegate` checked the
+  revocation cutoffs against the user's token only, and trusted
+  `token.delegate` from the caller's token, which stays valid for its TTL. Now
+  `/token/delegate` and `actor_token` on `/token/exchange` refuse, with
+  `actor_refused`, a gateway whose token predates a revocation of it or that
+  current RBAC no longer grants `token.delegate`. A refresh of a user chain
+  bound to a gateway is refused, and the chain ended, once RBAC no longer
+  grants the gateway `token.delegate`.
+- Revocation cutoffs are read on the Raft leader when minting or delegating,
+  so a member that has not applied a revocation yet no longer mints past it.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts (an
+  audience dropped, the subject or groups claim changed, or `jwks_url` or
+  `discovery_url` changed), revokes the tenant's sessions, as removing a rule
+  that reached an IdP group does. Adding an audience revokes nobody.
+
+### Changed
+- **YAML parser: `serde_yaml_ng` replaced by `serde-saphyr` (#1211).** The broker,
+  control plane and `felix-client` read their config files with
+  `serde-saphyr` 1.3, a pure-Rust parser. `serde_yaml_ng` pulled in
+  `unsafe-libyaml`, which is unmaintained (RUSTSEC-2024-0449). `felix-client`
+  users get the new dependency in place of `serde_yaml_ng`. A config file that
+  loaded before loads to the same values, and the 1.1 spellings that were
+  refused still are: `yes`/`no`/`on`/`off` for a boolean, `0777`, a `<<` merge
+  key, a duplicate key, an unknown key. Some inputs behave differently:
+  - Now accepted: a quoted number or boolean (`max_frame_bytes: "1024"`,
+    `ack_on_commit: "true"`), `1_000`, a file that is only `~` or `null`, and
+    a tab before the first key.
+  - Now refused: an explicit tag that contradicts the setting's type
+    (`!!str 5` for a number, `!!int "5"` for a string); a tag the parser does
+    not know (`!custom x`, which used to read as `x`); and a bare or
+    null `tls.cert_path`/`key_path` in the control plane file (`cert_path:` or
+    `cert_path: ~`), which used to be read as the path `""` or `~`. A quoted
+    `cert_path: ''` is still accepted, as before. `!!binary` on a string
+    setting is still kept as written, not decoded.
+  - Parse errors name the key and give a line and column. A wrong-typed
+    value is no longer quoted, since it could be a token; an unknown enum
+    value still is.
+  - `--print-config` puts double quotes, not single quotes, around strings
+    that need them, and also quotes `yes` and `1_000`. The output still reads
+    back to the same values.
+- An auth change that takes rights back (an RBAC rule removed, an issuer
+  deleted or narrowed) and its revocation are one store write: one Raft entry
+  (metadata level 9) or one Postgres transaction. A failed request changed
+  nothing and is safe to retry. Below level 9 the Raft proposer writes them
+  separately, as before.
+- `/token/refresh` does its store reads before spending the refresh token, and
+  spends it in the same write that stores the replacement (Raft level 9), so a
+  failed refresh no longer turns the client's retry into a replay that ends
+  the chain.
+- `/token/delegate` reads the subject's and the caller's revocation cutoffs in
+  one leader read.
+- A spent refresh token presented again with the right secret within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default; 0 turns it off) of its
+  rotation, while its replacement is unused, gets a working token instead of
+  revoking the chain. This covers a refresh whose answer was lost and two
+  concurrent refreshes. Replay detection is blind for that window. Postgres
+  migration `0027_refresh_token_rotation`; under Raft, metadata level 9.
+- Deleting an IdP issuer the tenant does not have answers `404` and revokes
+  nobody.
+
+**Upgrade note.** A Raft control plane needs every member at metadata level 9
+before auth changes and their revocations, and refresh rotations, are single
+entries.
+
+### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+
+### Fixed
+- The power-loss test model no longer mixes up a file with an earlier one that
+  had the same inode number (#1221). A file created after another was deleted
+  could get its inode number, and the model then spliced the new file's bytes
+  onto the old one's, or gave a deleted name whose unlink was not flushed the
+  new file's bytes after a crash. Files are now told apart by birth time and
+  inode generation as well.
+- A broker following the control plane's catalog no longer misses tenant,
+  namespace, stream or cache changes (#1224). Three ways to lose one are
+  closed, on Postgres and in memory: a snapshot now reads its items and its
+  `next_seq` at one point, so a delete landing between the two reads is no
+  longer counted but unseen; Postgres hands out each change table's `seq` in
+  commit order, so a reader can no longer pass a change that is still
+  committing; and a full page of changes (`FELIX_CONTROLPLANE_CHANGES_LIMIT`,
+  1000 by default) answers with the seq after its last change instead of the
+  feed's tail, which skipped everything past the first page. The node and
+  shard-assignment feeds had the same page bug and are fixed too. Brokers now
+  follow each feed page by page within a sync pass, up to 64 pages. The wire
+  format is unchanged; an older broker against a fixed control plane catches
+  up one page per sync interval.
+- A broker no longer moves a change-feed cursor backwards (#1224). On Raft a
+  control-plane member answers from its own applied state, so a broker whose
+  request reached a lagging member could replay changes it had already applied
+  (a stale delete removing a stream created again since) or, for shard
+  assignments, re-snapshot onto the member's older view. The catalog sync and
+  the shard watch now ignore an answer from behind what they applied and ask
+  again. Once a feed has answered from behind for 60 s it is taken as reset,
+  and the broker takes a new snapshot of it.
+- A Postgres catalog write that waits more than 5 s for other writes to the
+  same change feed now gives up with a retryable 503 `unavailable`, and writes
+  queued in one control-plane instance no longer hold pooled connections while
+  they wait, so a long cascading delete cannot starve reads (#1224). The
+  commit-order guarantee holds once every control-plane instance runs this
+  release. A Postgres write that gives up waiting answers 503
+  `busy` (nothing written, safe to retry); `felixctl` retries only `busy`, up
+  to three times over about two seconds. A Raft 503 `unavailable` may have
+  committed, so it is not retried.
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
+- A `ClusterClient` recovers when every broker changes IP at once, as in a
+  rollout that restarts every pod (#1227). Reconnect dialled only the addresses
+  it already held, and discovery needs one of them to answer, so the client
+  failed every operation until it was rebuilt. When none of them answers, it
+  now resolves its seed names, and the names brokers last advertised, again
+  and dials the new addresses. The names are looked up at the same time, each
+  bounded to 2 s, without holding the lock every operation reads the client
+  through, and at most once a second for a client and the identities derived
+  from it, including when callers give up waiting. Discovery's names are
+  looked up the same way. A seed name that stops resolving keeps its last
+  addresses. felixctl and the
+  Python, TypeScript and C clients pass the configured `host:port` through as
+  a name instead of resolving it once at startup; a name that does not
+  resolve at connect is still refused as an invalid argument.
+- A `ClusterClient` reconnect replaces the client only if it is still the one
+  the failing operation used. Every operation that failed on the same broker
+  used to throw away whatever client was in place, including a fresh
+  replacement, and dial again with the endpoint list it had read before
+  waiting for the lock.
+- A history campaign client no longer keeps publishing over a connection to
+  brokers that restarted on new ports (#1223). A successful read or cache op,
+  which opens its own connection, reset the client's count of failures in a
+  row, so a client could spend most of the outage campaign waiting out 10 s
+  publish timeouts, and the campaign fell short of its floor of cache puts.
+  A failed op over the connection now reconnects at once when the address
+  book changed since the client connected, and only ops over the connection
+  count toward reconnecting.
+- The power-loss test model no longer loses a sync it saw (#1218). When two
+  flushes of one file overlapped, the one that read the file first could
+  record its read last, so the model held less than the device would. A flush
+  that read the active segment just before a background roll retired it could
+  undo the seal's sync of that segment, and the nightly sweep then built
+  crashes that cut a sealed segment short and failed when recovery refused
+  them. Each capture now takes a ticket before it reads, and an older read
+  never replaces a newer one. Storage itself is unchanged.
+- A client can no longer split one shard across two writers by routing with
+  the width of a stream that was deleted and created again at another width
+  (#1067). The client declares the width it routed each keyed batch by in a
+  new `publish_width` message, sent once per width per publish stream, and a
+  broker advertising the new extended feature `FEATURE_PUBLISH_WIDTH` refuses
+  a keyed batch routed by a width the stream does not have: acknowledged
+  publishes fail with the new error code `stale_width` (`retry`, 17), and the
+  client drops the width so the retry asks for the current one;
+  fire-and-forget publishes are dropped. Against such a broker the Rust
+  client also asks a stream's width again every 5 seconds while it publishes
+  to it, so a fire-and-forget or idle client catches up. A `ClusterClient`'s
+  widths and an idempotent producer's numbering follow the same rules, and
+  their batches are declared by the width that routed or numbered them. Under
+  a new width a producer starts the stream's sequences again under a fresh
+  producer id for that stream, except while a batch on it is in doubt: that
+  batch keeps the width and id it was numbered by until it settles, and a
+  re-send under a width that has since gone is refused with an error saying
+  so. The new `IdempotentProducer::abandon_in_doubt(tenant, namespace, stream)`
+  gives such batches up and numbers the stream afresh under a new id; an
+  abandoned batch may land twice. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
+  id a stream's batches go out under. Older brokers and
+  clients exchange the frames they always did.
+- `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
+  silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
+  in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit (#1200).
+- A consumer group could pass a record that was neither finished nor listed
+  as dead. The dead letter is written before the cursor passes the record,
+  but replication shipped cursors first, the two logs flush separately, and
+  a follower's dead letters can be replaced by a newer leader's, so a copy
+  could hold a cursor without the dead letter it relied on and serve it once
+  promoted. Each cursor now records the dead-letter log it needs (its end
+  and the generation that wrote it) and the group's origin; dead letters
+  are synced before a cursor that needs them; and before a broker serves a
+  shard's groups, a cursor that no longer stands is put back to the latest
+  one that does or to its origin, never removed. Dead letters ship before
+  cursors. A promoted stream leader fences both group logs in one round
+  beside its records, takes the dead-letter log of the replica furthest
+  ahead and merges that replica's cursors into its own, on replicas that
+  offer the new internal capability `GROUP_FENCE` (`1 << 8`). Group logs
+  carry generation labels like the records, and a `Quorum` stream's report
+  leaves out a follower short of the pair a majority holds. The cursor
+  value is a new 33-byte layout, written once the fleet finalizes the new
+  `group_cursor_dependencies` feature, and by a single broker from the
+  start; an older build cannot read it (#1202).
+
+### Documentation
+- Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
+  `FELIX_SUB_QUEUE_MAX_BYTES` or its largest batch, whichever is larger, and with the
+  per-subscriber bound at `0` only queue capacity times batch size limits it; the docs now
+  say so and recommend setting the total in production. They also say that under `block` one subscriber that stops reading holds
+  a shard's publishers with no timeout, and that the replay ring and cache watch queues are
+  bounded by entry count only (#1201).
+- The replication design no longer says a lagging non-successor follower is skipped while
+  a shard drains: it is not gated on, but the drained pass still ships to it and waits.
+
 ## [0.6.0-preview.7] - 2026-10-11
 
 The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded

@@ -56,6 +56,18 @@ pub struct RefreshToken {
     /// written before it was recorded, which refresh to full RBAC rights.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrowing: Option<Narrowing>,
+    /// Set when a refresh spent this token: when, and the token that
+    /// replaced it. What lets a retry within the reuse grace window be told
+    /// apart from a replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotated: Option<Rotation>,
+}
+
+/// How a spent refresh token was replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rotation {
+    pub at_secs: i64,
+    pub successor_id: String,
 }
 
 /// What an exchange asked for, kept with its refresh chain.

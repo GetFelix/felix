@@ -77,6 +77,16 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
+**Catalog feeds on Postgres during a control-plane roll.** A control plane
+hands out each tenant, namespace, stream and cache change's `seq` in commit
+order only when every instance writing to the database takes the feed's lock.
+While older and newer control-plane instances share one database, a write
+through an older instance can still commit out of order, and a broker can skip
+that change until it restarts. The guarantee holds once
+every control-plane instance runs a release that has it, so finish the roll
+before relying on it, and keep catalog writes to a minimum while it is under
+way.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,
@@ -254,6 +264,22 @@ record, and subscribers and consumer groups that ask are told it (see
 - **What clients see.** Nothing unless they ask. A client that asked gets the
   publisher on records written after the finalize, and none on older ones.
 
+#### `group_cursor_dependencies`
+
+Once finalized, each consumer-group cursor records the dead letters it passed
+records on, and a broker puts a cursor whose dead letters it no longer has
+back where one stands before it serves the shard. That closes a crash that
+keeps the cursor log's tail and loses the dead-letter log's, which otherwise
+skips a record.
+
+- **It is the one-way step for consumer groups.** A cursor written this way
+  is 33 bytes, and an older broker refuses to read it: its groups on that
+  shard fail until it is upgraded again. Take a backup first.
+- **A single broker** writes them from the start.
+- **What clients see.** Nothing, unless a crash or failover left a cursor
+  without its dead letter: the group then redelivers from where it last
+  stood instead of skipping.
+
 #### `fenced_caches`
 
 `majority_ack` for caches. Once finalized, together with `majority_ack` and
@@ -333,7 +359,11 @@ above); v5 for an atomic commit, once `atomic_commit` is; and v6 for a record
 with its publisher, once `publisher_principal` is, or on a single broker with
 `FELIX_RECORD_PUBLISHERS=true` (see
 [`publisher_principal`](#publisher_principal)). Each of those is the one-way
-step.
+step. Consumer-group cursors are not in the segment format but have a layout
+of their own: a cluster moves to the newer one once
+[`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a
+single broker from the start, after which an older build cannot read that
+shard's groups.
 
 ## Upgrade order
 

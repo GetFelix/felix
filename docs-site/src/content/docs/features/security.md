@@ -540,6 +540,26 @@ sequenceDiagram
     C->>B: Auth with a token minted after the cutoff
 ```
 
+A gateway that is revoked, or loses `token.delegate`, can no longer bind or
+delegate user tokens with a `felix-controlplane` token minted before that,
+even one that has not expired: `/token/exchange` (with `actor_token`) and
+`/token/delegate` check it against current RBAC and its revocations, and answer
+`actor_refused`. Users' refresh chains bound to the gateway end only when RBAC
+no longer grants it `token.delegate`, so an RBAC edit that merely reaches the
+gateway does not log its users out.
+
+Revocation fails open on a broker that cannot reach the feed. Until a poll
+succeeds again, a new session with a revoked token is accepted until the token
+expires (at most one access TTL, 900 s by default, after the revocation), and a
+stream already open keeps running. The broker logs a warning, and
+`time() - felix_revocation_feed_last_success_seconds` shows how long it has
+been; see
+[Observability](/features/observability/). The broker does not refuse new
+streams meanwhile, so a control-plane outage stays out of the data path.
+Cutoffs and token issue times come from the control-plane members' clocks.
+Cutoffs are read on the Raft leader, so the only window is clock skew between
+members: keep those clocks in sync.
+
 Revocation ends sessions rather than narrowing them in place. A client whose
 rights were only reduced gets a token minted under the current rules from its
 next refresh and opens its streams again. Tokens for the control plane's own

@@ -6,7 +6,10 @@ use super::codec::{
     DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_routing,
     parse_stream_kind,
 };
-use super::{PostgresStore, is_unique_violation, page_fetch};
+use super::{
+    CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
+    is_unique_violation, page_fetch,
+};
 use crate::model::{
     Cache, CacheKey, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey, RetentionPolicy,
     Stream, StreamKey,
@@ -83,7 +86,7 @@ pub(super) async fn create_namespace(
     store: &PostgresStore,
     namespace: Namespace,
 ) -> StoreResult<Namespace> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Namespaces]).await?;
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id = $1)")
             .bind(&namespace.tenant_id)
@@ -124,7 +127,15 @@ pub(super) async fn create_namespace(
 }
 
 pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) -> StoreResult<()> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(
+        store,
+        &[
+            CatalogFeed::Namespaces,
+            CatalogFeed::Streams,
+            CatalogFeed::Caches,
+        ],
+    )
+    .await?;
 
     let ns_row = sqlx::query_as::<_, DbNamespace>(
         r#"SELECT tenant_id, namespace, display_name FROM namespaces WHERE tenant_id = $1 AND namespace = $2"#,
@@ -249,10 +260,14 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
 }
 
 pub(super) async fn namespace_snapshot(store: &PostgresStore) -> StoreResult<Snapshot<Namespace>> {
+    // One REPEATABLE READ snapshot for the rows and `next_seq`, or a change
+    // committed between the two reads is counted but missing.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let items = sqlx::query_as::<_, DbNamespace>(
         r#"SELECT tenant_id, namespace, display_name FROM namespaces ORDER BY tenant_id, namespace"#,
     )
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?
     .into_iter()
@@ -262,10 +277,8 @@ pub(super) async fn namespace_snapshot(store: &PostgresStore) -> StoreResult<Sna
         display_name: row.display_name,
     })
     .collect();
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM namespace_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
+    let next_seq = feed_head(&mut tx, CatalogFeed::Namespaces).await?;
+    tx.commit().await?;
     Ok(Snapshot { items, next_seq })
 }
 
@@ -273,12 +286,16 @@ pub(super) async fn namespace_changes(
     store: &PostgresStore,
     since: u64,
 ) -> StoreResult<ChangeSet<NamespaceChange>> {
+    // The page and `head` from one snapshot, so a short page means the feed
+    // really had nothing more.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, NamespaceChangeRow>(
         r#"SELECT seq, op, tenant_id, namespace, payload FROM namespace_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
     let mut items = Vec::with_capacity(rows.len());
@@ -300,11 +317,14 @@ pub(super) async fn namespace_changes(
             namespace,
         });
     }
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM namespace_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
-    Ok(ChangeSet { items, next_seq })
+    let head = feed_head(&mut tx, CatalogFeed::Namespaces).await?;
+    tx.commit().await?;
+    Ok(ChangeSet::page(
+        items,
+        store.changes_limit(),
+        head,
+        |change| change.seq,
+    ))
 }
 
 pub(super) async fn namespace_exists(

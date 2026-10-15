@@ -180,3 +180,106 @@ async fn a_failed_reset_poisons_the_log() {
         .await
         .expect_err("appended to a log whose reset failed");
 }
+
+/// A background seal ends with `set_len` on the segment it retired. A
+/// truncation into that segment has to wait for it, or the seal puts back the
+/// length the truncation cut, or cuts off what was appended after it.
+async fn truncate_during_a_seal(appended_after: usize) {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        segment_size_bytes: 64 * 1024,
+        ..config(FsyncMode::None)
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config.clone()).expect("open");
+    for i in 0..10 {
+        log.append(&records(&[&format!("a{i}")]))
+            .await
+            .expect("append");
+    }
+    let (roll, release) = park_a_seal(&log).await;
+
+    let mut truncating = {
+        let log = log.clone();
+        tokio::spawn(async move {
+            log.truncate(4).await.expect("truncate");
+            for i in 0..appended_after {
+                log.append(&records(&[&format!("after-the-truncation-{i}")]))
+                    .await
+                    .expect("append");
+            }
+        })
+    };
+    let ran_during_the_seal = tokio::time::timeout(Duration::from_millis(500), &mut truncating)
+        .await
+        .is_ok();
+    release.send(()).expect("release the seal");
+    roll.await.expect("join").expect("roll");
+    if !ran_during_the_seal {
+        truncating.await.expect("join");
+    }
+
+    let mut expected: Vec<String> = (0..4).map(|i| format!("a{i}")).collect();
+    expected.extend((0..appended_after).map(|i| format!("after-the-truncation-{i}")));
+    let (path, size) = {
+        let segments = log.inner.segments.read();
+        (
+            segments.active().path().to_path_buf(),
+            segments.active().size_bytes(),
+        )
+    };
+    assert_eq!(
+        std::fs::metadata(&path).expect("stat").len(),
+        size,
+        "the seal changed the length of the segment the truncation cut"
+    );
+    log.shutdown().await.expect("shutdown");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
+    assert_eq!(read_all(&log, 0).await, expected);
+    assert!(
+        !ran_during_the_seal,
+        "the truncation did not wait for the seal"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seal_in_flight_does_not_undo_a_truncation() {
+    truncate_during_a_seal(0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seal_in_flight_does_not_cut_off_appends_after_a_truncation() {
+    truncate_during_a_seal(20).await;
+}
+
+/// A flush that fails to sync a retired segment marks the roll failed while
+/// its seal is still running. A truncation then must not cut that segment:
+/// the seal's `set_len` would pad it back with zeros, on a log that reported
+/// the truncation done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_truncation_is_refused_once_a_flush_failed_a_pending_seal() {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        segment_size_bytes: 64 * 1024,
+        ..config(FsyncMode::None)
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config.clone()).expect("open");
+    for i in 0..10 {
+        log.append(&records(&[&format!("a{i}")]))
+            .await
+            .expect("append");
+    }
+    let (roll, release) = park_a_seal(&log).await;
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.sync().await.expect_err("the flush failed");
+
+    let truncated = log.truncate(4).await;
+    release.send(()).expect("release the seal");
+    let _ = roll.await.expect("join");
+    truncated.expect_err("truncated a log whose roll failed");
+
+    drop(log);
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
+    assert_eq!(read_all(&log, 0).await.len(), 10);
+}

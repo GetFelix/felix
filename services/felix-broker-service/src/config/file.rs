@@ -40,8 +40,8 @@ impl BrokerConfig {
         };
         if let Some(contents) = contents {
             // YAML overrides allow ops-friendly config files.
-            let override_cfg: BrokerConfigOverride =
-                serde_yaml_ng::from_str(&contents).with_context(|| "parse broker config yaml")?;
+            let override_cfg: BrokerConfigOverride = felix_common::yaml::from_str(&contents)
+                .with_context(|| "parse broker config yaml")?;
             config.apply(override_cfg)?;
         }
         // After the file, which may move `quic_bind`.

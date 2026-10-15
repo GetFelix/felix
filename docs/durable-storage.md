@@ -294,6 +294,19 @@ the active segment (a background roll's install, truncation, reset, restore,
 seal, close) takes the same append lock, so nothing moves the segment under a
 write in flight. An inline rollover runs on the append thread with the append.
 
+A background roll's seal runs without the append lock and ends by setting the
+retired file's length. So truncation, reset and restore wait for a seal in
+flight and keep the next roll from starting until they finish. Otherwise the
+seal would put back the length of a segment the cut reopened, or cut off
+records appended to it since. A log that has failed refuses them outright: a
+flush that cannot sync the retired segment marks the roll failed while its
+seal may still be running, so there is nothing safe to wait for.
+
+> `a_seal_in_flight_does_not_undo_a_truncation`,
+> `a_seal_in_flight_does_not_cut_off_appends_after_a_truncation` and
+> `a_truncation_is_refused_once_a_flush_failed_a_pending_seal` hold a seal
+> while a truncation runs.
+
 A flush takes its bound on the append thread too, behind the appends already
 queued there, so one flush covers every append in flight. Taken on the caller,
 it would miss the appends still queued, and each would wait for a flush of its

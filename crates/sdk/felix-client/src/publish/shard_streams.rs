@@ -110,6 +110,11 @@ impl ShardStreams {
         Ok(Some(Arc::clone(worker)))
     }
 
+    /// Whether shards get streams of their own at all.
+    pub(crate) fn enabled(&self) -> bool {
+        self.cap > 0
+    }
+
     /// Stop opening streams, and return the writers that are open so they
     /// can be finished.
     pub(crate) fn close(&self) -> Vec<Arc<PublishWorker>> {

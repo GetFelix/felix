@@ -42,6 +42,13 @@
 //! up with fewer ways in than it was given, however wrong or stale the
 //! cluster's answer turns out to be -- which is what makes it safe to take the
 //! answer at all.
+//!
+//! # Names outlive addresses
+//!
+//! When no address in hand answers, the seeds given as `host:port` names and
+//! the names brokers last advertised are resolved again and the new addresses
+//! dialled. That is how a client gets back in after every broker has moved at
+//! once, as in a rollout that restarts every pod.
 
 mod cache;
 mod cache_watch;
@@ -53,11 +60,13 @@ mod nodes;
 mod publish;
 mod retry;
 mod routing;
+mod seeds;
 mod sharded;
 mod subscribe;
 
 pub use follow::{ClusterCacheWatch, ClusterSubscription};
 pub use retry::ReconnectPolicy;
+pub use seeds::Seed;
 pub use sharded::{
     ShardEvent, ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup,
     ShardedGroupRecord, ShardedSubscription,
@@ -75,6 +84,7 @@ use tokio::sync::RwLock;
 
 use crate::client::Client;
 use crate::config::ClientConfig;
+use crate::publish::{LearnWidth, StreamWidths};
 
 /// How many times a subscribe or watch will follow a redirect before giving up.
 ///
@@ -99,11 +109,11 @@ const MAX_REDIRECTS: usize = 3;
 /// // For a long-running client, set `config.token_provider` so reconnects
 /// // get a fresh token.
 ///
-/// // One address is enough; the rest are discovered. Configure more anyway,
-/// // because discovery needs *some* broker to answer first.
-/// let seeds = ["10.0.0.4:5000".parse()?, "10.0.0.5:5000".parse()?];
+/// // One name is enough; the rest are discovered. A name is resolved again
+/// // when no broker the client knows answers, so prefer one to an IP.
+/// let seeds = ["felix.prod.svc.cluster.local:5000".parse()?];
 ///
-/// let client = ClusterClient::connect_with_policy(
+/// let client = ClusterClient::connect_seeds(
 ///     &seeds,
 ///     "broker.internal",
 ///     config,
@@ -131,15 +141,17 @@ const MAX_REDIRECTS: usize = 3;
 pub struct ClusterClient {
     /// What the application configured. Never removed from `endpoints`: the
     /// cluster's account of itself can be wrong, and these are the addresses
-    /// someone chose deliberately.
-    seeds: Vec<SocketAddr>,
+    /// someone chose deliberately. Shared with every identity derived from
+    /// this client, so they re-resolve together.
+    seeds: Arc<seeds::Seeds>,
     /// Everywhere worth trying: the seeds, plus whatever discovery has added.
     endpoints: RwLock<Vec<SocketAddr>>,
     policy: ReconnectPolicy,
     /// Replaced wholesale on reconnect. `RwLock` rather than a swap because a
     /// reconnect must exclude the publishes that would otherwise keep using the
     /// client being replaced.
-    client: RwLock<Arc<Client>>,
+    /// Shared with `widths`, which asks whichever client is in use.
+    client: Arc<RwLock<Arc<Client>>>,
     /// Where a shard's publishes should go, learned from the acks of the ones
     /// that were forwarded.
     ///
@@ -157,13 +169,12 @@ pub struct ClusterClient {
     /// How many shards each stream was placed with and how keys map onto
     /// them, as the cluster last said.
     ///
-    /// Asked once per stream rather than per publish. A stale width is not a
-    /// correctness problem: the shard number is only a cache key for an owner
-    /// learned from an ack, so a client that computes a different number than
-    /// the broker still routes to the right broker -- it just keys the entry
-    /// differently. What the width buys is a cache bounded by shard count
-    /// instead of by the number of distinct routing keys.
-    shards: RwLock<HashMap<StreamKey, (u32, felix_wire::routing::ShardRouting)>>,
+    /// The shard number picks the broker a keyed publish goes to, so a stale
+    /// width can send two keys that now share a shard through two brokers,
+    /// and so two writers. Kept like a plain client's widths: asked again on
+    /// the same cadence against brokers that check declared widths, and
+    /// dropped when a publish says the stream is gone or the width stale.
+    widths: Arc<StreamWidths>,
     /// The broker that last served each shard's consumer groups, found by
     /// following `NotLeader`. Apart from `owners` because it is learned from a
     /// different answer, and a group redirect carries no fresher generation
@@ -195,15 +206,67 @@ impl ClusterClient {
         config: ClientConfig,
         policy: ReconnectPolicy,
     ) -> Result<Self> {
-        let nodes = Arc::new(nodes::Nodes::new(server_name, config));
-        let client = nodes.connect_any(seeds).await?;
-        let cluster = Self {
-            seeds: seeds.to_vec(),
-            endpoints: RwLock::new(seeds.to_vec()),
+        let seeds: Vec<Seed> = seeds.iter().copied().map(Seed::Addr).collect();
+        Self::connect_seeds(&seeds, server_name, config, policy).await
+    }
+
+    /// Connect to whichever seed answers, where a seed may be a `host:port`
+    /// name.
+    ///
+    /// Names are resolved now, and every address each one yields is tried.
+    /// They are resolved again whenever no address this client holds
+    /// answers, so a client configured with names recovers when every broker
+    /// has moved to a new address at once. One with only IP seeds can then
+    /// get back in only through the names brokers advertise.
+    pub async fn connect_seeds(
+        seeds: &[Seed],
+        server_name: &str,
+        config: ClientConfig,
+        policy: ReconnectPolicy,
+    ) -> Result<Self> {
+        Self::connect_resolving(
+            seeds,
+            server_name,
+            config,
             policy,
-            client: RwLock::new(client),
+            Arc::new(seeds::Dns::new()),
+        )
+        .await
+    }
+
+    /// [`ClusterClient::connect_seeds`] resolving names through `lookup`.
+    pub(crate) async fn connect_resolving(
+        seeds_given: &[Seed],
+        server_name: &str,
+        config: ClientConfig,
+        policy: ReconnectPolicy,
+        lookup: Arc<dyn seeds::Lookup>,
+    ) -> Result<Self> {
+        if seeds_given.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no broker addresses were given to connect to"
+            ));
+        }
+        let nodes = Arc::new(nodes::Nodes::new(server_name, config, lookup));
+        let seeds = Arc::new(seeds::Seeds::new(seeds_given.to_vec()));
+        seeds.resolve(&nodes).await;
+        let endpoints = seeds.addrs();
+        if endpoints.is_empty() {
+            let given: Vec<String> = seeds_given.iter().map(Seed::to_string).collect();
+            return Err(anyhow::anyhow!(
+                "none of the brokers given resolved to an address: {}",
+                given.join(", ")
+            ));
+        }
+        let client = nodes.connect_any(&endpoints).await?;
+        let holder = Arc::new(RwLock::new(client));
+        let cluster = Self {
+            seeds,
+            endpoints: RwLock::new(endpoints),
+            policy,
+            widths: cluster_widths(&holder),
+            client: holder,
             owners: RwLock::new(HashMap::new()),
-            shards: RwLock::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
@@ -226,6 +289,11 @@ impl ClusterClient {
         Arc::clone(&*self.client.read().await)
     }
 
+    /// The widths this client routes keyed publishes by.
+    pub(crate) fn stream_widths(&self) -> Arc<StreamWidths> {
+        Arc::clone(&self.widths)
+    }
+
     pub(crate) fn policy(&self) -> &ReconnectPolicy {
         &self.policy
     }
@@ -244,21 +312,19 @@ impl ClusterClient {
     pub async fn refresh_topology(&self) -> Result<usize> {
         let client = self.client().await;
         let reported = client.topology().await?;
-        let mut discovered = Vec::with_capacity(reported.len());
-        for broker in &reported {
-            if let Some(addr) = self.nodes.resolve(&broker.addr).await {
-                discovered.push(addr);
-            }
-        }
+        self.seeds
+            .set_advertised(reported.iter().map(|broker| broker.addr.clone()));
+        let advertised: Vec<String> = reported.iter().map(|broker| broker.addr.clone()).collect();
+        let discovered = self.nodes.resolve_all(&advertised).await;
 
         let mut endpoints = self.endpoints.write().await;
         // Rebuilt rather than appended to, so a broker that has left the
         // cluster stops being tried -- while the configured seeds stay whatever
         // the answer was.
         let mut next = discovered.clone();
-        for seed in &self.seeds {
-            if !next.contains(seed) {
-                next.push(*seed);
+        for seed in self.seeds.addrs() {
+            if !next.contains(&seed) {
+                next.push(seed);
             }
         }
         *endpoints = next;
@@ -286,29 +352,93 @@ impl ClusterClient {
         self.nodes.connections_per_node().await
     }
 
-    /// Replace the client with one connected to a seed that answers, trying
-    /// the broker in use last.
+    /// Replace `failed`, the client an operation just saw fail, with one
+    /// connected to a broker that answers, trying `failed`'s broker last, and
+    /// resolving names again when no address in hand answers.
     ///
-    /// Held exclusively while it runs, so publishes queue behind it rather than
-    /// racing to build several replacements for the same failure.
-    pub(crate) async fn reconnect(&self) -> Result<()> {
-        let mut endpoints = self.endpoints.read().await.clone();
-        {
+    /// Does nothing when the client in use is no longer `failed`: someone
+    /// else has already replaced it, and every operation that failed on the
+    /// same broker must not each throw away the replacement and dial again.
+    /// Held exclusively while dialling, so publishes queue behind it rather
+    /// than racing to build several replacements for the same failure.
+    pub(crate) async fn reconnect(&self, failed: &Arc<Client>) -> Result<()> {
+        let (endpoints, stranded) = {
             let mut slot = self.client.write().await;
+            if !Arc::ptr_eq(&slot, failed) {
+                return Ok(());
+            }
+            // Read under the lock, so a reconnect that queued behind another
+            // one dials what that one left, not what was there before it.
+            let mut endpoints = self.endpoints.read().await.clone();
             // The broker in use just failed, so it is dialled afresh rather
             // than handed back from the shared clients. It goes last because
             // a draining broker still completes handshakes and would be
             // picked again until it exits.
             self.nodes.forget(&slot).await;
-            let failed = slot.dialled();
-            endpoints.sort_by_key(|addr| *addr == failed);
-            *slot = self.nodes.connect_any(&endpoints).await?;
+            let failed_addr = slot.dialled();
+            endpoints.sort_by_key(|addr| *addr == failed_addr);
+            match self.nodes.connect_any(&endpoints).await {
+                Ok(client) => {
+                    *slot = client;
+                    (endpoints, None)
+                }
+                Err(err) => (endpoints, Some(err)),
+            }
+        };
+        if let Some(err) = stranded
+            && !self.reconnect_by_name(&endpoints, failed, err).await?
+        {
+            // Another caller replaced the client while this one was
+            // resolving, and has run discovery for it.
+            return Ok(());
         }
         // After the swap, and outside the write lock: the broker that answered
         // is the one that knows what the cluster looks like now, and a failover
         // is exactly when the answer has changed.
         self.discover().await;
         Ok(())
+    }
+
+    /// Every address in hand failed. Without this the client could only get
+    /// back in through one of them, and after a rollout that moved every
+    /// broker none will ever answer again.
+    ///
+    /// Resolves outside the client lock, since lookups can take seconds and
+    /// every operation reads the client. `false` when someone else replaced
+    /// `failed` meanwhile, which leaves theirs in place.
+    async fn reconnect_by_name(
+        &self,
+        tried: &[SocketAddr],
+        failed: &Arc<Client>,
+        err: anyhow::Error,
+    ) -> Result<bool> {
+        let fresh: Vec<SocketAddr> = self
+            .seeds
+            .resolve(&self.nodes)
+            .await
+            .into_iter()
+            .filter(|addr| !tried.contains(addr))
+            .collect();
+        let mut slot = self.client.write().await;
+        if !Arc::ptr_eq(&slot, failed) {
+            return Ok(false);
+        }
+        if fresh.is_empty() {
+            return Err(err);
+        }
+        *slot = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
+            anyhow::anyhow!("{err:#}; nor did the names resolved again ({by_name:#})")
+        })?;
+        // Every address tried just failed, so only the new ones and the
+        // configured seeds are kept. Discovery adds the rest back.
+        let mut next = fresh;
+        for seed in self.seeds.addrs() {
+            if !next.contains(&seed) {
+                next.push(seed);
+            }
+        }
+        *self.endpoints.write().await = next;
+        Ok(true)
     }
 
     /// Refresh if the broker supports it, and carry on if it does not.
@@ -341,7 +471,42 @@ struct Owner {
     /// mid-rebalance would otherwise take turns replacing each other.
     generation: u64,
     client: Arc<Client>,
+    /// The stream's width when this was learned; `None` for shard 0 of an
+    /// unkeyed publish.
+    width: Option<(u32, felix_wire::routing::ShardRouting)>,
 }
 
 #[cfg(test)]
 mod tests;
+
+/// A cluster client's widths, asked of whichever client is in use when the
+/// question is asked. Re-asks go through that client's own re-ask stream.
+///
+/// Always declared and asked again, whatever the first broker negotiated:
+/// re-asking needs only `stream_shards`, and each declaration is sent only
+/// to a stream that negotiated it, and used for routing only by a client
+/// whose broker checks it.
+fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>) -> Arc<StreamWidths> {
+    let learn: LearnWidth = {
+        let client = Arc::clone(client);
+        Arc::new(move |tenant_id, namespace, stream| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let client = Arc::clone(&*client.read().await);
+                client.stream_routing(&tenant_id, &namespace, &stream).await
+            })
+        })
+    };
+    let recheck: LearnWidth = {
+        let client = Arc::clone(client);
+        Arc::new(move |tenant_id, namespace, stream| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let client = Arc::clone(&*client.read().await);
+                let recheck = client.publish_widths().recheck();
+                recheck(tenant_id, namespace, stream).await
+            })
+        })
+    };
+    Arc::new(StreamWidths::new(learn, true).rechecking_with(recheck))
+}

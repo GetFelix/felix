@@ -39,7 +39,8 @@ use crate::auth::rbac::authorize::{
     validate_assignment_allowed, validate_new_rule_allowed,
 };
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
-use crate::store::StoreError;
+use crate::auth::revocation::ALL_PRINCIPALS;
+use crate::store::{AuthChange, Revocation, StoreError};
 
 #[derive(Debug, Deserialize, ToSchema, Clone)]
 pub struct PolicyRequest {
@@ -97,19 +98,43 @@ pub async fn upsert_idp_issuer(
         .list_idp_issuers(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load issuers", &err))?;
-    let needs_cluster = match issuers.iter().find(|item| item.issuer == body.issuer) {
+    let current = issuers.iter().find(|item| item.issuer == body.issuer);
+    let needs_cluster = match current {
         Some(current) => !same_trust(current, &body),
         None => issuer_used_elsewhere(&state, &tenant_id, &body.issuer).await?,
     };
     if needs_cluster {
         require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     }
-    state
-        .store
-        .upsert_idp_issuer(&tenant_id, body)
-        .await
-        .map_err(|err| api_internal("failed to upsert issuer", &err))?;
+    // A narrowed or replaced issuer can stop vouching for principals and
+    // groups that tokens already carry, which takes grants back like removing
+    // a rule does. Pure widening takes nothing back.
+    let revocation = current
+        .is_some_and(|current| narrows_trust(current, &body))
+        .then(|| revoking(vec![ALL_PRINCIPALS.to_string()]));
+    change_auth(
+        &state,
+        &tenant_id,
+        AuthChange::UpsertIssuer(body),
+        revocation,
+    )
+    .await
+    .map_err(|err| api_internal("failed to upsert issuer", &err))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Whether `next` stops trusting something `current` trusts: an audience
+/// dropped, the subject or groups claim read differently, or the keys taken
+/// from somewhere else.
+fn narrows_trust(current: &IdpIssuerConfig, next: &IdpIssuerConfig) -> bool {
+    current
+        .audiences
+        .iter()
+        .any(|audience| !next.audiences.contains(audience))
+        || current.jwks_url != next.jwks_url
+        || current.discovery_url() != next.discovery_url()
+        || current.claim_mappings.subject_claim != next.claim_mappings.subject_claim
+        || current.claim_mappings.groups_claim != next.claim_mappings.groups_claim
 }
 
 /// Whether `next` would accept exactly the tokens `current` does and read the
@@ -175,11 +200,27 @@ pub async fn delete_idp_issuer(
     // `upsert_idp_issuer` makes, so deletion takes the same cluster rights.
     require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
-    state
+    // Answered before anything is written: revoking the whole tenant for an
+    // issuer it never trusted would end every session for nothing.
+    let known = state
         .store
-        .delete_idp_issuer(&tenant_id, &issuer)
+        .list_idp_issuers(&tenant_id)
         .await
-        .map_err(|err| api_internal("failed to delete issuer", &err))?;
+        .map_err(|err| api_internal("failed to load issuers", &err))?
+        .iter()
+        .any(|item| item.issuer == issuer);
+    if !known {
+        return Err(api_not_found("issuer not found"));
+    }
+    // Every grant through the issuer's groups, and to its principals, is gone.
+    change_auth(
+        &state,
+        &tenant_id,
+        AuthChange::DeleteIssuer(issuer),
+        Some(revoking(vec![ALL_PRINCIPALS.to_string()])),
+    )
+    .await
+    .map_err(|err| api_internal("failed to delete issuer", &err))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -411,11 +452,15 @@ pub async fn remove_policy(
         .await
         .map_err(|err| api_internal("failed to load groupings", &err))?;
     let reached = crate::auth::revocation::reached_by(&groupings, &rule.subject);
-    match state.store.remove_rbac_policy(&tenant_id, rule).await {
-        Ok(()) => {
-            end_sessions_after_removal(&state, &tenant_id, reached).await;
-            Ok(StatusCode::NO_CONTENT)
-        }
+    match change_auth(
+        &state,
+        &tenant_id,
+        AuthChange::RemovePolicy(rule),
+        Some(revoking(reached)),
+    )
+    .await
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(StoreError::NotFound(_)) => Err(api_not_found("policy not found")),
         Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove policy", &err)),
@@ -478,11 +523,15 @@ pub async fn remove_grouping(
         .await
         .map_err(|err| api_internal("failed to load groupings", &err))?;
     let reached = crate::auth::revocation::reached_by(&groupings, &grouping.user);
-    match state.store.remove_rbac_grouping(&tenant_id, grouping).await {
-        Ok(()) => {
-            end_sessions_after_removal(&state, &tenant_id, reached).await;
-            Ok(StatusCode::NO_CONTENT)
-        }
+    match change_auth(
+        &state,
+        &tenant_id,
+        AuthChange::RemoveGrouping(grouping),
+        Some(revoking(reached)),
+    )
+    .await
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(StoreError::NotFound(_)) => Err(api_not_found("grouping not found")),
         Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove grouping", &err)),
@@ -558,19 +607,32 @@ pub async fn revoke_principal_refresh_tokens(
     Ok(Json(RevokeRefreshTokensResponse { revoked }))
 }
 
-/// End the broker sessions of everyone a removed rule reached, so they come
-/// back with tokens minted under the rules as they are now. The removal has
-/// already happened, so a failure here is logged rather than answered: the
-/// rights are gone from every token minted from now on either way.
-async fn end_sessions_after_removal(state: &AppState, tenant_id: &str, reached: Vec<String>) {
-    if let Err(err) = crate::auth::revocation::revoke(state, tenant_id, reached).await {
-        tracing::warn!(
-            tenant_id = %tenant_id,
-            error = %err,
-            "removed an RBAC rule but could not end the sessions it reached; \
-             they keep their rights until their tokens expire",
-        );
+/// Revoke `principal_ids` as of now.
+fn revoking(principal_ids: Vec<String>) -> Revocation {
+    Revocation {
+        principal_ids,
+        revoked_at: crate::auth::refresh::now_secs(),
     }
+}
+
+/// Make `change` and end the sessions it reached in one store write, so they
+/// come back with tokens minted under the rules as they are now, and a
+/// failure leaves neither done.
+async fn change_auth(
+    state: &AppState,
+    tenant_id: &str,
+    change: AuthChange,
+    revocation: Option<Revocation>,
+) -> Result<(), StoreError> {
+    let count = revocation
+        .as_ref()
+        .map_or(0, |revocation| revocation.principal_ids.len() as u64);
+    state
+        .store
+        .change_auth(tenant_id, change, revocation)
+        .await?;
+    metrics::counter!("felix_principal_revocations_total").increment(count);
+    Ok(())
 }
 
 struct ActionScope {
@@ -642,3 +704,6 @@ fn policy_in_scope(policy: &PolicyRule, scopes: &[ParsedObject], tenant_id: &str
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests;

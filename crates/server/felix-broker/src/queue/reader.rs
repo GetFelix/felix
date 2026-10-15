@@ -9,7 +9,7 @@
 //! is the only moment the group has genuinely finished a prefix — writing it
 //! per acknowledgement would either lie about progress or need a second
 //! structure on disk to say which of the acknowledged offsets were contiguous.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Mutex, Notify, OnceCell, OwnedMutexGuard};
 
-use super::cursors::ConsumerGroups;
+use super::cursors::{ConsumerGroups, DeadLetterMark};
 use super::dead_letters::DeadLetters;
 use super::tracker::{GroupConsumer, GroupTracker};
 use crate::error::{BrokerError, Result};
@@ -50,6 +50,9 @@ pub struct GroupReader {
     max_in_flight: AtomicUsize,
     /// Polls the in-flight cap held short of available work.
     capped: AtomicU64,
+    /// Shards whose cursors were checked against their dead-letter log since
+    /// this broker started, began a term, or had either log rewritten.
+    normalized: SyncMutex<HashSet<(String, String, String, u32)>>,
 }
 
 impl GroupReader {
@@ -68,7 +71,61 @@ impl GroupReader {
             trimmed: AtomicU64::new(0),
             max_in_flight: AtomicUsize::new(DEFAULT_MAX_IN_FLIGHT),
             capped: AtomicU64::new(0),
+            normalized: SyncMutex::new(HashSet::new()),
         }
+    }
+
+    /// Check the shard's cursors against its dead-letter log, once, before
+    /// anything here reads or writes its groups.
+    ///
+    /// A cursor can be left needing a dead letter this broker no longer has:
+    /// a crash that kept the cursor log's tail and not the dead-letter log's,
+    /// or a replica's logs replaced on promotion. Served as it stands, it
+    /// would pass a record that is neither finished nor dead. Run before any
+    /// dead letter is written, so a new one cannot land where a lost one was.
+    async fn ensure_normalized(&self, key: &GroupKey) -> Result<()> {
+        let shard = (
+            key.tenant_id.clone(),
+            key.namespace.clone(),
+            key.stream.clone(),
+            key.shard,
+        );
+        if self.normalized.lock().contains(&shard) {
+            return Ok(());
+        }
+        let dead_letters = self
+            .dead_letters
+            .synced_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        self.cursors
+            .normalize(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &dead_letters,
+            )
+            .await?;
+        self.normalized.lock().insert(shard);
+        Ok(())
+    }
+
+    /// Check the shard's cursors again before it is next served: replication
+    /// rewrote one of its group logs.
+    pub fn invalidate(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32) {
+        self.normalized.lock().retain(|(t, n, s, sh)| {
+            !(*sh == shard && s == stream && n == namespace && t == tenant_id)
+        });
+    }
+
+    /// What a commit made now needs of the dead-letter log, synced, so the
+    /// cursor is never durable ahead of the dead letters it passed records on.
+    async fn dead_letter_mark(&self, key: &GroupKey) -> Result<DeadLetterMark> {
+        let log = self
+            .dead_letters
+            .synced_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        Ok(DeadLetterMark::of(log.end, &log.epochs))
     }
 
     /// Bound how many records one group may have handed out and unsettled at
@@ -440,6 +497,7 @@ impl GroupReader {
                     &key.group,
                     committed,
                     &held.retired,
+                    self.dead_letter_mark(key).await?,
                 )
                 .await?;
         }
@@ -448,6 +506,11 @@ impl GroupReader {
 
     /// Where `group` has finished, as recorded on disk.
     pub async fn committed(&self, key: &GroupKey) -> Result<Option<u64>> {
+        self.ensure_normalized(key).await?;
+        self.committed_here(key).await
+    }
+
+    async fn committed_here(&self, key: &GroupKey) -> Result<Option<u64>> {
         self.cursors
             .committed(
                 &key.tenant_id,
@@ -461,6 +524,7 @@ impl GroupReader {
 
     /// Stop tracking one dead letter. Returns whether it was listed.
     pub async fn discard(&self, key: &GroupKey, offset: u64) -> Result<bool> {
+        self.ensure_normalized(key).await?;
         self.dead_letters.discard(key, offset).await
     }
 
@@ -500,9 +564,10 @@ impl GroupReader {
     ///
     /// The caller picks `offset`; this does not check it against the log.
     pub async fn seek(&self, key: &GroupKey, offset: u64, if_new: bool) -> Result<Seek> {
+        self.ensure_normalized(key).await?;
         let _shard = self.lock_shard(key).await;
         let (slot, old) = self.claim_slot(key).await;
-        let committed = self.committed(key).await?;
+        let committed = self.committed_here(key).await?;
         if if_new {
             let current = match (&committed, &old) {
                 (Some(committed), _) => Some(*committed),
@@ -543,9 +608,10 @@ impl GroupReader {
     /// never existed. Claims standing at the delete are void, as for
     /// [`Self::seek`].
     pub async fn delete(&self, key: &GroupKey) -> Result<bool> {
+        self.ensure_normalized(key).await?;
         let _shard = self.lock_shard(key).await;
         let (slot, old) = self.claim_slot(key).await;
-        let committed = self.committed(key).await?;
+        let committed = self.committed_here(key).await?;
         self.cursors
             .set_locked(
                 &key.tenant_id,
@@ -657,6 +723,7 @@ impl GroupReader {
     /// finished is in the cursor log copied back with the shard, not here. Kept,
     /// they would hand out records the group has already acknowledged.
     pub async fn reset_shard(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32) {
+        self.invalidate(tenant_id, namespace, stream, shard);
         self.trackers.lock().slots.retain(|key, _| {
             !(key.shard == shard
                 && key.stream == stream
@@ -736,6 +803,7 @@ impl GroupReader {
                     &key.group,
                     committed,
                     &held.retired,
+                    self.dead_letter_mark(key).await?,
                 )
                 .await?;
         }
@@ -765,6 +833,7 @@ impl GroupReader {
         if sweep {
             self.evict_idle(now);
         }
+        self.ensure_normalized(key).await?;
         // Hydrated once per slot. Two pollers racing share the cell, so only
         // one reads the cursor and both get the same tracker: two trackers for
         // one group would each hand out the same records. A failed read leaves

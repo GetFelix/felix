@@ -20,7 +20,11 @@ of it is configured here: it is chosen by using `ClusterClient` rather than
 - Environment variables next
 - YAML overrides last (if provided by `config_path` or `FELIX_CLIENT_CONFIG`)
 
-If a YAML path is provided and cannot be read or parsed, it returns an error.
+If a YAML path is provided and cannot be read or parsed, it returns an error. The file is read
+with the same rules as the broker's (only `true`/`false` are booleans, `<<` is
+not a merge key); see
+[Configuration](../docs-site/src/content/docs/reference/configuration.md#how-the-file-is-read).
+Unknown keys are ignored here, unlike in the broker.
 
 ## Config File Path
 
@@ -64,7 +68,10 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
     on the least-loaded connection, and kept. Shards past the cap use the
     pool. Only with `hash_stream`. A plain `Client` learns a stream's width
     from the broker on its first keyed publish to it; a `ClusterClient`
-    already knows it.
+    already knows it. Against a broker with `FEATURE_PUBLISH_WIDTH` the
+    width is declared ahead of keyed batches and checked by the broker, and
+    asked again every 5 s, so a stream created again at another width is
+    picked up.
 
 ### Cache Parallelism
 

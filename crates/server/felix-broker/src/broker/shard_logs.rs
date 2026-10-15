@@ -216,9 +216,9 @@ impl Broker {
     }
 
     /// One of a shard's logs was cut back to `tail` or rebuilt from it; forget
-    /// the state derived from the records that went. A stream's tail, a
-    /// cache's index, or a counter shard's sums. The group logs keep nothing
-    /// here that a cut would leave stale.
+    /// the state derived from the records that went. A stream's tail, or the
+    /// index over a cache, a counter shard or a group log; a group log also
+    /// has its shard's cursors checked again before it is next served.
     pub async fn reset_log(
         &self,
         kind: LogKind,
@@ -243,7 +243,26 @@ impl Broker {
                     .await?),
                 None => Ok(()),
             },
-            LogKind::GroupCursors | LogKind::GroupDeadLetters => Ok(()),
+            LogKind::GroupCursors | LogKind::GroupDeadLetters => {
+                // Its cursors are checked against what the logs now hold
+                // before the shard is next served.
+                if let Some(reader) = &self.group_reader {
+                    reader.invalidate(tenant_id, namespace, name, shard);
+                    if kind == LogKind::GroupCursors {
+                        if let Some(groups) = &self.consumer_groups {
+                            groups
+                                .forget_index(tenant_id, namespace, name, shard)
+                                .await?;
+                        }
+                    } else {
+                        reader
+                            .dead_letters()
+                            .forget_index(tenant_id, namespace, name, shard)
+                            .await?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
