@@ -41,6 +41,10 @@ use crate::raft::{AskLeaderError, RaftHandle};
 
 /// The metadata level whose members store a stream's incarnation.
 const INCARNATION_LEVEL: u16 = 10;
+
+/// The metadata level whose members store a node's storage identity and the
+/// identities a replica report names.
+const STORAGE_IDENTITY_LEVEL: u16 = 12;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -408,6 +412,14 @@ impl ControlPlaneStore for RaftStore {
         &self,
         mut node: Node,
     ) -> StoreResult<(Node, std::collections::BTreeSet<String>)> {
+        // Stored without it, the node reads as one that sent none, which
+        // placement cannot check a report against. Dropped first: the level
+        // below is measured with it gone.
+        if node.status.storage_id.is_some()
+            && self.handle.cluster_version().await < STORAGE_IDENTITY_LEVEL
+        {
+            node.status.storage_id = None;
+        }
         let command = MetaCommand::RegisterNodeInFleet { node: node.clone() };
         if self.handle.cluster_version().await >= command.version() {
             return match self.propose(command).await? {
@@ -675,6 +687,13 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // Without them every follower is judged by the report's age alone,
+        // as before identities existed. Dropped first, like `by_round`.
+        if !report.follower_storage.is_empty()
+            && self.handle.cluster_version().await < STORAGE_IDENTITY_LEVEL
+        {
+            report.follower_storage.clear();
+        }
         // The API's own check still stands for a group that cannot apply
         // the field.
         if report.stream_incarnation.is_some()

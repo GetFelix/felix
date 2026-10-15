@@ -409,3 +409,72 @@ async fn a_report_by_round_raises_the_mark_to_11() {
     assert_eq!(original.levels_used(), 11);
     assert_eq!(original.join_floor(), 11);
 }
+
+/// **Storage identities are plain command data.** A registration carrying a
+/// node's identity and a report carrying its followers' are stored as sent,
+/// with nothing read from a clock or the node table, so two members applying
+/// them serialize the same bytes and a restored member holds the same. Both
+/// need level 12, so applying them raises the mark to it.
+#[tokio::test]
+async fn storage_identities_apply_identically() {
+    use crate::raft::AppStateMachine;
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let mut registered = node("broker-1", 7_001);
+    registered.status.storage_id = Some(id.clone());
+    let report = crate::model::ReplicaReport {
+        follower_storage: [("broker-1".to_string(), id.clone())].into(),
+        ..replica_report("t-a", "ns-1", "orders", 1_000)
+    };
+    let commands = vec![
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+        MetaCommand::CreateStream {
+            stream: stream("t-a", "ns-1", "orders"),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-0", 7_000),
+        },
+        MetaCommand::RegisterNodeInFleet { node: registered },
+        MetaCommand::PutShardAssignmentIf {
+            assignment: shard_assignment("t-a", "ns-1", "orders", "broker-0"),
+            expected_generation: None,
+        },
+    ];
+    let (first, second) = (machine(), machine());
+    for machine in [&first, &second] {
+        for command in &commands {
+            machine.dispatch(command.clone()).await.expect("apply");
+        }
+        let generation = machine
+            .store()
+            .get_shard_assignment(&report.key)
+            .await
+            .expect("assignment")
+            .generation;
+        let command = MetaCommand::RecordReplicaReport {
+            report: crate::model::ReplicaReport {
+                generation,
+                ..report.clone()
+            },
+            leader: Some("broker-0".to_string()),
+        };
+        assert_eq!(command.version(), 12);
+        machine.apply(&encode_command(&command)).await;
+    }
+    let snapshot = first.snapshot().await;
+    assert_eq!(snapshot, second.snapshot().await);
+    let held = first.store().list_replica_reports().await.expect("reports");
+    assert_eq!(held[0].follower_storage, report.follower_storage);
+    let node = first.store().get_node("broker-1").await.expect("node");
+    assert_eq!(node.status.storage_id, Some(id));
+    assert_eq!(first.levels_used(), 12);
+    assert_eq!(first.join_floor(), 12);
+
+    let restored = machine();
+    restored.restore(&snapshot).await;
+    assert_eq!(snapshot, restored.snapshot().await);
+}

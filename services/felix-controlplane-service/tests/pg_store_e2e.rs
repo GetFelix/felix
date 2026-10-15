@@ -2063,6 +2063,7 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
                 registered_at_millis: 1,
                 incarnation: 0,
                 features: Default::default(),
+                storage_id: None,
             },
         })
         .await?;

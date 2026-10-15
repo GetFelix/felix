@@ -52,6 +52,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        follower_storage: Default::default(),
     }
 }
 
@@ -229,6 +230,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 drained: false,
                 leader_offset: None,
                 halted: Default::default(),
+                follower_storage: Default::default(),
             },
             "broker-x",
         )
@@ -497,4 +499,125 @@ fn a_finalize_waits_for_the_leader_to_report_by_round() {
     // Its next report, after the heartbeat that told it.
     let after = positions(vec![leader_report(true, now)]);
     assert!(after.suspects(&key("orders"), 4, "broker-b", "broker-a"));
+}
+
+const B_STORAGE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// `node` registered with `storage`, down or live, last heard from at
+/// `heartbeat`.
+fn node_at(node_id: &str, storage: Option<&str>, down: bool, heartbeat: u64) -> crate::model::Node {
+    crate::model::Node {
+        node_id: node_id.to_string(),
+        spec: crate::model::NodeSpec {
+            advertise_addr: format!("10.0.0.1:{}", 7000 + node_id.len()),
+            client_addr: None,
+            kafka_addr: None,
+            region: "r".to_string(),
+            zone: None,
+            labels: Default::default(),
+            capacity: Default::default(),
+        },
+        status: crate::model::NodeStatus {
+            lifecycle: if down {
+                crate::model::NodeLifecycle::Down
+            } else {
+                crate::model::NodeLifecycle::Live
+            },
+            last_heartbeat_at_millis: heartbeat,
+            registered_at_millis: 1,
+            incarnation: 1,
+            features: Default::default(),
+            storage_id: storage.map(str::to_string),
+        },
+    }
+}
+
+/// `orders` led by broker-a at `generation`.
+fn led_by_a(generation: u64) -> ShardAssignment {
+    ShardAssignment {
+        key: key("orders"),
+        leader: "broker-a".to_string(),
+        replicas: vec!["broker-b".to_string()],
+        generation,
+        state: crate::model::ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    }
+}
+
+/// broker-a down since 1 100, broker-b registered with `storage`.
+fn dead_leader(storage: Option<&str>) -> Vec<crate::model::Node> {
+    vec![
+        node_at("broker-a", None, true, 1_100),
+        node_at("broker-b", storage, false, 1_000),
+    ]
+}
+
+/// A report naming broker-b under [`B_STORAGE`].
+fn identified(reported_at_millis: u64) -> ReplicaReport {
+    ReplicaReport {
+        follower_storage: [("broker-b".to_string(), B_STORAGE.to_string())].into(),
+        ..report("orders", &["broker-b"], reported_at_millis)
+    }
+}
+
+/// Once the assignment has moved past the report's generation, the down node
+/// is not the leader that made it, and the report ages against now.
+#[test]
+fn a_report_from_an_earlier_generation_does_not_stop_ageing() {
+    let view = at(vec![identified(1_000)], 1_000 + TTL_MS * 10)
+        .with_nodes(&dead_leader(Some(B_STORAGE)), &[led_by_a(5)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.reported_generation(&key("orders")), None);
+
+    let view = at(vec![identified(1_000)], 1_000 + TTL_MS * 10)
+        .with_nodes(&dead_leader(Some(B_STORAGE)), &[led_by_a(4)]);
+    assert!(view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.reported_generation(&key("orders")), Some(4));
+}
+
+/// The freeze stops at the leader's last heartbeat: a report already older
+/// than the TTL then is not revived.
+#[test]
+fn a_dead_leaders_report_ages_up_to_its_last_heartbeat() {
+    let nodes = vec![
+        node_at("broker-a", None, true, 1_000 + TTL_MS + 1),
+        node_at("broker-b", Some(B_STORAGE), false, 1_000),
+    ];
+    let view = at(vec![identified(1_000)], 1_000 + TTL_MS * 10).with_nodes(&nodes, &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.leader_offset(&key("orders")), None);
+}
+
+/// A mismatch is evidence and excludes the follower even from a fresh
+/// report. A missing identity on either side is not, and the follower is
+/// read by the report's age alone; that includes a node the read does not
+/// know at all.
+#[test]
+fn only_a_mismatched_identity_excludes_a_fresh_report() {
+    let fresh = 1_000;
+    let other = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let view =
+        at(vec![identified(1_000)], fresh).with_nodes(&dead_leader(Some(other)), &[led_by_a(4)]);
+    assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+    assert_eq!(view.reported_offset(&key("orders"), "broker-b"), None);
+    // What the report says of the shard is still read.
+    assert_eq!(view.reported_generation(&key("orders")), Some(4));
+
+    for (report, nodes) in [
+        (identified(1_000), dead_leader(None)),
+        (
+            report("orders", &["broker-b"], 1_000),
+            dead_leader(Some(B_STORAGE)),
+        ),
+        (identified(1_000), Vec::new()),
+    ] {
+        let view = at(vec![report.clone()], fresh).with_nodes(&nodes, &[led_by_a(4)]);
+        assert!(view.is_caught_up(&key("orders"), "broker-b"), "{report:?}");
+        let view = at(vec![report.clone()], fresh + TTL_MS * 10).with_nodes(&nodes, &[led_by_a(4)]);
+        assert!(!view.is_caught_up(&key("orders"), "broker-b"), "{report:?}");
+    }
 }

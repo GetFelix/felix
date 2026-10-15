@@ -26,6 +26,7 @@ pub(crate) fn node(node_id: &str, port: u16) -> Node {
             registered_at_millis: 1_699_000_000_000,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }
@@ -46,6 +47,7 @@ pub(crate) async fn run_node_contract(store: Arc<dyn ControlPlaneStore>) {
     let store: &dyn ControlPlaneStore = store.as_ref();
     register_is_readable(store).await;
     optional_addresses_survive_a_round_trip(store).await;
+    the_storage_id_belongs_to_the_registration_that_sent_it(store).await;
     register_rejects_an_address_another_node_holds(store).await;
     reregistering_preserves_identity_and_bumps_incarnation(store).await;
     an_invalid_node_is_rejected(store).await;
@@ -257,6 +259,38 @@ async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) 
     // Likewise a broker restarted without a zone is placed as having none.
     assert_eq!(stored.spec.zone, None);
     assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
+}
+
+/// **The storage identity is the current registration's.** Placement checks
+/// a report against it, so a restart that sends none must not leave the
+/// previous process's identity behind to match on.
+async fn the_storage_id_belongs_to_the_registration_that_sent_it(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let with_id = |id: &str| {
+        let mut node = node("broker-a", 7001);
+        node.status.storage_id = Some(id.to_string());
+        node
+    };
+    let first = "0123456789abcdef0123456789abcdef";
+    let stored = store.register_node(with_id(first)).await.expect("register");
+    assert_eq!(stored.status.storage_id.as_deref(), Some(first));
+    assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
+
+    let wiped = "fedcba9876543210fedcba9876543210";
+    let stored = store
+        .register_node(with_id(wiped))
+        .await
+        .expect("re-register");
+    assert_eq!(stored.status.storage_id.as_deref(), Some(wiped));
+
+    let stored = store
+        .register_node(node("broker-a", 7001))
+        .await
+        .expect("re-register without one");
+    assert_eq!(stored.status.storage_id, None);
+    assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
+    let listed = store.list_nodes().await.expect("list");
+    assert_eq!(listed[0].status.storage_id, None);
 }
 
 async fn register_rejects_an_address_another_node_holds(store: &dyn ControlPlaneStore) {

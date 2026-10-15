@@ -224,6 +224,7 @@ fn node_named(node_id: &str) -> Node {
             registered_at_millis: 1,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }

@@ -23,4 +23,5 @@ mod membership;
 mod partition;
 mod promotion_fence;
 mod retention_floor;
+mod wiped;
 mod writes;

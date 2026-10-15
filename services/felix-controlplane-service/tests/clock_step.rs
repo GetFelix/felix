@@ -49,6 +49,7 @@ fn node(node_id: &str, port: u16, now: u64) -> Node {
             registered_at_millis: now,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }

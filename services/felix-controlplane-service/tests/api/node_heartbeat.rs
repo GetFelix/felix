@@ -42,6 +42,7 @@ fn node(node_id: &str) -> Node {
             registered_at_millis: 1,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }
@@ -472,4 +473,83 @@ async fn follower_features_are_finalized_after_generation_start() {
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK, "{feature}");
     }
+}
+
+/// A storage identity is 32 lowercase hex digits. Anything else is refused
+/// with 400 rather than stored, since placement compares identities as
+/// strings and a second spelling of one would read as a wiped disk. A good
+/// one is kept, and a registration without one clears it.
+#[tokio::test]
+async fn a_malformed_storage_id_is_a_bad_request() {
+    let store = store();
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec!["node.manage:cluster:*".to_string()],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let app = app_with(Arc::clone(&store)).await;
+    let register = |storage_id: Option<&str>| {
+        let mut body = serde_json::json!({
+            "node_id": "broker-a",
+            "advertise_addr": "10.0.0.4:7001",
+            "region": "local",
+        });
+        if let Some(id) = storage_id {
+            body["storage_id"] = serde_json::json!(id);
+        }
+        authed(&token, "POST", "/v1/nodes", body)
+    };
+
+    for bad in [
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef",
+        "0123456789abcdef0123456789abcdeg",
+        "",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(register(Some(bad)))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad:?}");
+    }
+    assert!(store.get_node("broker-a").await.is_err(), "nothing stored");
+
+    let good = "0123456789abcdef0123456789abcdef";
+    let response = app
+        .clone()
+        .oneshot(register(Some(good)))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        read_json(response).await["node"]["status"]["storage_id"],
+        good
+    );
+
+    let response = app.clone().oneshot(register(None)).await.expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        read_json(response).await["node"]["status"]
+            .get("storage_id")
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .get_node("broker-a")
+            .await
+            .expect("node")
+            .status
+            .storage_id,
+        None
+    );
 }

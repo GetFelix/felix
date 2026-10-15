@@ -118,6 +118,7 @@ async fn seed_node(store: &InMemoryStore, node_id: &str, port: u16) {
                 registered_at_millis: 1,
                 incarnation: 0,
                 features: Default::default(),
+                storage_id: None,
             },
         })
         .await

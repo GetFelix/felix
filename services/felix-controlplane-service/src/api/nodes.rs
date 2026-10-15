@@ -23,7 +23,9 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
+};
 use crate::api::types::{NodeRegistrationRequest, NodeRegistrationResponse};
 use crate::auth::bearer::{require_cluster_action, verified_claims};
 use crate::auth::rbac::authorize::{
@@ -40,6 +42,7 @@ use crate::store::StoreError;
     request_body = NodeRegistrationRequest,
     responses(
         (status = 200, description = "Node registered", body = NodeRegistrationResponse),
+        (status = 400, description = "Malformed storage_id", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Identity or address rejected", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -50,6 +53,7 @@ use crate::store::StoreError;
 /// incarnation. That is what lets a restart be told apart from a new node.
 ///
 /// # Errors
+/// - 400 when `storage_id` is not 32 lowercase hex digits.
 /// - 409 when the identity or advertised address is invalid, the address
 ///   already belongs to another node, or the broker lacks a fleet feature
 ///   every other serving broker reported.
@@ -62,6 +66,10 @@ pub(crate) async fn register_node(
     // token has to be authorised for. A broker cannot register as someone else
     // by asking to.
     require_node_manage(&state, &headers, &request.node_id).await?;
+    if let Some(storage_id) = &request.storage_id {
+        crate::model::validate_storage_id(storage_id)
+            .map_err(|err| api_validation_error(&err.to_string()))?;
+    }
     let now = now_millis();
     let node = Node {
         node_id: request.node_id,
@@ -82,6 +90,7 @@ pub(crate) async fn register_node(
             registered_at_millis: now,
             incarnation: 0,
             features: request.features,
+            storage_id: request.storage_id,
         },
     };
 

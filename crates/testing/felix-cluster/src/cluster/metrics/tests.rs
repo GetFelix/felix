@@ -30,6 +30,7 @@ fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> Re
         leader_offset: Some(leader_offset),
         halted: BTreeMap::new(),
         counter_offsets: BTreeMap::new(),
+        follower_storage: Default::default(),
     }
 }
 

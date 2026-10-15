@@ -22,6 +22,7 @@ fn node() -> Node {
             registered_at_millis: 1_699_000_000_000,
             incarnation: 3,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }
