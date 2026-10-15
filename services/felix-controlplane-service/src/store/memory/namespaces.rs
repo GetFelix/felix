@@ -2,7 +2,7 @@
 use super::InMemoryStore;
 use crate::model::{
     CacheChange, CacheChangeOp, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey,
-    StreamChange, StreamChangeOp,
+    ShardKind, StreamChange, StreamChangeOp,
 };
 use crate::store::{ChangeSet, ControlPlaneStore, Snapshot, StoreError, StoreResult};
 
@@ -100,6 +100,14 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
                     stream: Some(stream),
                     deleted_through,
                 });
+            store
+                .drop_shard_assignments_for(
+                    ShardKind::Stream,
+                    &stream_key.tenant_id,
+                    &stream_key.namespace,
+                    &stream_key.stream,
+                )
+                .await;
         }
     }
     drop(nodes);
@@ -122,6 +130,14 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
                 key: cache_key.clone(),
                 cache: Some(cache),
             });
+            store
+                .drop_shard_assignments_for(
+                    ShardKind::Cache,
+                    &cache_key.tenant_id,
+                    &cache_key.namespace,
+                    &cache_key.cache,
+                )
+                .await;
         }
     }
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);

@@ -1,8 +1,8 @@
 //! Tenants, and the cascade that deleting one sets off.
 use super::InMemoryStore;
 use crate::model::{
-    CacheChange, CacheChangeOp, NamespaceChange, NamespaceChangeOp, StreamChange, StreamChangeOp,
-    Tenant, TenantChange, TenantChangeOp,
+    CacheChange, CacheChangeOp, NamespaceChange, NamespaceChangeOp, ShardKind, StreamChange,
+    StreamChangeOp, Tenant, TenantChange, TenantChangeOp,
 };
 use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
 
@@ -97,6 +97,14 @@ pub(super) async fn delete_tenant(store: &InMemoryStore, tenant_id: &str) -> Sto
                     stream: Some(stream),
                     deleted_through,
                 });
+            store
+                .drop_shard_assignments_for(
+                    ShardKind::Stream,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                )
+                .await;
         }
     }
     drop(nodes);
@@ -120,6 +128,14 @@ pub(super) async fn delete_tenant(store: &InMemoryStore, tenant_id: &str) -> Sto
                 key: key.clone(),
                 cache: Some(cache),
             });
+            store
+                .drop_shard_assignments_for(
+                    ShardKind::Cache,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.cache,
+                )
+                .await;
         }
     }
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);

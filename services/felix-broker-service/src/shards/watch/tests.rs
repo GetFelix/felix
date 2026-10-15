@@ -102,6 +102,29 @@ fn a_stale_generation_cannot_roll_ownership_back() {
     );
 }
 
+/// A recreated stream's shard can start below the deleted stream's generation
+/// (a control-plane restore rewinds the change seq it starts at). The newer
+/// incarnation wins anyway, and the deleted one's assignment, delivered late,
+/// does not take the shard back.
+#[test]
+fn a_newer_incarnation_wins_at_a_lower_generation() {
+    let at = |leader: &str, generation, incarnation| ShardAssignment {
+        incarnation,
+        ..assignment(0, leader, generation)
+    };
+    let mut owned = ShardOwnership::default();
+    owned.apply(&key(0), Some(at("broker-a", 40, 7)));
+    assert!(owned.apply(&key(0), Some(at("broker-b", 12, 9))));
+    assert_eq!(owned.get(&key(0)).expect("present").leader, "broker-b");
+    assert!(!owned.apply(&key(0), Some(at("broker-a", 41, 7))));
+    assert_eq!(owned.get(&key(0)).expect("present").incarnation, 9);
+
+    // A stream from before incarnations is at 0, below any incarnated one.
+    let mut owned = ShardOwnership::default();
+    owned.apply(&key(0), Some(at("broker-a", 40, 0)));
+    assert!(owned.apply(&key(0), Some(at("broker-b", 3, 9))));
+}
+
 #[test]
 fn an_unassignment_removes_the_shard() {
     let mut owned = ShardOwnership::default();
