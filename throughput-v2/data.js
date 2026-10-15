@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792041564427,
+  "lastUpdate": 1792041876903,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29692,6 +29692,58 @@ window.BENCHMARK_DATA = {
             "range": "3566.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797633.01\nmean: 797730.79\nstdev: 3566.64\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d5b9af98143412012e9ee480b7df2c2874f81b04",
+          "message": "fix(controlplane): stop catalog snapshots and change pages from skipping changes (#1226)\n\n* fix(controlplane): stop catalog snapshots and change pages from skipping changes\n\nThree ways a broker following the catalog feeds could miss a change, closed\nfor tenants, namespaces, streams and caches on Postgres and in memory:\n\n- A snapshot read its rows and its next_seq separately. Postgres now reads\n  both in one REPEATABLE READ transaction; memory holds the rows' lock while\n  it reads the change log.\n- Postgres handed out change seqs from a BIGSERIAL in allocation order, so a\n  reader could pass a seq still committing. Writers now take the feed's\n  advisory lock first thing and hold it to commit, making seq order commit\n  order.\n- A full page of changes answered with the feed's tail as next_seq, which\n  skipped everything past the first page. A full page now answers with the\n  seq after its last change. The node and shard-assignment feeds had the same\n  page bug.\n\nThe broker's catalog sync follows each feed page by page within a pass.\n\nCloses #1224\n\n* fix(broker): never move a change-feed cursor backwards\n\nOn Raft each control-plane member answers from its own applied state, so a\nbroker reaching a lagging member could get a next_seq below its cursor and\nreplay changes it had already applied, or, in the shard watch, re-snapshot\nonto the member's older view. The catalog sync and the shard watch now ignore\nan answer from behind what they applied and ask again, and take it as a\nreset only after the feed has answered from behind for 60 s.\n\n* fix(controlplane): bound feed-lock waits, resnapshot a reset catalog feed\n\n- Writers to a Postgres catalog feed queue on an in-process gate before they\n  take a pooled connection, and give up with a retryable 503 after 5 s\n  (lock_timeout on the advisory lock, a deadline on the gate), so a long\n  cascade cannot starve reads of the pool.\n- The broker's catalog sync takes a new snapshot of a feed it judges reset\n  instead of adopting the new next_seq, which skipped the new history.\n- Docs: upgrade note on the commit-order guarantee during a control-plane\n  roll; OpenAPI comment and wrapping fixes.\n\n* fix(controlplane): bound a multi-feed write by one deadline; retry 503 in felixctl\n\n- lock_timeout is per lock wait in Postgres, so it is now set to what is\n  left of the deadline before each feed lock; a writer to several feeds gives\n  up by the deadline in total.\n- felixctl retries a 503 `unavailable` a few times with short backoff, and the\n  cluster harness retries a 503 when seeding metadata.\n- Document the new 503 on the catalog write endpoints (docs and OpenAPI), and\n  state exactly what a reset catalog feed leaves on a broker.\n\n* fix(controlplane): answer a busy Postgres feed as 503 busy; retry only busy\n\nA Raft 503 unavailable may have committed, so retrying it turned a\nsuccessful create into a 409 and a delete into a 404. A feed-lock timeout\nwrote nothing and now has its own code, busy, which felixctl and the\ncluster harness retry. unavailable is no longer retried.\n\n* docs(controlplane): say only feed writes answer busy; don't promise a blind retry on unavailable",
+          "timestamp": "2026-10-14T22:20:04-07:00",
+          "tree_id": "6b9b14be0c9af5916a347384eba31a9f06f739f4",
+          "url": "https://github.com/GetFelix/felix/commit/d5b9af98143412012e9ee480b7df2c2874f81b04"
+        },
+        "date": 1792041876160,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342358.51,
+            "range": "6184.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342358.51\nmean: 340436.38\nstdev: 6184.90\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342358.51,
+            "range": "6184.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342358.51\nmean: 340436.38\nstdev: 6184.90\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79647.29,
+            "range": "1443.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79647.29\nmean: 79289.36\nstdev: 1443.56\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796472.85,
+            "range": "14435.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796472.85\nmean: 792893.65\nstdev: 14435.58\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
