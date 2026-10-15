@@ -16,6 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           sparse-checkout: .github/actions
       - id: code
         uses: ./.github/actions/code-changed
@@ -58,7 +59,7 @@ jobs:
         run: rustup update stable
 
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           # Pinned: a new tag can be published before its binaries are.
           version: 3.53.1
@@ -69,7 +70,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@32e16a23c68a001a1621efca19f131f965d4d122 # cargo-llvm-cov
         env:
           # Same reason as above: this resolves a release through the API.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,7 +111,7 @@ jobs:
           task coverage
 
       - name: Generate coverage badge (coverage.svg)
-        uses: ImBIOS/lcov-coverage-badge@v1
+        uses: ImBIOS/lcov-coverage-badge@fdc933e7a7795de686d543981db3580011838d3c # v1.0.0
         with:
           file: ./lcov.info
 
@@ -150,7 +151,7 @@ jobs:
 
       - name: Publish badge to badges branch (orphan)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: badges
