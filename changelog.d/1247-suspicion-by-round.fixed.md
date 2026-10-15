@@ -10,8 +10,9 @@
   report from before a restart no longer counts once it registers again. A
   placement pass that read the old incarnation can still act on that report,
   so in a fleet that reads by round a restarted leader refuses consumer-group
-  writes, which it would acknowledge on its lease alone, until its first
-  replication pass over the shard.
+  writes, which it would acknowledge on its lease alone, until a replication
+  pass over the shard made after it registered. A pass that ran before
+  registration answered saw no fleet features and does not count.
   Under Postgres it counts only with the report that set it, so a control
   plane on the previous release cannot leave a stale one behind. Postgres
   migration `0029_replica_report_by_round`; under Raft, metadata level 11.

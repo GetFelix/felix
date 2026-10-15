@@ -18,7 +18,7 @@
 //! that lacks the feature, so it is never withdrawn by a late-joining older
 //! broker. `docs/control-plane.md` ("Fleet features") has the rules.
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// A feature a broker may report, named as it goes on the wire.
 ///
@@ -193,6 +193,33 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
 pub struct FleetGate {
     reported: Box<[String]>,
     enabled: AtomicU64,
+    /// A registration's answer has been taken. Until then `enabled` is
+    /// empty because nothing was asked, not because nothing is enabled.
+    adopted: AtomicBool,
+}
+
+/// [`FleetGate`] read once, so several decisions agree on one answer.
+#[derive(Debug, Clone, Copy)]
+pub struct FleetView<'a> {
+    reported: &'a [String],
+    enabled: u64,
+    adopted: bool,
+}
+
+impl FleetView<'_> {
+    /// [`FleetGate::supports`] as of this view.
+    pub fn supports(&self, feature: FleetFeature) -> bool {
+        self.reported
+            .iter()
+            .position(|reported| reported == feature.name())
+            .is_some_and(|bit| self.enabled & (1 << bit) != 0)
+    }
+
+    /// Whether this process had taken a registration's answer when the view
+    /// was read. Before that, a feature missing from the view may be enabled.
+    pub fn adopted(&self) -> bool {
+        self.adopted
+    }
 }
 
 impl FleetGate {
@@ -206,6 +233,7 @@ impl FleetGate {
         Self {
             reported: reported.into_iter().take(MAX_FEATURES).collect(),
             enabled: AtomicU64::new(0),
+            adopted: AtomicBool::new(false),
         }
     }
 
@@ -223,6 +251,18 @@ impl FleetGate {
     /// this broker has been told. Every broker supporting it is not enough.
     pub fn supports(&self, feature: FleetFeature) -> bool {
         self.supports_name(feature.name())
+    }
+
+    /// The enabled set and whether it came from a registration, read once.
+    pub fn view(&self) -> FleetView<'_> {
+        // `adopted` first: set after the swap, so seeing it means seeing at
+        // least the registration's answer.
+        let adopted = self.adopted.load(Ordering::Acquire);
+        FleetView {
+            reported: &self.reported,
+            enabled: self.enabled.load(Ordering::Acquire),
+            adopted,
+        }
     }
 
     /// [`Self::supports`] by wire name.
@@ -259,6 +299,7 @@ impl FleetGate {
     {
         let bits = self.bits(fleet);
         let before = self.enabled.swap(bits, Ordering::AcqRel);
+        self.adopted.store(true, Ordering::Release);
         self.names(before & !bits)
     }
 

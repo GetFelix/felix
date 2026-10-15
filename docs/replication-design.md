@@ -286,13 +286,21 @@ from the process that is gone, still says `by_round`. Registration moves the
 node to a new incarnation before the new process can hold a lease, so a
 placement pass that reads incarnations after it no longer counts the old
 report. A pass that read them before can still promote on it once the new
-process holds a lease, so that process serves nothing on the lease alone
-until its first replication pass. It takes the enabled set from its
-registration answer, before the heartbeat that grants the lease, and in a
-fleet that reads by round it refuses group writes, the one thing it would
-acknowledge on the lease alone, until replication has passed over the shard
-at its generation. Its writes wait for a mark its followers decide and its
-`Quorum` reads for a round, and a promotion's fence ends both. Reports carry the incarnation the broker last registered,
+process holds a lease, so that process acknowledges nothing on the lease
+alone until it has decided how it serves the shard. It takes the enabled set
+from its registration answer, before the heartbeat that grants the lease, and
+in a fleet that reads by round it refuses group writes, the one thing it would
+acknowledge on the lease alone, until a replication pass has passed over the
+shard at its generation with that set. Replication starts before registration,
+so an earlier pass can see an empty set; it decides nothing and does not count
+(`Serving::adopted` in `quorum.rs`). Its writes wait for a mark its followers
+decide and its `Quorum` reads for a round, and a promotion's fence ends both.
+
+One gap remains. Changing a stream's consistency from `Quorum` to `Leader`
+does not bump its shard's generation, and a report at that generation that
+says `by_round` stands until the leader's next report. In that window the
+leader acknowledges on its lease while placement may still promote on its
+followers' word. Reports carry the incarnation the broker last registered,
 and the control plane stamps `leader_incarnation` only when it matches. A
 Postgres member that predates the column updates a report without it, so the
 flag is read as true only while `by_round_at` matches the row's

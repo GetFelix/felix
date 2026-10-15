@@ -383,22 +383,28 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // Every other shard keeps both: until every broker fences what it is
     // promoted to, a successor is only as good as the report it was chosen
     // from.
+    let serving = marks.serving();
     let by_followers = quorum_shard
         && match key.kind {
-            felix_router::ShardKind::Stream => marks.acks_by_followers(),
-            felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
+            felix_router::ShardKind::Stream => serving.streams_by_followers,
+            felix_router::ShardKind::Cache => serving.caches_by_followers,
         };
     if by_followers {
         fence.serve_without_lease(mark_key, route.generation);
     }
-    let reads_by_round = quorum_shard && marks.reads_by_round().is_some();
+    let reads_by_round = quorum_shard && serving.reads_by_round;
     if reads_by_round {
         fence.sessions_without_lease(mark_key, route.generation);
     }
     // Placement replaces a leader on its followers' word only when this
     // says nothing it serves rests on its lease.
     let by_round = by_followers && reads_by_round;
-    fence.passed(mark_key, route.generation);
+    // A pass made before registration answered saw an empty fleet, not the
+    // real one: it decided nothing, and group writes stay off the lease
+    // until a pass that did.
+    if serving.adopted {
+        fence.passed(mark_key, route.generation);
+    }
     // Read from the cursors the last pass left: a follower halted this way
     // stays halted until the assignment changes.
     if entry

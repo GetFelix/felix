@@ -739,7 +739,10 @@ async fn describe_reports_the_tail_and_the_claims() {
     assert_eq!(snapshot.in_flight, 1);
 }
 
-struct Confirms;
+/// Counts the rounds a group write confirms leadership with; every one
+/// succeeds.
+#[derive(Default)]
+struct Confirms(std::sync::atomic::AtomicUsize);
 
 #[async_trait::async_trait]
 impl felix_replication::quorum::LeadershipCheck for Confirms {
@@ -748,57 +751,119 @@ impl felix_replication::quorum::LeadershipCheck for Confirms {
         _key: &ShardKey,
         _generation: u64,
     ) -> Result<(), felix_replication::quorum::QuorumError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
 
-/// A restarted leader holds a lease before its first replication pass, while
-/// placement may still promote a follower on the report its previous process
-/// left. In a fleet that reads by round, group state on the lease alone would
-/// then be acknowledged and lost, so it waits for the pass.
-#[tokio::test]
-async fn group_state_waits_for_the_first_pass_in_a_fleet_that_reads_by_round() {
-    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
-    use felix_replication::driver::WriteFence;
+/// A follower that stores every batch it is sent.
+struct Accepting;
 
-    let leader = Leader::start().await;
-    let _lease = leader.hold_lease();
-    leader
-        .broker
-        .publish_batch(
-            TENANT,
-            NAMESPACE,
-            leader::QUORUM,
-            0,
-            &[Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+impl felix_replication::peer::PeerRequester for Accepting {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+        message: felix_wire::internal::InternalMessage,
+    ) -> Result<felix_wire::internal::InternalMessage, felix_replication::peer::PeerError> {
+        use felix_wire::internal::{InternalMessage, ReplicateOk};
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateCacheRecords(batch)
+        | InternalMessage::ReplicateCounterRecords(batch)) = message
+        else {
+            panic!("the driver sent {:?}", message.kind());
+        };
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
+/// A restarted `Quorum` leader in a fleet that reads by round, with two
+/// records published and its fleet gate not yet told anything.
+struct ByRound {
+    leader: Leader,
+    fleet: Arc<felix_common::fleet::FleetGate>,
+    marks: Arc<felix_replication::quorum::QuorumMarks>,
+    confirms: Arc<Confirms>,
+    publish_ctx: PublishContext,
+}
+
+impl ByRound {
+    async fn start() -> Self {
+        let leader = Leader::start().await;
+        leader
+            .broker
+            .publish_batch(
+                TENANT,
+                NAMESPACE,
+                leader::QUORUM,
+                0,
+                &[Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+            )
+            .await
+            .expect("publish");
+        let fleet = Arc::new(felix_common::fleet::FleetGate::for_this_build());
+        let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
+            Arc::clone(&fleet),
+        ));
+        let confirms = Arc::new(Confirms::default());
+        marks.set_read_check(Arc::clone(&confirms) as _, false);
+        marks.publish(&leader::stream_key(leader::QUORUM), leader::GENERATION, 2);
+        let publish_ctx = build_publish_context(
+            Arc::clone(&leader.broker),
+            &BrokerConfig::default(),
+            ClusterContext {
+                ingress: Some(Arc::clone(&leader.ingress)),
+                marks: Some(Arc::clone(&marks)),
+                ..ClusterContext::default()
+            },
+        );
+        Self {
+            leader,
+            fleet,
+            marks,
+            confirms,
+            publish_ctx,
+        }
+    }
+
+    /// What registration does: take the fleet's answer, which reads by round.
+    fn register(&self) {
+        use felix_common::fleet::{GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+        self.fleet.restart(
+            [GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS]
+                .iter()
+                .map(|feature| feature.name()),
+        );
+    }
+
+    /// One replication pass against this leader's real fence.
+    async fn pass(&self) {
+        use std::collections::HashMap;
+        felix_replication::driver::replicate_once_with(
+            &Accepting,
+            &self.leader.broker,
+            &self.leader.router,
+            self.leader.ingress.fence().as_ref(),
+            &felix_replication::promotion::NoGate,
+            &self.marks,
+            None,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &felix_replication::Rebuilds::disabled(),
+            &felix_replication::MoveThrottle::unlimited(),
         )
-        .await
-        .expect("publish");
-    let fleet = FleetGate::for_this_build();
-    fleet.observe(
-        [GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS]
-            .iter()
-            .map(|feature| feature.name()),
-    );
-    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
-        Arc::new(fleet),
-    ));
-    marks.set_read_check(Arc::new(Confirms), false);
-    let key = leader::stream_key(leader::QUORUM);
-    marks.publish(&key, leader::GENERATION, 2);
-    let publish_ctx = build_publish_context(
-        Arc::clone(&leader.broker),
-        &BrokerConfig::default(),
-        ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
-            ..ClusterContext::default()
-        },
-    );
-    let take = || {
+        .await;
+    }
+
+    async fn take(&self) -> Result<Vec<GroupRecord>, ClientError> {
         poll(
-            &leader.broker,
-            &publish_ctx,
+            &self.leader.broker,
+            &self.publish_ctx,
             None,
             TENANT,
             NAMESPACE,
@@ -810,14 +875,81 @@ async fn group_state_waits_for_the_first_pass_in_a_fleet_that_reads_by_round() {
             None,
             None,
         )
-    };
+        .await
+    }
+}
 
-    let refused = take()
+/// A restarted leader holds a lease before its first replication pass, while
+/// placement may still promote a follower on the report its previous process
+/// left. In a fleet that reads by round, group state on the lease alone would
+/// then be acknowledged and lost, so it waits for the pass.
+#[tokio::test]
+async fn group_state_waits_for_the_first_pass_in_a_fleet_that_reads_by_round() {
+    use felix_replication::driver::WriteFence;
+
+    let shard = ByRound::start().await;
+    shard.register();
+    let _lease = shard.leader.hold_lease();
+    let key = leader::stream_key(leader::QUORUM);
+
+    let refused = shard
+        .take()
         .await
         .expect_err("claimed on the lease before the first pass");
     assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
 
     // A pass that left the shard on the lease: the lease serves it again.
-    WriteFence::passed(leader.ingress.fence().as_ref(), &key, leader::GENERATION);
-    assert_eq!(take().await.expect("claimed on the lease").len(), 1);
+    WriteFence::passed(
+        shard.leader.ingress.fence().as_ref(),
+        &key,
+        leader::GENERATION,
+    );
+    assert_eq!(shard.take().await.expect("claimed on the lease").len(), 1);
+}
+
+/// **A pass made before registration answered decides nothing.** Replication
+/// starts before the broker registers, so its first pass can see an empty
+/// fleet and leave the shard on the lease. Once registration adopts a fleet
+/// that reads by round and the lease is granted, that pass must not let group
+/// writes through on the lease: placement may already be promoting on the
+/// previous process's report. Only a pass after adoption does.
+#[tokio::test]
+async fn a_pass_before_registration_does_not_open_group_writes_to_the_lease() {
+    let shard = ByRound::start().await;
+    shard.pass().await;
+    shard.register();
+    let _lease = shard.leader.hold_lease();
+
+    let refused = shard
+        .take()
+        .await
+        .expect_err("claimed on the lease after a pass that saw no fleet");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+
+    shard.pass().await;
+    assert_eq!(shard.take().await.expect("claimed after a pass").len(), 1);
+}
+
+/// **After a pass that reads by round, group writes confirm by a round and
+/// need no lease.**
+#[tokio::test]
+async fn a_by_round_pass_confirms_group_writes_by_a_round() {
+    let shard = ByRound::start().await;
+    shard.register();
+    let lease = shard.leader.hold_lease();
+    shard.pass().await;
+    lease.surrender();
+
+    assert_eq!(
+        shard
+            .take()
+            .await
+            .expect("claimed by a round without the lease")
+            .len(),
+        1
+    );
+    assert!(
+        shard.confirms.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "the write was not confirmed by a round",
+    );
 }

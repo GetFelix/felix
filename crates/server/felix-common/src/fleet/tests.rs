@@ -126,3 +126,18 @@ fn prerequisites_come_first_and_carry_their_own() {
         &[GENERATION_START, MAJORITY_ACK]
     );
 }
+
+#[test]
+fn a_view_is_adopted_only_after_a_registration_answer() {
+    let gate = FleetGate::new([MAJORITY_ACK.name()]);
+    gate.observe([MAJORITY_ACK.name()]);
+    let view = gate.view();
+    assert!(view.supports(MAJORITY_ACK));
+    assert!(!view.adopted(), "a heartbeat is not a registration");
+
+    gate.restart([MAJORITY_ACK.name()]);
+    let view = gate.view();
+    assert!(view.adopted());
+    assert!(view.supports(MAJORITY_ACK));
+    assert!(!view.supports(GENERATION_START));
+}
