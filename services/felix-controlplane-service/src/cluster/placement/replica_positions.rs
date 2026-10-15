@@ -83,6 +83,9 @@ pub struct ReplicaPositions {
     now_millis: u64,
     /// The fresh suspicions, by the broker that holds them.
     suspicions: HashMap<String, NodeSuspicion>,
+    /// Each node's current incarnation, which a leader's `by_round` must
+    /// have been reported from.
+    incarnations: HashMap<String, u64>,
     /// The fleet acknowledges `Quorum` stream writes by their followers and
     /// confirms `Quorum` reads by a round, so a deposed stream leader is
     /// kept out without its lease running out.
@@ -106,6 +109,7 @@ impl ReplicaPositions {
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
             suspicions: HashMap::new(),
+            incarnations: HashMap::new(),
             followers_decide: false,
             progressed: HashMap::new(),
         }
@@ -114,16 +118,21 @@ impl ReplicaPositions {
     /// With what brokers said about the leaders they cannot reach, and the
     /// fleet features that decide whether that may move a shard.
     ///
-    /// Both features, not only `majority_ack`: without `lease_free_reads` a
-    /// deposed leader still serves reads on its lease, and replacing it
-    /// before that runs out would let it hand out what its successor has
-    /// since overwritten.
+    /// All three of what brokers need to serve without the lease
+    /// (`generation_start`, `majority_ack`, `lease_free_reads`): short of any
+    /// of them a deposed leader still acknowledges or serves reads on its
+    /// lease, and replacing it before that runs out would let it hand out
+    /// what its successor has since overwritten.
+    ///
+    /// `incarnations` is each node's current incarnation, from the same read.
     pub fn with_suspicions(
         mut self,
         suspicions: Vec<NodeSuspicion>,
+        incarnations: HashMap<String, u64>,
         liveness: &NodeLivenessConfig,
         enabled: &BTreeSet<String>,
     ) -> Self {
+        self.incarnations = incarnations;
         let ttl = suspicion_ttl_millis(liveness);
         self.suspicions = suspicions
             .into_iter()
@@ -131,6 +140,7 @@ impl ReplicaPositions {
             .map(|suspicion| (suspicion.node_id.clone(), suspicion))
             .collect();
         self.followers_decide = [
+            felix_common::fleet::GENERATION_START,
             felix_common::fleet::MAJORITY_ACK,
             felix_common::fleet::LEASE_FREE_READS,
         ]
@@ -163,11 +173,24 @@ impl ReplicaPositions {
 }
 
 impl CaughtUp for ReplicaPositions {
-    fn suspects(&self, key: &ShardKey, follower: &str, leader: &str) -> bool {
+    fn suspects(&self, key: &ShardKey, generation: u64, follower: &str, leader: &str) -> bool {
         // Streams only for now. A `Quorum` cache would also need
         // `fenced_caches`, and still fails over on the lease.
+        //
+        // The enabled set says what brokers may do, not what this leader
+        // does: it may not have heard of the finalize yet, and one that has
+        // not reported by round at this generation may still serve on its
+        // lease. Its report is held only from the assignment's leader. A
+        // report from before the leader last registered speaks for a process
+        // that is gone: the new one serves on its lease until its first pass.
         self.followers_decide
             && key.kind == ShardKind::Stream
+            && self.fresh(key).is_some_and(|report| {
+                report.generation == generation
+                    && report.by_round
+                    && report.leader_incarnation.is_some()
+                    && report.leader_incarnation == self.incarnations.get(leader).copied()
+            })
             && self
                 .suspicions
                 .get(follower)

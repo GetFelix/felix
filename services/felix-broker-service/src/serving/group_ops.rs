@@ -509,16 +509,48 @@ impl Owned {
         )
         .map_err(ClientError::from)?;
         // Group state is acknowledged on this broker alone. Where the shard's
-        // sessions need no lease, [`Self::confirm`] stands in for it.
+        // sessions need no lease, [`Self::confirm`] stands in for it. Read
+        // after the pass check: a pass marks the sessions before it marks
+        // itself done.
+        let unsettled = publish_ctx
+            .ingress
+            .as_deref()
+            .is_some_and(|ingress| self.before_first_pass(publish_ctx, ingress));
         let by_round = self.sessions_by_round(publish_ctx);
         self.by_round
             .store(by_round, std::sync::atomic::Ordering::Relaxed);
         if let Some(ingress) = publish_ctx.ingress.as_deref()
             && !by_round
         {
+            if unsettled {
+                return Err(ClientError::unavailable(
+                    &crate::shards::routing::Reason::NotReady,
+                    "group state is not served here until replication has started for the shard",
+                ));
+            }
             ingress.fence().require_lease().map_err(ClientError::from)?;
         }
         Ok(guard)
+    }
+
+    /// Whether the lease cannot stand in for a round yet. In a fleet that
+    /// reads by round, placement replaces a leader on its followers' word
+    /// once it reported serving nothing on its lease, and that report may
+    /// come from this node's previous process. Until replication here has
+    /// decided how the shard serves, a group write on the lease could be
+    /// acknowledged after such a promotion. See "Failover on the followers'
+    /// word" in `docs/replication-design.md`.
+    fn before_first_pass(
+        &self,
+        publish_ctx: &PublishContext,
+        ingress: &crate::shards::routing::IngressRouter,
+    ) -> bool {
+        publish_ctx
+            .marks
+            .as_deref()
+            .is_some_and(|marks| marks.reads_by_round().is_some())
+            && ingress.replicated(&self.key)
+            && !ingress.fence().has_passed(&self.key, self.generation)
     }
 
     /// Whether a group write confirms leadership by a round rather than the

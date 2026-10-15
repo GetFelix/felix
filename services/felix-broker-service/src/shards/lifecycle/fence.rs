@@ -222,6 +222,16 @@ impl ShardFence {
             .is_some_and(|gate| gate.sessions_free_at.load(SeqCst) == generation)
     }
 
+    /// Whether replication has made a pass over `key` at `generation` here,
+    /// so [`Self::confirms_by_round`] says what this process decided rather
+    /// than what it has not got to yet.
+    pub fn has_passed(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.passed_at.load(SeqCst) == generation)
+    }
+
     /// Note that `key` has a newer leader than `generation`, or that no
     /// majority answered this broker for a lease duration. Its sessions stop
     /// going on without the lease, and the first report at a generation is
@@ -307,6 +317,12 @@ impl felix_replication::driver::WriteFence for ShardFence {
     fn sessions_without_lease(&self, key: &ShardKey, generation: u64) {
         if let Some(gate) = self.gates.read().get(key) {
             gate.sessions_free_at.store(generation, SeqCst);
+        }
+    }
+
+    fn passed(&self, key: &ShardKey, generation: u64) {
+        if let Some(gate) = self.gates.read().get(key) {
+            gate.passed_at.store(generation, SeqCst);
         }
     }
 
@@ -427,6 +443,8 @@ struct Gate {
     /// The generation whose readers and group sessions need no lease, or
     /// [`CLOSED`]: see [`ShardFence::sessions_lease_free`].
     sessions_free_at: AtomicU64,
+    /// The generation replication last passed over, or [`CLOSED`].
+    passed_at: AtomicU64,
     /// The generation this broker learned it was deposed at, or [`CLOSED`].
     deposed_at: AtomicU64,
     in_flight: AtomicUsize,
@@ -439,6 +457,7 @@ impl Default for Gate {
             open_at: AtomicU64::new(CLOSED),
             lease_free_at: AtomicU64::new(CLOSED),
             sessions_free_at: AtomicU64::new(CLOSED),
+            passed_at: AtomicU64::new(CLOSED),
             deposed_at: AtomicU64::new(CLOSED),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),

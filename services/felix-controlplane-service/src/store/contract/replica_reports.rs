@@ -14,7 +14,12 @@ pub(super) async fn a_replica_report_is_kept_and_read_back(store: &dyn ControlPl
         .put_shard_assignment(assignment(shard, LEADER))
         .await
         .expect("assign");
-    let recorded = report(shard, generation(store, shard).await, &["broker-b"], 5_000);
+    // With every optional field placement reads to fail over set.
+    let recorded = ReplicaReport {
+        by_round: true,
+        leader_incarnation: Some(1),
+        ..report(shard, generation(store, shard).await, &["broker-b"], 5_000)
+    };
     assert_eq!(
         store
             .record_replica_report(recorded.clone(), LEADER)
@@ -331,6 +336,8 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
     ReplicaReport {
         counter_offsets: Default::default(),
         stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
         key: key(shard),
         generation,
         caught_up: caught_up.iter().map(|n| n.to_string()).collect(),

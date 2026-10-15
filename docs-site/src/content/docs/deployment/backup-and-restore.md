@@ -165,6 +165,9 @@ The restored control plane hands out change sequence numbers, and so first
 generations of new incarnated streams, it had already used before the
 restore. A broker that kept running would still hold quorum marks and
 follower positions under those generations; one that restarts holds none.
+The restore also rewinds node incarnations and replica reports together, so
+an old report could let placement replace a broker that kept running while
+it still serves on its lease.
 
 ## See also
 

@@ -57,6 +57,9 @@ struct DbReplicaReport {
     leader_offset: Option<i64>,
     halted: serde_json::Value,
     counter_offsets: serde_json::Value,
+    by_round: bool,
+    leader_incarnation: Option<i64>,
+    by_round_at: Option<i64>,
 }
 
 pub(super) async fn put_shard_assignment(
@@ -529,8 +532,9 @@ pub(super) async fn record_replica_report(
     let result = sqlx::query(
         r#"INSERT INTO replica_reports
                    (tenant_id, namespace, kind, stream, shard, generation, caught_up, offsets,
-                    reported_at_millis, drained, leader_offset, halted, counter_offsets)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    reported_at_millis, drained, leader_offset, halted, counter_offsets,
+                    by_round, leader_incarnation, by_round_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -539,7 +543,10 @@ pub(super) async fn record_replica_report(
                    drained = EXCLUDED.drained,
                    leader_offset = EXCLUDED.leader_offset,
                    halted = EXCLUDED.halted,
-                   counter_offsets = EXCLUDED.counter_offsets
+                   counter_offsets = EXCLUDED.counter_offsets,
+                   by_round = EXCLUDED.by_round,
+                   leader_incarnation = EXCLUDED.leader_incarnation,
+                   by_round_at = EXCLUDED.by_round_at
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -559,6 +566,12 @@ pub(super) async fn record_replica_report(
     .bind(report.leader_offset.map(|offset| offset as i64))
     .bind(serde_json::to_value(&report.halted).expect("a map of halts serializes"))
     .bind(serde_json::to_value(&report.counter_offsets).expect("a map of integers serializes"))
+    .bind(report.by_round)
+    .bind(
+        report
+            .leader_incarnation
+            .map(|incarnation| incarnation as i64),
+    )
     .execute(&mut *tx)
     .await;
     match result {
@@ -577,7 +590,8 @@ pub(super) async fn record_replica_report(
 pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<Vec<ReplicaReport>> {
     sqlx::query_as::<_, DbReplicaReport>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, generation, caught_up, offsets,
-                      reported_at_millis, drained, leader_offset, halted, counter_offsets
+                      reported_at_millis, drained, leader_offset, halted, counter_offsets,
+                      by_round, leader_incarnation, by_round_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -618,6 +632,9 @@ fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
 }
 
 fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
+    // Only the report that set the flag speaks for it: a member that predates
+    // the columns updates the row and leaves them behind (migration 0029).
+    let by_round = row.by_round && row.by_round_at == Some(row.reported_at_millis);
     Ok(ReplicaReport {
         key: ShardKey {
             tenant_id: row.tenant_id,
@@ -639,6 +656,11 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
         counter_offsets: serde_json::from_value(row.counter_offsets)
             .map_err(|err| StoreError::Unexpected(anyhow!("decode counter_offsets: {err}")))?,
         stream_incarnation: None,
+        by_round,
+        leader_incarnation: row
+            .leader_incarnation
+            .filter(|_| by_round)
+            .map(|incarnation| incarnation as u64),
     })
 }
 

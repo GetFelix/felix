@@ -378,3 +378,34 @@ async fn the_join_floor_follows_apply_and_restore() {
     restored.restore(&empty).await;
     assert_eq!(restored.join_floor(), 0);
 }
+
+/// A report carrying `by_round` needs level 11, so applying it raises the
+/// mark and the join floor to 11; one without it leaves both alone. The
+/// proposer strips it below 11 (`record_replica_report`), so only a group
+/// already at 11 ever applies one.
+#[tokio::test]
+async fn a_report_by_round_raises_the_mark_to_11() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    let plain = MetaCommand::RecordReplicaReport {
+        report: replica_report("acme", "ns", "orders", 1),
+        leader: None,
+    };
+    assert!(plain.version() < 11);
+    original.apply(&encode_command(&plain)).await;
+    assert_eq!(original.levels_used(), 0);
+    assert_eq!(original.join_floor(), 0);
+
+    let by_round = MetaCommand::RecordReplicaReport {
+        report: crate::model::ReplicaReport {
+            by_round: true,
+            leader_incarnation: Some(2),
+            ..replica_report("acme", "ns", "orders", 2)
+        },
+        leader: None,
+    };
+    assert_eq!(by_round.version(), 11);
+    original.apply(&encode_command(&by_round)).await;
+    assert_eq!(original.levels_used(), 11);
+    assert_eq!(original.join_floor(), 11);
+}

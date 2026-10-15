@@ -617,6 +617,8 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         halted: Default::default(),
                         counter_offsets: Default::default(),
                         stream_incarnation: None,
+                        by_round: false,
+                        leader_incarnation: None,
                     },
                     "broker-x",
                 )
@@ -791,6 +793,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     let report = ReplicaReport {
         counter_offsets: [("broker-y".to_string(), 7)].into(),
         stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
         key: key.clone(),
         generation: assigned.generation,
         caught_up: Default::default(),
@@ -845,6 +849,114 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         assert!(
             std::time::Instant::now() < deadline,
             "halts still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A member before `by_round` would drop it, and its placement would read the
+/// leader as on its lease while the others did not. So until every member has
+/// the level the report is recorded without it, which is the safe reading, and
+/// the halts and counter positions a member at level 10 can apply are kept.
+#[tokio::test]
+async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
+    use crate::model::{
+        HaltedCopy, ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 10).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+        })
+        .await
+        .expect("assign");
+    let report = ReplicaReport {
+        counter_offsets: [("broker-y".to_string(), 7)].into(),
+        stream_incarnation: None,
+        by_round: true,
+        leader_incarnation: Some(1),
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: Default::default(),
+        offsets: Default::default(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: None,
+        halted: [(
+            "broker-y".to_string(),
+            HaltedCopy {
+                reason: "diverged".to_string(),
+                generation: assigned.generation,
+                since_millis: 1,
+            },
+        )]
+        .into(),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("recorded without by_round"),
+        crate::store::ReportWrite::Stored
+    );
+    let first = held().await;
+    assert!(!first.by_round);
+    assert!(first.halted.contains_key("broker-y"));
+    assert!(first.counter_offsets.contains_key("broker-y"));
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("record");
+        if held().await.by_round {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "by_round still dropped after every member reported the level"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

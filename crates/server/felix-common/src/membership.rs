@@ -130,6 +130,12 @@ pub struct ShardReplicaStatus {
     /// brokers that predate it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stream_incarnation: u64,
+    /// The leader acknowledges this shard by its followers and confirms its
+    /// reads by a round, so nothing it serves rests on its lease. Placement
+    /// replaces a leader on its followers' word only when its report says
+    /// so. Omitted when false, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_round: bool,
 }
 
 fn is_zero(value: &u64) -> bool {

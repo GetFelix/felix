@@ -39,6 +39,8 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
     ReplicaReport {
         counter_offsets: Default::default(),
         stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
         key: key(stream),
         generation: 4,
         offsets: caught_up
@@ -217,6 +219,8 @@ async fn load_reads_the_store_on_the_stores_clock() {
             ReplicaReport {
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
+                by_round: false,
+                leader_incarnation: None,
                 key: key.clone(),
                 generation,
                 caught_up: ["broker-b".to_string()].into_iter().collect(),
@@ -292,25 +296,42 @@ fn suspicion(node_id: &str, leader: &str, reported_at_millis: u64) -> crate::mod
     }
 }
 
+/// The leader, `broker-a`, at the incarnation its reports came from.
+fn incarnations() -> HashMap<String, u64> {
+    HashMap::from([("broker-a".to_string(), 1)])
+}
+
 fn features(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|name| name.to_string()).collect()
 }
+
+/// A report from the leader of `orders` at generation 4, saying whether it
+/// serves by round.
+fn leader_report(by_round: bool, reported_at_millis: u64) -> ReplicaReport {
+    ReplicaReport {
+        by_round,
+        leader_incarnation: by_round.then_some(1),
+        ..report("orders", &["broker-b"], reported_at_millis)
+    }
+}
+
+const ALL: &[&str] = &["generation_start", "majority_ack", "lease_free_reads"];
 
 /// **A suspicion counts for two heartbeats.** A broker that still suspects
 /// says so on every beat; one that stopped says nothing, so an old one must
 /// stop counting on its own.
 #[test]
 fn a_suspicion_counts_for_two_heartbeats() {
-    let both = features(&["majority_ack", "lease_free_reads"]);
     let now = 100_000;
     let held = |stamped| {
-        at(Vec::new(), now)
+        at(vec![leader_report(true, now)], now)
             .with_suspicions(
                 vec![suspicion("broker-b", "broker-a", stamped)],
+                incarnations(),
                 &liveness(),
-                &both,
+                &features(ALL),
             )
-            .suspects(&key("orders"), "broker-b", "broker-a")
+            .suspects(&key("orders"), 4, "broker-b", "broker-a")
     };
     assert!(held(now - 2 * HEARTBEAT_MS));
     assert!(!held(now - 2 * HEARTBEAT_MS - 1));
@@ -318,27 +339,36 @@ fn a_suspicion_counts_for_two_heartbeats() {
 
 /// **Only once the fleet keeps a deposed leader out without its lease.**
 /// `majority_ack` keeps its writes from being acknowledged; without
-/// `lease_free_reads` it still answers reads on the lease.
+/// `lease_free_reads` it still answers reads on the lease. Brokers use
+/// either only alongside `generation_start`, so without it both stay on the
+/// lease, whatever else is enabled.
 #[test]
-fn a_suspicion_counts_only_with_both_features() {
+fn a_suspicion_counts_only_with_all_three_features() {
     let now = 100_000;
     for (enabled, counts) in [
-        (features(&["majority_ack", "lease_free_reads"]), true),
+        (
+            features(&["generation_start", "majority_ack", "lease_free_reads"]),
+            true,
+        ),
+        (features(&["majority_ack", "lease_free_reads"]), false),
+        (features(&["generation_start", "majority_ack"]), false),
+        (features(&["generation_start", "lease_free_reads"]), false),
         (features(&["majority_ack"]), false),
         (features(&["lease_free_reads"]), false),
         (features(&[]), false),
     ] {
-        let positions = at(Vec::new(), now).with_suspicions(
+        let positions = at(vec![leader_report(true, now)], now).with_suspicions(
             vec![suspicion("broker-b", "broker-a", now)],
+            incarnations(),
             &liveness(),
             &enabled,
         );
         assert_eq!(
-            positions.suspects(&key("orders"), "broker-b", "broker-a"),
+            positions.suspects(&key("orders"), 4, "broker-b", "broker-a"),
             counts,
             "{enabled:?}"
         );
-        assert!(!positions.suspects(&key("orders"), "broker-b", "broker-c"));
+        assert!(!positions.suspects(&key("orders"), 4, "broker-b", "broker-c"));
     }
 }
 
@@ -346,14 +376,125 @@ fn a_suspicion_counts_only_with_both_features() {
 #[test]
 fn a_suspicion_does_not_move_a_cache() {
     let now = 100_000;
-    let positions = at(Vec::new(), now).with_suspicions(
-        vec![suspicion("broker-b", "broker-a", now)],
-        &liveness(),
-        &features(&["majority_ack", "lease_free_reads", "fenced_caches"]),
-    );
     let cache = ShardKey {
         kind: crate::model::ShardKind::Cache,
         ..key("profiles")
     };
-    assert!(!positions.suspects(&cache, "broker-b", "broker-a"));
+    let positions = at(
+        vec![ReplicaReport {
+            key: cache.clone(),
+            ..leader_report(true, now)
+        }],
+        now,
+    )
+    .with_suspicions(
+        vec![suspicion("broker-b", "broker-a", now)],
+        incarnations(),
+        &liveness(),
+        &features(&[
+            "generation_start",
+            "majority_ack",
+            "lease_free_reads",
+            "fenced_caches",
+        ]),
+    );
+    assert!(!positions.suspects(&cache, 4, "broker-b", "broker-a"));
+}
+
+/// **Only against a leader that reported it serves nothing on its lease.**
+/// The enabled set says what brokers may do. A leader still reading on its
+/// lease, kept there by `FELIX_QUORUM_READS=lease` or not yet told of the
+/// finalize, would go on serving after it was replaced. A broker that
+/// predates the field never says so.
+#[test]
+fn a_suspicion_counts_only_against_a_leader_off_its_lease() {
+    let now = 100_000;
+    let suspects = |reports: Vec<ReplicaReport>, generation| {
+        at(reports, now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", now)],
+                incarnations(),
+                &liveness(),
+                &features(ALL),
+            )
+            .suspects(&key("orders"), generation, "broker-b", "broker-a")
+    };
+    assert!(suspects(vec![leader_report(true, now)], 4));
+    // On its lease, or silent about it.
+    assert!(!suspects(vec![leader_report(false, now)], 4));
+    let older: ReplicaReport = serde_json::from_value(serde_json::json!({
+        "key": key("orders"),
+        "generation": 4,
+        "caught_up": ["broker-b"],
+        "offsets": {"broker-b": 10},
+        "reported_at_millis": now,
+    }))
+    .expect("a report without the field");
+    assert!(!suspects(vec![older], 4));
+    // No report, or one too old to believe.
+    assert!(!suspects(Vec::new(), 4));
+    assert!(!suspects(vec![leader_report(true, now - TTL_MS - 1)], 4));
+    // Reported at another generation: not this leader's word.
+    assert!(!suspects(vec![leader_report(true, now)], 5));
+}
+
+/// **Not on a report from before the leader restarted.** A broker that
+/// restarts within the report's lifetime can lead again at the same
+/// generation, and serves on its lease until its first replication pass. Its
+/// last report, from the process that is gone, still says `by_round`; the
+/// incarnation its registration took tells the two apart.
+#[test]
+fn a_suspicion_does_not_count_on_a_report_from_before_a_restart() {
+    let now = 100_000;
+    let suspects = |incarnations: HashMap<String, u64>| {
+        at(vec![leader_report(true, now)], now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", now)],
+                incarnations,
+                &liveness(),
+                &features(ALL),
+            )
+            .suspects(&key("orders"), 4, "broker-b", "broker-a")
+    };
+    assert!(suspects(incarnations()));
+    assert!(!suspects(HashMap::from([("broker-a".to_string(), 2)])));
+    assert!(!suspects(HashMap::new()));
+    // Nor one that says `by_round` without naming the incarnation.
+    let unnamed = ReplicaReport {
+        leader_incarnation: None,
+        ..leader_report(true, now)
+    };
+    assert!(
+        !at(vec![unnamed], now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", now)],
+                incarnations(),
+                &liveness(),
+                &features(ALL),
+            )
+            .suspects(&key("orders"), 4, "broker-b", "broker-a")
+    );
+}
+
+/// **Finalizing does not move a leader that has not heard of it.** Brokers
+/// learn the enabled set on their next heartbeat, and until then a leader
+/// reads on its lease and reports so. Placement waits for the report that
+/// says otherwise.
+#[test]
+fn a_finalize_waits_for_the_leader_to_report_by_round() {
+    let now = 100_000;
+    let positions = |reports| {
+        at(reports, now).with_suspicions(
+            vec![suspicion("broker-b", "broker-a", now)],
+            incarnations(),
+            &liveness(),
+            &features(ALL),
+        )
+    };
+    // The last feature just committed; the leader's report predates it.
+    let before = positions(vec![leader_report(false, now - HEARTBEAT_MS)]);
+    assert!(!before.suspects(&key("orders"), 4, "broker-b", "broker-a"));
+    // Its next report, after the heartbeat that told it.
+    let after = positions(vec![leader_report(true, now)]);
+    assert!(after.suspects(&key("orders"), 4, "broker-b", "broker-a"));
 }

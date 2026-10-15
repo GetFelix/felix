@@ -682,6 +682,22 @@ impl ControlPlaneStore for RaftStore {
         {
             report.stream_incarnation = None;
         }
+        // Without `by_round` placement waits the leader's lease out, which is
+        // safe, so a group that cannot apply it records the rest. Dropped
+        // first: the levels below are measured with it gone.
+        let by_round_level = MetaCommand::RecordReplicaReport {
+            report: ReplicaReport {
+                halted: Default::default(),
+                counter_offsets: Default::default(),
+                ..report.clone()
+            },
+            leader: None,
+        }
+        .version();
+        if report.by_round && self.handle.cluster_version().await < by_round_level {
+            report.by_round = false;
+            report.leader_incarnation = None;
+        }
         // Halts and counter positions are advisory: a group with a member that
         // would drop them records the rest of the report, which placement
         // needs.

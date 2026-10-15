@@ -14,6 +14,9 @@
 //! one broker be rolled back mid-upgrade. Each backend serializes finalizing
 //! with registration, so a broker without the feature cannot slip in while
 //! it is being enabled.
+//!
+//! A feature brokers use only alongside others is finalized after them
+//! ([`check_prerequisites`]).
 use std::collections::BTreeSet;
 
 use crate::model::Node;
@@ -52,9 +55,18 @@ pub(crate) fn admit(enabled: &BTreeSet<String>, joining: &Node) -> Result<(), St
     if missing.is_empty() {
         return Ok(());
     }
+    // A current build lacks `lease_free_reads` only when it keeps its reads
+    // on the lease, and the operator can fix that without a new build.
+    let reads_by_lease = if missing.contains(&felix_common::fleet::LEASE_FREE_READS.name()) {
+        "; a broker started with FELIX_QUORUM_READS=lease does not support \
+         lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) \
+         and restart the broker"
+    } else {
+        ""
+    };
     Err(StoreError::Conflict(format!(
         "node {} does not support fleet feature(s) {} that the fleet has enabled; \
-         run a build that has them, since an enabled feature cannot be disabled",
+         run a build that has them, since an enabled feature cannot be disabled{reads_by_lease}",
         joining.node_id,
         missing.join(", "),
     )))
@@ -91,6 +103,43 @@ where
     Err(StoreError::Conflict(format!(
         "cannot finalize {feature}: serving broker(s) {} do not support it; upgrade them first",
         lacking.join(", "),
+    )))
+}
+
+/// The features `feature` needs enabled first that `enabled` lacks
+/// ([`felix_common::fleet::prerequisites`]).
+pub(crate) fn missing_prerequisites(enabled: &BTreeSet<String>, feature: &str) -> Vec<String> {
+    felix_common::fleet::prerequisites(feature)
+        .iter()
+        .map(|needed| needed.name())
+        .filter(|needed| !enabled.contains(*needed))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Refuse to enable `feature` before the features brokers use it alongside.
+/// Placement reads the enabled set directly, so enabling `lease_free_reads`
+/// without `generation_start` would let it fail over on suspicion while the
+/// brokers still serve on the lease.
+///
+/// Checked when the operator asks, not when a store applies the finalize:
+/// the enabled set only grows, so a prerequisite seen enabled stays enabled,
+/// and a Raft member applying the command must not decide differently from
+/// one on an older release.
+pub(crate) fn check_prerequisites(
+    enabled: &BTreeSet<String>,
+    feature: &str,
+) -> Result<(), StoreError> {
+    if enabled.contains(feature) {
+        return Ok(());
+    }
+    let missing = missing_prerequisites(enabled, feature);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(StoreError::Conflict(format!(
+        "cannot finalize {feature}: finalize {} first; brokers use {feature} only alongside them",
+        missing.join(", "),
     )))
 }
 

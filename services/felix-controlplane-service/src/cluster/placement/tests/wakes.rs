@@ -57,6 +57,8 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             crate::model::ReplicaReport {
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
+                by_round: false,
+                leader_incarnation: None,
                 key: shard_zero(),
                 generation: fenced.generation,
                 caught_up: ["broker-y".to_string()].into_iter().collect(),

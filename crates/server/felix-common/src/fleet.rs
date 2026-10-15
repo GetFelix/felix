@@ -18,7 +18,7 @@
 //! that lacks the feature, so it is never withdrawn by a late-joining older
 //! broker. `docs/control-plane.md` ("Fleet features") has the rules.
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// A feature a broker may report, named as it goes on the wire.
 ///
@@ -163,6 +163,22 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
         .collect()
 }
 
+/// The features a broker uses `feature` only alongside, in the order they
+/// can be finalized. The control plane refuses to finalize `feature` before
+/// them: on its own it turns nothing on at the brokers, while the control
+/// plane, reading the enabled set, would act as if it had. Empty for a
+/// feature that needs no other, or a name this build does not know.
+pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
+    const BY_FOLLOWERS: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
+    if feature == MAJORITY_ACK.name() {
+        &[GENERATION_START]
+    } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
+        BY_FOLLOWERS
+    } else {
+        &[]
+    }
+}
+
 /// One broker's view of which features the fleet has enabled.
 ///
 /// Built from what this broker reported, so it can only ever enable a
@@ -177,6 +193,33 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
 pub struct FleetGate {
     reported: Box<[String]>,
     enabled: AtomicU64,
+    /// A registration's answer has been taken. Until then `enabled` is
+    /// empty because nothing was asked, not because nothing is enabled.
+    adopted: AtomicBool,
+}
+
+/// [`FleetGate`] read once, so several decisions agree on one answer.
+#[derive(Debug, Clone, Copy)]
+pub struct FleetView<'a> {
+    reported: &'a [String],
+    enabled: u64,
+    adopted: bool,
+}
+
+impl FleetView<'_> {
+    /// [`FleetGate::supports`] as of this view.
+    pub fn supports(&self, feature: FleetFeature) -> bool {
+        self.reported
+            .iter()
+            .position(|reported| reported == feature.name())
+            .is_some_and(|bit| self.enabled & (1 << bit) != 0)
+    }
+
+    /// Whether this process had taken a registration's answer when the view
+    /// was read. Before that, a feature missing from the view may be enabled.
+    pub fn adopted(&self) -> bool {
+        self.adopted
+    }
 }
 
 impl FleetGate {
@@ -190,6 +233,7 @@ impl FleetGate {
         Self {
             reported: reported.into_iter().take(MAX_FEATURES).collect(),
             enabled: AtomicU64::new(0),
+            adopted: AtomicBool::new(false),
         }
     }
 
@@ -207,6 +251,18 @@ impl FleetGate {
     /// this broker has been told. Every broker supporting it is not enough.
     pub fn supports(&self, feature: FleetFeature) -> bool {
         self.supports_name(feature.name())
+    }
+
+    /// The enabled set and whether it came from a registration, read once.
+    pub fn view(&self) -> FleetView<'_> {
+        // `adopted` first: set after the swap, so seeing it means seeing at
+        // least the registration's answer.
+        let adopted = self.adopted.load(Ordering::Acquire);
+        FleetView {
+            reported: &self.reported,
+            enabled: self.enabled.load(Ordering::Acquire),
+            adopted,
+        }
     }
 
     /// [`Self::supports`] by wire name.
@@ -243,6 +299,7 @@ impl FleetGate {
     {
         let bits = self.bits(fleet);
         let before = self.enabled.swap(bits, Ordering::AcqRel);
+        self.adopted.store(true, Ordering::Release);
         self.names(before & !bits)
     }
 

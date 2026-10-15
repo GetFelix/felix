@@ -46,7 +46,7 @@ fn counting_control_plane(
             base_url: format!("http://{addr}"),
             node_id: "broker-a".to_string(),
             token: None,
-            incarnation: 0,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         sizes,
         server,
@@ -70,6 +70,7 @@ fn report(stream: &str) -> ShardReport {
         halted: Vec::new(),
         counter_offsets: Vec::new(),
         incarnation: 0,
+        by_round: false,
     }
 }
 
@@ -308,7 +309,7 @@ fn judging_control_plane(
             base_url: format!("http://{addr}"),
             node_id: "broker-a".to_string(),
             token: None,
-            incarnation: 0,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         server,
     )

@@ -352,6 +352,11 @@ database backups are taken, with two caveats:
   can pair records from different moments (an assignment for a stream the same
   file no longer lists, a change-feed head behind a record). Only an export of a
   frozen database is a state the cluster has actually been in.
+- **Restore under stopped brokers.** A restore rewinds node incarnations and
+  replica reports together, so an old report can again name the incarnation a
+  running broker's later process holds, and placement may replace that leader
+  on its followers' word while it still serves on its lease. Stop every broker
+  before the import, as the backup-and-restore steps do.
 - **The file is a credential.** It holds every tenant's Ed25519 signing-key
   seeds, current and previous, as plaintext JSON: whoever reads it can mint a
   valid token for any tenant. Store and transfer it the way you would the
@@ -636,6 +641,13 @@ delete keeps both. The proposer sets the flag only once every member is at level
 10, so a mixed group applies every delete alike. Until then a stream created
 again under a deleted name can find what the delete kept, as before.
 
+Level 11 is a replica report's `by_round`, the leader's word that it serves
+the shard without its lease, and the `leader_incarnation` it was said from. Placement takes a follower's suspicion against a
+leader only when its report says so, so until every member is at level 11
+reports are recorded without it and leaders are failed over on the lease.
+Dropping it is the safe side: a member that applied the field and one that
+dropped it would otherwise disagree on whether a leader may be replaced.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -658,6 +670,7 @@ the field itself, on every member alike, or refuses the command:
 | stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
 | replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
+| replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

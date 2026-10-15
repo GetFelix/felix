@@ -328,7 +328,7 @@ impl RecordingControlPlane {
                 base_url: format!("http://{}", self.addr),
                 node_id: LOCAL.to_string(),
                 token: None,
-                incarnation: 0,
+                incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
             shutdown,
         )
@@ -427,7 +427,7 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
             base_url: format!("http://{addr}"),
             node_id: LOCAL.to_string(),
             token: None,
-            incarnation: 0,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         report_shutdown.clone(),
     );
@@ -501,6 +501,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
                 durable_offset: 7,
             }],
             stream_incarnation: 0,
+            by_round: true,
         }],
     };
 
@@ -515,6 +516,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
     assert_eq!(shard["shard"], 3);
     assert_eq!(shard["kind"], "cache");
     assert_eq!(shard["generation"], 9);
+    assert_eq!(shard["by_round"], true);
     assert_eq!(shard["caught_up"][0], "broker-b");
     assert_eq!(shard["replica_offsets"][0]["node_id"], "broker-b");
     assert_eq!(shard["replica_offsets"][0]["durable_offset"], 41);
@@ -607,7 +609,7 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
             base_url: format!("http://{addr}"),
             node_id: LOCAL.to_string(),
             token: None,
-            incarnation: 0,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         report_shutdown.clone(),
     );
@@ -711,7 +713,7 @@ async fn pass_with_a_publish_behind_the_report(
             base_url: format!("http://{addr}"),
             node_id: LOCAL.to_string(),
             token: None,
-            incarnation: 0,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         CancellationToken::new(),
     );

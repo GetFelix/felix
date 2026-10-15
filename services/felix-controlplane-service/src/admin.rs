@@ -519,6 +519,10 @@ fn render_finalize(response: &Value) -> String {
             text(&response["serving_nodes"]),
         );
     }
+    let requires = names(&response["requires"]);
+    if requires != "-" {
+        return format!("dry run: {feature} cannot be finalized: finalize {requires} first\n");
+    }
     let lacking = names(&response["lacking"]);
     if lacking == "-" {
         format!("dry run: {feature} cannot be finalized: no broker is serving\n")

@@ -79,6 +79,19 @@ impl std::fmt::Debug for ReadRounds {
     }
 }
 
+/// [`QuorumMarks::serving`]: what a pass over a `Quorum` shard may take off
+/// the lease, as of one read of the fleet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Serving {
+    /// The fleet set came from this process's registration. Before that it
+    /// is empty for want of an answer, and a pass cannot say how the shard
+    /// serves.
+    pub(crate) adopted: bool,
+    pub(crate) streams_by_followers: bool,
+    pub(crate) caches_by_followers: bool,
+    pub(crate) reads_by_round: bool,
+}
+
 /// What a quorum wait is for: a write is released on the lease, or on its
 /// followers' answers; a read on the lease or on a round
 /// ([`QuorumMarks::reads_by_round`]).
@@ -131,10 +144,31 @@ impl QuorumMarks {
     /// with what follower acks need, since the round relies on a newer leader
     /// fencing a majority before it serves.
     pub fn reads_by_round(&self) -> Option<&Arc<dyn LeadershipCheck>> {
-        let reads = self.reads.get().filter(|reads| !reads.by_lease)?;
-        let fleet = self.fleet.as_ref()?;
-        (self.acks_by_followers() && fleet.supports(felix_common::fleet::LEASE_FREE_READS))
-            .then_some(&reads.check)
+        let reads = self.reads.get()?;
+        self.serving().reads_by_round.then_some(&reads.check)
+    }
+
+    /// How a pass over a `Quorum` shard serves it, decided from one read of
+    /// the fleet so the calls it makes on the fence agree.
+    pub(crate) fn serving(&self) -> Serving {
+        let Some(fleet) = self.fleet.as_ref() else {
+            return Serving {
+                adopted: true,
+                ..Serving::default()
+            };
+        };
+        let view = fleet.view();
+        let streams = view.supports(felix_common::fleet::GENERATION_START)
+            && view.supports(felix_common::fleet::MAJORITY_ACK);
+        let by_lease = self.reads.get().is_none_or(|reads| reads.by_lease);
+        Serving {
+            adopted: view.adopted(),
+            streams_by_followers: streams,
+            caches_by_followers: streams && view.supports(felix_common::fleet::FENCED_CACHES),
+            reads_by_round: streams
+                && !by_lease
+                && view.supports(felix_common::fleet::LEASE_FREE_READS),
+        }
     }
 
     /// Whether a `Quorum` stream shard's mark is decided by its followers'
@@ -144,11 +178,7 @@ impl QuorumMarks {
     /// every broker fences before it serves a promoted shard, the second that
     /// the mark counts only past a record of the leader's own generation.
     pub(crate) fn acks_by_followers(&self) -> bool {
-        self.own_generation_only()
-            && self
-                .fleet
-                .as_ref()
-                .is_some_and(|fleet| fleet.supports(felix_common::fleet::MAJORITY_ACK))
+        self.serving().streams_by_followers
     }
 
     /// [`Self::acks_by_followers`] for a `Quorum` cache shard and its counter
@@ -157,7 +187,7 @@ impl QuorumMarks {
     /// then an older broker could be promoted without that fence, and only
     /// the old leader's lease keeps it from acknowledging alongside.
     pub(crate) fn caches_ack_by_followers(&self) -> bool {
-        self.acks_by_followers() && self.fleet_supports(felix_common::fleet::FENCED_CACHES)
+        self.serving().caches_by_followers
     }
 
     /// Check stream marks against `broker`'s registered incarnations from

@@ -92,7 +92,10 @@ pub struct ReportTo {
     /// Held, not copied: this reports for the life of the process, across
     /// however many access tokens that spans.
     pub token: Option<std::sync::Arc<dyn Credential>>,
-    pub incarnation: u64,
+    /// This process's node incarnation, set by membership at each
+    /// registration (0 before the first). The control plane keeps a report's
+    /// `by_round` only from the node's current incarnation.
+    pub incarnation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The token a report is sent with.
@@ -129,6 +132,9 @@ pub struct ShardReport {
     /// The stream incarnation whose log this measured; 0 for a cache and
     /// before incarnations.
     pub incarnation: u64,
+    /// This leader acknowledges the shard by its followers and confirms its
+    /// reads by a round, so nothing it serves rests on its lease.
+    pub by_round: bool,
 }
 
 impl ShardReport {
@@ -138,6 +144,11 @@ impl ShardReport {
             incarnation,
             ..self
         }
+    }
+
+    /// This report, saying whether the leader serves without its lease.
+    pub(super) fn serving_by_round(self, by_round: bool) -> Self {
+        Self { by_round, ..self }
     }
 }
 
@@ -172,6 +183,7 @@ pub(super) fn shard_report(
             .collect(),
         counter_offsets: Vec::new(),
         incarnation: 0,
+        by_round: false,
     }
 }
 
@@ -244,7 +256,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
     // same definition, so a field renamed on one side stops compiling instead
     // of quietly arriving as a missing one.
     let body = ReplicaStatusRequest {
-        incarnation: to.incarnation,
+        incarnation: to.incarnation.load(std::sync::atomic::Ordering::Acquire),
         shards: reports
             .iter()
             .map(|report| ShardReplicaStatus {
@@ -286,6 +298,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     })
                     .collect(),
                 stream_incarnation: report.incarnation,
+                by_round: report.by_round,
             })
             .collect(),
     };

@@ -142,17 +142,21 @@ pub(crate) async fn report_replica_status(
         .now_millis()
         .await
         .map_err(|ref err| api_internal("read the store clock", err))?;
-    // Not enforced: brokers still send 0 here, because the driver that reports
-    // is spawned before registration returns an incarnation. The leadership
-    // check below is the stronger one anyway — it bounds *which* shards a
-    // broker can speak about, where the incarnation would only catch a stale
-    // report from the same broker's previous life.
-    let _ = request.incarnation;
+    // Not enforced: a broker reports before its registration returns an
+    // incarnation, and sends 0 until then. The leadership check below is the
+    // stronger one; the incarnation only says which process `by_round` came
+    // from. A process serves on its lease only once it has registered, which
+    // moves the node past every report an earlier process made.
+    let leader_incarnation = if request.shards.iter().any(|shard| shard.by_round) {
+        current_incarnation(&state, &node_id, request.incarnation).await?
+    } else {
+        None
+    };
 
     // Grown, not sized from the request: the shard count is the caller's.
     let mut outcomes = Vec::new();
     for shard in request.shards {
-        let outcome = record_one(&state, &node_id, now, &shard).await?;
+        let outcome = record_one(&state, &node_id, now, leader_incarnation, &shard).await?;
         if !outcome.accepted() {
             metrics::counter!(
                 "felix_replica_status_rejected_total",
@@ -178,11 +182,26 @@ pub(crate) async fn report_replica_status(
     Ok((status, Json(ReplicaStatusResponse { shards: outcomes })))
 }
 
-/// Judge one shard's report and, if it passes, store it.
+/// `reported`, if it is the node's incarnation now.
+async fn current_incarnation(
+    state: &AppState,
+    node_id: &str,
+    reported: u64,
+) -> Result<Option<u64>, ApiError> {
+    match state.store.get_node(node_id).await {
+        Ok(node) => Ok((node.status.incarnation == reported).then_some(reported)),
+        Err(StoreError::NotFound(_)) => Ok(None),
+        Err(ref other) => Err(api_internal("read the node", other)),
+    }
+}
+
+/// Judge one shard's report and, if it passes, store it. `by_round` is kept
+/// only with `leader_incarnation`, the reporting process's incarnation.
 async fn record_one(
     state: &AppState,
     node_id: &str,
     now: u64,
+    leader_incarnation: Option<u64>,
     shard: &ShardReplicaStatus,
 ) -> Result<ReportOutcome, ApiError> {
     let key = crate::model::ShardKey {
@@ -285,6 +304,8 @@ async fn record_one(
             .map(|replica| (replica.node_id.clone(), replica.durable_offset))
             .collect(),
         stream_incarnation: Some(shard.stream_incarnation),
+        by_round: shard.by_round && leader_incarnation.is_some(),
+        leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
