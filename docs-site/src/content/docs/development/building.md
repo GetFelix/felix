@@ -122,7 +122,16 @@ pull requests.
 ## What CI runs
 
 `ci.yml` runs on Linux only. `test` runs on the self-hosted runners described
-below; the rest run GitHub-hosted (see [Larger runners](#larger-runners)). Its jobs:
+below; the rest run GitHub-hosted (see [Larger runners](#larger-runners)).
+Every push and pull request starts `ci.yml` and `coverage.yml`. Their first
+job, `changes`, checks whether anything besides docs and Markdown changed
+(the TLA+ specs under `docs/formal` count as code), and the other jobs skip
+when nothing did. Each workflow ends with a job that always runs, `CI ok` and
+`Coverage ok`. They fail if any job failed or was cancelled, and they are the
+checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
+docs-only change gets both within a minute or two.
+
+Its jobs:
 
 | Job | Runs |
 | --- | --- |
