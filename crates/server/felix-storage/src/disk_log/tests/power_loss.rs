@@ -478,6 +478,91 @@ async fn a_segment_overshoots_rather_than_rolls_while_a_seal_is_parked() {
     parked.finish().await;
 }
 
+/// The race behind the nightly failure on workload seed 1333428443 (#1218),
+/// made deterministic. A flush reads the active segment, then a background
+/// roll retires that segment and its seal syncs it whole before the flush
+/// records its read. The seal's sync is the newer one, so the model must keep
+/// what it read; a later flush of the new segment then moves the durable mark past the
+/// retired one, and a model left holding the flush's shorter read builds
+/// crashes that cut a sealed segment short, which recovery rightly refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flush_overtaken_by_a_seal_does_not_rewind_the_sealed_segment() {
+    let scenario = Scenario {
+        fsync_mode: FsyncMode::None,
+        background_roll: true,
+        writeback: Writeback::InOrder,
+        seed: BASE_SEED,
+    };
+    let config = scenario.config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    std::fs::create_dir_all(&root).expect("log dir");
+    let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+    let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+    let mut next: Offset = 0;
+    let append = async |next: &mut Offset| {
+        let record = AppendRecord {
+            payload: Bytes::from(payload(scenario.seed, *next)),
+            timestamp_micros: 1_700_000_000 + *next,
+            mark: Default::default(),
+            publisher: None,
+        };
+        log.append(&[record]).await.expect("append");
+        *next += 1;
+    };
+    for _ in 0..2 {
+        append(&mut next).await;
+    }
+
+    // The flush reads the segment and parks before recording the read.
+    let (parked, release) = observer.park_next_capture();
+    let flushing = tokio::spawn(Arc::clone(&log.inner).flush());
+    tokio::task::spawn_blocking(move || parked.recv_timeout(Duration::from_secs(10)))
+        .await
+        .expect("join")
+        .expect("the flush never reached its capture");
+
+    // Fill the segment past the early-roll threshold and let the roll seal it.
+    let first = log.segments()[0].id;
+    while log.segments().len() == 1 {
+        append(&mut next).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    for _ in 0..5_000 {
+        if log.inner.roll_state.load(Ordering::Acquire) == RollState::Idle as u8
+            && log.inner.pending_seal.lock().is_none()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(
+        log.inner.pending_seal.lock().is_none(),
+        "the background roll never sealed segment {first}"
+    );
+
+    release.send(()).expect("release the flush");
+    flushing.await.expect("join").expect("flush");
+    append(&mut next).await;
+    log.sync().await.expect("sync the new segment");
+
+    let acknowledged = log.durable_offset();
+    for seed in 0..64 {
+        for writeback in [Writeback::InOrder, Writeback::AnySubset] {
+            let image = tempdir().expect("image dir");
+            observer
+                .crash(seed, writeback, image.path())
+                .expect("build the crash image");
+            let scenario = Scenario {
+                writeback,
+                ..scenario
+            };
+            verify(image.path(), &config, scenario, seed, acknowledged, next).await;
+        }
+    }
+    log.shutdown().await.expect("shutdown");
+}
+
 /// Whether segment `retired` in `image` is intact but ends before segment
 /// `active`, which holds records, begins.
 fn retired_ends_before(

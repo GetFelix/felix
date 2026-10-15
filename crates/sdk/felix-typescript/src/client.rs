@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::args::{parse_ack, parse_positions, parse_start, resolve, u64_of};
+use crate::args::{parse_ack, parse_positions, parse_start, seeds, u64_of};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
 use crate::sharded_subscription::ShardedSubscriptionHandle;
@@ -41,8 +41,10 @@ impl Client {
     /// Connect to a cluster.
     ///
     /// `addrs` is one `"host:port"` or several; any reachable one is enough
-    /// and the client discovers the rest. `serverName` is the name the
-    /// broker's certificate is expected to carry.
+    /// and the client discovers the rest. A name is resolved again whenever
+    /// no broker the client knows answers, so prefer one to an IP.
+    /// `serverName` is the name the broker's certificate is expected to
+    /// carry.
     ///
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `caFile` to
     /// trust a specific CA (what a self-signed development broker needs); omit
@@ -64,7 +66,7 @@ impl Client {
             Either::A(one) => vec![one],
             Either::B(many) => many,
         };
-        let seeds = resolve(addrs)?;
+        let seeds = seeds(addrs)?;
         if seeds.is_empty() {
             return Err(invalid("at least one broker address is required"));
         }
@@ -74,9 +76,10 @@ impl Client {
         config.auth_token = Some(token);
 
         let server_name = server_name.unwrap_or_else(|| "localhost".to_string());
-        let inner = ClusterClient::connect(&seeds, &server_name, config)
-            .await
-            .map_err(classify)?;
+        let inner =
+            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+                .await
+                .map_err(classify)?;
         Ok(Client {
             inner: std::sync::Mutex::new(Some(Arc::new(inner))),
         })

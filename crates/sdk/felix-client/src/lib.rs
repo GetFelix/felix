@@ -77,7 +77,7 @@ pub use client::{
     SubscriptionsPage,
 };
 pub use cluster::{
-    ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
+    ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, Seed, ShardEvent,
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,
     ShardedSubscription,
 };
