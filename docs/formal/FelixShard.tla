@@ -1000,10 +1000,19 @@ MajorityLen(b) ==
 \* all of it.
 \* With `ReportFloor`, never below the log the leader inherited either:
 \* `acknowledged` in crates/server/felix-replication/src/driver/shard.rs.
+\*
+\* The code's floor is the mark it published, which it publishes as soon as
+\* the report describing it lands. The model releases that acknowledgement
+\* later, from `heard`, so the floor is also what `b` was told was stored.
+\* Only a wipe lowers the leader's count of a majority below a report that
+\* landed, so the floor is applied where wipes are and the other
+\* configurations keep the state spaces they were checked with.
 Max(x, y) == IF x >= y THEN x ELSE y
+Landed(b) == IF Wipes > 0 /\ AckOnResponse /\ heard[b].gen = bgen[b] THEN heard[b].len ELSE 0
 ReportAt(b) ==
     IF ReportBound /= "tail" /\ Quorum /\ ~stopped[b]
-    THEN Max(Max(MajorityLen(b), hwm[b]), IF ReportFloor THEN Inherited(b) ELSE 0)
+    THEN Max(Max(Max(MajorityLen(b), hwm[b]), Landed(b)),
+             IF ReportFloor THEN Inherited(b) ELSE 0)
     ELSE Len(log[b])
 
 \* With follower acks and a promotion that does not read it, nothing reads the
