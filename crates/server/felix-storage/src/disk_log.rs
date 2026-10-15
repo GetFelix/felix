@@ -534,6 +534,7 @@ impl DiskLog {
                     };
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
+                    operation.commit_persisted.store(offset, Ordering::Release);
                     *persisted = (state, Some(std::time::Instant::now()));
                 }
             }
@@ -578,6 +579,9 @@ impl DiskLog {
 
     /// Record that every record below `offset` is committed.
     ///
+    /// If the write fails the offset still holds in memory, and the next call
+    /// with it or a lower one writes again.
+    ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
     /// [`DiskLog::reset_to`], which refuse to cut below it. Under
     /// [`FsyncMode::OnCommit`] it is on disk when this returns, so a restart
@@ -588,7 +592,9 @@ impl DiskLog {
     /// committed since, until the leader's next batch carries the offset again.
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
-        if offset <= previous {
+        // Not `offset <= previous`: a write that failed left memory ahead of
+        // disk, and the next call with the same offset has to write again.
+        if offset.max(previous) <= self.inner.commit_persisted.load(Ordering::Acquire) {
             return Ok(());
         }
         // Concurrent advances coalesce: whoever takes the writer's lock next
@@ -648,6 +654,9 @@ impl DiskLog {
                 return Ok(());
             }
             replica_state::store(&inner.dir, &state)?;
+            inner
+                .commit_persisted
+                .store(state.commit_offset, Ordering::Release);
             *persisted = (state, Some(std::time::Instant::now()));
             Ok(())
         })
@@ -832,6 +841,7 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
+            commit_persisted: AtomicU64::new(replica.commit_offset),
             // Set before retention starts below, so a sweep after a restart
             // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
@@ -1144,6 +1154,9 @@ struct LogInner {
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
+    /// The commit offset `replica` last held on disk, so a raise whose write
+    /// failed or is still due is told apart from one already written.
+    commit_persisted: AtomicU64,
     /// Retention and head trims stop at `commit_offset`; see
     /// [`DiskLog::hold_retention_at_commit`].
     hold_at_commit: std::sync::atomic::AtomicBool,

@@ -1,0 +1,1 @@
+- A replica commit-offset write that failed is now retried by the next call with the same offset (#1248). The storage-format doc says a follower still acknowledges the batch when it fails.
