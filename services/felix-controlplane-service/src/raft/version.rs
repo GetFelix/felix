@@ -15,7 +15,7 @@
 //! member has heard the leader's. A leader that dies is then not an unknown
 //! to the one elected after it, which would otherwise hold back every newer
 //! command, the leader's soft state included, for as long as it stays down.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -46,10 +46,22 @@ pub(super) struct Versions {
     reported: BTreeMap<NodeId, u16>,
     checked: Option<(Instant, Level)>,
     refreshing: bool,
-    /// Members that lost their log since they last reported, each with the
-    /// [`Self::epoch`] it was marked at.
-    stale: BTreeMap<NodeId, u64>,
+    /// Members whose reported level is in doubt until they answer again,
+    /// each with the [`Self::epoch`] it was marked at.
+    stale: BTreeMap<NodeId, (u64, Doubt)>,
     epoch: u64,
+}
+
+/// Why a member's reported level cannot be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Doubt {
+    /// It conflicted below an entry it acknowledged. Held until it answers.
+    LostLog,
+    /// It conflicted on a new replication client's first append, so it may
+    /// have lost its log or just be behind. Held until one probe sent after
+    /// the mark settles it; a probe that fails releases it, since silence
+    /// must never hold a healthy member.
+    Unconfirmed,
 }
 
 impl Versions {
@@ -70,9 +82,25 @@ impl Versions {
         if self
             .stale
             .get(&id)
-            .is_some_and(|marked| *marked <= asked_at)
+            .is_some_and(|(marked, _)| *marked <= asked_at)
         {
             self.stale.remove(&id);
+        }
+    }
+
+    /// A probe of `id` sent at `asked_at` came back with `answer`, `None`
+    /// when it got none. Silence settles only a [`Doubt::Unconfirmed`] mark
+    /// made before the probe, so it never holds a member.
+    pub(super) fn settle(&mut self, id: NodeId, answer: Option<u16>, asked_at: u64) {
+        match answer {
+            Some(version) => self.heard(id, version, asked_at),
+            None => {
+                if self.stale.get(&id).is_some_and(|(marked, doubt)| {
+                    *doubt == Doubt::Unconfirmed && *marked <= asked_at
+                }) {
+                    self.stale.remove(&id);
+                }
+            }
         }
     }
 
@@ -84,11 +112,30 @@ impl Versions {
     /// `id` lost its log: its level is unknown until it answers again.
     pub(super) fn mark_stale(&mut self, id: NodeId) {
         self.epoch += 1;
-        self.stale.insert(id, self.epoch);
+        self.stale.insert(id, (self.epoch, Doubt::LostLog));
     }
 
+    /// `id` may have lost its log. Never weakens a [`Doubt::LostLog`] mark.
+    pub(super) fn mark_unconfirmed(&mut self, id: NodeId) {
+        if self.stale.contains_key(&id) {
+            return;
+        }
+        self.epoch += 1;
+        self.stale.insert(id, (self.epoch, Doubt::Unconfirmed));
+    }
+
+    pub(super) fn doubt(&self, id: NodeId) -> Option<Doubt> {
+        self.stale.get(&id).map(|(_, doubt)| *doubt)
+    }
+
+    #[cfg(test)]
     pub(super) fn is_stale(&self, id: NodeId) -> bool {
         self.stale.contains_key(&id)
+    }
+
+    /// Forget the marks of members `keep` rejects.
+    pub(super) fn retain_marks(&mut self, keep: impl Fn(NodeId) -> bool) {
+        self.stale.retain(|id, _| keep(*id));
     }
 }
 
@@ -209,17 +256,17 @@ impl RaftHandle {
                 continue;
             };
             let (client, asker, id) = (self.forward.clone(), self.asker(), *id);
-            probes.spawn(async move { Some((id, probe(&client, &base, &asker).await?)) });
+            probes.spawn(async move { (id, probe(&client, &base, &asker).await) });
         }
         let mut answers = Vec::new();
         while let Some(joined) = probes.join_next().await {
-            if let Ok(Some(answer)) = joined {
+            if let Ok(answer) = joined {
                 answers.push(answer);
             }
         }
         let mut versions = self.versions.lock().expect("versions lock");
         for (id, version) in answers {
-            versions.heard(id, version, asked_at);
+            versions.settle(id, version, asked_at);
         }
         members.into_iter().map(|(id, _)| id).collect()
     }
@@ -228,12 +275,13 @@ impl RaftHandle {
     /// answer. `None` when it does not answer.
     pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
         let asked_at = self.versions.lock().expect("versions lock").epoch();
-        let version = probe(&self.forward, base, &self.asker()).await?;
-        self.versions
-            .lock()
-            .expect("versions lock")
-            .record(id, version, asked_at);
-        Some(version)
+        let version = probe(&self.forward, base, &self.asker()).await;
+        let mut versions = self.versions.lock().expect("versions lock");
+        match version {
+            Some(version) => versions.record(id, version, asked_at),
+            None => versions.settle(id, None, asked_at),
+        }
+        version
     }
 
     /// While this member leads, keep every member's reported level fresh
@@ -247,10 +295,24 @@ impl RaftHandle {
             if self.is_stopped() {
                 return;
             }
-            let leading = metrics.borrow_and_update().current_leader == Some(self.id);
+            let (leading, members) = {
+                let metrics = metrics.borrow_and_update();
+                let members: BTreeSet<NodeId> = metrics
+                    .membership_config
+                    .membership()
+                    .nodes()
+                    .map(|(id, _)| *id)
+                    .collect();
+                (metrics.current_leader == Some(self.id), members)
+            };
             if !leading {
+                // The marks and holds belong to this leader's replication.
+                self.hold.clear();
                 next = None;
-            } else if next.is_none_or(|at| at <= Instant::now()) {
+            } else {
+                self.hold.retain(&members);
+            }
+            if leading && next.is_none_or(|at| at <= Instant::now()) {
                 self.probe_members().await;
                 // A held member is asked often, so it is fed again soon
                 // after it reports the floor.

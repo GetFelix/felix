@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -272,4 +273,223 @@ async fn nothing_is_held_without_a_floor() {
     floor.store(0, Ordering::SeqCst);
     append(&mut network).await.expect("no floor");
     assert_eq!(member.appends.load(Ordering::SeqCst), 1);
+}
+
+/// What the leader's version watch does with one probe of member `id`,
+/// sent at `asked_at`.
+async fn probe_at(versions: &std::sync::Mutex<Versions>, id: NodeId, addr: &str, asked_at: u64) {
+    let answer = crate::raft::version::probe(
+        &reqwest::Client::new(),
+        &format!("http://{addr}"),
+        &crate::raft::version::Asker::default(),
+    )
+    .await;
+    versions
+        .lock()
+        .expect("versions lock")
+        .settle(id, answer, asked_at);
+}
+
+async fn probe_now(versions: &std::sync::Mutex<Versions>, id: NodeId, addr: &str) {
+    let asked_at = versions.lock().expect("versions lock").epoch();
+    probe_at(versions, id, addr, asked_at).await;
+}
+
+/// A fresh client's first conflict after `reports(10)`, as when a leader
+/// was wiped and restarted on an older build while the others still hold
+/// the level it reported before: held, and the watch woken.
+async fn first_conflict(
+    member: &Member,
+    versions: &Arc<std::sync::Mutex<Versions>>,
+) -> (Arc<Hold>, HttpNetwork) {
+    let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(versions));
+    let mut network = network(&member.addr, Arc::clone(&hold));
+    reports(versions, 2, 10);
+    member.conflict.store(true, Ordering::SeqCst);
+    append_at(&mut network, Some(5), None)
+        .await
+        .expect("answered");
+    tokio::time::timeout(Duration::from_secs(1), hold.wake.notified())
+        .await
+        .expect("the watch was not woken");
+    member.conflict.store(false, Ordering::SeqCst);
+    let held = append(&mut network).await.expect_err("held");
+    assert!(held.contains("first append"), "{held}");
+    (hold, network)
+}
+
+/// A first-append conflict from a member on an older build holds it once
+/// the probe reports a level below the floor, despite the higher level it
+/// reported before.
+#[tokio::test]
+async fn a_first_conflict_holds_a_member_the_probe_finds_below_the_floor() {
+    let member = member(8).await;
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let (_hold, mut network) = first_conflict(&member, &versions).await;
+
+    probe_now(&versions, 2, &member.addr).await;
+    let held = append(&mut network).await.expect_err("held");
+    assert!(held.contains("supports metadata version 8"), "{held}");
+    assert_eq!(
+        member.appends.load(Ordering::SeqCst),
+        1,
+        "a member below the floor was fed"
+    );
+}
+
+/// A member at the floor that conflicts on a first append is only behind:
+/// one probe releases it, and later conflicts on the same client do not
+/// ask again.
+#[tokio::test]
+async fn a_first_conflict_from_a_member_at_the_floor_costs_one_probe() {
+    let member = member(10).await;
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let (hold, mut network) = first_conflict(&member, &versions).await;
+
+    probe_now(&versions, 2, &member.addr).await;
+    append(&mut network).await.expect("released");
+    member.conflict.store(true, Ordering::SeqCst);
+    append_at(&mut network, Some(3), None)
+        .await
+        .expect("answered");
+    member.conflict.store(false, Ordering::SeqCst);
+    append(&mut network)
+        .await
+        .expect("a later conflict held the member");
+    assert!(!hold.any_held());
+    assert_eq!(member.probes.load(Ordering::SeqCst), 1);
+}
+
+/// A probe that gets no answer releases a member held on a first-append
+/// conflict: silence never holds. A probe sent before the conflict does
+/// not count.
+#[tokio::test]
+async fn a_failed_probe_releases_a_first_conflict() {
+    let member = member(u16::MAX).await;
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let asked_before = versions.lock().expect("versions lock").epoch();
+    let (hold, mut network) = first_conflict(&member, &versions).await;
+
+    probe_at(&versions, 2, &member.addr, asked_before).await;
+    append(&mut network)
+        .await
+        .expect_err("released by an older probe");
+
+    probe_now(&versions, 2, &member.addr).await;
+    append(&mut network).await.expect("released");
+    assert!(!hold.any_held());
+}
+
+/// The gauge as the Prometheus recorder renders it for `member`.
+fn gauge(rendered: &str, member: NodeId) -> Option<String> {
+    let prefix = format!("felix_meta_raft_member_below_floor{{member=\"{member}\"}} ");
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::to_string))
+}
+
+/// A member removed from the membership while held or marked is
+/// forgotten, and its gauge reset; the others are kept.
+#[test]
+fn a_removed_member_is_forgotten() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let render = recorder.handle();
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(&versions));
+    reports(&versions, 2, 8);
+    reports(&versions, 4, 8);
+    metrics::with_local_recorder(&recorder, || {
+        hold.check(2).expect_err("held");
+        hold.check(4).expect_err("held");
+        hold.lost_log(3);
+        assert_eq!(gauge(&render.render(), 2).as_deref(), Some("1"));
+
+        hold.retain(&BTreeSet::from([1, 4]));
+    });
+    assert_eq!(gauge(&render.render(), 2).as_deref(), Some("0"));
+    assert_eq!(gauge(&render.render(), 4).as_deref(), Some("1"));
+    assert!(!versions.lock().expect("versions lock").is_stale(3));
+    assert!(
+        hold.any_held(),
+        "a member still in the membership was released"
+    );
+}
+
+/// Stepping down forgets every mark and hold, and resets the gauges.
+#[test]
+fn stepping_down_forgets_every_hold() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let render = recorder.handle();
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(&versions));
+    reports(&versions, 2, 8);
+    metrics::with_local_recorder(&recorder, || {
+        hold.check(2).expect_err("held");
+        hold.unconfirmed(3);
+        hold.clear();
+    });
+    assert_eq!(gauge(&render.render(), 2).as_deref(), Some("0"));
+    assert!(!versions.lock().expect("versions lock").is_stale(3));
+    assert!(!hold.any_held());
+}
+
+async fn node(dir: &std::path::Path) -> crate::raft::RaftHandle {
+    let mut settings = crate::raft::RaftSettings::new(
+        1,
+        dir.into(),
+        crate::raft::PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            tls: None,
+        },
+    );
+    settings.heartbeat_interval = Duration::from_millis(50);
+    settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
+    crate::raft::RaftHandle::start(settings, Arc::new(FloorApp(Arc::new(AtomicU16::new(10)))))
+        .await
+        .expect("start raft")
+}
+
+async fn until_unmarked(handle: &crate::raft::RaftHandle, id: NodeId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while handle.versions.lock().expect("versions lock").is_stale(id) || handle.hold.any_held() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "member {id} is still marked or held"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The leader's version watch drops a member that is not in the membership.
+#[tokio::test]
+async fn the_leaders_watch_forgets_a_non_member() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = node(dir.path()).await;
+    handle
+        .initialize(BTreeMap::from([(1, "127.0.0.1:0".to_string())]))
+        .await
+        .expect("initialize");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while handle.status().leader != Some(1) {
+        assert!(std::time::Instant::now() < deadline, "no leader");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    reports(&handle.versions, 7, 8);
+    handle.hold.check(7).expect_err("held");
+    handle.hold.lost_log(7);
+    until_unmarked(&handle, 7).await;
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A member that does not lead keeps no marks or holds.
+#[tokio::test]
+async fn a_follower_keeps_no_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = node(dir.path()).await;
+    reports(&handle.versions, 7, 8);
+    handle.hold.check(7).expect_err("held");
+    handle.hold.lost_log(7);
+    until_unmarked(&handle, 7).await;
+    handle.shutdown().await.expect("shutdown");
 }

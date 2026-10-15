@@ -387,8 +387,11 @@ sends it no entries and no snapshot, logs a warning once, and sets
 `felix_meta_raft_member_below_floor{member}` to 1. The leader holds a
 member only on evidence: the member reported an older version, or it lost
 the log it had acknowledged and has not reported a version since. A member
-that is slow to answer or cannot be asked is not held, so a leader change
-or a network blip never holds a healthy member. The group keeps committing
+that answers the first append after a leader change with a conflict, as an
+empty one does, is held only until the leader's next probe of it: a version
+at the group's or no answer releases it. A member that is slow to answer or
+cannot be asked is otherwise not held, so a leader change or a network blip
+never holds a healthy member. The group keeps committing
 with the other members, but a held voter is one fewer failure the group can
 survive. Upgrade that member; replication to it resumes within about a
 second of it starting on a build at the group's version.

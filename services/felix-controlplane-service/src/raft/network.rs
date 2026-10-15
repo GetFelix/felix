@@ -73,6 +73,7 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             heartbeat: self.heartbeat,
             hold: Arc::clone(&self.hold),
             acknowledged: None,
+            confirmed: false,
         }
     }
 }
@@ -84,9 +85,14 @@ pub(super) struct HttpNetwork {
     heartbeat: Duration,
     hold: Arc<Hold>,
     /// The highest log index this member acknowledged to this client. A
-    /// client lives for one leader's term, whose log only grows, so a
+    /// client lives at most one leader's term (openraft also rebuilds it on
+    /// every membership change), and that leader's log only grows, so a
     /// conflict at or below it means the member lost its log.
     acknowledged: Option<u64>,
+    /// A conflict before any acknowledgement already had the member's level
+    /// asked. Only the first one asks, so the leader's search for where
+    /// their logs match is not slowed at every step.
+    confirmed: bool,
 }
 
 /// The longest wait between retries to an unreachable member, so a member
@@ -142,6 +148,7 @@ impl HttpNetwork {
             heartbeat: Duration::from_millis(150),
             hold,
             acknowledged: None,
+            confirmed: false,
         }
     }
 
@@ -233,7 +240,17 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
             // one that lost its log conflicts at or below it.
             Ok(AppendEntriesResponse::Conflict) if prev.is_some() && prev <= self.acknowledged => {
                 self.acknowledged = None;
+                self.confirmed = true;
                 self.hold.lost_log(self.target);
+            }
+            // A fresh client has no acknowledgement to compare with, so a
+            // member that lost its log looks like one that is behind.
+            // Up-to-date members answer success and are never asked.
+            Ok(AppendEntriesResponse::Conflict)
+                if self.acknowledged.is_none() && !self.confirmed =>
+            {
+                self.confirmed = true;
+                self.hold.unconfirmed(self.target);
             }
             _ => {}
         }

@@ -166,7 +166,11 @@ while it holds a member back because that member reported a build below the
 metadata version the group already uses, or lost its log and has not
 reported since; upgrade that member. The leader holds only on that
 evidence, read from levels it refreshes in the background, so a member it
-cannot reach or has not asked yet is fed as usual.
+cannot reach or has not asked yet is fed as usual. One exception is short:
+a member whose first append after a leader or membership change conflicts
+is held until one probe settles it, released if it answers at the group's
+version or does not answer. The gauge returns to 0 when the member leaves
+the group or this member stops leading.
 
 ### Leader deploys pause writes for one election (pre-0.10 openraft)
 
