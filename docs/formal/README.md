@@ -561,11 +561,17 @@ against it. While its change is pending a leader acknowledges on a majority
 of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
 a leader on it has its generation's start record acknowledged, which then
 sits on a majority of both, and `FinishChange` lets a leader drop the old set
-once the control plane holds its set. A failover (`Promote`), or adopting a
-leader on the old set (`CpAdopt`), abandons the pending change.
-`AdoptedMatchesOpened` compares the control plane's leader with the pending
-set while there is one, since that is the set the control plane named it
-for. The swap walk found the window this closes: a replica removed by a
+once the control plane holds its set. A failover (`Promote`) abandons the
+pending change; it writes the set at a generation above the pending one.
+While a change is pending, `CpAdopt` adopts only a leader on the pending set
+and takes just the generation of one on the old set, which the new set's
+higher set generation deposes; the walk found an adopted old-set leader
+fenced that way. No other placement change starts while one is pending.
+Only the control plane ends a pending change, so while it is down a lost
+majority of the old set stops writes; nothing here checks liveness.
+`AdoptedMatchesOpened` compares the control plane's leader, while it still
+holds the control plane's generation, with the pending set while there is
+one, since that is the set the control plane named it for. The swap walk found the window this closes: a replica removed by a
 cut-over that never heard of it stood, fenced the stopped old leader, and
 acknowledged on a majority of the old set, which the control plane had
 already dropped (`AckedOnMajority`).
@@ -605,7 +611,9 @@ write is conditional on the read, like every placement write, and
 At `Adopt = 2` no adoption can mismatch: the only generation a replica can
 elect itself to past the control plane's comes before any set change.
 `FelixShardElectAdoptNoMatch.cfg` lets generation 3 in and drops only the
-comparison (`AdoptMatch`).
+comparison (`AdoptMatch`). It is not registered in `scripts/check_tla.sh`
+and has not been run yet, so whether the comparison is needed for safety or
+only for the control plane's bookkeeping is still open.
 
 `PreVote` models pre-vote and stickiness: a replica stands only once a
 majority of its set, itself included, no longer hears a leader, and a replica

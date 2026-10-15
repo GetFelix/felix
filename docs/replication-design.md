@@ -689,20 +689,23 @@ elected leader waits for the lease until the control plane is back (issue
    old set beside the new one, a fence and a batch carry both, a leader
    acknowledges on a majority of both, and whoever stands next fences both,
    so a leader deposed mid-change leaves the change to the next one rather
-   than leaving the old set electable. A failover, or adopting a leader that
-   opened on the old set, abandons the pending change. A cut-over that
-   changes the set also waits for the drain, so the old leader has stopped
-   and the joining copies hold the destination's log, which holds the old
-   leader's.
+   than leaving the old set electable. A failover abandons the pending
+   change. A leader elected on the old set while it is pending is not
+   adopted (rule 10). A cut-over that changes the set also waits for the
+   drain, so the old leader has stopped and the joining copies hold the
+   destination's log, which holds the old leader's.
 9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
-9. *Adoption.* The elected leader reports its generation and its set's
-   generation. If the generation is above the control plane's and the set
-   is the one the control plane records, the control plane makes it the
-   shard's leader at that generation, with the same conditional write as any
-   assignment, so a planner acting on an older read loses. Otherwise it
-   records the generation only, and issues every later one above it. It
-   never reissues a generation at or below one it was told was elected.
+10. *Adoption.* The elected leader reports its generation and its set's
+    generation. If the generation is above the control plane's and the set
+    is the one the control plane records (the pending set, with its
+    generation, while a change is pending), the control plane makes it the
+    shard's leader at that generation, with the same conditional write as
+    any assignment, so a planner acting on an older read loses. Otherwise it
+    records the generation only, and issues every later one above it. It
+    never reissues a generation at or below one it was told was elected. A
+    leader on the old set is passed over while a change is pending: the new
+    set's leader, carrying a newer set generation, deposes it.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -794,16 +797,18 @@ control plane.
 
 **Across versions.** Each piece goes behind a negotiation, as ballots did:
 
-- *Storage.* A replica keeps its set in its own file beside `ballot`, the
-  assignment's generation and the members, fsynced before it answers at that
-  set. A build without it still opens the shard.
+- *Storage.* A replica keeps its set in its own file beside `ballot`: the
+  assignment's generation, the members, and while a change is pending the
+  set it is leaving, fsynced before it answers at that set. A build without
+  it still opens the shard.
 - *Wire.* A broker that checks sets offers the `ELECTION` internal capability
   (bit `1 << 9`). The fence, the pre-vote and the batch carry the set's
   generation only to a peer that offered it, and a missing one means what it
   means today: no check.
-- *Control plane.* Adoption is a new store write, so under Raft it needs
-  the next free metadata level on every member, and a Postgres control plane
-  gets a migration. Below that the control plane ignores election reports
+- *Control plane.* Adoption, the pending set a cut-over records beside the
+  current one, and the flip to it after the joint fence are new store
+  writes, so under Raft they need the next free metadata level on every
+  member, and a Postgres control plane gets a migration. Below that the control plane ignores election reports
   and goes on promoting on suspicion.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
   serving broker lacks `ELECTION`, the control plane is below that level, or
@@ -813,9 +818,10 @@ control plane.
   a replacement, fenced jointly (which does not yet). Only after it do
   followers stand.
 
-The work lands in this order: the set file in storage, the `ELECTION`
-capability, the replica's checks, joint fences on every set change and the
-fence on the next-generation open, adoption in the control plane, then the
+The work lands in this order: the set file in storage (with the old set),
+the `ELECTION` capability, the replica's checks, joint fences on every set
+change and the fence on the next-generation open, the control plane's
+pending set and flip, adoption in the control plane, then the
 election driver with pre-vote and stickiness, then cluster and history tests
 (`failures/replica_election.rs`, and a nemesis holding the control plane
 down across a leader kill) and the docs that describe it as shipped. The

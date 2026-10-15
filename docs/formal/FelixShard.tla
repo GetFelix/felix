@@ -1389,6 +1389,7 @@ Fence(v, f, views) ==
     /\ Handoff
     /\ moves < MaxMoves
     /\ ~v.draining
+    /\ cpNext = {}
     /\ f /= v.leader
     /\ f \notin halted
     /\ staged /= {} => f \in staged
@@ -1453,6 +1454,7 @@ Takes(f) ==
 
 CutOver(v, f, views) ==
     /\ v.draining /\ v.successor = f
+    /\ cpNext = {}
     /\ f \notin halted
     /\ WaitForDrained => (v.report.gen = v.gen /\ v.report.drained /\ f \in v.report.holders)
     /\ Cas(v)
@@ -1484,6 +1486,7 @@ CutOver(v, f, views) ==
 Retake(v, f, views) ==
     /\ Cancel
     /\ v.draining
+    /\ cpNext = {}
     /\ f = v.leader
     /\ CancelCas => Cas(v)
     /\ ver' = ver + 1
@@ -1525,6 +1528,8 @@ OldSetLen(b) ==
 Regenerate(v, views, set) ==
     /\ v.leader = leader /\ ~v.lapsed
     /\ bgen[leader] = gen /\ ~fencing[leader]
+    \* Placement changes one set at a time; a cut-over's pending set comes first.
+    /\ cpNext = {}
     /\ Elections > 0 => MayPromise(leader, leader, gen + 1)
     /\ Cas(v)
     /\ ver' = ver + 1
@@ -1596,13 +1601,24 @@ Seat(v, j, views) ==
     /\ joinedAt' = 0
     /\ UNCHANGED moves
 
+\* Whether `b` leads the set the control plane records, or while a cut-over
+\* is pending, the pending set at its generation.
+CpHoldsSetOf(b) ==
+    IF cpNext = {} THEN mine[b] = CpSet
+    ELSE mine[b] = cpNext /\ setGen[b] = cpNextGen
+
 \* Under `Adopt`, the control plane hears from a leader that opened above the
 \* generation it read, one it never named. With `AdoptMatch`, if the leader's
 \* set is the one the control plane records, it becomes the control plane's
 \* leader at that generation; otherwise only the generation is taken, so every
-\* later one the control plane issues is above it. Without `AdoptMatch` it
-\* adopts whatever set the leader has. A conditional write like any other
-\* (`Cas`), so a planner acting on an old read loses to a newer write.
+\* later one the control plane issues is above it. While a cut-over is
+\* pending, the set that matches is the pending one: a leader on the old set
+\* would be fenced by the new set's higher set generation, so the control
+\* plane takes only its generation. A pending-set leader adopted here keeps
+\* the change pending until CpFlip; after the flip it matches `CpSet`.
+\* Without `AdoptMatch` it adopts whatever set the leader has. A conditional
+\* write like any other (`Cas`), so a planner acting on an old read loses to
+\* a newer write.
 \* Bounded by `Adopt`, or elections and adoptions never end.
 CpAdopt(v, b, views) ==
     /\ bgen[b] > v.gen /\ bgen[b] <= Adopt
@@ -1612,14 +1628,14 @@ CpAdopt(v, b, views) ==
     /\ ver' = ver + 1
     /\ cpView' = views
     /\ gen' = bgen[b]
-    \* Adopting a leader on the control plane's set abandons a pending change:
-    \* that leader opened on the old set, so the change never completed there.
-    /\ IF AdoptMatch => mine[b] = CpSet
+    /\ IF AdoptMatch => CpHoldsSetOf(b)
        THEN /\ leader' = b
             /\ cpExpiry' = now + L
             /\ report' = NoReport
             /\ draining' = FALSE
-            /\ cpNext' = {} /\ cpNextGen' = 0
+            \* Without `AdoptMatch` the adopted set replaces a pending one.
+            /\ (IF AdoptMatch THEN UNCHANGED nextVars
+                ELSE cpNext' = {} /\ cpNextGen' = 0)
        ELSE UNCHANGED << leader, cpExpiry, report, draining, nextVars >>
     /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
                     queued, pending, acked, writes, staleCommit >>
@@ -1691,6 +1707,10 @@ Swap(v, f, views) ==
 \* `JointFence` took a majority of the old set and of the new: every record
 \* acknowledged before is then on a majority of the new set too. The leader's
 \* report is modelled by reading its state. A conditional write like any other.
+\* Liveness: only the control plane ends a pending change. While it is down,
+\* leaders on the new set keep fencing and acknowledging on both sets, so
+\* losing a majority of the old set stops writes until it comes back. Nothing
+\* here checks liveness; safety does not depend on the flip happening.
 CpFlip ==
     /\ cpNext /= {}
     /\ \E l \in Brokers :
@@ -1830,9 +1850,11 @@ OneLeaderPerGeneration ==
 \* The control plane's leader, once open at the control plane's generation,
 \* leads the set the control plane records: an adopted leader included. While
 \* a cut-over is pending, the control plane records the set it moves to as
-\* well, and its leader leads that one.
+\* well, and its leader leads that one. Only while it still holds that
+\* generation: a leader that stepped down learns newer sets.
 AdoptedMatchesOpened ==
-    <<gen, leader>> \in opened => mine[leader] = IF cpNext /= {} THEN cpNext ELSE CpSet
+    <<gen, leader>> \in opened /\ bgen[leader] = gen =>
+        mine[leader] = IF cpNext /= {} THEN cpNext ELSE CpSet
 
 \* Under `SetCheck`, once a set change opened, a majority of the new set and
 \* of the set before it know the new set, so no replica on the old set alone
