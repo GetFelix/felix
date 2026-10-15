@@ -3,20 +3,30 @@ name: Coverage
 on:
   push:
     branches: [ main ]
-    paths-ignore:
-      - "**/coverage.svg"
-      - "docs/**"
-      - "**/*.md"
+  # No path filter here: the changes job skips coverage for docs or the badge
+  # alone, so the run still reports `Coverage ok`.
   pull_request:
-    paths-ignore:
-      - "**/coverage.svg"
-      - "docs/**"
-      - "**/*.md"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.code.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/actions
+      - id: code
+        uses: ./.github/actions/code-changed
+        with:
+          ignore: '^docs/|\.md$|(^|/)coverage\.svg$'
+
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
   coverage:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
@@ -146,3 +156,17 @@ jobs:
           force_orphan: true
           commit_message: "chore(ci): update coverage badge"
           enable_jekyll: false
+
+  # The required check; see ci.yml's `CI ok`.
+  coverage-ok:
+    name: Coverage ok
+    if: always()
+    needs: [changes, coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

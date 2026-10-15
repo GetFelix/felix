@@ -1,0 +1,44 @@
+name: Code changed
+description: >
+  Say whether a push or pull request touches anything outside the ignored
+  paths. The workflows filter here, not under `on:`, so a docs-only change
+  still runs them and reports their required check.
+inputs:
+  ignore:
+    description: Python regex for paths that don't count
+    required: true
+  keep:
+    description: Python regex for paths that count even when `ignore` matches
+    default: "(?!)"
+outputs:
+  code:
+    description: "'true' or 'false'"
+    value: ${{ steps.diff.outputs.code }}
+runs:
+  using: composite
+  steps:
+    - id: diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IGNORE: ${{ inputs.ignore }}
+        KEEP: ${{ inputs.keep }}
+        BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        # A manual run, a new branch or an unreadable diff runs everything.
+        if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+          echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        if ! files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --jq '.files[].filename'); then
+          echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        code=$(python3 -c '
+        import os, re, sys
+        files = sys.stdin.read().split()
+        ignore, keep = re.compile(os.environ["IGNORE"]), re.compile(os.environ["KEEP"])
+        # The compare API lists at most 300 files; past that, assume code changed.
+        print(str(len(files) >= 300 or any(keep.search(f) or not ignore.search(f) for f in files)).lower())
+        ' <<< "$files")
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        echo "code changed: $code"
