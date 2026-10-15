@@ -549,12 +549,18 @@ fn a_dead_leaders_report_stops_ageing_at_its_last_heartbeat() {
     let report = report("orders", &["broker-b"], reported_at);
     let existing = [led_by("orders", "broker-a", report.generation)];
 
-    let heard_within = at(vec![report.clone()], now)
-        .with_reporters(&existing, &[reporter("broker-a", reported_at + TTL_MS)]);
+    let heard_within = at(vec![report.clone()], now).with_reporters(
+        &existing,
+        &[reporter("broker-a", reported_at + TTL_MS)],
+        &no_lease_fallback(),
+    );
     assert!(heard_within.is_caught_up(&key("orders"), "broker-b"));
 
-    let heard_after = at(vec![report], now)
-        .with_reporters(&existing, &[reporter("broker-a", reported_at + TTL_MS + 1)]);
+    let heard_after = at(vec![report], now).with_reporters(
+        &existing,
+        &[reporter("broker-a", reported_at + TTL_MS + 1)],
+        &no_lease_fallback(),
+    );
     assert!(
         !heard_after.is_caught_up(&key("orders"), "broker-b"),
         "a report made a TTL before the leader's last heartbeat was believed",
@@ -570,7 +576,11 @@ fn a_live_leaders_old_report_still_expires() {
     let report = report("orders", &["broker-b"], reported_at);
     let existing = [led_by("orders", "broker-a", report.generation)];
 
-    let view = at(vec![report], now).with_reporters(&existing, &[reporter("broker-a", now)]);
+    let view = at(vec![report], now).with_reporters(
+        &existing,
+        &[reporter("broker-a", now)],
+        &no_lease_fallback(),
+    );
     assert!(!view.is_caught_up(&key("orders"), "broker-b"));
 }
 
@@ -583,7 +593,49 @@ fn a_report_from_another_generation_ages_against_now() {
     let report = report("orders", &["broker-b"], reported_at);
     let existing = [led_by("orders", "broker-a", report.generation + 1)];
 
-    let view =
-        at(vec![report], now).with_reporters(&existing, &[reporter("broker-a", reported_at)]);
+    let view = at(vec![report], now).with_reporters(
+        &existing,
+        &[reporter("broker-a", reported_at)],
+        &no_lease_fallback(),
+    );
     assert!(!view.is_caught_up(&key("orders"), "broker-b"));
+}
+
+/// The fleet features under which a promoted shard never opens on the lease.
+fn no_lease_fallback() -> BTreeSet<String> {
+    [
+        felix_common::fleet::GENERATION_START,
+        felix_common::fleet::MAJORITY_ACK,
+        felix_common::fleet::FENCED_CACHES,
+    ]
+    .iter()
+    .map(|feature| feature.name().to_string())
+    .collect()
+}
+
+/// **Where a promotion can open on the lease, a dead leader's report still
+/// expires.** A follower it named may since have lost its log and registered
+/// again; nothing on the lease path would catch it up before it serves.
+#[test]
+fn a_dead_leaders_report_expires_where_a_promotion_can_open_on_the_lease() {
+    let reported_at = 1_000;
+    let now = reported_at + TTL_MS + 1;
+    let report = report("orders", &["broker-b"], reported_at);
+    let existing = [led_by("orders", "broker-a", report.generation)];
+    let nodes = [reporter("broker-a", reported_at)];
+
+    let lease = at(vec![report.clone()], now).with_reporters(&existing, &nodes, &BTreeSet::new());
+    assert!(!lease.is_caught_up(&key("orders"), "broker-b"));
+
+    let mut streams_only = no_lease_fallback();
+    streams_only.remove(felix_common::fleet::FENCED_CACHES.name());
+    let mut cache_report = report.clone();
+    cache_report.key.kind = crate::model::ShardKind::Cache;
+    let mut cache = led_by("orders", "broker-a", report.generation);
+    cache.key.kind = crate::model::ShardKind::Cache;
+    let view = at(vec![cache_report.clone()], now).with_reporters(&[cache], &nodes, &streams_only);
+    assert!(
+        !view.is_caught_up(&cache_report.key, "broker-b"),
+        "a cache report was frozen without fenced_caches",
+    );
 }

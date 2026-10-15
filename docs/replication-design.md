@@ -1734,15 +1734,24 @@ stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
 
-The age is measured up to the reporting leader's last heartbeat, not up to
-now. A live leader heartbeats, so its report ages as before and an old one
-from a leader that stopped reporting still expires. A dead leader's heartbeats
-stop, and so does the age of its last report. Without that, a placement pass
-that ran more than the window after the last report, through a control-plane
-outage or a slow pass, would find no replica to promote, and the shard would
-wait for an operator to abandon it. A report is tied to a heartbeat only while
-the assignment is still at the report's generation, since only that
-generation's leader can have made it; any other ages against now.
+A dead leader's last report would expire the same way, and nothing else will
+ever report on its shards: a placement pass that ran more than the window
+after the last report, through a control-plane outage or a slow pass, would
+find no replica to promote, and the shard would wait for an operator to
+abandon it. So once the fleet has finalized `generation_start` and
+`majority_ack` (and `fenced_caches`, for a cache), a report past the window is
+still believed while it is within the window of its leader's last heartbeat.
+A live leader heartbeats, so an old report from one that stopped reporting
+still expires. A report is tied to a heartbeat only while the assignment is
+still at the report's generation, since only that generation's leader can
+have made it.
+
+It waits for those features because a follower the report names may since
+have lost its log and registered again, and the control plane cannot tell.
+With them, a promoted shard never opens on the lease: the new leader fences a
+majority and takes the furthest tail before it serves, so such a follower is
+caught up first. On the lease path nothing would catch it up, so there the
+report expires as before.
 
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.

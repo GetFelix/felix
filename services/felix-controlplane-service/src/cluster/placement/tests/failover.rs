@@ -570,12 +570,11 @@ fn a_quorum_cache_failover_does_not_promote_a_move_destination() {
     );
 }
 
-/// **A dead leader's last report does not expire.** Only that leader ever
-/// reported on its shard, so once it is down nothing refreshes the report. Its
-/// age is taken at the leader's last heartbeat: a control-plane outage or a
-/// slow pass long after the death must still find a follower to promote.
-#[test]
-fn a_dead_leaders_report_still_promotes_long_after_it_died() {
+/// A shard whose leader broker-a died at 10 s, having reported broker-c
+/// caught up, planned long after: past the report TTL by now, within it by
+/// broker-a's last heartbeat. broker-c registered again since, as it would
+/// after losing its disk.
+fn plan_long_after_the_leader_died(enabled: &[felix_common::fleet::FleetFeature]) -> Plan {
     let liveness = crate::config::NodeLivenessConfig {
         heartbeat_interval_ms: 500,
         expiry_timeout_ms: 1_500,
@@ -583,17 +582,18 @@ fn a_dead_leaders_report_still_promotes_long_after_it_died() {
     };
     let ttl = super::super::replica_positions::report_ttl_millis(&liveness);
     let reported_at = 10_000;
-    let last_heartbeat = reported_at + liveness.heartbeat_interval_ms;
-    // Far past the TTL measured from now, well within it from the heartbeat.
     let now = reported_at + ttl * 10;
 
     let streams = vec![replicated_stream("orders", 1, 3)];
     let mut leader = node("broker-a", NodeLifecycle::Down, None);
-    leader.status.last_heartbeat_at_millis = last_heartbeat;
+    leader.status.last_heartbeat_at_millis = reported_at + liveness.heartbeat_interval_ms;
+    let mut reregistered = node("broker-c", NodeLifecycle::Live, None);
+    reregistered.status.incarnation = 1;
+    reregistered.status.last_heartbeat_at_millis = now;
     let nodes = vec![
         leader,
         node("broker-b", NodeLifecycle::Live, None),
-        node("broker-c", NodeLifecycle::Live, None),
+        reregistered,
     ];
     let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
     let report = ReplicaReport {
@@ -610,13 +610,42 @@ fn a_dead_leaders_report_still_promotes_long_after_it_died() {
         by_round: false,
         leader_incarnation: None,
     };
-    let positions =
-        ReplicaPositions::new(vec![report], &liveness, now).with_reporters(&existing, &nodes);
+    let enabled = enabled
+        .iter()
+        .map(|feature| feature.name().to_string())
+        .collect();
+    let positions = ReplicaPositions::new(vec![report], &liveness, now)
+        .with_reporters(&existing, &nodes, &enabled);
+    plan(&streams, &[], &nodes, &existing, &positions)
+}
 
-    let plan = plan(&streams, &[], &nodes, &existing, &positions);
+/// **A dead leader's last report does not expire** once no promotion opens on
+/// the lease. Only that leader ever reported on its shard, so once it is down
+/// nothing refreshes the report. A control-plane outage or a slow pass long
+/// after the death must still find a follower to promote; the promotion's
+/// fence catches broker-c up from a majority before it serves.
+#[test]
+fn a_dead_leaders_report_still_promotes_long_after_it_died() {
+    let plan = plan_long_after_the_leader_died(&[
+        felix_common::fleet::GENERATION_START,
+        felix_common::fleet::MAJORITY_ACK,
+    ]);
     let (_, leader, _) = plan
         .to_place()
         .next()
         .expect("the dead leader's shard was not placed");
     assert_eq!(leader, "broker-c");
+}
+
+/// **Where a promotion can open on the lease, it does not.** broker-c may have
+/// lost the log the report credits it with, and on the lease nothing catches
+/// it up before it serves, so the report expires as it always did.
+#[test]
+fn a_follower_that_registered_again_is_not_promoted_on_the_lease() {
+    let plan = plan_long_after_the_leader_died(&[]);
+    assert_eq!(
+        plan.to_place().count(),
+        0,
+        "a follower was promoted from a report older than the TTL",
+    );
 }

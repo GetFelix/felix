@@ -645,8 +645,10 @@ async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
 
 type OpenCaches = HashSet<(String, String, String, u32)>;
 
-/// Counted only once the shard serves: a refused open is retried, and a test
-/// or operator reading the counter takes it to mean the shard is open.
+/// Counted when the gate lets the shard go, not when the fence finished, so a
+/// refused open that is retried counts once. The gate also lets go of a shard
+/// no longer fencing at `generation`, which a newer assignment superseded, and
+/// that is counted too.
 async fn opened(
     gate: &dyn PromotionGate,
     key: &ShardKey,
