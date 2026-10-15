@@ -537,7 +537,10 @@ async fn a_counter_catch_up_is_reported_a_slice_at_a_time() {
         if !pass.copying {
             break;
         }
-        assert!(reported.len() <= ADDS as usize, "the catch-up never finished");
+        assert!(
+            reported.len() <= ADDS as usize,
+            "the catch-up never finished"
+        );
     }
     assert!(reported.len() > 1, "caught up in one pass: {reported:?}");
     assert!(
