@@ -89,9 +89,9 @@ way.
 
 **Storage identities during a roll.** A broker now registers the identity of
 its data directory, and its replica reports name the identity each follower
-was counted under. Placement promotes a follower only while the two match, and
-keeps a dead leader's last report believed past the usual window for such a
-follower. A Postgres control plane runs migration `0030` on start. Until every
+was counted under. Placement never promotes a follower whose two identities
+differ, and keeps a dead leader's last report believed past the usual window
+for one whose identities match. A Postgres control plane runs migration `0030` on start. Until every
 instance runs this release, a registration or report written through an older
 instance carries no identity and reads as unverified: that follower is judged
 by the report's age alone, as on the previous release, until a current

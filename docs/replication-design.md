@@ -1830,6 +1830,11 @@ dies before the restarted broker registers again, can still be counted on the
 old identity. Placement does not treat a missing heartbeat as evidence to close
 that window.
 
+The identity catches a lost data directory, not a tail lost in a crash under a
+relaxed `FsyncMode`. Keeping a dead leader's report believed for longer widens
+that exposure; under `OnCommit` an acknowledged record is on disk, so there is
+none.
+
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.
 Placement does not guess in that case. At a later generation the acknowledged
