@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792074713372,
+  "lastUpdate": 1792075188393,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29900,6 +29900,58 @@ window.BENCHMARK_DATA = {
             "range": "45353.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1022271.92\nmean: 1005190.59\nstdev: 45353.00\ncv: 4.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "22ba9a10781dbce170963aa2160968c3145a50ca",
+          "message": "fix(replication): ship a cache's counter log in catch-up slices (#1199) (#1242)\n\n* fix(replication): ship a cache's counter log in catch-up slices\n\nCounters rode each follower's exchange in one unsliced ship, so a long\ncounter catch-up reached the reports only once it was done and placement\ndropped the restore as stalled. Give it the same five-second slices as\nthe records.\n\nCloses #1199\n\n* changelog: counter catch-up slices (#1199)\n\n* docs(replication): counters ship in their own catch-up slice (#1199)",
+          "timestamp": "2026-10-15T14:35:13Z",
+          "tree_id": "6575ba0d582ebc0c82a6e2eb3a2d3086b7df6b1c",
+          "url": "https://github.com/GetFelix/felix/commit/22ba9a10781dbce170963aa2160968c3145a50ca"
+        },
+        "date": 1792075186549,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356661.31,
+            "range": "27769.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356661.31\nmean: 346038.07\nstdev: 27769.44\ncv: 8.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356661.31,
+            "range": "27769.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356661.31\nmean: 346038.07\nstdev: 27769.44\ncv: 8.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82242.9,
+            "range": "566.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82242.90\nmean: 82388.94\nstdev: 566.86\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822429,
+            "range": "5668.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822429.00\nmean: 823889.42\nstdev: 5668.68\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
