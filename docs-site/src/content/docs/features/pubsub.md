@@ -191,7 +191,7 @@ at each level:
   is overloaded, and it is deliberately visible.
 - **The subscriber queue** bounds what one subscription can have pending, by
   entries (`subscriber_queue_capacity`) and by payload bytes
-  (`subscriber_queue_max_bytes`, 64 MiB by default). Frames already taken
+  (`subscriber_queue_max_bytes`, 128 MiB by default). Frames already taken
   from the queue and waiting to be written count against the connection's
   writer-lane bound instead (`subscriber_egress_max_bytes`), so the
   subscription's memory is bounded all the way to the network. What happens

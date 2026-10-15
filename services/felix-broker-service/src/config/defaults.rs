@@ -90,7 +90,7 @@ pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX: usize = 4096;
 // One entry can be a whole frame, so the count alone lets a slow reader pin
 // gigabytes of large records. Counts only what waits in the broker queue;
 // the writer lanes have their own per-connection bound below.
-pub(super) const DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
 // Shared out equally among a connection's subscriptions, so one that stalls
 // holds at most its share. Large enough that a share still fits several
 // 4 MiB batches with ten subscriptions on a connection, so a feeder is not

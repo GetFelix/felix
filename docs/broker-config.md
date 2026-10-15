@@ -57,7 +57,7 @@ subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
 max_subscriptions_per_conn_total: 16384
-subscriber_queue_max_bytes: 67108864
+subscriber_queue_max_bytes: 134217728
 subscriber_queue_max_bytes_total: 0
 subscriber_egress_max_bytes: 268435456
 replay_ring_max_bytes: 67108864
@@ -332,7 +332,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
   chooses only the size, never the policy: under `block` one slow reader would stall every
   publisher on the shard.
-- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 64 MiB) bounds the
+- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 128 MiB) bounds the
   payload bytes waiting in one subscriber's broker-core queue, since one entry can be a whole
   frame. A batch stops counting here once the subscriber's feeder has moved it into the writer
   lanes, which have their own bound (below), so a batch being written never looks like the

@@ -51,7 +51,7 @@ use keys::{CacheKey, NamespaceKey, StreamKey, TopicKey};
 const DEFAULT_TOPIC_CAPACITY: usize = 1024;
 const DEFAULT_LOG_CAPACITY: usize = 1024;
 const DEFAULT_SUB_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
-const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DEFAULT_REPLAY_RING_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// In-process broker for pub/sub messaging.
@@ -268,7 +268,7 @@ impl Broker {
     /// A batch larger than the bound is still queued into an empty queue.
     /// A receiver that moves a batch on into a queue of its own can stop
     /// counting it here ([`HeldBytes::release_subscriber`](crate::HeldBytes::release_subscriber)).
-    /// Defaults to 64 MiB.
+    /// Defaults to 128 MiB.
     pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
         self.subscriber_queue_bytes.per_subscriber = bytes;
         self

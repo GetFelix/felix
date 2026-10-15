@@ -583,10 +583,10 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
 
 **Type**: Non-negative integer (bytes)
 
-**Default**: `67108864` (64 MiB)
+**Default**: `134217728` (128 MiB)
 
 ```bash
-export FELIX_SUB_QUEUE_MAX_BYTES="67108864"
+export FELIX_SUB_QUEUE_MAX_BYTES="134217728"
 ```
 
 ### `FELIX_SUB_EGRESS_MAX_BYTES`
