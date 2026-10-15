@@ -175,7 +175,7 @@ where
         "sub egress lanes ENABLED"
     );
 
-    let (broker, durable_storage) = storage::open(&config)?;
+    let (broker, durable_storage, storage_id) = storage::open(&config)?;
     // A record with its publisher is storage format v6, which an older build
     // refuses to open, so a cluster waits for its fleet to finalize it and a
     // lone broker for its operator to ask.
@@ -380,6 +380,7 @@ where
         &credential,
         &suspects,
         &incarnation,
+        storage_id,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes

@@ -128,3 +128,16 @@ fn a_stream_with_an_incarnation_is_found_in_that_incarnations_directory() {
         vec![("t/ns/orders/0".to_string(), LogKind::Stream, 10)]
     );
 }
+
+#[test]
+fn a_restore_gives_the_data_directory_a_new_storage_id() {
+    // The restored logs are older than what peers last saw under the old id.
+    let root = tempfile::tempdir().expect("tempdir");
+    let before = crate::node::storage::storage_id(Some(root.path())).expect("create");
+    let rotated = crate::node::storage::rotate_storage_id(root.path()).expect("rotate");
+    assert_ne!(rotated, before);
+    assert_eq!(
+        crate::node::storage::storage_id(Some(root.path())).expect("load"),
+        rotated
+    );
+}

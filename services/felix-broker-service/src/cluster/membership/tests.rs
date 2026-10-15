@@ -142,6 +142,7 @@ async fn registration_sends_the_identity_and_returns_the_incarnation() {
         &base_url,
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
@@ -178,6 +179,7 @@ async fn registration_sends_the_kafka_address_when_the_listener_is_on() {
         &base_url,
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
@@ -204,12 +206,44 @@ async fn registration_sends_the_zone_when_one_is_set() {
         &base_url,
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
 
     let sent = calls.lock().expect("lock").registrations[0].clone();
     assert_eq!(sent["zone"], "us-west-2b");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn registration_sends_the_storage_id_as_hex_when_one_is_set() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+
+    let mut bytes = [0u8; 16];
+    bytes[0] = 0xab;
+    register(
+        &client,
+        &base_url,
+        &config(),
+        &credential,
+        Some(StorageId::from_bytes(bytes)),
+    )
+    .await
+    .expect("register");
+    register(&client, &base_url, &config(), &credential, None)
+        .await
+        .expect("register");
+
+    let sent = calls.lock().expect("lock").registrations.clone();
+    assert_eq!(sent[0]["storage_id"], "ab000000000000000000000000000000");
+    // Omitted, not null, so an older control plane sees the body it expects.
+    assert!(sent[1].get("storage_id").is_none());
 
     let _ = stop.send(());
     let _ = handle.await;
@@ -236,6 +270,7 @@ async fn a_rejected_registration_is_an_error() {
         &format!("http://{addr}"),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect_err("should fail");
@@ -258,6 +293,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
         &base_url,
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
@@ -316,6 +352,7 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
         &base_url,
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
@@ -382,6 +419,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
         &base_url,
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");
@@ -496,6 +534,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
         &format!("http://{addr}"),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect_err("should be refused");
@@ -513,6 +552,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
         &format!("http://{addr}"),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect_err("should be unavailable");
@@ -543,6 +583,7 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
         &format!("http://{addr}"),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect_err("should fail");
@@ -588,6 +629,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
         Arc::default(),
         Arc::default(),
+        None,
     );
 
     for _ in 0..300 {
@@ -717,14 +759,14 @@ async fn registration_reports_features_only_when_there_are_some() {
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
 
-    register(&client, &base_url, &config(), &credential)
+    register(&client, &base_url, &config(), &credential, None)
         .await
         .expect("register");
     let with_features = MembershipConfig {
         features: ["jump".to_string()].into(),
         ..config()
     };
-    register(&client, &base_url, &with_features, &credential)
+    register(&client, &base_url, &with_features, &credential, None)
         .await
         .expect("register");
 
@@ -751,6 +793,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
         &base_url,
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
     )
     .await
     .expect("register");

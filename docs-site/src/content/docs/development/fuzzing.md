@@ -25,7 +25,7 @@ nightly and links libFuzzer:
 | | `sparse_index` | a segment's sparse index | disk |
 | | `cache_record` | a cache log record | disk, and replication peers |
 | | `counter_record` | a counter log record and a forwarded counter sum | disk, replication, peer brokers |
-| | `sidecar_state` | the durable mark, replica state, generation history and producer snapshot | disk |
+| | `sidecar_state` | the durable mark, replica state, generation history, producer snapshot and storage id | disk |
 
 Each target asserts more than "does not panic": decoded values re-encode to
 what they came from, lengths agree with the bytes present, and nothing

@@ -14,7 +14,7 @@ in this decoder is a remote crash.
 | `sparse_index` | an index file | a malformed index loads as `None`; entries stay strictly ascending; every seek lands at or after the segment header |
 | `cache_record` | one cache log record | decodes or is refused as corruption; a put re-encodes identically, a delete round-trips |
 | `counter_record` | one counter log record, or a forwarded sum | decodes or is refused; a record re-encodes identically |
-| `sidecar_state` | a durable mark, replica state, generation history or producer snapshot | none panics; each decoder also sees the input with its CRC fixed up, and whatever decodes round-trips |
+| `sidecar_state` | a durable mark, replica state, generation history, producer snapshot or storage id | none panics; each decoder also sees the input with its CRC fixed up, and whatever decodes round-trips |
 
 `counter_record` and `sidecar_state` reach decoders the crate does not export,
 through its `fuzzing` feature (`src/fuzzing.rs`).

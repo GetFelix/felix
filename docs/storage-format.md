@@ -39,6 +39,9 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 | `0x464C5347` | `FLSG` | Felix Se**g**ment | segment data (`*.log`) |
 | `0x464C5349` | `FLSI` | Felix Segment **I**ndex | sparse offset index (`*.index`) |
 
+The small state files have magics of their own, listed with each file below.
+The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`.
+
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
 versioning, and a file that turned up on a socket, or a frame that turned up in
@@ -48,6 +51,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
 
 ```text
 <root>/
+  storage-id                                 ← this data directory's identity
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -807,6 +811,27 @@ after a power loss it can lag by the filesystem's writeback delay; it is
 synced at open (with its directory entry, so a fresh shard's first segment has
 a mark), at clean shutdown and close, and after a truncation or reset. A
 missing or corrupt mark reads as absent.
+
+## `storage-id`: the data directory's identity
+
+One file at the durable root, beside the shard directories, holding 16 random
+bytes the broker generates the first time it opens the directory:
+
+```text
+ 0   4  magic    u32  "FLID"
+ 4   2  version  u16
+ 6  16  id       the storage id
+22   4  crc      u32  crc32 over bytes 0..22
+```
+
+Written to `storage-id.tmp`, synced, renamed over `storage-id` and the
+directory synced, so a crash leaves the old id or the new one. Shard discovery
+lists only directories, so neither file is read as a shard. A missing file
+gets a new id, logged at info. A file that does not decode (wrong length,
+magic, version or CRC) is replaced with a new id and a warning, rather than
+failing the start: a new id only makes peers treat the directory as one that
+may have lost data, which is the safe reading of damage. See
+`docs/durable-storage.md`, "Storage identity".
 
 ## Consumer-group cursor values
 

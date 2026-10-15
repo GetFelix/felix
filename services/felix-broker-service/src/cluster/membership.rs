@@ -22,6 +22,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use felix_common::fleet::FleetGate;
 use felix_common::membership::NodeLifecycle;
+use felix_storage::StorageId;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -75,6 +76,10 @@ struct RegistrationRequest<'a> {
     /// the body it always did.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     features: &'a BTreeSet<String>,
+    /// The data directory's identity, as 32 lowercase hex digits. Omitted
+    /// when unset, so the body is the one a broker sent before storage ids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,7 +194,8 @@ impl std::fmt::Display for MembershipError {
     }
 }
 
-/// Claim this broker's identity.
+/// Claim this broker's identity, reporting the identity of its data
+/// directory with it when `storage_id` is set.
 ///
 /// Fails loudly. A broker that cannot register is not a cluster member, and
 /// carrying on as if it were means publishing to a node no one will route to.
@@ -198,6 +204,7 @@ pub async fn register(
     base_url: &str,
     config: &MembershipConfig,
     credential: &crate::cluster::credential::NodeCredential,
+    storage_id: Option<StorageId>,
 ) -> std::result::Result<Registration, MembershipError> {
     let response = client
         .post(format!("{}/v1/nodes", base_url.trim_end_matches('/')))
@@ -213,6 +220,7 @@ pub async fn register(
             region: &config.region,
             zone: config.zone.as_deref(),
             features: &config.features,
+            storage_id: storage_id.map(|id| id.to_hex()),
         })
         .send()
         .await
@@ -445,6 +453,7 @@ pub fn spawn(
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
     incarnation: Arc<AtomicU64>,
+    storage_id: Option<StorageId>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
@@ -462,7 +471,7 @@ pub fn spawn(
             loop {
                 let mut attempt = 0u64;
                 let registration = loop {
-                    match register(&client, &base_url, &config, &credential).await {
+                    match register(&client, &base_url, &config, &credential, storage_id).await {
                         Ok(registration) => break registration,
                         Err(MembershipError::Rejected(message)) => {
                             mm::record_registration(mm::KIND_REJECTED);

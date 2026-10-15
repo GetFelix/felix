@@ -170,6 +170,7 @@ async fn boot_produces_one_live_record_and_a_restart_reuses_it() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
+        None,
     )
     .await
     .expect("register");
@@ -182,6 +183,7 @@ async fn boot_produces_one_live_record_and_a_restart_reuses_it() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
+        None,
     )
     .await
     .expect("re-register");
@@ -210,6 +212,7 @@ async fn graceful_shutdown_leaves_rather_than_expiring() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
+        None,
     )
     .await
     .expect("register");
@@ -235,6 +238,7 @@ async fn an_abrupt_stop_is_detected_by_expiry() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
+        None,
     )
     .await
     .expect("register");
@@ -273,6 +277,7 @@ async fn a_duplicate_advertised_address_is_refused_terminally() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
+        None,
     )
     .await
     .expect("register");
@@ -285,6 +290,7 @@ async fn a_duplicate_advertised_address_is_refused_terminally() {
         &cluster.base_url,
         &config("broker-b", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(fleet_token.clone()),
+        None,
     )
     .await
     .expect_err("should be refused");
@@ -319,6 +325,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
         std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
         std::sync::Arc::default(),
         std::sync::Arc::clone(&incarnation),
+        None,
     );
 
     // Wait for registration to land.
@@ -371,6 +378,7 @@ async fn a_brokers_credential_cannot_deregister_another_broker() {
         &cluster.base_url,
         &config("broker-b", 7002),
         &felix_broker_service::cluster::credential::NodeCredential::new(fleet_token.clone()),
+        None,
     )
     .await
     .expect("register broker-b");
@@ -407,6 +415,7 @@ async fn an_unauthenticated_broker_cannot_register() {
         &cluster.base_url,
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(""),
+        None,
     )
     .await
     .expect_err("should be refused");

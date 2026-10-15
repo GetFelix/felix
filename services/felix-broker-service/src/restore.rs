@@ -53,7 +53,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let durable = DurableStorageConfig::from_env()?
         .context("FELIX_DURABLE_STORAGE_DIR is not set, so this broker keeps no logs to restore")?;
     let config = BrokerConfig::from_env_or_yaml().context("load broker configuration")?;
-    let (broker, storage) = crate::node::storage::open(&config)?;
+    let (broker, storage, _) = crate::node::storage::open(&config)?;
 
     let plan = manifest.plan(node.as_deref(), &durable.root)?;
     if plan.is_empty() {
@@ -104,6 +104,10 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     if let Some(storage) = storage {
         storage.shutdown().await?;
     }
+    // The logs are now an older copy than any peer last saw here, so the
+    // directory must not keep the identity those peers know it by.
+    let id = crate::node::storage::rotate_storage_id(&durable.root)?;
+    println!("new storage id {id}");
     println!(
         "restored {} logs to point {:?}; start this broker, and start its followers without these shards' directories",
         plan.len(),
