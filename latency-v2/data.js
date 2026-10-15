@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792097125991,
+  "lastUpdate": 1792101811686,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38874,6 +38874,72 @@ window.BENCHMARK_DATA = {
             "range": "742.26",
             "unit": "us",
             "extra": "trials: 5\nmedian: 794.00\nmean: 1139.60\nstdev: 742.26\ncv: 65.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "435ec7c810da72a88e4548adf679491404521f74",
+          "message": "feat(replication): learn each follower's storage id and reset it when it changes (part of #1266) (#1270)\n\n* feat(replication): learn each follower's storage id and reset it when it changes (part of #1266)\n\nPeers exchange storage identities behind a new capability bit,\nSTORAGE_IDENTITY (1 << 10): HelloCapableOk carries 16 trailing bytes only\nwhen its bits include it, and a responder sets it only for a caller that\noffered it, so older peers see unchanged frames.\n\nThe leader asks the pool for each follower's identity at the start of every\nexchange. A different identity starts the follower's cursor over at the\nshard's base and its group, dead-letter and counter cursors at zero, giving\nback any rebuild slot, so a wiped follower on an idle shard is no longer\nreported caught up. Reports carry the identity each follower was counted\nunder (replica_storage_ids, omitted when empty).\n\nFelixShard.tla gains Wipe, storage ids and a probe, with FelixShardWipe.cfg\n(pass) and FelixShardWipeNoIds.cfg (violates AckedSurvive).\n\n* spec: floor a wiped run's report at the report that landed\n\nTLC found FelixShardWipe reaching AckedSurvive: after a probe reset a\nfollower's count, a later report fell to length 0 and named the lagging\nfollower, while the acknowledgement was still released from the earlier\nreport the leader had heard. The code publishes the mark when that report\nlands, so its later reports never go below it; the model now floors the\nreport at what it heard, where wipes are checked.",
+          "timestamp": "2026-10-15T22:00:25Z",
+          "tree_id": "72bab3bce0ead7de3aab1b557aec60d244e8adc6",
+          "url": "https://github.com/GetFelix/felix/commit/435ec7c810da72a88e4548adf679491404521f74"
+        },
+        "date": 1792101808077,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 69.40\nstdev: 0.89\ncv: 1.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "38.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 108.60\nstdev: 38.24\ncv: 35.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 119,
+            "range": "40.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 137.80\nstdev: 40.49\ncv: 29.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.00\nstdev: 0.71\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "6.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 213.20\nstdev: 6.98\ncv: 3.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 390,
+            "range": "739.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 877.80\nstdev: 739.37\ncv: 84.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
