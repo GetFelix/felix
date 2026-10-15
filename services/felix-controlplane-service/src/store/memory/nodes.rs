@@ -339,18 +339,9 @@ pub(super) async fn node_changes(
     since: u64,
 ) -> StoreResult<ChangeSet<NodeChange>> {
     let state = store.nodes.read().await;
-    let items = state
+    Ok(state
         .changes
-        .items
-        .iter()
-        .filter(|item| item.seq >= since)
-        .take(store.limit())
-        .cloned()
-        .collect();
-    Ok(ChangeSet {
-        items,
-        next_seq: state.changes.next_seq,
-    })
+        .page(since, store.limit(), |change| change.seq))
 }
 
 /// A model rejection is the caller's fault, so it surfaces as a conflict

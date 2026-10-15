@@ -87,7 +87,8 @@ pub(crate) async fn list_caches(
         (status = 201, description = "Cache created", body = Cache),
         (status = 200, description = "Cache already exists with this configuration; nothing changed", body = Cache),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Cache already exists with a different configuration", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Cache already exists with a different configuration", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_cache(
@@ -182,7 +183,8 @@ pub(crate) async fn get_cache(
     request_body = CachePatchRequest,
     responses(
         (status = 200, description = "Cache updated", body = Cache),
-        (status = 404, description = "Cache or namespace not found", body = crate::api::types::ErrorResponse)
+        (status = 404, description = "Cache or namespace not found", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn patch_cache(
@@ -216,7 +218,8 @@ pub(crate) async fn patch_cache(
     ),
     responses(
         (status = 204, description = "Cache deleted"),
-        (status = 404, description = "Cache or namespace not found", body = crate::api::types::ErrorResponse)
+        (status = 404, description = "Cache or namespace not found", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn delete_cache(
