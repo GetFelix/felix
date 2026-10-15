@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792086666571,
+  "lastUpdate": 1792088387070,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30212,6 +30212,58 @@ window.BENCHMARK_DATA = {
             "range": "1956.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806734.79\nmean: 806198.39\nstdev: 1956.92\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b49f081398a0ee2fe7a6ee7258dc54d696b58af",
+          "message": "ci: pin publishing actions, harden inputs and credentials, audit demo lockfiles (#1249) (#1254)\n\nPin every third-party action to a commit SHA, pass dispatch inputs\nthrough env, drop persisted checkout credentials where nothing pushes,\nscope release.yml's contents: write to the asset jobs, bump h2 and\ncrossbeam-epoch in the demo lockfiles, and run cargo deny advisories on\neach out-of-workspace lockfile.\n\nSpec-Unaffected: comment-only change in peer/server.rs",
+          "timestamp": "2026-10-15T18:15:03Z",
+          "tree_id": "075a2ac6f155d6b1781f53ec40cbb058ff4df351",
+          "url": "https://github.com/GetFelix/felix/commit/1b49f081398a0ee2fe7a6ee7258dc54d696b58af"
+        },
+        "date": 1792088386253,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 375842.74,
+            "range": "22721.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 375842.74\nmean: 378246.31\nstdev: 22721.50\ncv: 6.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 375842.74,
+            "range": "22721.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 375842.74\nmean: 378246.31\nstdev: 22721.50\ncv: 6.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83926.01,
+            "range": "4883.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83926.01\nmean: 86173.40\nstdev: 4883.38\ncv: 5.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 839260.06,
+            "range": "48833.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 839260.06\nmean: 861734.02\nstdev: 48833.81\ncv: 5.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
