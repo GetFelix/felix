@@ -1257,9 +1257,10 @@ async fn an_older_member_is_refused_after_a_flagged_delete() {
 }
 
 /// A member already in the group that comes back on an older build (a wiped
-/// volume, the same id) answers the next append with a conflict. The leader
-/// asks its level again and sends it nothing while it is below the floor,
-/// then feeds it again once it reports the floor.
+/// volume, the same id) answers the next append with a conflict below what
+/// it acknowledged. The leader asks its level again and sends it nothing
+/// while it is below the floor, then feeds it again once it reports the
+/// floor.
 #[tokio::test]
 async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
     use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};

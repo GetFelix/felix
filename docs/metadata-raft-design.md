@@ -490,21 +490,40 @@ upgrade.
 **A member below the floor is held, not fed.** A member already in the
 membership is never asked to join again: one whose volume was wiped and
 that restarts on an older build under its old id would otherwise be sent
-the log and a snapshot it cannot apply. So before each append or snapshot
-it sends, the leader checks the member's reported level against the floor
-(`raft/hold.rs`). A member below it, or one that has not reported a level
-while the floor is above 0, is held: the send fails as unreachable and
-nothing is written to it. A reported level is trusted until the member
-answers an append with a conflict, which is what a member that lost its log
-does, and is asked again before the next send. A held member is asked on
-every retry, so replication resumes within about a second of it reporting
-the floor. The leader logs the hold once and sets
+the log and a snapshot it cannot apply. So the leader holds a member when
+it has evidence the member is below the floor (`raft/hold.rs`): the send
+fails as unreachable and nothing is written to it. The check reads only
+cached state, the floor from an atomic the state machine updates on apply
+and restore and each member's last reported level; a send never waits on a
+probe. The leader keeps those levels fresh in the background
+(`watch_versions` in `raft/version.rs`): it asks every member on the
+`standing` route when it takes the lead, every 10 seconds after that, and
+every 500 ms while a member is held.
+
+The evidence is one of two things. Either the member reported a level
+below the floor (every released build that runs Raft answers `standing`
+with its level, 8 for v0.6.0-preview.7), or it answered an append with a
+conflict at or below an entry it had acknowledged to this leader. Within
+one leader's term the leader's log only grows, so that conflict means the
+member lost its log, possibly to a restart on another build. It alone is
+held, and asked at once, until it reports a level at the floor; an answer
+to a probe sent before the conflict does not count. A member whose level
+is unknown, because it has not been asked yet or did not answer, is fed,
+and a failed probe keeps the last level it reported. Holding on silence
+would hold healthy voters after every leader change or slow probe and cost
+the group its quorum. The conflicts a lagging member answers while the
+leader searches for where their logs match are above what it acknowledged,
+so they hold nothing.
+
+The leader logs the hold once and sets
 `felix_meta_raft_member_below_floor{member}` to 1 until it ends. To openraft
 a held member is a follower that is down, so commits still need only a
 majority, but holding a voter takes one failure off what the group can
-survive until that member is upgraded. A member restarted on an older build
-with its log intact is not caught this way; that is a rollback, covered
-below.
+survive until that member is upgraded. Two cases are not caught: a member
+restarted on an older build with its log intact, which is a rollback,
+covered below; and a member wiped and restarted on an older build while a
+new leader has not yet heard its level, which is fed until the leader's
+first probe reaches it.
 
 Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 `remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,

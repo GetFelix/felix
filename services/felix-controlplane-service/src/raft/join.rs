@@ -245,7 +245,7 @@ impl RaftHandle {
     /// them, and the two would diverge. Once there is a floor, a member that
     /// does not answer is refused too: nothing says it meets it.
     pub(super) async fn admit(&self, id: NodeId, addr: &str) -> anyhow::Result<()> {
-        let floor = self.app.join_floor().await;
+        let floor = self.app.join_floor();
         if floor == 0 {
             return Ok(());
         }

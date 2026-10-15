@@ -27,6 +27,11 @@ use super::{NodeId, RaftHandle};
 /// rises within about this long of the last member upgrading.
 const FRESH_FOR: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often a leader asks every member its level again, for the
+/// replication hold ([`super::hold`]).
+const REFRESH_EVERY: Duration = Duration::from_secs(10);
+/// How often a member that is held, or lost its log, is asked again.
+const HELD_RETRY: Duration = Duration::from_millis(500);
 
 /// Who is asking for a member's standing, and the level it can apply.
 /// Absent from a member that predates it.
@@ -41,6 +46,10 @@ pub(super) struct Versions {
     reported: BTreeMap<NodeId, u16>,
     checked: Option<(Instant, Level)>,
     refreshing: bool,
+    /// Members that lost their log since they last reported, each with the
+    /// [`Self::epoch`] it was marked at.
+    stale: BTreeMap<NodeId, u64>,
+    epoch: u64,
 }
 
 impl Versions {
@@ -49,9 +58,37 @@ impl Versions {
     }
 
     /// Remember what `id` answered, and work the level out again next time.
-    pub(super) fn record(&mut self, id: NodeId, version: u16) {
-        self.reported.insert(id, version);
+    pub(super) fn record(&mut self, id: NodeId, version: u16, asked_at: u64) {
+        self.heard(id, version, asked_at);
         self.checked = None;
+    }
+
+    /// `id` answered `version` to a probe sent at `asked_at`. An answer sent
+    /// before the member lost its log does not clear the mark.
+    fn heard(&mut self, id: NodeId, version: u16, asked_at: u64) {
+        self.reported.insert(id, version);
+        if self
+            .stale
+            .get(&id)
+            .is_some_and(|marked| *marked <= asked_at)
+        {
+            self.stale.remove(&id);
+        }
+    }
+
+    /// For [`Self::heard`]: taken before a probe is sent.
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// `id` lost its log: its level is unknown until it answers again.
+    pub(super) fn mark_stale(&mut self, id: NodeId) {
+        self.epoch += 1;
+        self.stale.insert(id, self.epoch);
+    }
+
+    pub(super) fn is_stale(&self, id: NodeId) -> bool {
+        self.stale.contains_key(&id)
     }
 }
 
@@ -137,6 +174,23 @@ impl RaftHandle {
     }
 
     async fn refresh_versions(&self) -> Level {
+        let members = self.probe_members().await;
+        let mut versions = self.versions.lock().expect("versions lock");
+        let level = Level {
+            answered: members
+                .iter()
+                .filter_map(|id| versions.reported.get(id).copied())
+                .fold(self.app.version(), u16::min),
+            unknown: members.iter().any(|id| !versions.reported.contains_key(id)),
+        };
+        versions.checked = Some((Instant::now(), level));
+        versions.refreshing = false;
+        level
+    }
+
+    /// Ask every other member of the current membership its level, and
+    /// remember the answers. Returns who was asked.
+    async fn probe_members(&self) -> Vec<NodeId> {
         let members: Vec<(NodeId, String)> = {
             let metrics = self.raft.metrics();
             let metrics = metrics.borrow();
@@ -148,6 +202,7 @@ impl RaftHandle {
                 .map(|(id, node)| (*id, node.addr.clone()))
                 .collect()
         };
+        let asked_at = self.versions.lock().expect("versions lock").epoch();
         let mut probes = tokio::task::JoinSet::new();
         for (id, addr) in &members {
             let Some(base) = self.peer_url(Some(*id), Some(addr)) else {
@@ -163,30 +218,69 @@ impl RaftHandle {
             }
         }
         let mut versions = self.versions.lock().expect("versions lock");
-        versions.reported.extend(answers);
-        let level = Level {
-            answered: members
-                .iter()
-                .filter_map(|(id, _)| versions.reported.get(id).copied())
-                .fold(self.app.version(), u16::min),
-            unknown: members
-                .iter()
-                .any(|(id, _)| !versions.reported.contains_key(id)),
-        };
-        versions.checked = Some((Instant::now(), level));
-        versions.refreshing = false;
-        level
+        for (id, version) in answers {
+            versions.heard(id, version, asked_at);
+        }
+        members.into_iter().map(|(id, _)| id).collect()
     }
 
     /// Ask one member at `base` for the level it can apply, and remember the
     /// answer. `None` when it does not answer.
     pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
+        let asked_at = self.versions.lock().expect("versions lock").epoch();
         let version = probe(&self.forward, base, &self.asker()).await?;
         self.versions
             .lock()
             .expect("versions lock")
-            .record(id, version);
+            .record(id, version, asked_at);
         Some(version)
+    }
+
+    /// While this member leads, keep every member's reported level fresh
+    /// for the replication hold: on taking the lead, every
+    /// [`REFRESH_EVERY`] ([`HELD_RETRY`] while a member is held), and at
+    /// once when a member lost its log. Returns when the node stops.
+    pub(super) async fn watch_versions(self) {
+        let mut metrics = self.raft.metrics();
+        let mut next: Option<Instant> = None;
+        loop {
+            if self.is_stopped() {
+                return;
+            }
+            let leading = metrics.borrow_and_update().current_leader == Some(self.id);
+            if !leading {
+                next = None;
+            } else if next.is_none_or(|at| at <= Instant::now()) {
+                self.probe_members().await;
+                // A held member is asked often, so it is fed again soon
+                // after it reports the floor.
+                let settled = self
+                    .versions
+                    .lock()
+                    .expect("versions lock")
+                    .stale
+                    .is_empty()
+                    && !self.hold.any_held();
+                let wait = if settled { REFRESH_EVERY } else { HELD_RETRY };
+                next = Some(Instant::now() + wait);
+            }
+            let sleep = tokio::time::sleep_until(
+                next.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600)),
+            );
+            tokio::select! {
+                changed = metrics.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                () = self.hold.wake.notified() => {
+                    if leading {
+                        next = Some(Instant::now());
+                    }
+                }
+                () = sleep => {}
+            }
+        }
     }
 
     fn asker(&self) -> Asker {
@@ -201,6 +295,7 @@ impl RaftHandle {
     pub(crate) fn forget_reported_versions(&self) {
         let mut versions = self.versions.lock().expect("versions lock");
         versions.reported.clear();
+        versions.stale.clear();
         versions.checked = None;
     }
 
@@ -212,10 +307,8 @@ impl RaftHandle {
         if from == self.id {
             return;
         }
-        self.versions
-            .lock()
-            .expect("versions lock")
-            .reported
-            .insert(from, version);
+        let mut versions = self.versions.lock().expect("versions lock");
+        let now = versions.epoch();
+        versions.heard(from, version, now);
     }
 }

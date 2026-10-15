@@ -172,8 +172,9 @@ pub trait AppStateMachine: Send + Sync + 'static {
 
     /// The lowest level a member must report to be added to the group: the
     /// level the applied state already depends on. A member below it would
-    /// refuse entries the others apply. 0 admits any member.
-    async fn join_floor(&self) -> u16 {
+    /// refuse entries the others apply. 0 admits any member. Read on every
+    /// replication send, so it must not wait on anything.
+    fn join_floor(&self) -> u16 {
         0
     }
 }

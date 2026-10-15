@@ -108,6 +108,9 @@ pub struct MetadataStateMachine {
     /// above [`RELEASED_LEVEL`]. Derived from the entries alone, so every
     /// replica holds the same mark, and carried in the snapshot.
     levels_used: std::sync::atomic::AtomicU16,
+    /// [`AppStateMachine::join_floor`], kept current on apply and restore so
+    /// the replication path reads it without touching the store.
+    floor: std::sync::atomic::AtomicU16,
     node_reset: std::sync::OnceLock<NodeReset>,
 }
 
@@ -121,6 +124,7 @@ impl MetadataStateMachine {
             store,
             applied: tokio::sync::RwLock::new(AppliedIds::default()),
             levels_used: std::sync::atomic::AtomicU16::new(0),
+            floor: std::sync::atomic::AtomicU16::new(0),
             node_reset: std::sync::OnceLock::new(),
         }
     }
@@ -150,6 +154,25 @@ impl MetadataStateMachine {
     /// needed, or 0. A member below it refuses something already in the log.
     pub(crate) fn levels_used(&self) -> u16 {
         self.levels_used.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Work the join floor out again from the whole state, after it was
+    /// replaced.
+    async fn recompute_floor(&self) {
+        let floor = self
+            .store
+            .enabled_fleet_features()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
+            .fold(self.levels_used(), u16::max);
+        self.floor.store(floor, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn raise_floor(&self, level: u16) {
+        self.floor
+            .fetch_max(level, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Apply one already-decoded command. Public for the determinism
@@ -237,11 +260,15 @@ impl MetadataStateMachine {
                     }
                 })
                 .map_err(Into::into),
-            MetaCommand::FinalizeFleetFeature { feature } => store
-                .finalize_fleet_feature(&feature)
-                .await
-                .map(|enabled| MetaResponse::FleetFeatures { enabled })
-                .map_err(Into::into),
+            MetaCommand::FinalizeFleetFeature { feature } => {
+                let level = MetaCommand::FinalizeFleetFeature {
+                    feature: feature.clone(),
+                }
+                .version();
+                let enabled = store.finalize_fleet_feature(&feature).await?;
+                self.raise_floor(level);
+                Ok(MetaResponse::FleetFeatures { enabled })
+            }
             MetaCommand::PatchNode { node_id, patch } => store
                 .patch_node(&node_id, patch)
                 .await
@@ -498,6 +525,7 @@ impl MetadataStateMachine {
                     ));
                 }
                 store.import_state(*state).await?;
+                self.recompute_floor().await;
                 self.node_reset(None);
                 Ok(MetaResponse::Unit)
             }
@@ -530,6 +558,7 @@ impl AppStateMachine for MetadataStateMachine {
                 if level > RELEASED_LEVEL {
                     self.levels_used
                         .fetch_max(level, std::sync::atomic::Ordering::SeqCst);
+                    self.raise_floor(level);
                 }
                 self.dispatch(command).await
             }
@@ -589,6 +618,7 @@ impl AppStateMachine for MetadataStateMachine {
         *self.applied.write().await = applied;
         self.levels_used
             .store(levels_used, std::sync::atomic::Ordering::SeqCst);
+        self.recompute_floor().await;
         self.node_reset(None);
     }
 
@@ -603,14 +633,8 @@ impl AppStateMachine for MetadataStateMachine {
     /// The higher of the levels the finalized fleet features needed and
     /// [`MetadataStateMachine::levels_used`]: a member below either refuses
     /// entries already in the log or the snapshot.
-    async fn join_floor(&self) -> u16 {
-        self.store
-            .enabled_fleet_features()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
-            .fold(self.levels_used(), u16::max)
+    fn join_floor(&self) -> u16 {
+        self.floor.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

@@ -4,39 +4,38 @@
 //! [`super::AppStateMachine::join_floor`], but a member already in the
 //! membership never asks again: one whose volume was wiped and that restarts
 //! on an older build under the same id would be fed the log and a snapshot it
-//! cannot apply, and part ways with the others. So the leader checks the
-//! member's reported level before each append or snapshot it sends, and while
-//! the member is below the floor the send fails as `Unreachable`. To openraft
-//! it is then a follower that is down: commits still need only a majority.
+//! cannot apply, and part ways with the others. So an append or snapshot to a
+//! member fails as `Unreachable` while there is evidence it is below the
+//! floor. To openraft it is then a follower that is down: commits still need
+//! only a majority.
 //!
-//! A level a member reported is trusted until it answers an append with a
-//! conflict, which is what a member that lost its log does; it is asked
-//! again before the next send. A held member is asked on every retry, so it
-//! is fed again within a backoff of reporting the floor.
+//! The evidence is the level the member last reported, which the leader's
+//! version watch ([`super::version`]) keeps fresh in the background; a send
+//! never waits on a probe. A member that has not answered is not held, since
+//! holding a healthy voter on a slow probe would cost the group its quorum.
+//! A member that answers an append with a conflict below an entry it already
+//! acknowledged has lost its log, possibly to a restart on another build, so
+//! it alone is held until it reports its level again.
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use super::version::{Asker, Versions, probe};
+use super::version::Versions;
 use super::{AppStateMachine, NodeId};
 
 pub(super) struct Hold {
-    id: NodeId,
     app: Arc<dyn AppStateMachine>,
     versions: Arc<Mutex<Versions>>,
-    state: Mutex<Members>,
-}
-
-#[derive(Default)]
-struct Members {
     /// Held now; logged and counted once per hold.
-    held: BTreeSet<NodeId>,
-    /// Answered a conflict since it last reported a level.
-    recheck: BTreeSet<NodeId>,
+    held: Mutex<BTreeSet<NodeId>>,
+    /// Asks the leader's version watch to probe the members that lost
+    /// their log.
+    pub(super) wake: tokio::sync::Notify,
 }
 
 /// Why a member is not being fed.
 #[derive(Debug)]
 pub(super) struct BelowFloor {
+    /// `None` when the member lost its log and has not reported since.
     reported: Option<u16>,
     floor: u16,
 }
@@ -51,7 +50,8 @@ impl std::fmt::Display for BelowFloor {
             ),
             None => write!(
                 f,
-                "held: member has not reported a metadata version, and the group is at {}",
+                "held: member lost its log and has not reported a metadata version since; the \
+                 group is at {}",
                 self.floor
             ),
         }
@@ -61,102 +61,83 @@ impl std::fmt::Display for BelowFloor {
 impl std::error::Error for BelowFloor {}
 
 impl Hold {
-    pub(super) fn new(
-        id: NodeId,
-        app: Arc<dyn AppStateMachine>,
-        versions: Arc<Mutex<Versions>>,
-    ) -> Self {
+    pub(super) fn new(app: Arc<dyn AppStateMachine>, versions: Arc<Mutex<Versions>>) -> Self {
         Self {
-            id,
             app,
             versions,
-            state: Mutex::default(),
+            held: Mutex::default(),
+            wake: tokio::sync::Notify::new(),
         }
     }
 
-    /// `Err` while member `target` at `base` must not be sent entries or a
-    /// snapshot.
-    pub(super) async fn check(
-        &self,
-        target: NodeId,
-        client: &reqwest::Client,
-        base: &str,
-    ) -> Result<(), BelowFloor> {
-        let floor = self.app.join_floor().await;
+    /// `Err` while member `target` must not be sent entries or a snapshot.
+    /// Reads only cached state.
+    pub(super) fn check(&self, target: NodeId) -> Result<(), BelowFloor> {
+        let floor = self.app.join_floor();
         if floor == 0 {
             self.release(target);
             return Ok(());
         }
-        let known = self
-            .versions
-            .lock()
-            .expect("versions lock")
-            .reported(target);
-        let recheck = self
-            .state
-            .lock()
-            .expect("hold lock")
-            .recheck
-            .contains(&target);
-        let reported = match known {
-            Some(version) if version >= floor && !recheck => version,
-            _ => {
-                let asker = Asker {
-                    from: Some(self.id),
-                    version: Some(self.app.version()),
-                };
-                match probe(client, base, &asker).await {
-                    Some(version) => {
-                        self.versions
-                            .lock()
-                            .expect("versions lock")
-                            .record(target, version);
-                        self.state
-                            .lock()
-                            .expect("hold lock")
-                            .recheck
-                            .remove(&target);
-                        version
-                    }
-                    // After a conflict the old answer may no longer hold.
-                    None => match known.filter(|_| !recheck) {
-                        Some(version) => version,
-                        None => return Err(self.hold(target, None, floor)),
-                    },
-                }
-            }
+        let (reported, lost_log) = {
+            let versions = self.versions.lock().expect("versions lock");
+            (versions.reported(target), versions.is_stale(target))
         };
-        if reported < floor {
-            return Err(self.hold(target, Some(reported), floor));
+        if lost_log {
+            return Err(self.hold(target, None, floor));
         }
-        self.release(target);
-        Ok(())
+        match reported {
+            Some(version) if version < floor => Err(self.hold(target, Some(version), floor)),
+            _ => {
+                self.release(target);
+                Ok(())
+            }
+        }
     }
 
-    /// Member `target` answered an append with a conflict: ask its level
-    /// again before feeding it.
-    pub(super) fn conflicted(&self, target: NodeId) {
-        self.state.lock().expect("hold lock").recheck.insert(target);
+    /// Member `target` answered a conflict below an entry it had
+    /// acknowledged: hold it until it reports its level again, and have
+    /// that asked now.
+    pub(super) fn lost_log(&self, target: NodeId) {
+        if self.app.join_floor() == 0 {
+            return;
+        }
+        self.versions
+            .lock()
+            .expect("versions lock")
+            .mark_stale(target);
+        self.wake.notify_one();
+    }
+
+    pub(super) fn any_held(&self) -> bool {
+        !self.held.lock().expect("hold lock").is_empty()
     }
 
     fn hold(&self, target: NodeId, reported: Option<u16>, floor: u16) -> BelowFloor {
-        if self.state.lock().expect("hold lock").held.insert(target) {
+        if self.held.lock().expect("hold lock").insert(target) {
             metrics::gauge!("felix_meta_raft_member_below_floor", "member" => target.to_string())
                 .set(1.0);
-            tracing::warn!(
-                member = target,
-                reported = ?reported,
-                floor,
-                "not replicating to a raft member below the group's metadata version; it would \
-                 refuse entries the others apply. Upgrade it to a release at that version or \
-                 later"
-            );
+            match reported {
+                Some(version) => tracing::warn!(
+                    member = target,
+                    reported = version,
+                    floor,
+                    "not replicating to a raft member below the group's metadata version; it \
+                     would refuse entries the others apply. Upgrade it to a release at that \
+                     version or later"
+                ),
+                None => tracing::warn!(
+                    member = target,
+                    floor,
+                    "raft member lost its log; not replicating to it until it reports a \
+                     metadata version at the group's"
+                ),
+            }
         }
         BelowFloor { reported, floor }
     }
 
     fn release(&self, target: NodeId) {
-        if self.state.lock().expect("hold lock").held.remove(&target) {
+        if self.held.lock().expect("hold lock").remove(&target) {
             metrics::gauge!("felix_meta_raft_member_below_floor", "member" => target.to_string())
                 .set(0.0);
             tracing::info!(

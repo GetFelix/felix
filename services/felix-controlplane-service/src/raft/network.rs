@@ -72,6 +72,7 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             base: format!("{}://{addr}", self.scheme),
             heartbeat: self.heartbeat,
             hold: Arc::clone(&self.hold),
+            acknowledged: None,
         }
     }
 }
@@ -82,6 +83,10 @@ pub(super) struct HttpNetwork {
     base: String,
     heartbeat: Duration,
     hold: Arc<Hold>,
+    /// The highest log index this member acknowledged to this client. A
+    /// client lives for one leader's term, whose log only grows, so a
+    /// conflict at or below it means the member lost its log.
+    acknowledged: Option<u64>,
 }
 
 /// The longest wait between retries to an unreachable member, so a member
@@ -122,15 +127,21 @@ const BODY_EXCERPT: usize = 200;
 impl HttpNetwork {
     #[cfg(test)]
     pub(super) fn for_tests(addr: &str, hold: Arc<Hold>) -> Self {
+        Self::for_tests_as(2, addr, hold)
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_tests_as(target: NodeId, addr: &str, hold: Arc<Hold>) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .expect("client"),
-            target: 2,
+            target,
             base: format!("http://{addr}"),
             heartbeat: Duration::from_millis(150),
             hold,
+            acknowledged: None,
         }
     }
 
@@ -187,15 +198,16 @@ impl HttpNetwork {
         result.map_err(|err| RPCError::RemoteError(RemoteError::new(self.target, err)))
     }
 
-    /// Entries and snapshots go only to a member at the group's floor
-    /// ([`super::hold`]); otherwise it reads as unreachable.
-    async fn hold_back<E: std::error::Error>(
-        &self,
-    ) -> Result<(), RPCError<u64, openraft::BasicNode, E>> {
+    /// Entries and snapshots go only to a member not known to be below the
+    /// group's floor ([`super::hold`]); otherwise it reads as unreachable.
+    fn hold_back(&self) -> Result<(), Unreachable> {
         self.hold
-            .check(self.target, &self.client, &self.base)
-            .await
-            .map_err(|held| RPCError::Unreachable(Unreachable::new(&held)))
+            .check(self.target)
+            .map_err(|held| Unreachable::new(&held))
+    }
+
+    fn acknowledged(&mut self, index: Option<u64>) {
+        self.acknowledged = self.acknowledged.max(index);
     }
 }
 
@@ -206,10 +218,24 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>
     {
-        self.hold_back().await?;
+        self.hold_back().map_err(RPCError::Unreachable)?;
         let response = self.send("append-entries", &rpc).await;
-        if let Ok(AppendEntriesResponse::Conflict) = &response {
-            self.hold.conflicted(self.target);
+        let prev = rpc.prev_log_id.map(|log_id| log_id.index);
+        match &response {
+            Ok(AppendEntriesResponse::Success) => {
+                let last = rpc.entries.last().map(|entry| entry.log_id.index);
+                self.acknowledged(last.or(prev));
+            }
+            Ok(AppendEntriesResponse::PartialSuccess(matched)) => {
+                self.acknowledged(matched.map(|log_id| log_id.index));
+            }
+            // A lagging member conflicts above what it acknowledged; only
+            // one that lost its log conflicts at or below it.
+            Ok(AppendEntriesResponse::Conflict) if prev.is_some() && prev <= self.acknowledged => {
+                self.acknowledged = None;
+                self.hold.lost_log(self.target);
+            }
+            _ => {}
         }
         response
     }
@@ -222,8 +248,12 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
         InstallSnapshotResponse<u64>,
         RPCError<u64, openraft::BasicNode, RaftError<u64, InstallSnapshotError>>,
     > {
-        self.hold_back().await?;
-        self.send("install-snapshot", &rpc).await
+        self.hold_back().map_err(RPCError::Unreachable)?;
+        let response = self.send("install-snapshot", &rpc).await;
+        if rpc.done && response.is_ok() {
+            self.acknowledged(rpc.meta.last_log_id.map(|log_id| log_id.index));
+        }
+        response
     }
 
     async fn vote(

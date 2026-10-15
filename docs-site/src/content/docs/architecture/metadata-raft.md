@@ -162,8 +162,11 @@ from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
 counts committed commands this build could not apply, which in a mixed-version
 group means this member has fallen behind the leader; the upgrade runbook
 watches it. `felix_meta_raft_member_below_floor{member}`, on the leader, is 1
-while it holds a member back because that member runs a build below the
-metadata version the group already uses; upgrade that member.
+while it holds a member back because that member reported a build below the
+metadata version the group already uses, or lost its log and has not
+reported since; upgrade that member. The leader holds only on that
+evidence, read from levels it refreshes in the background, so a member it
+cannot reach or has not asked yet is fed as usual.
 
 ### Leader deploys pause writes for one election (pre-0.10 openraft)
 

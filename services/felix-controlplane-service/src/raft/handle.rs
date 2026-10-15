@@ -38,6 +38,8 @@ pub struct RaftHandle {
     pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
     /// What each member last reported it can apply ([`super::version`]).
     pub(super) versions: Arc<std::sync::Mutex<super::version::Versions>>,
+    /// Holds replication to members below the join floor ([`super::hold`]).
+    pub(super) hold: Arc<super::hold::Hold>,
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
@@ -86,7 +88,6 @@ impl RaftHandle {
 
         let versions = Arc::default();
         let hold = Arc::new(super::hold::Hold::new(
-            settings.node_id,
             Arc::clone(&app),
             Arc::clone(&versions),
         ));
@@ -97,7 +98,7 @@ impl RaftHandle {
                 &settings.security,
                 settings.peer_addrs.clone(),
                 settings.heartbeat_interval,
-                hold,
+                Arc::clone(&hold),
             )?,
             log_store,
             state_machine,
@@ -133,7 +134,7 @@ impl RaftHandle {
             }
         }
 
-        Ok(Self {
+        let handle = Self {
             raft,
             id: settings.node_id,
             write_timeout: settings.write_timeout,
@@ -148,8 +149,11 @@ impl RaftHandle {
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
+            hold,
             stopped: Arc::default(),
-        })
+        };
+        tokio::spawn(handle.clone().watch_versions());
+        Ok(handle)
     }
 
     pub fn status(&self) -> RaftStatus {

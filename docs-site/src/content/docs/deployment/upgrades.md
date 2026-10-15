@@ -384,10 +384,14 @@ build may join, as it would part-way through a rolling upgrade.
 A member already in the group that comes back on an older build, for
 example after its volume was lost, is held rather than fed: the leader
 sends it no entries and no snapshot, logs a warning once, and sets
-`felix_meta_raft_member_below_floor{member}` to 1. The group keeps
-committing with the other members, but a held voter is one fewer failure
-the group can survive. Upgrade that member; replication to it resumes
-within about a second of it starting on a build at the group's version.
+`felix_meta_raft_member_below_floor{member}` to 1. The leader holds a
+member only on evidence: the member reported an older version, or it lost
+the log it had acknowledged and has not reported a version since. A member
+that is slow to answer or cannot be asked is not held, so a leader change
+or a network blip never holds a healthy member. The group keeps committing
+with the other members, but a held voter is one fewer failure the group can
+survive. Upgrade that member; replication to it resumes within about a
+second of it starting on a build at the group's version.
 
 ### Storage format: the one that does not roll back
 
