@@ -90,7 +90,7 @@ pub(crate) async fn list_namespaces(
         (status = 201, description = "Namespace created", body = Namespace),
         (status = 404, description = "Tenant not found", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Namespace already exists", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. Other store writes, such as rbac and placement, can answer `busy` too. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_namespace(
@@ -128,7 +128,7 @@ pub(crate) async fn create_namespace(
     responses(
         (status = 204, description = "Namespace deleted"),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. Other store writes, such as rbac and placement, can answer `busy` too. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn delete_namespace(

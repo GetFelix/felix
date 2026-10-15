@@ -78,7 +78,7 @@ pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
         return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
-            "no raft leader or quorum committed the write in time; retry",
+            "no raft leader or quorum committed the write in time; it may still have committed, so read before retrying",
         );
     }
     if let StoreError::Unexpected(inner) = err

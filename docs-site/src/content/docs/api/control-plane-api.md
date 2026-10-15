@@ -515,7 +515,7 @@ does: a policy granting the cluster actions to a role, and an exchange.
 A create, update or delete of a tenant, namespace, stream or cache can answer
 `503`. Code `busy` means other writes to the same feed held it for more than
 5 s, for example a large tenant delete, and nothing was written, so retry it.
-Other store writes, such as rbac and placement, can answer `busy` too. Code
+Code
 `unavailable` is Raft: no quorum committed the write in time and it may still
 land, so a retried create can answer `409` and a retried delete `404`.
 `felixctl` retries only `busy`, a few times before failing.
