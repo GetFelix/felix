@@ -64,6 +64,12 @@ impl PeerCapabilities {
     /// furthest ahead once a majority has taken both fences.
     pub const GROUP_FENCE: Self = Self(1 << 8);
     // `1 << 9` is reserved for `ELECTION` (#1009).
+    /// Answers a `HelloCapable` offering this bit with its storage identity,
+    /// which a restart keeps and a wiped data directory changes
+    /// ([`HelloOk::identity`]).
+    ///
+    /// [`HelloOk::identity`]: super::HelloOk::identity
+    pub const STORAGE_IDENTITY: Self = Self(1 << 10);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

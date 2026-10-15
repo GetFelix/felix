@@ -9,6 +9,7 @@ mod cursors;
 mod drain;
 mod groups;
 mod halts;
+mod identity;
 mod learner;
 mod quorum;
 mod reports;

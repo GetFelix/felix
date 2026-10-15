@@ -109,8 +109,30 @@ never have dialled the one that shipped to it.
 | `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
 | `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
 | `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
+| `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 
 <!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
+
+#### Storage identity
+
+Every broker has a storage identity: 16 random bytes in `<data dir>/storage-id`,
+which a restart keeps and a wiped or replaced data directory changes. A leader
+uses it to tell a follower that restarted from one that lost its disk (see
+"Storage identities" in `docs/replication-design.md`).
+
+It travels on `HelloCapableOk`, as 16 bytes after the capability bits, and only
+when those bits include `STORAGE_IDENTITY`:
+
+```text
+u64 correlation_id | str node_id | u64 bits | [16 bytes identity, if bits has 1 << 10]
+```
+
+A responder sets the bit and appends the bytes only when the caller offered the
+bit, so a caller that predates it gets the same bytes it always did. A decoder
+reads the 16 bytes only when the bit is set, and refuses a body with the bit set
+and the bytes missing, or with bytes and no bit. Every current broker offers the
+bit when it dials; a peer that gives no identity is read as having none, and the
+leader treats it as it did before identities existed.
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,

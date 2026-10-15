@@ -343,6 +343,7 @@ async fn an_unexpected_answer_is_refused() {
         correlation_id: 0,
         node_id: "broker-b".to_string(),
         capabilities: None,
+        identity: None,
     }))]);
 
     let err = forward(&owner).await.expect_err("should be refused");

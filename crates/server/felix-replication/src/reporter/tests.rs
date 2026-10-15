@@ -71,6 +71,7 @@ fn report(stream: &str) -> ShardReport {
         counter_offsets: Vec::new(),
         incarnation: 0,
         by_round: false,
+        storage_ids: Vec::new(),
     }
 }
 

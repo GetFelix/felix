@@ -3,6 +3,8 @@
 
 use std::net::SocketAddr;
 
+use felix_storage::StorageId;
+
 /// How far a follower may be behind and still be fit to lead.
 ///
 /// Zero: a follower is caught up when it holds every record the leader does.
@@ -46,6 +48,10 @@ pub struct FollowerCursor {
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
+    /// The storage identity the follower gave when this cursor's positions
+    /// were learned; `None` from one that gives none. A different one is a
+    /// different copy of the log, so the cursor starts over.
+    pub storage_id: Option<StorageId>,
 }
 
 impl FollowerCursor {
@@ -61,6 +67,7 @@ impl FollowerCursor {
             shipped_bytes: 0,
             stalled: true,
             legacy_frames: false,
+            storage_id: None,
         }
     }
 }

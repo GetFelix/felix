@@ -34,6 +34,11 @@ impl StorageId {
         Self(bytes)
     }
 
+    /// The 16 bytes this id is.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        self.0
+    }
+
     /// 32 lowercase hex digits.
     pub fn to_hex(&self) -> String {
         use std::fmt::Write;

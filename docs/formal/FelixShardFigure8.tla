@@ -20,7 +20,7 @@ SeededInit ==
     /\ gen = 2
     /\ leader = b
     /\ cpExpiry = 0
-    /\ report = [holders |-> {a, c}, len |-> 0, drained |-> FALSE, gen |-> 2]
+    /\ report = [NoReport EXCEPT !.holders = {a, c}, !.gen = 2]
     /\ inflight = <<>>
     /\ bgen = [m \in Brokers |-> 0]
     /\ bexpiry = [m \in Brokers |-> 0]
@@ -63,6 +63,7 @@ SeededInit ==
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
+    /\ IdInit
 \* The same history one leadership further, with no start records in it: the
 \* fleet finalized `generation_start` only after c's promotion. c was
 \* promoted at 3, fenced a and took x, acknowledged nothing, and is now
@@ -76,7 +77,7 @@ SeededCutOverInit ==
     /\ gen = 3
     /\ leader = c
     /\ cpExpiry = L
-    /\ report = [holders |-> {a}, len |-> 1, drained |-> TRUE, gen |-> 3]
+    /\ report = [NoReport EXCEPT !.holders = {a}, !.len = 1, !.drained = TRUE, !.gen = 3]
     /\ inflight = <<>>
     /\ bgen = (a :> 0 @@ b :> 0 @@ c :> 3)
     /\ bexpiry = (a :> 0 @@ b :> 0 @@ c :> Eps)
@@ -117,6 +118,7 @@ SeededCutOverInit ==
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
+    /\ IdInit
 \* The code moves no mark while it fences: nothing ships until it opens.
 NoAckWhileFencing == \A m \in Brokers : fencing[m] => hwm'[m] = hwm[m]
 SeededSpec == SeededInit /\ [][Next /\ NoAckWhileFencing]_vars

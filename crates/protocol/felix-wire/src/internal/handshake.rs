@@ -31,4 +31,8 @@ pub struct HelloOk {
     /// What the responder can do, answered only to a `HelloCapable`: a
     /// plain `Hello` gets the original `HelloOk`.
     pub capabilities: Option<PeerCapabilities>,
+    /// The responder's storage identity: travels as 16 bytes after the
+    /// capability bits, present exactly when those bits include
+    /// [`PeerCapabilities::STORAGE_IDENTITY`].
+    pub identity: Option<[u8; 16]>,
 }

@@ -226,6 +226,17 @@
 (* finds the old leader still serving on its lease beside the new one      *)
 (* (AtMostOneServing, FelixShardSuspicionLease.cfg), which is why          *)
 (* placement acts on it only once the fleet acknowledges by its followers. *)
+(*                                                                         *)
+(* `Wipes` lets a follower lose its disk and come back empty, up to       *)
+(* `Wipes` times. Counted by its answers (`ReportFromAnswers`), it stays  *)
+(* in the leader's reports until it answers again, which on an idle shard *)
+(* is never. With `StorageIds` each data directory has an identity a      *)
+(* wipe changes (`sid`); the leader learns it in the peer handshake,       *)
+(* starts the follower's count over when it changes (`Probe`), and its    *)
+(* report says which identity each follower was counted under. Placement  *)
+(* promotes a follower only under the identity it has now. Without it TLC *)
+(* finds the wiped follower promoted without a record the old leader      *)
+(* acknowledged (AckedSurvive, FelixShardWipeNoIds.cfg).                  *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -281,7 +292,9 @@ CONSTANTS
     Adopt,          \* up to which generation replicas elect and the control plane adopts them
     AdoptMatch,     \* whether the control plane adopts a leader only on the set it records
     Swaps,          \* how many cut-overs may change several members of the set at once
-    PreVote         \* whether a candidate needs a majority not hearing a leader, and a replica that hears one refuses it
+    PreVote,        \* whether a candidate needs a majority not hearing a leader, and a replica that hears one refuses it
+    Wipes,          \* how many times a follower may lose its disk; bounds the state space
+    StorageIds      \* whether the leader learns each follower's storage identity and placement checks it
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -327,6 +340,11 @@ ASSUME PreVote \in BOOLEAN /\ (PreVote => Elections > 0)
 ASSUME Swaps \in Nat /\ (Swaps > 0 => SetCheck /\ Spares /= {} /\ FenceEveryChange /\ MaxMoves = 0 /\ StartRecord)
 \* Acknowledgements are recorded by generation where opens are tracked.
 ASSUME (Elections > 0 \/ Suspicions > 0) => Quorum /\ ~Resends
+\* A wipe is checked against the report counted from answers, with no
+\* promises to lose and no other set changes.
+ASSUME Wipes \in Nat /\ StorageIds \in BOOLEAN
+ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /\ ~Counters /\ ~Handoff /\ ~Cancel
+                   /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
 
 VARIABLES
     now,        \* real time
@@ -377,7 +395,10 @@ VARIABLES
     ackGen,     \* history, where opens are tracked: each <<write, generation>> it was acknowledged at
     installed,  \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened
     cpNext,     \* under `Swaps`, the set a cut-over is moving to while the old one is still the control plane's: {} when none
-    cpNextGen   \* the generation that set was written at
+    cpNextGen,  \* the generation that set was written at
+    sid,        \* each broker's storage identity, which a wipe changes
+    seen,       \* per leader, the identity it last learned for each follower
+    wipes       \* how many wipes have happened
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -387,11 +408,14 @@ counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
+\* Storage identities: only a wipe and a leader learning one change them.
+idVars == << sid, seen, wipes >>
+
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
-           counterVars, ballot, opened, setVars, ackGen >>
+           counterVars, ballot, opened, setVars, ackGen, idVars >>
 
 \* Placement's state, which only the control plane's decisions change, but
 \* `mine`, which a follower also learns under `SetCheck`.
@@ -425,7 +449,7 @@ Promise(f, b, g) ==
 TracksOpens == Elections > 0 \/ Suspicions > 0
 Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
-NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
+NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0, sids |-> [m \in Brokers |-> 0]]
 
 \* The replica set the stream asked for: everyone but a destination still
 \* copying, a replacement still joining, and the brokers outside it. A quorum
@@ -555,6 +579,11 @@ CounterInit ==
 
 -----------------------------------------------------------------------------
 
+IdInit ==
+    /\ sid = [m \in Brokers |-> 0]
+    /\ seen = [m \in Brokers |-> [n \in Brokers |-> 0]]
+    /\ wipes = 0
+
 Init ==
     /\ now = 0
     /\ clock = [b \in Brokers |-> 0]
@@ -604,6 +633,7 @@ Init ==
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
+    /\ IdInit
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -990,7 +1020,8 @@ Report(b) ==
                        len     |-> IF ReportBound = "unpaired" THEN Len(log[b])
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
-                       gen     |-> bgen[b]] >>
+                       gen     |-> bgen[b],
+                       sids    |-> seen[b]] >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
@@ -1022,7 +1053,11 @@ LoseReport ==
 
 \* A candidate under the design as written: reported caught up by the last
 \* report the planner read, and not halted.
-ByLeaderReport(r, f) == f \in r.holders /\ f \notin halted
+\* With `StorageIds`, only under the identity the follower has now: a
+\* follower counted under another was counted holding a log it has lost.
+ByLeaderReport(r, f) ==
+    /\ f \in r.holders /\ f \notin halted
+    /\ StorageIds => r.sids[f] = sid[f]
 
 \* A candidate under the log-order rule: among the live replicas, one whose
 \* (last generation, length) is greatest.
@@ -1737,10 +1772,42 @@ Decide(v, f, views) ==
        /\ UNCHANGED counterVars
 
 -----------------------------------------------------------------------------
+(* Wipes. A follower loses its data directory and comes back empty, under *)
+(* a new storage identity. Its high-water mark goes with the log.         *)
+
+Wipe(f) ==
+    /\ wipes < Wipes
+    /\ bgen[f] = 0
+    /\ log' = [log EXCEPT ![f] = <<>>]
+    /\ hwm' = [hwm EXCEPT ![f] = 0]
+    /\ sid' = [sid EXCEPT ![f] = @ + 1]
+    /\ wipes' = wipes + 1
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen >>
+
+\* The leader learns `f`'s identity from the handshake, and a new one
+\* starts `f`'s count over: `follow_storage` in
+\* crates/server/felix-replication/src/driver/shard.rs, at the start of each
+\* exchange, so an idle shard learns it too.
+Probe(b, f) ==
+    /\ StorageIds
+    /\ bgen[b] > 0 /\ f /= b
+    /\ seen[b][f] /= sid[f]
+    /\ seen' = [seen EXCEPT ![b][f] = sid[f]]
+    /\ confirmed' = [confirmed EXCEPT ![b][f] = 0]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
+    /\ UNCHANGED << sid, wipes >>
+
+-----------------------------------------------------------------------------
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-quietVars == << counterVars, heard >>
+\* Identities change only in a wipe and a probe.
+quietVars == << counterVars, heard, idVars >>
+loudVars == << heard, idVars >>
 
 \* Every action is its own disjunct, with what it leaves alone conjoined
 \* inside it. TLC splits a next-state relation only at disjunctions and
@@ -1768,18 +1835,20 @@ Next ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
-            \/ ShipCounter(b, f) /\ UNCHANGED heard
-            \/ AnswerCounterFence(b, f) /\ UNCHANGED heard
-        \/ OpenForWrites(b) /\ UNCHANGED heard
-        \/ Decide(Now, b, cpView) /\ UNCHANGED heard
+            \/ ShipCounter(b, f) /\ UNCHANGED loudVars
+            \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
+            \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
+        \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
+        \/ OpenForWrites(b) /\ UNCHANGED loudVars
+        \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-           /\ UNCHANGED heard
-        \/ CommitCounter(b) /\ UNCHANGED heard
-        \/ AckCounters(b) /\ UNCHANGED heard
+           /\ UNCHANGED loudVars
+        \/ CommitCounter(b) /\ UNCHANGED loudVars
+        \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
     \/ CpFlip /\ UNCHANGED quietVars
     \/ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
-    \/ DeliverReport /\ UNCHANGED counterVars
+    \/ DeliverReport /\ UNCHANGED << counterVars, idVars >>
 
 Spec == Init /\ [][Next]_vars
 
@@ -1924,7 +1993,8 @@ TypeOK ==
     /\ ver \in Nat
     /\ \A p \in Planners : Cardinality(cpView[p]) <= 1
     /\ staged \subseteq Brokers /\ Cardinality(staged) <= 1
-    /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat]]
+    /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat,
+                               sids : [Brokers -> Nat]]]
     /\ promised \in [Brokers -> Nat]
     /\ fencing \in [Brokers -> BOOLEAN]
     /\ answered \in [Brokers -> SUBSET Brokers]
@@ -1943,5 +2013,7 @@ TypeOK ==
     /\ oldSet \in [Brokers -> SUBSET Brokers]
     /\ cpNext \subseteq Brokers /\ cpNextGen \in Nat
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
+    /\ sid \in [Brokers -> Nat] /\ seen \in [Brokers -> [Brokers -> Nat]]
+    /\ wipes \in 0..Wipes
 
 =============================================================================

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use felix_storage::StorageId;
 use felix_transport::QuicConnection;
 use felix_wire::internal::{ErrorCode, Hello, InternalMessage, PeerCapabilities};
 use parking_lot::Mutex;
@@ -32,6 +33,9 @@ pub(super) struct PeerConnection {
     /// What the peer said it can do in the handshake. `NONE` until then, and
     /// for a peer that predates the bits.
     pub(super) capabilities: Mutex<PeerCapabilities>,
+    /// The peer's storage identity from the handshake, `None` from a peer
+    /// that does not send one.
+    pub(super) identity: Mutex<Option<StorageId>>,
 }
 
 /// Waiters for responses that have not arrived.
@@ -127,6 +131,7 @@ impl PeerConnection {
             last_used: Mutex::new(Instant::now()),
             tasks: Mutex::new(tasks),
             capabilities: Mutex::new(PeerCapabilities::NONE),
+            identity: Mutex::new(None),
         });
 
         // One watcher fails every waiter the moment the connection drops, which
@@ -175,6 +180,7 @@ impl PeerConnection {
         match response {
             InternalMessage::HelloOk(ok) if ok.node_id == self.node_id => {
                 *self.capabilities.lock() = ok.capabilities.unwrap_or(PeerCapabilities::NONE);
+                *self.identity.lock() = ok.identity.map(StorageId::from_bytes);
                 Ok(())
             }
             InternalMessage::HelloOk(ok) => {
@@ -213,6 +219,11 @@ impl PeerConnection {
     /// What the peer said it can do.
     pub(super) fn capabilities(&self) -> PeerCapabilities {
         *self.capabilities.lock()
+    }
+
+    /// The peer's storage identity, if it gave one.
+    pub(super) fn identity(&self) -> Option<StorageId> {
+        *self.identity.lock()
     }
 
     /// Send one request and wait for its terminal response.

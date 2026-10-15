@@ -19,6 +19,7 @@ use felix_common::membership::{
     ShardKind as WireShardKind, ShardReplicaStatus,
 };
 use felix_router::ShardKey;
+use felix_storage::StorageId;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -135,6 +136,9 @@ pub struct ShardReport {
     /// This leader acknowledges the shard by its followers and confirms its
     /// reads by a round, so nothing it serves rests on its lease.
     pub by_round: bool,
+    /// The storage identity each follower gave, for every follower that gave
+    /// one. The positions above describe that copy of the log and no other.
+    pub storage_ids: Vec<(String, StorageId)>,
 }
 
 impl ShardReport {
@@ -184,6 +188,10 @@ pub(super) fn shard_report(
         counter_offsets: Vec::new(),
         incarnation: 0,
         by_round: false,
+        storage_ids: followers
+            .iter()
+            .filter_map(|follower| Some((follower.node_id.clone(), follower.storage_id?)))
+            .collect(),
     }
 }
 
@@ -299,6 +307,11 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .collect(),
                 stream_incarnation: report.incarnation,
                 by_round: report.by_round,
+                replica_storage_ids: report
+                    .storage_ids
+                    .iter()
+                    .map(|(node_id, id)| (node_id.clone(), id.to_hex()))
+                    .collect(),
             })
             .collect(),
     };

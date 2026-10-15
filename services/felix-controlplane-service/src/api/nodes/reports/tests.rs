@@ -55,6 +55,7 @@ fn status(
         halted: Default::default(),
         stream_incarnation: 0,
         by_round: false,
+        replica_storage_ids: Default::default(),
     }
 }
 

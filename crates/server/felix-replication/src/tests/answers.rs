@@ -48,6 +48,7 @@ fn an_unexpected_answer_is_retried() {
             correlation_id: 0,
             node_id: "broker-b".to_string(),
             capabilities: None,
+            identity: None,
         })),
         Progress::Retry,
     );

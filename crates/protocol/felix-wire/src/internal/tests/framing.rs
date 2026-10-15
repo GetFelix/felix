@@ -123,6 +123,7 @@ fn every_body_begins_with_its_correlation_id() {
             correlation_id: id,
             node_id: "broker-a".to_string(),
             capabilities: None,
+            identity: None,
         }),
         InternalMessage::Hello(Hello {
             correlation_id: id,
@@ -133,6 +134,7 @@ fn every_body_begins_with_its_correlation_id() {
             correlation_id: id,
             node_id: "broker-a".to_string(),
             capabilities: Some(PeerCapabilities::FENCE),
+            identity: None,
         }),
         InternalMessage::Fence(Fence {
             correlation_id: id,
