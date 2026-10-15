@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792046198048,
+  "lastUpdate": 1792074710257,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -37884,6 +37884,72 @@ window.BENCHMARK_DATA = {
             "range": "718.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 641.00\nmean: 945.00\nstdev: 718.33\ncv: 76.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9cfb9c86016ccba41ac598a0116f3cf079286e74",
+          "message": "fix(storage): give each stream incarnation its own logs and delete a removed stream's (#1208) (#1210)\n\n* fix(controlplane): stop catalog snapshots and change pages from skipping changes\n\nThree ways a broker following the catalog feeds could miss a change, closed\nfor tenants, namespaces, streams and caches on Postgres and in memory:\n\n- A snapshot read its rows and its next_seq separately. Postgres now reads\n  both in one REPEATABLE READ transaction; memory holds the rows' lock while\n  it reads the change log.\n- Postgres handed out change seqs from a BIGSERIAL in allocation order, so a\n  reader could pass a seq still committing. Writers now take the feed's\n  advisory lock first thing and hold it to commit, making seq order commit\n  order.\n- A full page of changes answered with the feed's tail as next_seq, which\n  skipped everything past the first page. A full page now answers with the\n  seq after its last change. The node and shard-assignment feeds had the same\n  page bug.\n\nThe broker's catalog sync follows each feed page by page within a pass.\n\nCloses #1224\n\n* fix(broker): never move a change-feed cursor backwards\n\nOn Raft each control-plane member answers from its own applied state, so a\nbroker reaching a lagging member could get a next_seq below its cursor and\nreplay changes it had already applied, or, in the shard watch, re-snapshot\nonto the member's older view. The catalog sync and the shard watch now ignore\nan answer from behind what they applied and ask again, and take it as a\nreset only after the feed has answered from behind for 60 s.\n\n* fix(controlplane): bound feed-lock waits, resnapshot a reset catalog feed\n\n- Writers to a Postgres catalog feed queue on an in-process gate before they\n  take a pooled connection, and give up with a retryable 503 after 5 s\n  (lock_timeout on the advisory lock, a deadline on the gate), so a long\n  cascade cannot starve reads of the pool.\n- The broker's catalog sync takes a new snapshot of a feed it judges reset\n  instead of adopting the new next_seq, which skipped the new history.\n- Docs: upgrade note on the commit-order guarantee during a control-plane\n  roll; OpenAPI comment and wrapping fixes.\n\n* fix(storage): give each stream incarnation its own logs (#1208)\n\n* fix(controlplane): bound a multi-feed write by one deadline; retry 503 in felixctl\n\n- lock_timeout is per lock wait in Postgres, so it is now set to what is\n  left of the deadline before each feed lock; a writer to several feeds gives\n  up by the deadline in total.\n- felixctl retries a 503 `unavailable` a few times with short backoff, and the\n  cluster harness retries a 503 when seeding metadata.\n- Document the new 503 on the catalog write endpoints (docs and OpenAPI), and\n  state exactly what a reset catalog feed leaves on a broker.\n\n* fix(storage): delete stream data only on the control plane's tombstone (#1208)\n\nIncarnations now increase per name and are decided inside the control\nplane's write; deletes after the finalize record tombstones served with the\nstream snapshot and named on the Deleted change. Brokers refuse a lower or\ndeleted incarnation and delete only on a tombstone or an operator's removal.\nRemoves catalog positions, the 60 s reset, kept markers and the inferred\ndelete of incarnation 0.\n\n* fix(controlplane): answer a busy Postgres feed as 503 busy; retry only busy\n\nA Raft 503 unavailable may have committed, so retrying it turned a\nsuccessful create into a 409 and a delete into a 404. A feed-lock timeout\nwrote nothing and now has its own code, busy, which felixctl and the\ncluster harness retry. unavailable is no longer retried.\n\n* docs(controlplane): say only feed writes answer busy; don't promise a blind retry on unavailable\n\n* fix(incarnation): stamp older instances' assignments, batch tombstone floors, answer stored incarnations\n\n- Postgres 0028: triggers give a shard assignment written without an\n  incarnation its stream's incarnation and first generation, and copy both\n  into its change, so an instance still on an older release after the\n  finalize cannot repeat a deleted stream's generations. Docs no longer claim\n  every instance must have run the migration.\n- A snapshot's tombstones for names the broker never held write only their\n  floor markers, together with one directory flush.\n- create_resources returns the streams as stored; /v1/resources answers\n  with the incarnation the store decided.\n- A tombstone for incarnation 0 under a later registered incarnation reads\n  the legacy per-group dead letters through a second cursor store instead\n  of skipping them.\n- The Postgres incarnation contract runs on its own database, so brokers\n  registered by other contract cases do not block its finalize.\n- docs/formal/README.md says how incarnations keep the one-log model true.\n- Changelog entry moved to changelog.d.\n\n* fix(incarnation): order by incarnation first, keep tombstone floors in one flushed file, propose the clock by level\n\n- The shard lifecycle compares an assignment's incarnation before its\n  generation, so a recreated stream whose first generation (the change seq)\n  a restore rewound below the deleted one's still opens.\n- Floors from snapshot tombstones go into .streams/.floors, replaced and\n  flushed once per snapshot, instead of unflushed per-name markers that a\n  power loss could lose.\n- A create proposes the clock whenever the store can carry it (on Raft, every\n  member at metadata level 10), not only once this instance saw the finalize.\n\n* fix(replication): key follower positions and quorum marks by incarnation (#1208)\n\nA recreate can start at the deleted incarnation's generation after a\ncontrol-plane restore. Cursors, marks, straggler put-backs and promotion\nfences now check the incarnation as well, a pass on a replaced log\npublishes no report or mark, and a stream delete takes its replica reports\nin the memory and Raft stores.\n\nCreates propose the clock once incarnations are finalized, and the Raft\nlevel gate takes a finalized group as level 10, so a restarted member with\na peer down no longer gives a name tombstone + 1.\n\n* fix(replication): carry the stream incarnation in replica reports (#1208)\n\nThe control plane refuses a report measured on another incarnation than\nthe assignment's, the alone-shard report floor and a follower's\nverified/mismatched records are kept per incarnation, and the Raft level\nfloor after the finalize applies only to members that never answered.\n\n* fix(controlplane): recheck the stream incarnation inside the report write\n\nThe API checked a report's incarnation against an assignment read before the\nstore write, so a delete and recreate landing in between could store the old\nlog's tail. The report now carries the incarnation and every backend rechecks\nit with the leader and generation. The replication driver also reads the\nincarnation before the tail.",
+          "timestamp": "2026-10-15T14:25:50Z",
+          "tree_id": "ffb38c5e9432cf90cadfa506cf9a239e4f623cc6",
+          "url": "https://github.com/GetFelix/felix/commit/9cfb9c86016ccba41ac598a0116f3cf079286e74"
+        },
+        "date": 1792074705560,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 100,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 100.20\nstdev: 0.84\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 133,
+            "range": "6.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 137.20\nstdev: 6.76\ncv: 4.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "5.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 171.60\nstdev: 5.55\ncv: 3.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 123,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 123.00\nstdev: 0.71\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 285,
+            "range": "10.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 284.20\nstdev: 10.43\ncv: 3.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 430,
+            "range": "106.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 430.00\nmean: 472.40\nstdev: 106.68\ncv: 22.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
