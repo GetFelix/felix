@@ -157,7 +157,8 @@ async fn promoted_away_from(cluster: &Cluster, gone: &str) -> String {
     }
 }
 
-/// Everything `node` replays from the start, retried while it opens.
+/// The records this test wrote that `node` replays from the start, retried
+/// while it opens.
 async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -166,7 +167,11 @@ async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
             while let Ok(Ok(Some(event))) =
                 tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
             {
-                payloads.push(String::from_utf8_lossy(&event.payload).into_owned());
+                // The harness writes its own probe record at startup.
+                let payload = String::from_utf8_lossy(&event.payload).into_owned();
+                if payload.starts_with("record-") {
+                    payloads.push(payload);
+                }
                 if payloads.len() == RECORDS {
                     return payloads;
                 }
