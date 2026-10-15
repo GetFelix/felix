@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792082832848,
+  "lastUpdate": 1792084586079,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38148,6 +38148,72 @@ window.BENCHMARK_DATA = {
             "range": "1133.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 501.00\nmean: 1225.60\nstdev: 1133.50\ncv: 92.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1de5ca207e7670bab80d5c8872761393bba8326",
+          "message": "fix(cluster): order shard ownership by incarnation, and drop assignments on cascades (#1209) (#1245)\n\n* fix(cluster): order shard ownership by incarnation, and drop assignments on cascades (#1209)\n\nA broker kept a deleted stream's assignment over a recreated stream's\nwhen the new one's generation was lower (after a control-plane restore\nrewinds the change seq). ShardOwnership now orders by\n(incarnation, generation), as ShardLifecycle already did.\n\nNamespace and tenant deletes on the in-memory and Raft stores left the\nstreams' and caches' shard assignments and replica reports behind, so a\nrecreated stream was assigned as an update of the deleted shard. They\nnow drop them, as a stream delete and Postgres's cascade do.\n\nSpec-Unaffected: broker ownership view and CP store cascades only; docs/formal/README already covers incarnations as fresh runs of the model.\n\n* fix(controlplane): gate delete shard cleanup on metadata level 10 under Raft (#1209)\n\nA namespace or tenant delete now takes its streams' and caches' shard\nassignments and replica reports, and a stream or cache delete its reports\n(added in #1210). Members from before level 10 apply the same Raft entries\nwithout either, so a delete in the middle of a roll left members holding\ndifferent assignments and reports for good.\n\nThe delete commands now carry the choice: take_shards on delete_tenant and\ndelete_namespace, take_reports on delete_stream and delete_cache, both at\nlevel 10 in fields.txt. The proposer sets them only once every member is at\nlevel 10, and an entry without them applies as an older member applies it.\nThe in-memory and Postgres stores keep cascading unconditionally.\n\n* fix(controlplane): refuse a raft member below a finalized metadata level (#1209)\n\nOnce a fleet feature is finalized, the leader asks a joining member its\nmetadata version before adding it as a learner and refuses one below the\nlevel that finalize needed, or one that reports none. Such a member would\nrefuse entries the others apply and diverge. Before any finalize an older\nbuild may still join, as during a rolling upgrade.\n\n* fix(controlplane): track used metadata levels and hold raft members below them (#1209)\n\nThe state machine keeps a mark of the highest level above 8 that any\napplied entry needed, derived from the entry alone and carried in the\nsnapshot only when non-zero, so a v0.6.0-preview.7 member still restores\nevery snapshot it can apply. The join floor is now the higher of that mark\nand the finalized features' levels, so an older member is refused after a\nflagged delete even with nothing finalized.\n\nThe leader also checks each member's reported level before sending it\nentries or a snapshot. A member below the floor, or one that has not\nreported while there is a floor, is held as unreachable; a conflict answer\nmakes it report again, which catches an older build restarted under its\nold id after a lost volume. The hold is logged once and shown as\nfelix_meta_raft_member_below_floor{member}.\n\n* fix(controlplane): hold a raft member only on evidence, never probing on the send path (#1209)\n\nThe send path read the reported level and probed /standing when it had\nnone, so after a leader change every heartbeat waited on a probe and a\nfailed one held a healthy voter. Routine match-search conflicts forced\nthe same probe.\n\nSends now read only cached state: the join floor from an atomic the state\nmachine updates on apply and restore, and the levels the leader's version\nwatch refreshes on taking the lead, every 10 s, and every 500 ms while a\nmember is held. A member is held only when it reported a level below the\nfloor, or conflicted at or below an entry it acknowledged to this leader\n(it lost its log) and has not reported since. An unknown or silent member\nis fed.\n\n* fix(controlplane): hold a member whose first append conflicts until one probe settles it (#1209)\n\nA fresh replication client has nothing acknowledged, so a member that lost\nits log conflicted without being marked and was fed. Its first conflict now\nholds that member until a probe sent afterwards answers (a level at the\nfloor releases, below keeps it held) or fails (released). Marks and holds of\nmembers that left the membership are dropped, and all are cleared with their\ngauges when the leader steps down.\n\n* fix(controlplane): settle a raft hold with a probe of that member alone and keep heartbeats flowing (#1209)\n\nA member marked on a conflict is now probed on its own with a 200 ms\nbound instead of waiting on the watch's pass over every member, and a\nheld member still gets heartbeats with the commit index stripped, so it\nneither times out nor applies anything. Each conflict before an\nacknowledgement asks again once the last probe settled, since the member\ncan be wiped between two of them. A hold made by a late send after\nstepping down wakes the watch, which clears it.\n\n* fix(controlplane): retry a silent hold probe once and keep one in flight per member (#1209)\n\nA first-conflict mark was released by 200 ms of silence, so a wiped\nolder-build member with a slow standing route could be fed. The ask now\nretries once with the watch's 1 s bound before silence counts, and only\nthe held member waits on it. Repeated lost-log conflicts no longer spawn a\nprobe each.\n\nCorrect the claim that a held member keeps getting heartbeats: openraft\nretries the held payload and sends none, so a lagging held member may call\nelections and cost one extra election after a long hold.",
+          "timestamp": "2026-10-15T17:12:37Z",
+          "tree_id": "79a4056ac2e62a9dcd0fb34bff75a0745d49da7e",
+          "url": "https://github.com/GetFelix/felix/commit/d1de5ca207e7670bab80d5c8872761393bba8326"
+        },
+        "date": 1792084581583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 93,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 93.00\nmean: 94.20\nstdev: 2.68\ncv: 2.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "9.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 134.20\nstdev: 9.76\ncv: 7.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 170,
+            "range": "12.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 164.60\nstdev: 12.50\ncv: 7.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 115.80\nstdev: 1.10\ncv: 0.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 253,
+            "range": "62.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 253.00\nmean: 281.80\nstdev: 62.51\ncv: 22.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 346,
+            "range": "2401.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 346.00\nmean: 1559.80\nstdev: 2401.91\ncv: 153.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
