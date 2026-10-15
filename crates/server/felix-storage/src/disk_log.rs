@@ -462,7 +462,7 @@ impl DiskLog {
     /// loss this log can prevent.
     pub async fn reset_to(&self, base_offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
-        let fence = inner.fence_rolls().await;
+        let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
@@ -509,7 +509,7 @@ impl DiskLog {
     /// it again is a no-op.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
-        let fence = inner.fence_rolls().await;
+        let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
@@ -1020,7 +1020,7 @@ impl AppendOnlyLog for DiskLog {
     fn truncate(&self, offset: Offset) -> BoxFuture<'_, Result<()>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let fence = inner.fence_rolls().await;
+            let fence = inner.fence_rolls().await?;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {

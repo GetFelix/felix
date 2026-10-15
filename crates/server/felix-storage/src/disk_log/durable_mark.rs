@@ -127,9 +127,6 @@ pub(super) struct MarkFile {
 struct MarkState {
     /// The furthest mark written since the last rewind.
     last: Option<DurableMark>,
-    /// Counts rewinds, so a writer that read the log before one can tell
-    /// its mark may describe records that are gone.
-    rewinds: u64,
 }
 
 impl MarkFile {
@@ -152,22 +149,8 @@ impl MarkFile {
     /// Record that `mark` has been synced. Called only after the sync returned.
     /// A mark behind the one already recorded is ignored.
     pub(super) fn record(&self, mark: DurableMark) -> std::io::Result<()> {
-        self.advance(mark, None)
-    }
-
-    /// [`Self::record`], unless the log was rewound since [`Self::rewinds`]
-    /// returned `seen`.
-    pub(super) fn record_since(&self, mark: DurableMark, seen: u64) -> std::io::Result<()> {
-        self.advance(mark, Some(seen))
-    }
-
-    pub(super) fn rewinds(&self) -> u64 {
-        self.state.lock().rewinds
-    }
-
-    fn advance(&self, mark: DurableMark, seen: Option<u64>) -> std::io::Result<()> {
         let mut state = self.state.lock();
-        if seen.is_some_and(|seen| seen != state.rewinds) || state.last >= Some(mark) {
+        if state.last >= Some(mark) {
             return Ok(());
         }
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
@@ -187,9 +170,6 @@ impl MarkFile {
     /// repairable tail.
     pub(super) fn record_durably(&self, mark: DurableMark) -> std::io::Result<()> {
         let mut state = self.state.lock();
-        // Counted first: a writer that read the log before this must not
-        // move the mark past it, even if this write fails.
-        state.rewinds += 1;
         state.last = None;
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         self.sync()?;
@@ -213,24 +193,10 @@ impl LogInner {
 
     /// Record that every segment before `active` is sealed, and so synced
     /// whole. Keeps a sealed segment out of the repairable range when the mark
-    /// last pointed into it. For a caller holding the append lock, which
-    /// keeps a rewind out.
+    /// last pointed into it. The caller keeps a rewind out: with the append
+    /// lock, or for a background seal, by holding the roll slot.
     pub(super) fn note_sealed_before(&self, active: SegmentId) {
         self.note_synced(active, SEGMENT_HEADER_LEN);
-    }
-
-    /// [`Self::note_sealed_before`] for a background seal, which runs without
-    /// the append lock: skipped if the log was rewound after `rewinds` was
-    /// read, since `active` may be gone and the mark would claim the segment
-    /// a truncation reopened is synced whole.
-    pub(super) fn note_sealed_before_since(&self, active: SegmentId, rewinds: u64) {
-        self.warn_unmarked(self.mark.record_since(
-            DurableMark {
-                segment: active,
-                synced_bytes: SEGMENT_HEADER_LEN,
-            },
-            rewinds,
-        ));
     }
 
     fn warn_unmarked(&self, written: std::io::Result<()>) {
