@@ -152,6 +152,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::GENERATION_LABELS)
         .union(PeerCapabilities::FORWARD_OFFSETS)
         .union(PeerCapabilities::CACHE_FENCE)
+        .union(PeerCapabilities::GROUP_FENCE)
         .union(PeerCapabilities::RECORD_TIMES)
         .union(PeerCapabilities::BALLOTS)
         .union(PeerCapabilities::PING);

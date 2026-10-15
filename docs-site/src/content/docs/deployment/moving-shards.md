@@ -72,8 +72,8 @@ is copied to a live broker outside its set. A set left short because too few
 brokers were live, after a failover or when the shard was placed, is topped up
 as soon as one is free, even one placed on its leader alone. The copy
 is seated once it has caught up. On a `Quorum` stream or cache it must also
-hold what a majority of the old set holds, and a cache's copy must hold its
-counters as well. The seat drops the lost follower in the
+hold what a majority of the old set holds, a cache's copy its counters as
+well, and a stream's copy its consumer groups' positions and dead letters. The seat drops the lost follower in the
 same write. If the broker being copied to fails, the copy is dropped and
 another broker is picked. If the lost broker comes back first, its copy is
 kept and the new one dropped. Restores take move slots after drains and before

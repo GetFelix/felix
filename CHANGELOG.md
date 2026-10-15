@@ -78,6 +78,9 @@ before auth changes and their revocations, and refresh rotations, are single
 entries.
 
 ### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
 - Brokers export `felix_revocation_feed_last_success_seconds` (set when they
   start following the feed, then at each good poll) and
   `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
@@ -86,6 +89,41 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A `ClusterClient` recovers when every broker changes IP at once, as in a
+  rollout that restarts every pod (#1227). Reconnect dialled only the addresses
+  it already held, and discovery needs one of them to answer, so the client
+  failed every operation until it was rebuilt. When none of them answers, it
+  now resolves its seed names, and the names brokers last advertised, again
+  and dials the new addresses. The names are looked up at the same time, each
+  bounded to 2 s, without holding the lock every operation reads the client
+  through, and at most once a second for a client and the identities derived
+  from it, including when callers give up waiting. Discovery's names are
+  looked up the same way. A seed name that stops resolving keeps its last
+  addresses. felixctl and the
+  Python, TypeScript and C clients pass the configured `host:port` through as
+  a name instead of resolving it once at startup; a name that does not
+  resolve at connect is still refused as an invalid argument.
+- A `ClusterClient` reconnect replaces the client only if it is still the one
+  the failing operation used. Every operation that failed on the same broker
+  used to throw away whatever client was in place, including a fresh
+  replacement, and dial again with the endpoint list it had read before
+  waiting for the lock.
+- A history campaign client no longer keeps publishing over a connection to
+  brokers that restarted on new ports (#1223). A successful read or cache op,
+  which opens its own connection, reset the client's count of failures in a
+  row, so a client could spend most of the outage campaign waiting out 10 s
+  publish timeouts, and the campaign fell short of its floor of cache puts.
+  A failed op over the connection now reconnects at once when the address
+  book changed since the client connected, and only ops over the connection
+  count toward reconnecting.
+- The power-loss test model no longer loses a sync it saw (#1218). When two
+  flushes of one file overlapped, the one that read the file first could
+  record its read last, so the model held less than the device would. A flush
+  that read the active segment just before a background roll retired it could
+  undo the seal's sync of that segment, and the nightly sweep then built
+  crashes that cut a sealed segment short and failed when recovery refused
+  them. Each capture now takes a ticket before it reads, and an older read
+  never replaces a newer one. Storage itself is unchanged.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
@@ -113,6 +151,25 @@ entries.
   silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
   in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
   batch rounded up to a whole unit (#1200).
+- A consumer group could pass a record that was neither finished nor listed
+  as dead. The dead letter is written before the cursor passes the record,
+  but replication shipped cursors first, the two logs flush separately, and
+  a follower's dead letters can be replaced by a newer leader's, so a copy
+  could hold a cursor without the dead letter it relied on and serve it once
+  promoted. Each cursor now records the dead-letter log it needs (its end
+  and the generation that wrote it) and the group's origin; dead letters
+  are synced before a cursor that needs them; and before a broker serves a
+  shard's groups, a cursor that no longer stands is put back to the latest
+  one that does or to its origin, never removed. Dead letters ship before
+  cursors. A promoted stream leader fences both group logs in one round
+  beside its records, takes the dead-letter log of the replica furthest
+  ahead and merges that replica's cursors into its own, on replicas that
+  offer the new internal capability `GROUP_FENCE` (`1 << 8`). Group logs
+  carry generation labels like the records, and a `Quorum` stream's report
+  leaves out a follower short of the pair a majority holds. The cursor
+  value is a new 33-byte layout, written once the fleet finalizes the new
+  `group_cursor_dependencies` feature, and by a single broker from the
+  start; an older build cannot read it (#1202).
 
 ### Documentation
 - Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to

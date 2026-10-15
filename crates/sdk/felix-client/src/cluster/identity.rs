@@ -49,7 +49,7 @@ impl ClusterClient {
         let client = nodes.connect_any(&endpoints).await?;
         let holder = Arc::new(RwLock::new(client));
         Ok(ClusterClient {
-            seeds: self.seeds.clone(),
+            seeds: Arc::clone(&self.seeds),
             endpoints: RwLock::new(self.endpoints().await),
             policy: self.policy.clone(),
             widths: super::cluster_widths(&holder),

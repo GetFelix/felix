@@ -229,6 +229,181 @@ mod generation_start {
     }
 }
 
+/// A stream leader's dead-letter and cursor logs carry the generation it
+/// leads, so a later promotion ranks their copies by it.
+mod group_labels {
+    use super::*;
+    use felix_replication::promotion::PromotionGate;
+    use felix_storage::log::{FsyncMode, LogConfig};
+
+    struct Groups {
+        broker: std::sync::Arc<felix_broker::Broker>,
+        storage: felix_broker::DurableStorage,
+        groups: std::sync::Arc<felix_broker::ConsumerGroups>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A broker with consumer groups holding one inherited cursor and one
+    /// inherited dead letter on `key(0)`.
+    async fn inheriting() -> Groups {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        };
+        let storage =
+            felix_broker::DurableStorage::open(dir.path().join("streams"), config.clone())
+                .expect("storage");
+        let groups = std::sync::Arc::new(
+            felix_broker::ConsumerGroups::open(dir.path().join("groups"), config.clone())
+                .expect("groups"),
+        );
+        let dead_letters = std::sync::Arc::new(
+            felix_broker::DeadLetters::open(dir.path().join("dead-letters"), config)
+                .expect("dead letters"),
+        );
+        dead_letters
+            .record(
+                &felix_broker::GroupKey {
+                    tenant_id: "t1".to_string(),
+                    namespace: "ns".to_string(),
+                    stream: "orders".to_string(),
+                    shard: 0,
+                    group: "workers".to_string(),
+                },
+                0,
+            )
+            .await
+            .expect("dead letter");
+        groups
+            .commit("t1", "ns", "orders", 0, "workers", 1)
+            .await
+            .expect("commit");
+        let broker = std::sync::Arc::new(
+            felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
+                .with_durable_storage(storage.clone())
+                .with_consumer_groups(
+                    std::sync::Arc::clone(&groups),
+                    dead_letters,
+                    std::time::Duration::from_secs(30),
+                    3,
+                ),
+        );
+        broker.register_tenant("t1").await.expect("tenant");
+        broker
+            .register_namespace("t1", "ns")
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                "orders",
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+        Groups {
+            broker,
+            storage,
+            groups,
+            _dir: dir,
+        }
+    }
+
+    fn finalized() -> std::sync::Arc<felix_common::fleet::FleetGate> {
+        let finalized = [felix_common::fleet::GENERATION_START.name()];
+        let fleet = felix_common::fleet::FleetGate::new(finalized);
+        fleet.observe(finalized);
+        std::sync::Arc::new(fleet)
+    }
+
+    /// Where each group log says `generation` begins, and the generation it
+    /// accepted.
+    async fn labels(broker: &felix_broker::Broker, generation: u64) -> Vec<(Option<u64>, u64)> {
+        let mut labels = Vec::new();
+        for kind in crate::shards::lifecycle::GROUP_LOGS {
+            let log = broker
+                .shard_log(kind, "t1", "ns", "orders", 0)
+                .await
+                .expect("log");
+            let start = log
+                .generations()
+                .iter()
+                .find(|epoch| epoch.generation == generation)
+                .map(|epoch| epoch.start_offset);
+            labels.push((start, log.accepted_generation()));
+        }
+        labels
+    }
+
+    /// **A stream shard taken at open labels its group logs** where its
+    /// generation begins, past what it inherited, and accepts the
+    /// generation on them.
+    #[tokio::test]
+    async fn an_open_labels_the_group_logs() {
+        let groups = inheriting().await;
+        let store = DurableShardStore::new(std::sync::Arc::new(groups.storage.clone()))
+            .with_generation_starts(crate::shards::lifecycle::GenerationStarts {
+                broker: std::sync::Arc::clone(&groups.broker),
+                fleet: finalized(),
+            });
+
+        store.open(&key(0), 3, true).await.expect("open");
+
+        assert_eq!(
+            labels(&groups.broker, 3).await,
+            vec![(Some(1), 3), (Some(1), 3)]
+        );
+    }
+
+    /// **A promoted shard labels them again where its fence left them**:
+    /// what the fence took from a replica belongs to the replica's
+    /// generation, and only what this leader writes next to its own.
+    #[tokio::test]
+    async fn a_fenced_open_labels_the_group_logs_past_what_the_fence_took() {
+        let groups = inheriting().await;
+        let key = key(0);
+        let mut own = fencing_lifecycle();
+        own.observe(&key, Some(&assigned_to("broker-a", 3)));
+        assert_eq!(own.opened(&key, 3), Opened::Fencing);
+        let router = std::sync::Arc::new(felix_router::ShardRouter::new(
+            "broker-a",
+            "us-west-2",
+            felix_router::RegionRouter::new("us-west-2".to_string()),
+        ));
+        let ingress = std::sync::Arc::new(crate::shards::routing::IngressRouter::new(
+            router,
+            std::sync::Arc::clone(own.fence()),
+        ));
+        let own = std::sync::Arc::new(tokio::sync::Mutex::new(own));
+        let gate = crate::shards::lifecycle::promotion::LifecycleGate::new(
+            std::sync::Arc::clone(&own),
+            ingress,
+            std::sync::Arc::new(groups.storage.clone()),
+            std::sync::Arc::clone(&groups.broker),
+            finalized(),
+        );
+        // What the fence took from a replica.
+        groups
+            .groups
+            .commit("t1", "ns", "orders", 0, "workers", 2)
+            .await
+            .expect("commit");
+
+        assert!(gate.open(&key, 3).await, "the shard stayed closed");
+
+        let labels = labels(&groups.broker, 3).await;
+        assert_eq!(labels[0].0, Some(1), "dead letters");
+        assert_eq!(labels[1].0, Some(2), "cursors");
+    }
+}
+
 /// **A promotion after a finished move is fenced**, though this broker was
 /// the move's draining leader. The move's destination led in between, and if
 /// it is cut off rather than gone it can still commit a write with a follower
