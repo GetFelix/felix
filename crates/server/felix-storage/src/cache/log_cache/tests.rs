@@ -7,11 +7,13 @@ mod basics;
 mod closing;
 mod compaction;
 mod concurrency;
+mod conditional;
 mod expiry;
 mod legacy_swap;
 mod observer;
 #[cfg(target_os = "linux")]
 mod power_loss;
+mod snapshot;
 
 use std::time::Duration;
 

@@ -17,7 +17,7 @@ See `README.md` for the system overview.
 > materially changed these results (the same `--binary --fanout 10 --batch
 > 64 --payload 4096` command cited below now measures ~560-590K delivered
 > msg/s, not ~70k). For current, methodology-documented numbers see
-> [Benchmarks](https://gabloe.github.io/felix/features/benchmarks/).
+> [Benchmarks](https://docs.getfelix.dev/features/benchmarks/).
 > The profile *names and env vars* below are still valid starting points;
 > only the specific latency/throughput figures and charts need
 > regenerating via `task perf:latency-matrix` (see below).

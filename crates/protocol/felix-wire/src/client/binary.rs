@@ -14,11 +14,12 @@ pub use acked_publish::{
     encode_idempotent_publish_batch_bytes, peek_acked_publish_prefix,
 };
 pub use event_batch::{
-    EncodedEventBatchParts, EventBatch, SharedEventBatch, decode_event_batch,
-    decode_shared_event_batch, encode_event_batch_bytes, encode_event_batch_bytes_with_offset,
+    EncodedEventBatchParts, EventBatch, EventBatchMeta, MAX_PUBLISHER_BYTES, SharedEventBatch,
+    decode_event_batch, decode_shared_event_batch, encode_event_batch_bytes,
+    encode_event_batch_bytes_with_meta, encode_event_batch_bytes_with_offset,
     encode_event_batch_bytes_with_skip, encode_event_batch_parts, encode_shared_event_batch_bytes,
-    encode_shared_event_batch_bytes_with_offset, encode_shared_event_batch_bytes_with_skip,
-    peek_event_batch_base_offset,
+    encode_shared_event_batch_bytes_with_meta, encode_shared_event_batch_bytes_with_offset,
+    encode_shared_event_batch_bytes_with_skip, peek_event_batch_base_offset,
 };
 pub use publish::{
     EncodeStats, PublishBatch, decode_publish_batch, encode_publish_batch,

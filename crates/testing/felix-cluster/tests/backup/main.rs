@@ -101,7 +101,7 @@ async fn take_point(cluster: &Cluster, name: &str) -> Manifest {
 fn backup_point(cluster: &Cluster, name: &str) -> BackupPoint {
     BackupPoint {
         control_plane_url: cluster.control_plane_url().to_string(),
-        token: Some(cluster.admin_token.clone()),
+        token: Some(cluster.admin_token()),
         name: name.to_string(),
         // Every harness broker has its own metrics port on one host.
         brokers: cluster

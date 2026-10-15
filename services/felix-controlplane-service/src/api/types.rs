@@ -127,6 +127,43 @@ impl Default for CacheCreateRequest {
     }
 }
 
+/// Streams and caches to create in one namespace, all or none.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Default)]
+pub struct ResourceBatchRequest {
+    #[serde(default)]
+    pub streams: Vec<StreamCreateRequest>,
+    #[serde(default)]
+    pub caches: Vec<CacheCreateRequest>,
+}
+
+/// Every item of a batch, in request order, with what the batch did to it.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct ResourceBatchResponse {
+    pub streams: Vec<BatchStream>,
+    pub caches: Vec<BatchCache>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BatchStream {
+    pub status: BatchItemStatus,
+    pub stream: Stream,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BatchCache {
+    pub status: BatchItemStatus,
+    pub cache: Cache,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchItemStatus {
+    /// The batch created it.
+    Created,
+    /// It already existed with the same configuration and was left alone.
+    Unchanged,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct TenantListResponse {
     pub items: Vec<Tenant>,
@@ -145,6 +182,8 @@ pub struct TenantSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct TenantChangesResponse {
     pub items: Vec<TenantChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -166,6 +205,8 @@ pub struct NamespaceSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct NamespaceChangesResponse {
     pub items: Vec<NamespaceChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -187,6 +228,8 @@ pub struct StreamSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct StreamChangesResponse {
     pub items: Vec<StreamChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -208,6 +251,8 @@ pub struct CacheSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct CacheChangesResponse {
     pub items: Vec<CacheChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -219,6 +264,10 @@ pub struct NodeHeartbeatRequest {
     /// Carried so a heartbeat that was delayed past a restart is rejected
     /// rather than counted for the process that replaced it.
     pub incarnation: u64,
+    /// Leaders of shards this broker follows that have stopped answering its
+    /// pings. Absent from a broker that suspects nobody, or predates it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub suspects: std::collections::BTreeSet<String>,
 }
 
 /// What the control plane tells a broker in return.
@@ -503,12 +552,14 @@ pub struct PlannedShard {
     #[serde(flatten)]
     pub key: crate::model::ShardKey,
     /// `place`, a move step (`stage`, `fence`, `cut_over`, `abandon`,
-    /// `timed_out`, `reseat`, `seat`), `waiting` or `unplaceable`.
+    /// `timed_out`, `reseat`, `seat`), `waiting`, `settling` (a new shard
+    /// waiting for more brokers to register) or `unplaceable`.
     pub action: String,
     /// What the step would write, for `place` and move steps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignment: Option<crate::model::ShardAssignment>,
-    /// Why nothing can be done yet, for `waiting` and `unplaceable`.
+    /// Why nothing can be done yet, for `waiting`, `settling` and
+    /// `unplaceable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

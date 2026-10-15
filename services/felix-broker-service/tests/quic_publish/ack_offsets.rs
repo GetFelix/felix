@@ -30,6 +30,7 @@ async fn authed_stream(
             token: auth.token.clone(),
             client_flags,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -206,7 +207,8 @@ async fn a_re_sent_idempotent_batch_reports_the_original_offset() -> Result<()> 
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, commit_acked).await?;
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let batch = || vec![b"a".to_vec(), b"b".to_vec()];
@@ -237,6 +239,67 @@ async fn a_re_sent_idempotent_batch_reports_the_original_offset() -> Result<()> 
     assert_eq!(
         stored_orders(&broker).await?,
         vec![b"a".to_vec(), b"b".to_vec(), b"x".to_vec()]
+    );
+    Ok(())
+}
+
+/// **A client can ask for commit acks on a broker that does not give them to
+/// everyone.** With `ClientConfig::ack_on_commit` its publishes report where
+/// they landed; a client on the same broker that did not ask is answered at
+/// enqueue, with no offset, as before.
+#[tokio::test]
+#[serial]
+async fn a_client_can_ask_for_commit_acks_on_its_own_connection() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    // Set here: the config comes from the environment, which other tests in
+    // this binary leave with `FELIX_ACK_ON_COMMIT=true`.
+    let (_broker, addr, cert, auth, _config) =
+        serve_orders(dir.path(), FsyncMode::None, |config| {
+            config.ack_on_commit = false;
+        })
+        .await?;
+
+    let mut asking = build_client_config(cert.clone(), &auth)?;
+    asking.ack_on_commit = true;
+    let client = Client::connect(addr, "localhost", asking).await?;
+    assert!(client.supports_ack_on_commit());
+    let publisher = client.publisher().await?;
+    let first = publisher
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"a".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await?
+        .context("a client that asked for commit acks got no offset")?;
+    let second = publisher
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"b".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await?;
+    assert_eq!(second, Some(first + 1));
+
+    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let offset = plain
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"c".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await?;
+    assert_eq!(
+        offset, None,
+        "a client that did not ask was acked at enqueue"
     );
     Ok(())
 }

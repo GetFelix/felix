@@ -5,6 +5,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::disk_log::DiskLog;
+use crate::disk_log::tests::park_a_seal;
 use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, ReadRange};
 use crate::segment::segment_file_name;
 use crate::{Result, StorageError};
@@ -23,6 +24,7 @@ fn batch(prefix: &str, count: usize) -> Vec<AppendRecord> {
             payload: Bytes::from(format!("{prefix}-{i:03}")),
             timestamp_micros: 1,
             mark: Default::default(),
+            publisher: None,
         })
         .collect()
 }
@@ -158,4 +160,64 @@ async fn a_truncation_moves_the_mark_back_durably() {
     assert_eq!(after.segment, before.segment);
     assert!(after.synced_bytes < before.synced_bytes);
     assert_eq!(read_all(&log).await.len(), 4);
+}
+
+/// A background seal that finishes after a flush covered the new segment
+/// must not pull the mark back to that segment's header. An idle shard never
+/// flushes again to fix it, so acknowledged records in the new segment would
+/// be repairable as a torn tail.
+#[tokio::test]
+async fn a_late_seal_does_not_move_the_mark_back() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    log.append(&batch("sealed", 10)).await.expect("append");
+    let (roll, release) = park_a_seal(&log).await;
+
+    log.append(&batch("acked", 10)).await.expect("append");
+    log.sync().await.expect("sync");
+    let flushed = load(dir.path()).expect("mark");
+    assert!(flushed.synced_bytes > SEGMENT_HEADER_LEN);
+
+    release.send(()).expect("release the seal");
+    roll.await.expect("join").expect("roll");
+    assert_eq!(load(dir.path()), Some(flushed));
+
+    // Rot in an acknowledged record of the new segment is still refused.
+    drop(log);
+    stale_blocks_from(
+        &dir.path().join(segment_file_name(flushed.segment)),
+        flushed.synced_bytes - 20,
+    );
+    match reopen(dir.path()).await {
+        Err(StorageError::Corruption(_)) => {}
+        other => panic!("expected corruption, got {other:?}"),
+    }
+}
+
+/// A seal that started before a truncation must not move the mark past it:
+/// the segment it names may be gone, and the mark would then vouch for the
+/// whole of the segment the truncation reopened.
+#[tokio::test]
+async fn a_seal_from_before_a_truncation_leaves_the_mark_alone() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    log.append(&batch("a", 10)).await.expect("append");
+    let (roll, release) = park_a_seal(&log).await;
+
+    let truncating = {
+        let log = log.clone();
+        tokio::spawn(async move { log.truncate(4).await })
+    };
+    release.send(()).expect("release the seal");
+    roll.await.expect("join").expect("roll");
+    truncating.await.expect("join").expect("truncate");
+
+    let active = {
+        let segments = log.inner.segments.read();
+        DurableMark {
+            segment: segments.active().id(),
+            synced_bytes: segments.active().size_bytes(),
+        }
+    };
+    assert_eq!(load(dir.path()), Some(active));
 }

@@ -17,11 +17,66 @@ use crate::frame_io::{read_message_with_limit, write_message};
 pub(crate) struct Credentials {
     tenant_id: String,
     tokens: Arc<dyn TokenProvider>,
+    /// The feature bits offered in `Auth`.
+    features: u32,
+    /// The frame-flag bits offered in `Auth`.
+    flags: u16,
 }
 
 impl Credentials {
     pub(crate) fn new(tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
-        Self { tenant_id, tokens }
+        Self {
+            tenant_id,
+            tokens,
+            // Each costs something on every exchange it changes, so it is
+            // offered only when the application asks.
+            features: felix_wire::KNOWN_FEATURES
+                & !felix_wire::FEATURE_ACK_ON_COMMIT
+                & !felix_wire::FEATURE_GROUP_PUBLISHER
+                & !felix_wire::FEATURE_RECORD_TIMESTAMPS,
+            flags: felix_wire::KNOWN_FLAGS
+                & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER
+                & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS,
+        }
+    }
+
+    /// The same offers, authenticating as a different principal.
+    pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
+        Self {
+            tenant_id,
+            tokens,
+            features: self.features,
+            flags: self.flags,
+        }
+    }
+
+    /// Also ask for each record's append time. See
+    /// [`felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS`].
+    pub(crate) fn with_timestamps(mut self, timestamps: bool) -> Self {
+        if timestamps {
+            self.features |= felix_wire::FEATURE_RECORD_TIMESTAMPS;
+            self.flags |= felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS;
+        }
+        self
+    }
+
+    /// Also ask to be told who published each event. See
+    /// [`felix_wire::FLAG_EVENT_BATCH_PUBLISHER`].
+    pub(crate) fn with_publishers(mut self, publishers: bool) -> Self {
+        if publishers {
+            self.features |= felix_wire::FEATURE_GROUP_PUBLISHER;
+            self.flags |= felix_wire::FLAG_EVENT_BATCH_PUBLISHER;
+        }
+        self
+    }
+
+    /// Also ask for acknowledgements after the write. See
+    /// [`felix_wire::FEATURE_ACK_ON_COMMIT`].
+    pub(crate) fn with_ack_on_commit(mut self, ack_on_commit: bool) -> Self {
+        if ack_on_commit {
+            self.features |= felix_wire::FEATURE_ACK_ON_COMMIT;
+        }
+        self
     }
 
     /// Authenticate `first`, a stream just opened on `connection`, with the
@@ -50,6 +105,8 @@ impl Credentials {
                 &mut recv,
                 &self.tenant_id,
                 &token,
+                self.flags,
+                self.features,
                 max_frame_bytes,
             )
             .await
@@ -89,6 +146,7 @@ impl Credentials {
                 token,
                 client_flags: None,
                 client_features: None,
+                client_features_hi: None,
             },
         )
         .await
@@ -105,6 +163,8 @@ pub(crate) struct Negotiated {
     pub(crate) server_flags: u16,
     /// Feature bits: which optional requests the broker implements.
     pub(crate) server_features: u32,
+    /// The extended feature word, counted only behind the marker bit.
+    pub(crate) server_features_hi: u32,
     /// Every port the broker's client-facing listeners are bound to, when it
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
@@ -135,15 +195,20 @@ async fn authenticate_stream(
     recv: &mut RecvStream,
     tenant_id: &str,
     token: &str,
+    flags: u16,
+    features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
+    let (features, features_hi) =
+        felix_wire::offer_features(features, felix_wire::KNOWN_FEATURES_HI);
     write_message(
         send,
         Message::Auth {
             tenant_id: tenant_id.to_string(),
             token: token.to_string(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: Some(felix_wire::KNOWN_FEATURES),
+            client_flags: Some(flags),
+            client_features: Some(features),
+            client_features_hi: features_hi,
         },
     )
     .await
@@ -153,6 +218,7 @@ async fn authenticate_stream(
         Some(Message::AuthOk {
             server_flags,
             server_features,
+            server_features_hi,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {
@@ -161,6 +227,10 @@ async fn authenticate_stream(
             // an unrecognised message type is fatal to the broker's control
             // loop, so a client that guessed would cost itself the connection.
             server_features: server_features.unwrap_or(0),
+            server_features_hi: felix_wire::peer_features_hi(
+                server_features.unwrap_or(0),
+                server_features_hi,
+            ),
             listener_ports: listener_ports.unwrap_or_default(),
             // Only meaningful with the feature bit; a window without it would
             // be a broker promising an order it never agreed to.
@@ -177,6 +247,7 @@ async fn authenticate_stream(
         Some(Message::Ok) => Ok(Negotiated {
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
+            server_features_hi: 0,
             listener_ports: Vec::new(),
             publish_window: 0,
         }),

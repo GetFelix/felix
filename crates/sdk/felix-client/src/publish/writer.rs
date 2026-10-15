@@ -31,9 +31,13 @@ pub(crate) struct PublishWorker {
     pub(crate) request_counter: AtomicU64,
     /// Frame-flag bits the broker advertised for this stream during auth.
     pub(crate) server_flags: u16,
-    /// The publish window the broker granted this stream's connection, with
-    /// answers in request order. `0` when it did not.
+    /// The publish window the broker granted, with answers in request order.
+    /// `0` when it did not.
     pub(crate) publish_window: u32,
+    /// The broker on this stream advertised `FEATURE_PUBLISH_WIDTH`. Asked
+    /// per stream: one that did not would take `publish_width` as a frame it
+    /// cannot decode and close the stream.
+    pub(crate) takes_width: bool,
 }
 
 pub(crate) enum PublishRequest {
@@ -48,6 +52,10 @@ pub(crate) enum PublishRequest {
         bytes: Bytes,
         item_count: usize,
         sample: bool,
+        /// A framed `publish_width` naming the width a keyed batch was routed
+        /// by. Written ahead of the batch unless it is the one this stream
+        /// last carried.
+        declaration: Option<Bytes>,
         /// `AckMode::None` for fire-and-forget frames. Anything else means the
         /// frame was encoded with `FLAG_BINARY_PUBLISH_ACKED` and the writer must
         /// block for the broker's ack before reporting the result.
@@ -69,7 +77,7 @@ struct PendingAck {
     request_id: u64,
     response: oneshot::Sender<AckOutcome>,
     _permit: OwnedSemaphorePermit,
-    /// This publish's slot in the connection's window, freed with the answer.
+    /// This publish's slot in the publish window, freed with the answer.
     _window: Option<OwnedSemaphorePermit>,
     // Read only by the telemetry counters in the ack reader.
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
@@ -100,11 +108,14 @@ pub(crate) async fn run_publisher_writer_with_limit(
     //
     // Depth is bounded by the publisher's in-flight byte budget
     // (`publish_inflight_bytes`), since each entry holds its admission permit
-    // until the broker answers, and by the connection's publish window when
-    // the broker granted one.
+    // until the broker answers, and by the publish window when the broker
+    // granted one.
     let mut ack_scratch = BytesMut::with_capacity(64 * 1024);
     let mut json_scratch = BytesMut::with_capacity(64 * 1024);
     let mut pending: VecDeque<PendingAck> = VecDeque::new();
+    // The `publish_width` the broker holds for this stream. One width's
+    // declaration is one allocation, so the pointer says whether it is sent.
+    let mut declared: Option<Bytes> = None;
 
     // On a broken stream: fail everything already written and everything
     // still queued, with the same message.
@@ -212,7 +223,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 }
             }
         };
-        // A slot in the connection's window before an acked publish goes out.
+        // A slot in the publish window before an acked publish goes out.
         // While none is free, settle this stream's own answers: they may be
         // what holds the slots, and waiting on them unread would deadlock.
         let needs_ack = match &request {
@@ -474,6 +485,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 bytes,
                 item_count,
                 sample,
+                declaration,
                 ack,
                 request_id,
                 _permit,
@@ -485,10 +497,22 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 let write_start = crate::telemetry::t_now_if(sample);
                 #[cfg(feature = "telemetry")]
                 let chunk_start = crate::telemetry::t_now_if(sample);
-                let write_result = send
-                    .write_all(&bytes)
-                    .await
-                    .context("write binary batch frame");
+                let write_result = async {
+                    if let Some(declaration) = declaration.filter(|declaration| {
+                        declared
+                            .as_ref()
+                            .is_none_or(|last| last.as_ptr() != declaration.as_ptr())
+                    }) {
+                        send.write_all(&declaration)
+                            .await
+                            .context("write publish width")?;
+                        declared = Some(declaration);
+                    }
+                    send.write_all(&bytes)
+                        .await
+                        .context("write binary batch frame")
+                }
+                .await;
                 #[cfg(feature = "telemetry")]
                 if let Some(start) = chunk_start {
                     let await_ns = start.elapsed().as_nanos() as u64;

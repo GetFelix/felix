@@ -14,7 +14,9 @@ use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
     UNKEYED_SHARD, publish_target, resolve_route, resolve_shard,
 };
-use crate::serving::quic::handlers::publish::{PublishContext, PublishJob, StreamHandleCache};
+use crate::serving::quic::handlers::publish::{
+    PublishAs, PublishContext, PublishJob, StreamHandleCache,
+};
 use crate::serving::quic::telemetry::{
     count_publish, count_publish_accepted, log_decode_error, payload_len_sum,
 };
@@ -111,6 +113,7 @@ pub(crate) async fn handle_binary_publish_batch_uni(
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: auth_ctx.publisher.clone(),
         },
         publish_ctx.overflow_policy(),
         None,
@@ -141,10 +144,15 @@ pub(crate) async fn handle_publish_message_uni(
     namespace: String,
     stream: String,
     payload: Vec<u8>,
-    // The publisher's token, carried on a forward for the owner to verify.
-    credential: String,
+    // The publisher's token, carried on a forward for the owner to verify,
+    // and the principal recorded on what is written here.
+    publishing_as: impl Into<PublishAs>,
 ) -> Result<bool> {
     super::record_json_publish("publish");
+    let PublishAs {
+        credential,
+        publisher,
+    } = publishing_as.into();
     #[cfg(feature = "telemetry")]
     {
         let counters = crate::serving::quic::telemetry::frame_counters();
@@ -189,6 +197,7 @@ pub(crate) async fn handle_publish_message_uni(
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: publisher.clone(),
         },
         publish_ctx.overflow_policy(),
         None,
@@ -220,10 +229,15 @@ pub(crate) async fn handle_publish_batch_message_uni(
     namespace: String,
     stream: String,
     payloads: Vec<Vec<u8>>,
-    // The publisher's token, carried on a forward for the owner to verify.
-    credential: String,
+    // The publisher's token, carried on a forward for the owner to verify,
+    // and the principal recorded on what is written here.
+    publishing_as: impl Into<PublishAs>,
 ) -> Result<bool> {
     super::record_json_publish("publish_batch");
+    let PublishAs {
+        credential,
+        publisher,
+    } = publishing_as.into();
     #[cfg(feature = "telemetry")]
     {
         let counters = crate::serving::quic::telemetry::frame_counters();
@@ -271,6 +285,7 @@ pub(crate) async fn handle_publish_batch_message_uni(
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: publisher.clone(),
         },
         publish_ctx.overflow_policy(),
         None,

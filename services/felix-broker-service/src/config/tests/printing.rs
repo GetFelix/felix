@@ -10,8 +10,6 @@ fn with_membership(token: &str) -> BrokerConfig {
             advertise_addr: "10.0.0.1:5000".to_string(),
             client_advertise_addr: None,
             kafka_advertise_addr: None,
-            refresh_token_file: None,
-            node_token_file: None,
             region: "us-west-2".to_string(),
             zone: None,
             region_bridges: Vec::new(),
@@ -28,8 +26,7 @@ fn with_membership(token: &str) -> BrokerConfig {
 /// has to hold even if every other field's rendering changes.
 #[test]
 fn the_credential_is_never_printed() {
-    let rendered =
-        serde_yaml_ng::to_string(&with_membership("super-secret-value")).expect("render");
+    let rendered = serde_saphyr::to_string(&with_membership("super-secret-value")).expect("render");
     assert!(
         !rendered.contains("super-secret-value"),
         "the credential reached the output:\n{rendered}",
@@ -41,7 +38,7 @@ fn the_credential_is_never_printed() {
 /// someone debugging a registration failure needs to see.
 #[test]
 fn an_absent_credential_says_so_rather_than_vanishing() {
-    let rendered = serde_yaml_ng::to_string(&with_membership("")).expect("render");
+    let rendered = serde_saphyr::to_string(&with_membership("")).expect("render");
     assert!(
         rendered.contains("controlplane_token: <unset>"),
         "{rendered}"
@@ -60,7 +57,7 @@ fn peer_timeouts_are_printed_as_milliseconds() {
         }),
         ..BrokerConfig::default()
     };
-    let rendered = serde_yaml_ng::to_string(&config).expect("render");
+    let rendered = serde_saphyr::to_string(&config).expect("render");
     assert!(rendered.contains("request_timeout: 2500"), "{rendered}");
 }
 
@@ -71,4 +68,26 @@ fn debug_never_shows_the_credential() {
     let rendered = format!("{:?}", with_membership("super-secret-value"));
     assert!(!rendered.contains("super-secret-value"), "{rendered}");
     assert!(rendered.contains("<redacted>"), "{rendered}");
+}
+
+/// The printed document is YAML that reads back to the values it was
+/// rendered from, including strings a YAML reader would otherwise take for
+/// a boolean, a number or null.
+#[test]
+fn the_printed_document_reads_back_to_the_same_values() {
+    for awkward in ["yes", "0777", "1e3", "~", "", "a: b", "#x", "true", "1_000"] {
+        let mut config = with_membership("token");
+        if let Some(membership) = config.membership.as_mut() {
+            membership.node_id = awkward.to_string();
+            membership.zone = Some(awkward.to_string());
+        }
+        let rendered = serde_saphyr::to_string(&config).expect("render");
+        let read_back: serde_json::Value =
+            felix_common::yaml::from_str(&rendered).expect("read back");
+        assert_eq!(
+            read_back,
+            serde_json::to_value(&config).expect("to json"),
+            "{awkward:?}:\n{rendered}"
+        );
+    }
 }

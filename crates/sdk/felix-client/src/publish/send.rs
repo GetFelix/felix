@@ -5,10 +5,13 @@
 
 use std::sync::atomic::Ordering;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use felix_wire::{AckMode, FrameHeader, Message};
 use tokio::sync::oneshot;
 
+use super::widths::Width;
 use super::writer::{PublishRequest, PublishWorker};
 use super::{AckOutcome, Publisher};
 #[cfg(feature = "telemetry")]
@@ -52,15 +55,26 @@ impl Publisher {
         )
     }
 
+    /// Whether the broker takes this idempotent batch as a binary frame: a
+    /// keyed one also needs the keyed layout.
+    pub(super) fn supports_binary_idempotent_for(&self, key: Option<&bytes::Bytes>) -> bool {
+        self.supports_binary_idempotent() && (key.is_none() || self.supports_binary_keyed())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn publish_batch_binary_inner(
         &self,
         key: Option<&[u8]>,
+        shard: Option<u32>,
+        width: Option<Arc<Width>>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> AckOutcome {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route_by(tenant_id, namespace, stream, key, shard, width)
+            .await?;
         let payloads_with_ts;
         let payloads = if self.inner.bench_embed_ts {
             payloads_with_ts = payloads
@@ -108,6 +122,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::None,
                 request_id: None,
                 _permit: permit,
@@ -127,9 +142,12 @@ impl Publisher {
         answer
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn publish_batch_binary_acked_inner(
         &self,
         key: Option<&[u8]>,
+        shard: Option<u32>,
+        width: Option<Arc<Width>>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -138,10 +156,14 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(key, tenant_id, namespace, stream, &payloads)
+                .publish_batch_binary_inner(
+                    key, shard, width, tenant_id, namespace, stream, &payloads,
+                )
                 .await;
         }
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route_by(tenant_id, namespace, stream, key, shard, width)
+            .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "telemetry")]
@@ -172,6 +194,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack,
                 request_id: Some(request_id),
                 _permit: permit,
@@ -190,6 +213,7 @@ impl Publisher {
             .await
             .context("acked binary batch response dropped")?;
         cancelled.answered();
+        self.forget_width_if_gone(tenant_id, namespace, stream, key, &answer);
         answer
     }
 
@@ -202,7 +226,9 @@ impl Publisher {
         key: Option<bytes::Bytes>,
         ack: AckMode,
     ) -> AckOutcome {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(tenant_id, namespace, stream, key.as_deref(), None)
+            .await?;
         let payload = maybe_append_publish_ts(payload, self.inner.bench_embed_ts);
         // Enqueue publish on the single-writer publisher task.
         let (response_tx, response_rx) = oneshot::channel();
@@ -265,7 +291,9 @@ impl Publisher {
         key: Option<bytes::Bytes>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(tenant_id, namespace, stream, key.as_deref(), None)
+            .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = if ack == AckMode::None {
             None
@@ -281,7 +309,7 @@ impl Publisher {
             request_id,
             ack: Some(ack),
         };
-        self.send_message(worker, message, ack, request_id)
+        self.send_message(&worker, message, ack, request_id)
             .await
             .map(|acked| acked.offset)
     }

@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use felix_authz::{Action, Namespace, StreamName, TenantId, stream_resource};
 use felix_broker::Broker;
 use felix_wire::Frame;
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tracing::Instrument;
 
 use super::batch::handle_publish_batch_message;
@@ -17,14 +17,15 @@ use crate::observability::timings;
 use crate::serving::auth::AuthContext;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::ack::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, Outgoing, handle_ack_enqueue_result,
-    send_outgoing_critical,
+    AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
 use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
-    publish_target, resolve_route, resolve_shard,
+    DeclaredWidth, publish_target, resolve_declared_shard, resolve_route,
 };
-use crate::serving::quic::handlers::publish::{PublishContext, PublishJob, StreamHandleCache};
+use crate::serving::quic::handlers::publish::{
+    CommitAcks, PublishContext, PublishJob, StreamHandleCache,
+};
 use crate::serving::quic::telemetry::{
     count_publish, count_publish_accepted, log_decode_error, payload_len_sum, t_histogram, t_now_if,
 };
@@ -37,6 +38,8 @@ pub(crate) async fn handle_binary_publish_batch_control(
     publish_ctx: &PublishContext,
     frame: &Frame,
     auth_ctx: Option<&AuthContext>,
+    // The client's last `publish_width`, if it sent one.
+    declared: Option<&DeclaredWidth>,
     sample: bool,
     // Bounds the unacked backpressure wait: without a timer, teardown is what
     // ends it.
@@ -87,13 +90,18 @@ pub(crate) async fn handle_binary_publish_batch_control(
     }
     // An unkeyed frame still resolves to shard 0, so this is the same routing
     // decision the JSON path makes -- the key just arrives in a cheaper frame.
-    let shard = resolve_shard(
+    // Unacknowledged, so a batch routed by a stale width is dropped like one
+    // to a stream that does not resolve.
+    let Ok(shard) = resolve_declared_shard(
         publish_ctx,
+        declared,
         &batch.tenant_id,
         &batch.namespace,
         &batch.stream,
         batch.key.as_deref(),
-    );
+    ) else {
+        return Ok(());
+    };
     let Ok(target) = publish_target(
         resolve_route(
             broker,
@@ -140,6 +148,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
+                publisher: auth_ctx.publisher.clone(),
             },
             publish_ctx.overflow_policy(),
             Some(cancel_tx.subscribe()),
@@ -189,16 +198,16 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
     publish_ctx: &PublishContext,
     frame: &Frame,
     auth_ctx: Option<&AuthContext>,
+    declared: Option<&DeclaredWidth>,
     throttled: bool,
     ack_on_commit: bool,
     sample: bool,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<AtomicUsize>,
     ack_throttle_tx: &watch::Sender<bool>,
-    ack_timeout_state: &Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &watch::Sender<bool>,
-    ack_waiters: &Arc<Semaphore>,
-    ack_waiter_tx: &mpsc::Sender<AckWaiterMessage>,
+    commit_acks: &CommitAcks,
     // Frame-flag bits this client advertised. Read only to decide whether the
     // ack may name a forwarding owner: that sets a flag bit, and a client that
     // did not advertise it rejects the whole frame rather than masking the bit
@@ -285,6 +294,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         peer_flags,
         broker,
         publish_ctx,
+        declared,
         stream_cache,
         stream_cache_key,
         throttled,
@@ -301,8 +311,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         batch.tenant_id,
         batch.namespace,
         batch.stream,
@@ -316,7 +325,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
             ack
         }),
         sample,
-        auth_ctx.token.clone(),
+        auth_ctx.publishing_as(),
         producer.map(|producer| {
             (
                 producer.producer_id,

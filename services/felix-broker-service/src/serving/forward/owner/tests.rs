@@ -193,6 +193,7 @@ async fn broker_with(consistency: ConsistencyLevel) -> (Arc<Broker>, TempDir) {
                 durable: true,
                 shards: 1,
                 consistency,
+                ..Default::default()
             },
         )
         .await
@@ -295,6 +296,7 @@ fn forwarded_cache_op(op: CacheOpKind, credential: String) -> ForwardCacheOp {
         value: Bytes::from_static(b"v"),
         ttl_ms: 0,
         credential,
+        condition: None,
     }
 }
 
@@ -401,6 +403,65 @@ async fn a_forwarded_cache_op_is_checked_against_its_own_action() {
     {
         InternalMessage::ForwardCacheError(err) => assert_eq!(err.code, ErrorCode::Unauthorized),
         other => panic!("a cache op with no credential was served: {other:?}"),
+    }
+}
+
+/// **The owner re-checks a forwarded cache op with its key.** A key grant
+/// covers the keys it names and no others, for every forwarded op, and a
+/// whole-cache grant still covers them all.
+#[tokio::test]
+async fn a_forwarded_cache_op_is_checked_against_its_key() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let handler = handler_with(
+        broker,
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+    );
+    let token = |object: &str| {
+        credentials.token(&[
+            &format!("cache.read:{object}"),
+            &format!("cache.write:{object}"),
+        ])
+    };
+    let cache = format!("cache:{TENANT}/{NAMESPACE}/{CACHE}");
+    // `forwarded_cache_op` uses the key `session:abc`.
+    let cases = [
+        (cache.clone(), true),
+        (format!("{cache}/session:abc"), true),
+        (format!("{cache}/session:*"), true),
+        (format!("{cache}/session:ab"), false),
+        (format!("{cache}/session:abcd*"), false),
+        (format!("{cache}/other*"), false),
+    ];
+    for (object, allowed) in cases {
+        let credential = token(&object);
+        for op in [
+            CacheOpKind::Get,
+            CacheOpKind::Put,
+            CacheOpKind::Delete,
+            CacheOpKind::CounterAdd,
+            CacheOpKind::CounterGet,
+        ] {
+            let answer = handler
+                .apply_cache_op(forwarded_cache_op(op, credential.clone()))
+                .await;
+            let refused = matches!(
+                &answer,
+                InternalMessage::ForwardCacheError(err) if err.code == ErrorCode::Unauthorized
+            );
+            assert_eq!(refused, !allowed, "{object} {op:?}: {answer:?}");
+        }
     }
 }
 
@@ -623,6 +684,7 @@ async fn a_forwarded_publish_to_a_stream_without_a_log_has_no_offsets() {
                 durable: false,
                 shards: 1,
                 consistency: ConsistencyLevel::Leader,
+                ..Default::default()
             },
         )
         .await
@@ -679,6 +741,7 @@ mod fence {
             value,
             ttl_ms: 0,
             credential: credential.to_string(),
+            condition: None,
         }
     }
 
@@ -903,5 +966,51 @@ mod fence {
             .await
             .expect("read");
         assert_eq!(counted, None, "the held add was applied on the old owner");
+    }
+}
+
+/// A forwarded conditional put is checked on the owner and answered with
+/// whether it applied and the version, as a local one is.
+#[tokio::test]
+async fn a_forwarded_conditional_put_answers_with_its_outcome() {
+    use felix_wire::internal::{ForwardCacheCondition, ForwardCacheOutcome};
+
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let handler = handler_with(
+        broker,
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+    );
+    let writer = credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]);
+    let put_if = || ForwardCacheOp {
+        condition: Some(ForwardCacheCondition::Absent),
+        ..forwarded_cache_op(CacheOpKind::Put, writer.clone())
+    };
+
+    let first = match handler.apply_cache_op(put_if()).await {
+        InternalMessage::ForwardCacheOk(ok) => ok.outcome.expect("an outcome"),
+        other => panic!("not served: {other:?}"),
+    };
+    assert!(first.applied);
+    match handler.apply_cache_op(put_if()).await {
+        InternalMessage::ForwardCacheOk(ok) => assert_eq!(
+            ok.outcome,
+            Some(ForwardCacheOutcome {
+                applied: false,
+                version: first.version,
+            })
+        ),
+        other => panic!("not served: {other:?}"),
     }
 }

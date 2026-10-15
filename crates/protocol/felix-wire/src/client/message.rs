@@ -6,10 +6,15 @@
 
 mod base64_serde;
 mod fields;
+mod inspect;
 
 pub use fields::{
-    AckMode, BrokerEndpoint, CursorErrorReason, GroupRecord, PublishRefusalReason, StartPosition,
-    StateChange,
+    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, PublishRefusalReason,
+    ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
+};
+pub use inspect::{
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,
+    ShardInspection, SubscriptionCursor, SubscriptionFilter,
 };
 
 use bytes::Bytes;
@@ -69,6 +74,16 @@ pub enum Message {
         /// implements none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_features: Option<u32>,
+        /// Extended feature bits, from `KNOWN_FEATURES_HI`: the second word of
+        /// the feature set, once the first ran out.
+        ///
+        /// A separate field rather than a wider `client_features` because an
+        /// older broker decodes that as a `u32`, and a value past it would fail
+        /// the whole `Auth`. Sent with `FEATURE_EXTENDED` set in
+        /// `client_features`, and only when non-zero: see
+        /// [`offer_features`](crate::offer_features).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_features_hi: Option<u32>,
     },
     /// Successful auth, carrying the broker's supported frame-flag bits.
     ///
@@ -90,6 +105,14 @@ pub enum Message {
         /// so a client must never send one speculatively.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_features: Option<u32>,
+        /// Extended feature bits this broker implements, the mirror of
+        /// `Auth.client_features_hi`.
+        ///
+        /// Sent only to a client that set `FEATURE_EXTENDED`, and only when
+        /// non-zero, so any other client's `AuthOk` is unchanged: see
+        /// [`answer_features`](crate::answer_features).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_features_hi: Option<u32>,
         /// Every port this broker's client-facing listeners are bound to,
         /// when it has more than one.
         ///
@@ -109,8 +132,9 @@ pub enum Message {
         /// during auth, which is a much larger claim than "I also listen here".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         listener_ports: Option<Vec<u16>>,
-        /// How many acknowledged publishes this connection may have
-        /// unanswered at once, when the broker pipelines them.
+        /// How many acknowledged publishes may be unanswered at once, when
+        /// the broker pipelines them: per stream if the broker advertises
+        /// `FEATURE_STREAM_PUBLISH_WINDOW`, else per connection.
         ///
         /// Present only for a client that offered `FEATURE_PUBLISH_PIPELINE`
         /// and only when the broker grants it, so every other client gets the
@@ -234,8 +258,49 @@ pub enum Message {
     /// How many shards that cache has, as this broker's routing snapshot sees
     /// it. `0` means the broker knows nothing of the cache.
     CacheShardsView { shards: u32, request_id: u64 },
+    /// Ask which broker owns each shard of a stream or cache.
+    ///
+    /// Only ever sent to a broker that advertised `FEATURE_SHARD_OWNERS`.
+    ShardOwners {
+        tenant_id: String,
+        namespace: String,
+        /// The stream or cache. A stream and a cache may share a name, which
+        /// is why `kind` is required.
+        name: String,
+        kind: ShardKind,
+        request_id: u64,
+    },
+    /// One entry per shard, in shard order, as this broker's routing snapshot
+    /// sees it. Empty means the broker knows nothing of the stream or cache.
+    ShardOwnersView {
+        owners: Vec<ShardOwner>,
+        request_id: u64,
+    },
 
     // Publishing, including idempotent producers.
+    /// The width the keyed publishes that follow on this stream, to `stream`,
+    /// were routed by: the answer to `stream_shards` the client holds.
+    ///
+    /// A client puts each shard of a stream on a publish stream of its own,
+    /// picked from that width. A stream deleted and created again at another
+    /// width leaves the client holding a stale one, and keys now sharing a
+    /// shard can go out on two writers. The broker compares each keyed batch
+    /// (`publish_batch`, `publish_idempotent` and the binary batch frames) to
+    /// the stream named here against its own width for it, and refuses one
+    /// that disagrees: `stale_width` when acknowledged, dropped when not.
+    ///
+    /// Holds until the next one; a batch to any other stream is not checked.
+    /// No answer. Only sent to a broker that advertised
+    /// `FEATURE_PUBLISH_WIDTH`.
+    PublishWidth {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shards: u32,
+        /// Absent is `modulo`, as on `stream_shards_view`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing: Option<crate::routing::ShardRouting>,
+    },
     /// Publish a single payload to a stream.
     Publish {
         tenant_id: String,
@@ -345,11 +410,39 @@ pub enum Message {
         producer_id: u64,
         sequence: u64,
     },
-    /// A `publish_idempotent` the broker would not append, with a reason the
-    /// producer can act on rather than prose it would have to parse.
+    /// A batch appended only if it would start at exactly `expected_offset`:
+    /// the shard's next offset, so nothing else was appended since the
+    /// writer last saw the tail.
     ///
-    /// Only ever sent to a client that offered `FEATURE_IDEMPOTENT_PRODUCER`,
-    /// which it did by sending `publish_idempotent` at all.
+    /// Answered with `publish_ok` carrying the batch's first offset, or
+    /// `publish_refused` with `offset_mismatch` and the tail, having written
+    /// nothing. Always acknowledged. Not forwarded: a broker that does not
+    /// lead the shard answers `not_leader`. Sent only to a broker that
+    /// advertised `FEATURE_PUBLISH_CONDITIONAL`.
+    PublishIf {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_vec")]
+        payloads: Vec<Vec<u8>>,
+        /// Routes the batch like `PublishBatch.key`. The expected offset is
+        /// the tail of the shard the key routes to.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::client::message::base64_serde::base64_option_bytes"
+        )]
+        key: Option<Bytes>,
+        expected_offset: u64,
+        request_id: u64,
+    },
+    /// A `publish_idempotent`, `publish_if` or conditional `commit` the
+    /// broker would not append, with a reason the writer can act on rather
+    /// than prose it would have to parse.
+    ///
+    /// Only ever sent to a client that offered `FEATURE_IDEMPOTENT_PRODUCER`
+    /// or `FEATURE_PUBLISH_CONDITIONAL`, which it did by sending one of those
+    /// requests at all.
     PublishRefused {
         request_id: u64,
         reason: PublishRefusalReason,
@@ -384,13 +477,23 @@ pub enum Message {
         /// per shard and merges them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shard: Option<u32>,
+        /// How many envelopes this subscriber's broker-side queue should hold.
+        /// An envelope is one published batch, not one record.
+        ///
+        /// The broker clamps it to `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+        /// and answers with what it granted. Absent means the stream's default.
+        /// The overflow policy is not the subscriber's to choose. Sent only to
+        /// a broker that advertised `FEATURE_SUBSCRIBE_QUEUE`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_capacity: Option<u32>,
     },
     /// Subscription confirmation with server-assigned ID.
     Subscribed {
         subscription_id: u64,
-        /// The first offset this subscription delivers. Sent only for a
-        /// subscribe with a `start`, on a durable stream, to a client that
-        /// negotiated offsets, so a plain subscribe gets the frame it always did.
+        /// The first offset this subscription delivers. Sent only on a durable
+        /// stream, to a client that negotiated offsets, which is the client
+        /// that can read it. A plain subscribe from such a client is `latest`;
+        /// any other client gets the frame it always did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         start_offset: Option<u64>,
         /// The stream's tail when the subscriber was registered. Records below
@@ -398,6 +501,10 @@ pub enum Message {
         /// in between. Equal to `start_offset` for `latest`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live_offset: Option<u64>,
+        /// The queue capacity the broker granted, after clamping. Sent only
+        /// when the subscribe asked for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_capacity: Option<u32>,
     },
     /// A subscribe could not start where it was asked to.
     ///
@@ -444,6 +551,31 @@ pub enum Message {
         addr: Option<String>,
         /// The assignment generation that moved the shard.
         generation: u64,
+    },
+    /// Last message on the event stream of a subscription whose stream was
+    /// deleted. The broker finishes the stream after it. Unlike `shard_moved`
+    /// there is nowhere to resume: the stream is gone.
+    ///
+    /// Sent only to a client that offered `FEATURE_STREAM_DELETED`; any other
+    /// client sees the stream end after its last event, as it always has.
+    StreamDeleted { subscription_id: u64 },
+    /// Last message on the event stream of a durable-stream subscription
+    /// whose queue on the broker dropped records: the subscriber fell behind.
+    /// The broker finishes the stream after it.
+    ///
+    /// Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED`; any
+    /// other client keeps its subscription and sees the drop only as a jump
+    /// in offsets, once a later event arrives.
+    SubscriptionLagged {
+        subscription_id: u64,
+        /// Where the broker's queue for this subscriber first dropped a
+        /// record, or where a resumed subscription's catch-up ended if that
+        /// drop was already covered. Nothing at or above it was sent. A record
+        /// below it can still have been dropped on the way out, by the
+        /// connection's write queue for this subscription, so a client
+        /// resumes after the last event it received and uses this only when
+        /// it received none.
+        resume_from: u64,
     },
     /// Single event delivered to a subscriber.
     Event {
@@ -518,9 +650,53 @@ pub enum Message {
         value: Option<Bytes>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u64>,
+        /// The value's version, for a conditional write to compare against.
+        /// Only on a get's answer to a client that offered
+        /// `FEATURE_CACHE_CONDITIONAL`, and only on a hit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
     },
     /// Cache write response with request id.
     CacheOk { request_id: u64 },
+    /// Store a value only if the key's current entry meets `condition`;
+    /// answered with `CacheConditionResult`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_CACHE_CONDITIONAL`. The
+    /// check and the write are atomic on the key's owner.
+    CachePutIf {
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        value: Bytes,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+        condition: CacheCondition,
+        request_id: u64,
+    },
+    /// Remove a key only if its current version is `version`; answered with
+    /// `CacheConditionResult`. Sent only to a broker that advertised
+    /// `FEATURE_CACHE_CONDITIONAL`.
+    CacheDeleteIf {
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        version: u64,
+        request_id: u64,
+    },
+    /// The answer to `CachePutIf` or `CacheDeleteIf`.
+    ///
+    /// `applied` says whether the write was made. After an applied put,
+    /// `version` is the version it wrote; otherwise it is the key's current
+    /// version, absent when the key has no live entry.
+    CacheConditionResult {
+        applied: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        request_id: u64,
+    },
     /// Watch a cache key or key prefix for changes; answered with
     /// `CacheWatchStarted` and a uni event stream carrying `CacheEvent`s.
     ///
@@ -677,6 +853,14 @@ pub enum Message {
         #[serde(default)]
         changes: Vec<StateChange>,
         request_id: u64,
+        /// Commit only if the record would land at exactly this offset, the
+        /// shard's next: a compare-and-set on the whole shard. Refused with
+        /// `publish_refused` and `offset_mismatch`, having written nothing.
+        /// Sent only to a broker that advertised
+        /// `FEATURE_PUBLISH_CONDITIONAL`; absent is the commit every client
+        /// sent before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_offset: Option<u64>,
     },
     /// The commit is durable (on a `Quorum` stream, on a majority) at
     /// `offset`, which is also the version of every key it wrote.
@@ -729,6 +913,24 @@ pub enum Message {
         #[serde(default)]
         wait_ms: u64,
         request_id: u64,
+        /// The member polling, stable across its restarts, 1 to 128 bytes. Its
+        /// claims are recorded as its own, under the connection's principal.
+        /// Absent for a member that does not name itself, which is every
+        /// client before `FEATURE_GROUP_CONSUMER`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumer: Option<String>,
+        /// With `consumer`: take back the claims that member holds from older
+        /// connections, which a restarted process left behind, ahead of
+        /// anything else, rather than wait for them to lapse. Honoured on the
+        /// connection's first such poll only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reclaim: bool,
+        /// How long this poll's claims stand, in milliseconds. Omitted or `0`
+        /// is the broker's visibility timeout. The broker caps it. Sent only
+        /// to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`: an older
+        /// one would ignore it and claim for its own timeout.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        visibility_ms: u64,
     },
     /// Records claimed by a `GroupPoll`, in offset order.
     ///
@@ -751,6 +953,57 @@ pub enum Message {
     /// Hand one record back without finishing it, to be redelivered at once
     /// rather than after the visibility timeout.
     GroupNack {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        offset: u64,
+        request_id: u64,
+        /// Owe the record again only this many milliseconds from now, rather
+        /// than at once. Omitted or `0` is at once. The broker caps it. Sent
+        /// only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`: an
+        /// older one would ignore it and redeliver at once.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        delay_ms: u64,
+        /// The delivery being handed back, as `attempts` names it on
+        /// `group_extend`. When set, the nack is refused with `stale_claim`
+        /// once that claim has lapsed or the record has been handed out
+        /// again, so a late nack cannot hold back someone else's delivery.
+        /// Omitted or `0` nacks whatever claim stands, as before. Sent only
+        /// to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        attempts: u32,
+    },
+    /// Keep a claim standing for `extend_ms` from now. Answered with
+    /// `group_extended`.
+    ///
+    /// Refused with `stale_claim` once the claim has lapsed, or once the
+    /// record has been handed out again: `attempts` is the count the record
+    /// was delivered with, and names that one delivery. Sent only to a broker
+    /// that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+    GroupExtend {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        offset: u64,
+        attempts: u32,
+        /// The broker caps it.
+        extend_ms: u64,
+        request_id: u64,
+    },
+    /// A `group_extend` landed. The claim stands for `visible_ms` from when
+    /// the broker answered, which is less than asked for when the broker
+    /// capped it.
+    GroupExtended { visible_ms: u64, request_id: u64 },
+    /// Give up on one record: list it as a dead letter of the group and
+    /// finish it, as the group does itself once a record runs out of attempts.
+    /// `group_redrive` puts it back. Answered with `cache_ok`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`.
+    GroupDeadLetter {
         tenant_id: String,
         namespace: String,
         stream: String,
@@ -798,6 +1051,196 @@ pub enum Message {
         shard: u32,
         group: String,
         offset: u64,
+        request_id: u64,
+    },
+    /// Move a group's cursor on one shard, backwards or forwards. Every claim
+    /// standing when it lands is void. Answered with `group_position`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupSeek {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        /// `earliest` is the oldest record the shard still holds, `latest`
+        /// its committed tail when the seek lands, and an offset must lie
+        /// between the two.
+        start: StartPosition,
+        /// Move the group only if it does not exist yet: no cursor, and
+        /// nothing handed out. This is how a group is created at a chosen
+        /// position. Left out when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        if_new: bool,
+        request_id: u64,
+    },
+    /// Where a `group_seek` left the group.
+    GroupPosition {
+        /// The offset the group resumes from on the shard.
+        offset: u64,
+        /// False when `if_new` found the group already there.
+        moved: bool,
+        request_id: u64,
+    },
+    /// Where a group stands on one shard. Answered with `group_info`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupDescribe {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        request_id: u64,
+    },
+    /// A group's standing on one shard. `in_flight` and `owed` are the
+    /// leader's memory, a snapshot that starts again from zero when the
+    /// shard changes leader.
+    GroupInfo {
+        /// Everything below this is finished. Left out for a group that has
+        /// no cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        committed: Option<u64>,
+        /// The shard's committed tail. `tail - committed` is how far behind
+        /// the group is.
+        tail: u64,
+        /// Records handed out and not yet settled.
+        in_flight: u64,
+        /// Records owed again after a nack or a lapsed claim.
+        owed: u64,
+        /// Records the group gave up on.
+        dead_letters: u64,
+        request_id: u64,
+    },
+    /// Delete a group on one shard: its cursor, its dead letters, and its
+    /// claims. Answered with `group_deleted`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupDelete {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        request_id: u64,
+    },
+    /// A `group_delete` landed. `existed` is false when there was nothing
+    /// to delete.
+    GroupDeleted { existed: bool, request_id: u64 },
+
+    // Record times.
+    /// The first offset on one shard whose record was appended at or after
+    /// `at_micros`. Answered with `offset_value`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_RECORD_TIMESTAMPS`.
+    OffsetForTime {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        /// Microseconds since the Unix epoch.
+        at_micros: u64,
+        request_id: u64,
+    },
+    /// The answer to `offset_for_time`. `offset` is left out when no record
+    /// that recent is committed yet: subscribe at `latest` to wait for one.
+    /// A time older than every record the shard holds answers with the
+    /// oldest.
+    OffsetValue {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        request_id: u64,
+    },
+
+    // Bounded reads.
+    /// One page of a durable stream shard's committed records, from `from` and
+    /// stopping before `end`. Answered with `stream_records`. Registers no
+    /// subscriber, so the read never runs on into live delivery.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_STREAM_READ`.
+    StreamRead {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        /// The first offset to read.
+        from: u64,
+        /// Stop before this offset. Left out, the page may run to the
+        /// committed tail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<u64>,
+        /// Most records to return. `0` takes the broker's cap, and the broker
+        /// caps any larger value.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        max_records: u32,
+        /// Most payload bytes to return, likewise. A single larger record is
+        /// still returned, alone.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        max_bytes: u64,
+        request_id: u64,
+    },
+    /// The answer to `stream_read`, in offset order. Empty when nothing
+    /// committed lies in the range yet, which is an answer and not an error.
+    StreamRecords {
+        records: Vec<StreamRecord>,
+        /// Where the next page starts. Not always the last offset plus one:
+        /// offsets that hold no record are passed over. At or past `end`
+        /// when the range is done.
+        next_offset: u64,
+        request_id: u64,
+    },
+
+    // Operator inspection.
+    /// Ask a broker for its own view of one shard: phase, generation, fence,
+    /// lease, tail, and as leader each replica's position. Answered with
+    /// `shard_inspect_info`. Needs `node.view:cluster:*`, and names any
+    /// tenant: the cluster scope is not a tenant's.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_INSPECT`.
+    ShardInspect {
+        tenant_id: String,
+        namespace: String,
+        /// The stream or cache. A stream and a cache may share a name, which
+        /// is why `kind` is required.
+        name: String,
+        kind: ShardKind,
+        shard: u32,
+        request_id: u64,
+    },
+    /// The answer to `shard_inspect`.
+    ShardInspectInfo {
+        /// Boxed: far larger than any other answer, and rare.
+        view: Box<ShardInspection>,
+        request_id: u64,
+    },
+    /// Ask a broker for the subscriptions it serves, one page at a time:
+    /// each one's queue, drops, position and owner. Answered with
+    /// `subscriptions_list_info`. Needs `node.view:cluster:*`, and lists
+    /// every tenant's.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_INSPECT`.
+    SubscriptionsList {
+        /// Boxed: larger than most requests, and rare.
+        #[serde(default)]
+        filter: Box<SubscriptionFilter>,
+        /// At most this many. The broker answers 100 when absent and never
+        /// more than 1000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        /// Start after this subscription: the `next_cursor` of the page
+        /// before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<SubscriptionCursor>,
+        request_id: u64,
+    },
+    /// The answer to `subscriptions_list`.
+    SubscriptionsListInfo {
+        /// The broker answering. Empty on a broker that is not in a cluster.
+        node_id: String,
+        subscriptions: Vec<InspectedSubscription>,
+        /// Where the next page starts. Absent on the last page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<SubscriptionCursor>,
         request_id: u64,
     },
 
@@ -904,6 +1347,18 @@ where
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// For `skip_serializing_if`, like [`is_false`].
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// [`is_zero`] for a `u32`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 #[cfg(test)]

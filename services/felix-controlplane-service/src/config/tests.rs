@@ -221,7 +221,10 @@ fn from_env_uses_defaults() {
     assert_eq!(config.metrics_bind.to_string(), "0.0.0.0:8080");
     assert_eq!(config.region_id, "local");
     assert_eq!(config.changes_limit, DEFAULT_CHANGES_LIMIT);
-    assert_eq!(config.oidc_allowed_algorithms, vec![Algorithm::ES256]);
+    assert_eq!(
+        config.oidc_allowed_algorithms,
+        vec![Algorithm::ES256, Algorithm::RS256]
+    );
     assert!(matches!(config.storage, StorageBackend::Memory));
     let _env = clear_felix_env();
 }
@@ -353,8 +356,8 @@ fn raft_initial_cluster_state_and_peer_tls_parse_strictly() {
 }
 
 /// Move pacing from the environment. Zero means "no limit" for the per-node
-/// cap and "never" for the timeout, and a move limit of zero holds every
-/// move.
+/// cap, "never" for the timeout, and no wait for the settle window, and a
+/// move limit of zero holds every move.
 #[serial]
 #[test]
 fn shard_move_pacing_comes_from_the_environment() {
@@ -369,14 +372,18 @@ fn shard_move_pacing_comes_from_the_environment() {
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "2");
         env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
+        env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
+        env::set_var("FELIX_PLACEMENT_SETTLE_MS", "0");
     }
     let config = ControlPlaneConfig::from_env()
         .expect("from_env")
         .shard_moves;
+    assert_eq!(config.settle_millis, None);
     assert_eq!(config.max_concurrent, 0);
     assert_eq!(config.max_per_node, Some(2));
     assert_eq!(config.fence_max_lag_records, 0);
     assert_eq!(config.timeout_millis, None);
+    assert_eq!(config.restore_stall_millis, None);
 
     unsafe {
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "0");
@@ -385,6 +392,14 @@ fn shard_move_pacing_comes_from_the_environment() {
         .expect("from_env")
         .shard_moves;
     assert_eq!(config.max_per_node, None);
+
+    unsafe {
+        env::set_var("FELIX_PLACEMENT_SETTLE_MS", "2500");
+    }
+    let config = ControlPlaneConfig::from_env()
+        .expect("from_env")
+        .shard_moves;
+    assert_eq!(config.settle_millis, Some(2_500));
     let _env = clear_felix_env();
 }
 
@@ -555,7 +570,7 @@ mod yaml_overrides {
     use super::*;
 
     fn parse(yaml: &str) -> ControlPlaneConfigOverride {
-        serde_yaml_ng::from_str(yaml).expect("parse the override")
+        felix_common::yaml::from_str(yaml).expect("parse the override")
     }
 
     /// A base taken from an empty environment, which is what a config file
@@ -590,6 +605,7 @@ max_shard_moves_per_node: 2
 shard_move_fence_max_lag_records: 500
 shard_move_timeout_ms: 60000
 shard_restore_after_ms: 90000
+shard_restore_stall_ms: 45000
 oidc_allowed_algorithms: ["ES256", "RS256"]
 node_liveness:
   heartbeat_interval_ms: 1100
@@ -633,6 +649,7 @@ bootstrap:
                 fence_max_lag_records: 500,
                 timeout_millis: Some(60_000),
                 restore_after_millis: Some(90_000),
+                restore_stall_millis: Some(45_000),
                 paused: false,
                 ..Default::default()
             }
@@ -820,4 +837,72 @@ mod debug_redaction {
             "<redacted>"
         );
     }
+}
+
+/// Development tokens are minted for any principal without an identity
+/// provider, so they are only served by a loopback bootstrap listener.
+#[serial]
+#[test]
+fn dev_tokens_need_a_loopback_bootstrap_listener() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_DEV_TOKENS", "true");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("bootstrap off");
+    assert!(
+        err.to_string().contains("FELIX_BOOTSTRAP_DEV_TOKENS"),
+        "{err}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_ENABLED", "true");
+        env::set_var("FELIX_BOOTSTRAP_TOKEN", "secret");
+        env::set_var("FELIX_BOOTSTRAP_BIND_ADDR", "0.0.0.0:9095");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("not loopback");
+    assert!(err.to_string().contains("loopback"), "{err}");
+
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_BIND_ADDR", "127.0.0.1:9095");
+    }
+    assert!(
+        ControlPlaneConfig::from_env()
+            .expect("loopback")
+            .bootstrap
+            .dev_tokens
+    );
+}
+
+/// What the file meant before the YAML parser changed: a YAML 1.1 boolean
+/// spelling is refused, `<<` is an unknown key rather than a merge, and a
+/// null where a path is required is refused instead of becoming the path
+/// `~`.
+#[test]
+fn yaml_1_1_spellings_merge_keys_and_null_paths_are_refused() {
+    for text in [
+        "bootstrap:\n  enabled: on\n",
+        "bootstrap:\n  dev_tokens: yes\n",
+        "<<: {changes_limit: 5}\n",
+        "postgres:\n  max_connections: 010\n",
+        "tls:\n  cert_path: ~\n  key_path: k\n",
+        "tls:\n  cert_path:\n  key_path: k\n",
+        "storage:\n  backend: memory\n  backend: postgres\n",
+    ] {
+        assert!(
+            felix_common::yaml::from_str::<ControlPlaneConfigOverride>(text).is_err(),
+            "{text:?} was accepted"
+        );
+    }
+}
+
+/// A quoted empty path still parses, as it did; it is a bare or null one that
+/// is refused.
+#[test]
+fn a_quoted_empty_cert_path_still_parses() {
+    assert!(
+        felix_common::yaml::from_str::<ControlPlaneConfigOverride>(
+            "tls:\n  cert_path: ''\n  key_path: k\n"
+        )
+        .is_ok()
+    );
 }

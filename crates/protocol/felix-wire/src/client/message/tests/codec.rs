@@ -34,6 +34,7 @@ fn message_all_variants_encode_decode() {
         namespace: "ns".to_string(),
         stream: "stream".to_string(),
         shard: None,
+        queue_capacity: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");
@@ -44,6 +45,7 @@ fn message_all_variants_encode_decode() {
         subscription_id: 42,
         start_offset: None,
         live_offset: None,
+        queue_capacity: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");

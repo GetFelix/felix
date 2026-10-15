@@ -12,6 +12,7 @@ fn auth_offering(fixture: &AuthFixture, features: Option<u32>) -> Message {
         token: fixture.token.clone(),
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: features,
+        client_features_hi: None,
     }
 }
 
@@ -104,5 +105,57 @@ async fn an_unnegotiated_client_gets_the_old_frame() -> Result<()> {
         let errors = publish_errors(broker, &auth, features).await?;
         assert_eq!(errors, vec![Message::publish_error(7, "forbidden")]);
     }
+    Ok(())
+}
+
+/// A stream the broker does not know is `not_found` to a client that
+/// declared a width for it, not `stale_width`: a deleted stream has to read
+/// as gone, so the client waits for it rather than asking a width it lacks.
+#[tokio::test]
+async fn a_declared_batch_to_an_unknown_stream_is_not_found() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let auth = auth_fixture("t1", default_perms());
+    let error_codes = Arc::new(ErrorCodeSupport::default());
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_offering(
+            &auth,
+            Some(felix_wire::FEATURE_ERROR_CODES),
+        )))),
+        Ok(Some(frame_from_message(Message::PublishWidth {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            stream: "updates".to_string(),
+            shards: 4,
+            routing: None,
+        }))),
+        Ok(Some(frame_from_message(Message::PublishBatch {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            stream: "updates".to_string(),
+            payloads: vec![b"payload".to_vec()],
+            key: Some(bytes::Bytes::from_static(b"customer-7")),
+            request_id: Some(1),
+            ack: Some(felix_wire::AckMode::PerBatch),
+        }))),
+    ];
+    let (_, outgoing) = run_control_loop_with_codes(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+        Arc::clone(&error_codes),
+    )
+    .await?;
+    let errors: Vec<_> = outgoing
+        .into_iter()
+        .filter_map(|outgoing| match outgoing {
+            Outgoing::Message(message @ Message::PublishError { .. }) => {
+                Some(error_codes.shape(message))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(code_of(&errors[0]).0, Some(ErrorCode::NotFound));
     Ok(())
 }

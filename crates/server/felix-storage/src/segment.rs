@@ -9,6 +9,7 @@ pub mod format;
 
 pub(crate) mod index;
 pub(crate) mod reader;
+pub(crate) mod reservation;
 pub(crate) mod scan;
 pub(crate) mod writer;
 

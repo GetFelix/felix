@@ -37,6 +37,7 @@ pub const LEASE_FREE_FEATURES: &[&str] = &[
     "generation_start",
     "majority_ack",
     "lease_free_reads",
+    "fenced_caches",
     ATOMIC_COMMIT,
 ];
 

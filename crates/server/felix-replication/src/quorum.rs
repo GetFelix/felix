@@ -138,6 +138,15 @@ impl QuorumMarks {
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::MAJORITY_ACK))
     }
 
+    /// [`Self::acks_by_followers`] for a `Quorum` cache shard and its counter
+    /// log: once the fleet also finalized `fenced_caches`, which says every
+    /// broker fences a promoted cache shard's logs before it serves. Until
+    /// then an older broker could be promoted without that fence, and only
+    /// the old leader's lease keeps it from acknowledging alongside.
+    pub(crate) fn caches_ack_by_followers(&self) -> bool {
+        self.acks_by_followers() && self.fleet_supports(felix_common::fleet::FENCED_CACHES)
+    }
+
     /// Whether `key`'s mark at `generation` was decided by its followers, so
     /// an acknowledgement released on it needs no lease.
     pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
@@ -229,6 +238,12 @@ impl MarkTable {
         self.publish_marked(key, generation, offset, false);
     }
 
+    /// [`Self::publish`], for a mark the followers decided. From here on the
+    /// shard's mark at `generation` releases writes without the lease.
+    pub(crate) fn publish_by_followers(&self, key: &ShardKey, generation: u64, offset: u64) {
+        self.publish_marked(key, generation, offset, true);
+    }
+
     /// [`Self::publish`], marking the shard as decided by its followers first
     /// when `by_followers`, so a waiter the new offset wakes already sees it.
     fn publish_marked(&self, key: &ShardKey, generation: u64, offset: u64, by_followers: bool) {
@@ -262,7 +277,8 @@ impl MarkTable {
         }
     }
 
-    fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
+    /// Whether `key`'s mark at `generation` was decided by its followers.
+    pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
         self.shards
             .lock()
             .get(key)
@@ -546,6 +562,9 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 /// Hold a write to a `Quorum` cache until a majority of its shard's replica set
 /// has it. The cache-side mirror of [`await_quorum`].
 ///
+/// Call it right after every local put or delete: a write wakes replication
+/// whatever the cache's consistency, so a `Leader` cache ships promptly too.
+///
 /// A cache put does not report the offset it took, so this waits for the
 /// shard's tail as read after the write. That is at or past the write, so a
 /// mark at the tail covers it; a concurrent later write can only make the wait
@@ -568,6 +587,11 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         Access::Write => "write",
         Access::Read => "read",
     };
+    // The cache log ships on a replication pass; start one now rather than
+    // wait out the tick.
+    if access == Access::Write {
+        broker.appended().notify_one();
+    }
     let consistency = broker
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
         .await;
@@ -602,11 +626,24 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     if !ingress.replicated(shard) {
         return unreplicated(marks, ingress, access);
     }
+    let waited_at = std::sync::atomic::AtomicU64::new(0);
+    let leading = || {
+        let generation = ingress.generation(shard);
+        waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
+        generation
+    };
     match marks
-        .wait_while_leading(shard, || ingress.generation(shard), tail, timeout)
+        .wait_while_leading(shard, leading, tail, timeout)
         .await
     {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        // As for a stream: a mark the followers decided holds without the
+        // lease, since every newer leader fences a majority first.
+        QuorumWait::Reached
+            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+        {
+            Ok(())
+        }
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -719,12 +756,25 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     // The counter log ships on a replication pass; start one now rather than
     // wait out the tick.
     broker.appended().notify_one();
+    let waited_at = std::sync::atomic::AtomicU64::new(0);
+    let leading = || {
+        let generation = ingress.generation(shard);
+        waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
+        generation
+    };
     match marks
         .counters()
-        .wait_while_leading(shard, || ingress.generation(shard), end, timeout)
+        .wait_while_leading(shard, leading, end, timeout)
         .await
     {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        QuorumWait::Reached
+            if marks
+                .counters()
+                .decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+        {
+            Ok(())
+        }
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -1037,6 +1087,28 @@ pub fn quorum_offset_without(
     // Descending, so the `needed`-th is the highest offset that many hold.
     held.sort_unstable_by(|a, b| b.cmp(a));
     held.get(needed - 1).copied().unwrap_or(0)
+}
+
+/// Whether the shard acknowledges a write only once a majority holds it. A
+/// stream or cache this broker has not registered counts as no, which keeps
+/// the stricter test.
+pub(crate) async fn acknowledges_at_quorum(
+    broker: &felix_broker::Broker,
+    key: &felix_router::ShardKey,
+) -> bool {
+    let consistency = match key.kind {
+        felix_router::ShardKind::Cache => {
+            broker
+                .cache_consistency(&key.tenant_id, &key.namespace, &key.stream)
+                .await
+        }
+        felix_router::ShardKind::Stream => {
+            broker
+                .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
+                .await
+        }
+    };
+    consistency == Some(felix_broker::ConsistencyLevel::Quorum)
 }
 
 /// The highest offset a majority has answered that it holds at this leader's

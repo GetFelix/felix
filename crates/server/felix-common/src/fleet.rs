@@ -62,6 +62,9 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     LEASE_FREE_READS,
     JUMP_HASH_ROUTING,
     ATOMIC_COMMIT,
+    PUBLISHER_PRINCIPAL,
+    FENCED_CACHES,
+    GROUP_CURSOR_DEPENDENCIES,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -89,11 +92,34 @@ pub const MAJORITY_ACK: FleetFeature = FleetFeature::new("majority_ack");
 /// `docs/replication-design.md` ("Reads without the lease").
 pub const LEASE_FREE_READS: FleetFeature = FleetFeature::new("lease_free_reads");
 
+/// [`MAJORITY_ACK`] for `Quorum` caches: a write or counter add is
+/// acknowledged once a majority of the cache shard's replicas has answered
+/// that it holds it at the leader's generation, and a promoted cache shard
+/// never opens on the lease. Safe only when every broker fences a promoted
+/// cache shard's cache and counter logs before it serves, which a build
+/// without this feature does not, so a broker running with
+/// `FELIX_INTERNAL_FENCE=false` does not report it. Takes effect alongside
+/// [`MAJORITY_ACK`] and [`GENERATION_START`]. See
+/// `docs/replication-design.md` ("Acknowledging by the followers").
+pub const FENCED_CACHES: FleetFeature = FleetFeature::new("fenced_caches");
+
 /// A stream shard accepts atomic commits: an event and state updates written
 /// as one commit record. The record needs storage format v5 and a replication
 /// mark an older build refuses, so it waits for the whole fleet. See
 /// `docs/atomic-commit.md`.
 pub const ATOMIC_COMMIT: FleetFeature = FleetFeature::new("atomic_commit");
+
+/// A durable stream stores the principal that published each record, and
+/// replication ships it. The record needs storage format v6 and a mark an
+/// older build refuses, so it waits for the whole fleet. See
+/// `docs/protocol.md` ("Publisher").
+pub const PUBLISHER_PRINCIPAL: FleetFeature = FleetFeature::new("publisher_principal");
+
+/// A consumer group's cursor records the dead-letter log it needs beneath it,
+/// so a cursor left without its dead letters is put back rather than served.
+/// An older build refuses such a cursor value, so it waits for the whole
+/// fleet. See `docs/storage-format.md` ("Consumer-group cursor values").
+pub const GROUP_CURSOR_DEPENDENCIES: FleetFeature = FleetFeature::new("group_cursor_dependencies");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

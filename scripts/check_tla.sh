@@ -16,11 +16,25 @@
 # configuration takes (`weights` below), so CI can split the set across
 # parallel jobs.
 #
-# Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
+# `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
+# below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
+# (default 25) of traces up to `TLA_DEPTH` steps (default 300), from
+# `TLA_SEED` or a random seed it prints. A walk is held to its declared outcome
+# the same way, and TLC's full output is kept under target/tla/walk/ so a
+# trace survives the run. Sampling, not proof: a pass means nothing was found.
+#
+# Needs Java 11+ on PATH, or Docker or Podman (CONTAINER_ENGINE picks one;
+# see scripts/container_engine.sh). The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+mode=check
+if [ "${1:-}" = "--simulate" ]; then
+  mode=simulate
+  shift
+fi
 
 TLA_VERSION="v1.7.4"
 TLA_SHA256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
@@ -49,6 +63,7 @@ fetch_tools() {
 # spec, and a run that is killed leaves them there.
 tlc() {
   local cfg="$1"
+  shift
   local scratch
   scratch="$(mktemp -d)"
   # A configuration checks the module whose name it starts with.
@@ -59,19 +74,25 @@ tlc() {
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
+    FelixGroups*) module="FelixGroups" ;;
   esac
-  local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 -config "$cfg.cfg" "$module.tla")
+  local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
+    -config "$cfg.cfg" "$module.tla")
+  # A simulation runs until stopped, so a walk is stopped by the clock: exit
+  # 124 from `timeout` is a walk that spent its budget.
+  local limit=()
+  if [ "$mode" = simulate ]; then limit=(timeout "${TLA_SIM_MINUTES:-25}m"); fi
   local status=0
   if command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then
-    (cd "$SPEC_DIR" && java -XX:+UseParallelGC -jar "../../$JAR" \
+    (cd "$SPEC_DIR" && ${limit[@]+"${limit[@]}"} java -XX:+UseParallelGC -jar "../../$JAR" \
       -metadir "$scratch" "${flags[@]}") || status=$?
-  elif command -v docker >/dev/null 2>&1; then
-    docker run --rm \
+  elif engine="$(scripts/container_engine.sh)" && [ -n "$engine" ]; then
+    "$engine" run --rm \
       -v "$PWD/$SPEC_DIR:/spec" -v "$PWD/$JAR:/tla2tools.jar" -v "$scratch:/scratch" \
-      -w /spec eclipse-temurin:21-jre java -XX:+UseParallelGC -jar /tla2tools.jar \
+      -w /spec docker.io/library/eclipse-temurin:21-jre ${limit[@]+"${limit[@]}"} java -XX:+UseParallelGC -jar /tla2tools.jar \
       -metadir /scratch "${flags[@]}" || status=$?
   else
-    echo "check_tla.sh needs java or docker" >&2
+    echo "check_tla.sh needs java, docker or podman" >&2
     exit 1
   fi
   # The larger configurations leave gigabytes in it, one run after another.
@@ -152,7 +173,38 @@ expectations=(
   "FelixShardFencedAckStagedMoveShort pass"
   "FelixShardFencedAckMoveCancelShort pass"
   "FelixShardFencedAckMoveDestination violates AckedHeldByLeader"
+  "FelixShardFencedCache pass"
+  "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
+  "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
+  "FelixShardElect pass"
+  "FelixShardElectNoBallot violates OneLeaderPerGeneration"
+  "FelixShardElectStaleSet violates AckedHeldByLeader"
+  "FelixShardElectHandoffLeaders pass"
+  "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
+  "FelixShardSuspicion pass"
+  "FelixShardSuspicionLease violates AtMostOneServing"
+  "FelixGroups pass"
+  "FelixGroupsNoCheck violates NoSkip"
+  "FelixGroupsLengthOnly violates NoSkip"
+  "FelixGroupsDropGroup violates NoSkip"
+  "FelixGroupsSplitSources pass"
+  "FelixGroupsSplitSourcesLengthOnly violates NoSkip"
+  "FelixGroupsShipUnsynced violates NoSkip"
 )
+
+# The long random walks, for `--simulate`: one pass configuration per family
+# of set changes, and its negative twin, which must reach its violation
+# within the budget to show the walks get that far at all.
+walks=(
+  "FelixShardWalkSpares pass"
+  "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
+  "FelixShardWalkMoves pass"
+  "FelixShardWalkMovesDestination violates AckedHeldByLeader"
+  "FelixShardWalkHandoff pass"
+  "FelixShardWalkHandoffNoWait violates AtMostOneServing"
+)
+registered=("${expectations[@]}")
+if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
 
 shard_index=0
 shard_count=1
@@ -163,45 +215,55 @@ fi
 
 # Configurations named on the command line, when any are, and no others. A
 # named one that is not registered above is run by hand and must pass.
-selected=("${expectations[@]}")
+selected=("${registered[@]}")
 if [ "$#" -gt 0 ]; then
   selected=()
   for name in "$@"; do
     entry="$name pass"
-    for known in "${expectations[@]}"; do
+    for known in "${registered[@]}"; do
       if [ "${known%% *}" = "$name" ]; then entry="$known"; fi
     done
     selected+=("$entry")
   done
 fi
 
-# Minutes each of the longer configurations takes on a four-core CI runner;
-# anything not listed is taken as one. Shards are filled longest first, each
+# Minutes each of the longer configurations takes on a four-core CI runner,
+# from the `Finished in` lines of a CI run (a new one is a guess until it has
+# run); anything not listed is taken as one. Shards are filled longest first, each
 # configuration going to the least loaded, so one long run does not land on
 # top of others and push a job past its hour.
 weights=(
-  "FelixShardFencedAckMoveCancelShort 35"
-  "FelixShardFencedAckMoveShort 22"
-  "FelixShardFencedAckStagedMoveShort 20"
-  "FelixShardFencedAckTwoPromotionsStart 20"
-  "FelixShardSessionsGroupRound 14"
-  "FelixShardReadsRound 11"
-  "FelixShardFencedAck 6"
-  "FelixShardCancel 5"
-  "FelixShardCancelResend 5"
-  "FelixShardFigure8FollowerAcks 5"
-  "FelixShardFigure8CutOver 5"
-  "FelixShard 4"
-  "FelixShardAckWithoutLease 3"
-  "FelixShardRealMargins 3"
-  "FelixShardFigure8 3"
-  "FelixShardFencedPromotion 3"
-  "FelixShardLogOrder 2"
-  "FelixShardFencedAckSeat 2"
-  "FelixShardRealMarginsLease 2"
-  "FelixShardHandoff 2"
-  "FelixShardIdempotentHandoff 2"
-  "FelixShardStalePlannerCas 2"
+  "FelixShardFencedAckMoveShort 31"
+  "FelixShardFencedAckMoveCancelShort 30"
+  "FelixShardFencedAckStagedMoveShort 26"
+  "FelixShardFencedAckTwoPromotionsStart 24"
+  "FelixShardFencedCache 22"
+  "FelixShardReadsRound 21"
+  "FelixShardSessionsGroupRound 16"
+  "FelixGroupsSplitSources 17"
+  "FelixShardFencedAck 12"
+  "FelixGroups 12"
+  "FelixShardFigure8CutOver 9"
+  "FelixShard 7"
+  "FelixShardFencedPromotion 7"
+  "FelixShardCancelResend 6"
+  "FelixShardFigure8FollowerAcks 6"
+  "FelixShardCancel 6"
+  "FelixShardReportFloor 5"
+  "FelixShardAckWithoutLease 4"
+  "FelixShardFigure8 4"
+  "FelixShardRealMargins 4"
+  "FelixShardRealMarginsLease 4"
+  "FelixShardFencedAckSeat 3"
+  "FelixShardFollowerLabels 3"
+  "FelixShardHandoff 3"
+  "FelixShardIdempotentHandoff 3"
+  "FelixShardStalePlannerCas 3"
+  "FelixShardLogOrder 3"
+  "FelixShardStagedMove 3"
+  "FelixShardElectHandoffLeaders 3"
+  "FelixShardSessionsSubscriber 2"
+  "FelixShardSuspicion 2"
 )
 
 weight_of() {
@@ -227,6 +289,11 @@ assign_shards() {
 shards=()
 while read -r s; do shards+=("$s"); done < <(assign_shards)
 
+WALK_DIR="target/tla/walk"
+if [ "$mode" = simulate ] && command -v java >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
+  echo "check_tla.sh --simulate needs timeout (GNU coreutils)" >&2
+  exit 1
+fi
 fetch_tools
 failed=0
 position=-1
@@ -235,13 +302,31 @@ for entry in "${selected[@]}"; do
   expect="${entry#* }"
   position=$((position + 1))
   if [ "${shards[$position]}" -ne "$shard_index" ]; then continue; fi
-  echo "== $cfg (expected: $expect)"
-  output="$(tlc "$cfg" 2>&1)" && status=0 || status=$?
-  summary="$(echo "$output" | grep -E "states generated|depth of the complete|Error:|is violated|Finished in" | tail -5)"
+  extra=()
+  if [ "$mode" = simulate ]; then
+    seed="${TLA_SEED:-$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')}"
+    extra=(-simulate -depth "${TLA_DEPTH:-300}" -seed "$seed")
+    echo "== $cfg (expected: $expect; seed $seed, depth ${TLA_DEPTH:-300}, ${TLA_SIM_MINUTES:-25} min)"
+  else
+    echo "== $cfg (expected: $expect)"
+  fi
+  output="$(tlc "$cfg" ${extra[@]+"${extra[@]}"} 2>&1)" && status=0 || status=$?
+  summary="$(echo "$output" | grep -E "Running Random Simulation|states generated|depth of the complete|Error:|is violated|Finished in" | tail -5 || true)"
   echo "$summary"
+  # A walk that ran out its budget without a violation is a clean run.
+  clean=0
+  if [ "$status" -eq 0 ]; then clean=1; fi
+  if [ "$mode" = simulate ]; then
+    mkdir -p "$WALK_DIR"
+    echo "$output" >"$WALK_DIR/$cfg.out"
+    if [ "$status" -eq 124 ] && grep -q "Running Random Simulation" <<<"$output" \
+      && ! grep -q "^Error:" <<<"$output"; then
+      clean=1
+    fi
+  fi
   case "$expect" in
     pass)
-      if [ "$status" -ne 0 ] || grep -q "is violated" <<<"$output"; then
+      if [ "$clean" -ne 1 ] || grep -q "is violated" <<<"$output"; then
         echo "   FAIL: expected no violation"
         echo "$output" | tail -80
         failed=1

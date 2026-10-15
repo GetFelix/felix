@@ -1,6 +1,6 @@
 # Threat model: the broker-internal surface
 
-For [#128](https://github.com/gabloe/felix/issues/128). Covers the M4 forwarding
+For [#128](https://github.com/GetFelix/felix/issues/128). Covers the M4 forwarding
 and M5 replication paths as they exist today, and says which controls are
 **present**, which are **absent**, and which are **absent by design pending a
 named issue**.

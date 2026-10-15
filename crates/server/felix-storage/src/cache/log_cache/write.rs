@@ -62,6 +62,12 @@ impl FinishOnDrop {
         Self(Some(write))
     }
 
+    /// The offset the write's record was given.
+    pub(super) fn offset(&self) -> u64 {
+        let write = self.0.as_ref().expect("armed until applied");
+        write.pending.first_offset()
+    }
+
     /// Wait for durability and the write's turn.
     pub(super) async fn commit(&mut self) -> Result<()> {
         let write = self.0.as_ref().expect("armed until applied");

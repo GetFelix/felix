@@ -91,14 +91,17 @@ Felix uses QUIC as its sole transport:
 The wire protocol is versioned and explicitly framed to allow forward compatibility.
 
 ### Storage Layer
-- **Ephemeral:** in-memory ring buffers and TTL maps for ultra-low latency
+- **Ephemeral:** in-memory ring buffers and TTL maps, with no disk write on the
+  publish path
 - **Durable:** a segmented, checksummed append-only log on persistent volumes,
   selected per stream by `durable: true`. See
   [Durable Storage](durable-storage.md).
-- **Retention:** implemented per broker via `FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`, and off unless set. A *per-stream* policy is recorded and not yet read, so a stream's declared retention is not the one enforced. `truncate` exists for replication's
+- **Retention:** a stream's own `retention` (`max_size_bytes`, `max_age_seconds`) bounds its logs, and a bound it leaves unset comes from the broker's `FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`. Off unless one of them is set. `truncate` exists for replication's
   benefit; nothing deletes segments on age or size.
-- **Tiering:** not yet implemented. `TieredStore` is declared and unimplemented;
-  tracked as [#172](https://github.com/gabloe/felix/issues/172).
+- **Tiering:** offload only. With `FELIX_DURABLE_OFFLOAD_DIR` set, sealed
+  segments are copied to a directory and retention deletes only segments with
+  a verified, recorded copy. Nothing reads the copies yet; tracked as
+  [#172](https://github.com/GetFelix/felix/issues/172).
 
 Durable storage is optional and configurable per stream.
 
@@ -155,7 +158,7 @@ Delivery guarantees:
 - All encryption uses modern, configurable cipher suites
 
 The rest of this section is the intended design, not what ships today. The
-[status table](https://gabloe.github.io/felix/getting-started/what-felix-is-for/)
+[status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
 is per capability and is the page to trust when another disagrees.
 
 ### Data Encryption
@@ -233,7 +236,7 @@ That rejection is about replicating *records*. Making the control plane's own
 metadata highly available is a separate problem, and Raft is the decided
 answer there. It is designed in
 [`metadata-raft-design.md`](metadata-raft-design.md) and tracked as milestone
-M13 under [#333](https://github.com/gabloe/felix/issues/333), and shipped:
+M13 under [#333](https://github.com/GetFelix/felix/issues/333), and shipped:
 `FELIX_CONTROLPLANE_STORAGE_BACKEND=raft` selects it and the instances hold
 the metadata themselves, with no external database. Postgres remains fully
 supported: any number of stateless instances over one HA database, whose

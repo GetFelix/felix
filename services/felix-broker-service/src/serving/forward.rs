@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use felix_wire::internal::{
-    AckMode, CacheOpKind, ErrorCode, ForwardCacheOp, ForwardPublish, InternalMessage,
-    PeerCapabilities, ShardRef,
+    AckMode, CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheOk, ForwardCacheOp,
+    ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
 };
 
 use felix_replication::peer::PeerRequester;
@@ -308,6 +308,18 @@ pub enum CacheRequest {
     },
     /// Read the counter's sum; answered in the value bytes the same way.
     CounterGet,
+    /// A put made only if the key's entry meets `condition`.
+    PutIf {
+        value: Bytes,
+        ttl_ms: u64,
+        condition: felix_storage::CacheCondition,
+    },
+    /// A delete made only if the key's live entry has `version`.
+    DeleteIf {
+        version: u64,
+    },
+    /// A read that also reports the value's version.
+    GetVersioned,
 }
 
 impl CacheRequest {
@@ -322,6 +334,25 @@ impl CacheRequest {
                 0,
             ),
             Self::CounterGet => (CacheOpKind::CounterGet, Bytes::new(), 0),
+            Self::PutIf { value, ttl_ms, .. } => (CacheOpKind::Put, value.clone(), *ttl_ms),
+            Self::DeleteIf { .. } => (CacheOpKind::Delete, Bytes::new(), 0),
+            Self::GetVersioned => (CacheOpKind::Get, Bytes::new(), 0),
+        }
+    }
+
+    /// The condition a versioned request carries, which is also what sends it
+    /// as the conditional kind.
+    fn condition(&self) -> Option<ForwardCacheCondition> {
+        match self {
+            Self::PutIf { condition, .. } => Some(match condition {
+                felix_storage::CacheCondition::Absent => ForwardCacheCondition::Absent,
+                felix_storage::CacheCondition::Version(version) => {
+                    ForwardCacheCondition::Version(*version)
+                }
+            }),
+            Self::DeleteIf { version } => Some(ForwardCacheCondition::Version(*version)),
+            Self::GetVersioned => Some(ForwardCacheCondition::Unconditional),
+            _ => None,
         }
     }
 
@@ -331,8 +362,11 @@ impl CacheRequest {
     /// either lands on the same state. A `Put` with a TTL does not: the second
     /// attempt restarts the clock. Treating a write as indeterminate rather
     /// than retrying it keeps the caller in charge of that decision.
+    ///
+    /// A conditional write is not: a lost answer may hide a write that was
+    /// made, and the retry would then be refused by the version it wrote.
     fn is_idempotent(&self) -> bool {
-        matches!(self, Self::Get | Self::Delete)
+        matches!(self, Self::Get | Self::Delete | Self::GetVersioned)
     }
 }
 
@@ -348,6 +382,26 @@ pub async fn forward_cache_op(
     credential: &str,
     request: &CacheRequest,
 ) -> Result<Option<Bytes>, ForwardError> {
+    forward_cache_request(pool, target, key, cache_key, credential, request)
+        .await
+        .map(|ok| ok.value)
+}
+
+/// [`forward_cache_op`] with the owner's whole answer, for a versioned
+/// request whose answer carries whether it applied and a version.
+///
+/// A versioned get sent to an owner that predates the conditional kind is
+/// sent again as a plain get, and answers with no outcome: a value without a
+/// version beats failing a read. A conditional write is refused instead.
+pub async fn forward_cache_request(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+    key: &ForwardKey,
+    cache_key: &str,
+    credential: &str,
+    request: &CacheRequest,
+) -> Result<ForwardCacheOk, ForwardError> {
+    let mut condition = request.condition();
     let mut target = target.clone();
     let mut last = String::new();
     let mut last_code = None;
@@ -382,12 +436,13 @@ pub async fn forward_cache_op(
             } else {
                 credential.to_string()
             },
+            condition,
         });
 
         match PeerRequester::request(pool, &target.node_id, target.advertise_addr, message).await {
             Ok(InternalMessage::ForwardCacheOk(ok)) => {
                 metrics::record_forward(metrics::OUTCOME_OK);
-                return Ok(ok.value);
+                return Ok(ok);
             }
             Ok(InternalMessage::NotLeader(moved)) => {
                 last = format!(
@@ -425,6 +480,24 @@ pub async fn forward_cache_op(
                     advertise_addr,
                     generation: moved.generation,
                 };
+            }
+            Ok(InternalMessage::ForwardPublishError(err))
+                if err.code == ErrorCode::UnsupportedKind && condition.is_some() =>
+            {
+                if !matches!(request, CacheRequest::GetVersioned) {
+                    metrics::record_forward(metrics::OUTCOME_REFUSED);
+                    return Err(ForwardError::Refused {
+                        stream: key.stream.clone(),
+                        code: Some(err.code),
+                        detail: format!(
+                            "owner {} does not support conditional cache writes",
+                            target.node_id
+                        ),
+                    });
+                }
+                last = format!("{:?}: {}", err.code, err.detail);
+                last_code = Some(err.code);
+                condition = None;
             }
             // An unknown kind is refused before the responder knows which
             // request it was, so the answer arrives in the publish error's

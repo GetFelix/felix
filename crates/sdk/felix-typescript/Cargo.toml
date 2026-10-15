@@ -10,12 +10,12 @@
 
 [package]
 name = "felix-typescript"
-version = "0.6.0-preview"
+version = "0.6.0-preview.7"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
-repository = "https://github.com/gabloe/felix"
-homepage = "https://github.com/gabloe/felix"
+repository = "https://github.com/GetFelix/felix"
+homepage = "https://github.com/GetFelix/felix"
 readme = "README.md"
 description = "Node.js/TypeScript bindings for the Felix client, over the Rust client rather than a reimplementation of it"
 keywords = ["felix", "nodejs", "typescript", "quic", "bindings"]
@@ -26,8 +26,8 @@ categories = ["api-bindings", "network-programming"]
 crate-type = ["cdylib"]
 
 [dependencies]
-felix-client = { path = "../felix-client", version = "0.6.0-preview" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
+felix-client = { path = "../felix-client", version = "0.6.0-preview.7" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.7" }
 bytes = "1"
 napi = { version = "2", default-features = false, features = ["napi6", "tokio_rt"] }
 napi-derive = "2"

@@ -26,12 +26,14 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     }
 }
 
 /// Write `count` records through a real `SegmentSet`, rolling as configured.
 fn populate(dir: &TempDir, count: usize) -> u64 {
-    let recovered = recover_shard(dir.path(), "t/ns/s/0", &config()).expect("recover");
+    let recovered =
+        recover_shard(dir.path(), "t/ns/s/0", &config(), &Manifest::default()).expect("recover");
     let mut set = crate::disk_log::segments::SegmentSet::new(
         dir.path().to_path_buf(),
         "t/ns/s/0".into(),
@@ -50,7 +52,7 @@ fn populate(dir: &TempDir, count: usize) -> u64 {
 }
 
 fn reopen(dir: &TempDir) -> Result<Recovered> {
-    recover_shard(dir.path(), "t/ns/s/0", &config())
+    recover_shard(dir.path(), "t/ns/s/0", &config(), &Manifest::default())
 }
 
 /// Reproduce the on-disk state left by a crash while a rollover was
@@ -94,6 +96,98 @@ fn a_crash_before_the_header_is_written_leaves_the_log_openable() {
     let recovered = reopen(&dir).expect("recover");
     assert_eq!(recovered.active.next_offset(), tail);
     assert!(!path.exists());
+}
+
+/// What a full disk left when the log's first segment could not be reserved.
+fn plant_blank_first_segment(dir: &TempDir) -> PathBuf {
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, b"").expect("create");
+    path
+}
+
+#[test]
+fn a_first_segment_that_never_got_a_header_starts_the_log_afresh() {
+    let dir = tempdir().expect("dir");
+    plant_blank_first_segment(&dir);
+
+    let mut recovered = reopen(&dir).expect("recover");
+    assert_eq!(recovered.active.next_offset(), 0);
+    assert_eq!(
+        recovered.active.append(&[record("a")]).expect("append"),
+        (0, 0)
+    );
+}
+
+#[test]
+fn placing_a_shard_over_a_blank_first_segment_keeps_its_base() {
+    let dir = tempdir().expect("dir");
+    plant_blank_first_segment(&dir);
+
+    assert!(place_empty_shard(dir.path(), "t/ns/s/0", &config(), 40).expect("place"));
+    assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 40);
+}
+
+/// The header write extended the file but its bytes never reached the disk.
+#[test]
+fn a_first_segment_of_one_zeroed_header_starts_the_log_afresh() {
+    let dir = tempdir().expect("dir");
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize]).expect("create");
+
+    assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 0);
+}
+
+/// Longer than a header means the header was synced before an append, so a
+/// zeroed one is rot even with no mark and nothing but zeros after it.
+#[test]
+fn a_zeroed_first_segment_longer_than_a_header_is_refused() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 1);
+    assert_eq!(discover_segment_ids(dir.path()).expect("ids"), [0]);
+    let path = segment_path(dir.path(), 0);
+    let len = std::fs::metadata(&path).expect("stat").len();
+    assert!(len > SEGMENT_HEADER_LEN);
+    std::fs::write(&path, vec![0u8; len as usize]).expect("zero");
+    let _ = std::fs::remove_file(dir.path().join(durable_mark::mark_file_name()));
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
+}
+
+/// A zeroed header in front of real records is rot on acknowledged data.
+#[test]
+fn a_zeroed_first_header_with_records_after_it_is_refused() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 1);
+    assert_eq!(discover_segment_ids(dir.path()).expect("ids"), [0]);
+    let path = segment_path(dir.path(), 0);
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes[..SEGMENT_HEADER_LEN as usize].fill(0);
+    std::fs::write(&path, bytes).expect("write");
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
+}
+
+/// The bytes after the header read as zeros, but the mark says they were
+/// synced: the records were acknowledged and are gone.
+#[test]
+fn a_zeroed_first_segment_the_mark_vouches_for_is_refused() {
+    let dir = tempdir().expect("dir");
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize + 64]).expect("create");
+    record_mark(&dir, 0, SEGMENT_HEADER_LEN + 64);
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
+}
+
+#[test]
+fn a_later_segment_alone_without_a_header_is_still_refused() {
+    let dir = tempdir().expect("dir");
+    std::fs::write(segment_path(dir.path(), 3), b"").expect("create");
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
 }
 
 #[test]
@@ -481,6 +575,7 @@ fn corruption_in_a_sealed_segment_fails_loudly() {
             verify_all_on_open: true,
             ..config()
         },
+        &Manifest::default(),
     )
     .expect_err("sealed corruption");
     let StorageError::Corruption(detail) = err else {

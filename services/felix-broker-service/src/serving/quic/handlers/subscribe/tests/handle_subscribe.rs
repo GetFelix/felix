@@ -24,7 +24,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -38,8 +38,9 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             broker_for_server,
             connection,
             test_config(),
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -51,8 +52,11 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             Some(7),
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            0,
+            None,
         )
         .await?;
         Result::<bool>::Ok(handled)
@@ -129,7 +133,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -141,8 +145,9 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             broker_for_server,
             connection,
             test_config(),
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -154,8 +159,11 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             Some(11),
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            0,
+            None,
         )
         .await
     });
@@ -200,7 +208,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -219,8 +227,9 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             broker_for_server,
             connection,
             config,
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -232,8 +241,11 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             Some(21),
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            0,
+            None,
         )
         .await
     });
@@ -321,7 +333,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -337,8 +349,9 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             broker_for_server,
             connection,
             config,
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -350,8 +363,11 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             None,
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            0,
+            None,
         )
         .await
     });
@@ -422,7 +438,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -435,8 +451,9 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             broker_for_server,
             connection,
             test_config(),
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -448,8 +465,11 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             Some(900),
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,
+            0,
+            None,
         )
         .await
     });
@@ -495,7 +515,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -512,8 +532,9 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             broker_for_server,
             connection,
             test_config(),
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -525,8 +546,11 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             Some(7),
             None,
             None,
+            None,
             felix_wire::ORIGINAL_V1_FLAGS,
             peer_features,
+            0,
+            None,
         )
         .await?;
         Result::<_>::Ok(held)
@@ -656,7 +680,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -670,8 +694,9 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             broker_for_server,
             connection,
             test_config(),
-            &Arc::new(SubscriptionLimiter::new()),
+            &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -683,8 +708,11 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             Some(7),
             Some(felix_wire::StartPosition::Offset(0)),
             None,
+            None,
             peer_flags,
             0,
+            0,
+            None,
         )
         .await?;
         Result::<_>::Ok(held)
@@ -790,6 +818,217 @@ async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() 
             .map(|(offset, skipped, _)| (*offset, *skipped))
             .collect::<Vec<_>>(),
         vec![(0, 0), (1, 0), (3, 0), (5, 0)],
+    );
+    Ok(())
+}
+
+/// Whether the routing check made before a subscribe registers would let
+/// one for the durable stream through.
+fn admitted(fixture: &crate::test_support::leader::Leader) -> bool {
+    use crate::test_support::leader;
+    crate::serving::quic::handlers::redirect::redirect_for(
+        Some(&fixture.ingress),
+        None,
+        leader::TENANT,
+        leader::NAMESPACE,
+        leader::DURABLE,
+        0,
+        crate::shards::ShardKind::Stream,
+        0,
+    )
+    .is_none()
+}
+
+/// Register a subscriber on the durable stream, as the control stream does
+/// once [`admitted`] said yes, and return the first answer to it.
+async fn subscribe_after_admission(
+    fixture: &crate::test_support::leader::Leader,
+) -> Result<Message> {
+    use crate::test_support::leader;
+
+    let (server_config, cert) = make_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+
+    let broker = Arc::clone(&fixture.broker);
+    let ingress = Arc::clone(&fixture.ingress);
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        handle_subscribe_message(
+            broker,
+            connection,
+            test_config(),
+            &IdentityLimits::unlimited(),
+            &WriterLaneManager::new(&test_config()),
+            Some(&ingress),
+            &out_ack_tx,
+            &out_ack_depth,
+            &ack_throttle_tx,
+            &ack_timeout_state,
+            &cancel_tx,
+            leader::TENANT.to_string(),
+            leader::NAMESPACE.to_string(),
+            leader::DURABLE.to_string(),
+            Some(13),
+            Some(StartPosition::Offset(0)),
+            None,
+            None,
+            felix_wire::ORIGINAL_V1_FLAGS,
+            0,
+            0,
+            None,
+        )
+        .await
+    });
+
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+    let _connection = client.connect(addr, "localhost").await?;
+
+    let ack = tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
+        .await
+        .context("ack timeout")?
+        .context("ack missing")?;
+    server_task.await.context("server join")??;
+    let Outgoing::Message(answer) = ack else {
+        panic!("expected a control message, got {ack:?}");
+    };
+    Ok(answer)
+}
+
+/// The refusal in `answer`, and that it left no subscriber behind.
+async fn assert_refused(
+    fixture: &crate::test_support::leader::Leader,
+    answer: Message,
+    says: &str,
+) -> Result<()> {
+    use crate::test_support::leader;
+
+    let Message::Error { code, message, .. } = answer else {
+        panic!("expected a refusal, got {answer:?}");
+    };
+    assert_eq!(code, Some(felix_wire::ErrorCode::ShardUnavailable));
+    assert!(message.contains(says), "unexpected refusal: {message}");
+    assert_eq!(
+        fixture
+            .broker
+            .registered_subscribers(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0)
+            .await?,
+        0,
+        "the refused subscribe left a registration behind"
+    );
+    Ok(())
+}
+
+/// **A subscribe that lands after a shard's readers were ended is refused.**
+/// The lifecycle closes the fence and ends the readers before this broker's
+/// routes catch up, so for a moment the routes still admit a subscribe. One
+/// registered then was never ended: it sat on a broker that no longer
+/// receives the shard's writes and delivered nothing more.
+#[tokio::test]
+async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let mut fixture = Leader::start().await;
+    let key = leader::stream_key(leader::DURABLE);
+    fixture.fence_move(&key);
+    fixture
+        .broker
+        .end_subscriptions(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0, None)
+        .await;
+    // The window: the routes still say the shard is served here.
+    assert!(admitted(&fixture));
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "stopped being served here").await
+}
+
+/// **A lease lapse between admission and registration still reaches the
+/// subscriber.** The lapse ends the readers registered at that moment, once.
+/// A subscribe admitted while the lease held but registered after that ending
+/// would get nothing and never hear that the shard moved.
+#[tokio::test]
+async fn a_subscribe_registered_after_a_lease_lapse_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let fixture = Leader::start().await;
+    let lease = fixture.hold_lease();
+    assert!(admitted(&fixture));
+    // What `ShardReaders::watch_leadership` does on a lapse, landing between
+    // the admission above and the registration below.
+    lease.surrender();
+    fixture
+        .broker
+        .end_subscriptions(
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::DURABLE,
+            0,
+            Some(felix_broker::ShardHandoff {
+                node_id: None,
+                addr: None,
+                generation: leader::GENERATION,
+            }),
+        )
+        .await;
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "lease").await
+}
+
+/// **The same for a deposal**: a follower named a newer leader, which ends the
+/// readers here, and a subscribe registered after that is refused rather than
+/// left on a shard someone else leads.
+#[tokio::test]
+async fn a_subscribe_registered_after_a_deposal_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let fixture = Leader::start().await;
+    let key = leader::stream_key(leader::DURABLE);
+    assert!(admitted(&fixture));
+    fixture.ingress.fence().depose(&key, leader::GENERATION);
+    fixture
+        .broker
+        .end_subscriptions(
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::DURABLE,
+            0,
+            Some(felix_broker::ShardHandoff {
+                node_id: None,
+                addr: None,
+                generation: leader::GENERATION,
+            }),
+        )
+        .await;
+
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert_refused(&fixture, answer, "stopped being served here").await?;
+    // And the routing check now refuses it before registering at all.
+    assert!(!admitted(&fixture));
+    Ok(())
+}
+
+/// A shard still served here takes the subscriber: the check after
+/// registering refuses only what has ended.
+#[tokio::test]
+async fn a_subscribe_with_the_lease_held_is_served() -> Result<()> {
+    use crate::test_support::leader::Leader;
+
+    let fixture = Leader::start().await;
+    let _lease = fixture.hold_lease();
+    assert!(admitted(&fixture));
+    let answer = subscribe_after_admission(&fixture).await?;
+    assert!(
+        matches!(answer, Message::Subscribed { .. }),
+        "expected Subscribed, got {answer:?}"
     );
     Ok(())
 }

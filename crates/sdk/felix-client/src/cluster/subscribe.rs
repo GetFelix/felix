@@ -1,7 +1,6 @@
 //! Subscribing through a [`ClusterClient`], following each shard to the
 //! broker that owns it.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,15 +45,36 @@ impl ClusterClient {
         stream: &str,
         start: Option<felix_wire::StartPosition>,
     ) -> Result<ClusterSubscription> {
+        self.subscribe_shard(tenant_id, namespace, stream, 0, start)
+            .await
+    }
+
+    /// Like [`ClusterClient::subscribe_from`], for one chosen shard of a
+    /// stream rather than shard 0.
+    ///
+    /// The subscription follows that shard to its owner and again whenever
+    /// it moves, exactly as [`ClusterSubscription`] describes. It reads that
+    /// shard only; [`Self::subscribe_sharded`] reads them all.
+    ///
+    /// A shard past the stream's width is refused by the broker, not
+    /// checked here.
+    pub async fn subscribe_shard(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<felix_wire::StartPosition>,
+    ) -> Result<ClusterSubscription> {
         let (client, subscription) = self
-            .open_shard(tenant_id, namespace, stream, 0, start)
+            .open_shard(tenant_id, namespace, stream, shard, start)
             .await?;
         Ok(ClusterSubscription::new(
             Arc::clone(self),
             tenant_id,
             namespace,
             stream,
-            0,
+            shard,
             client,
             subscription,
         ))
@@ -247,8 +267,9 @@ impl ClusterClient {
                     "the owner's client address is not published, so there is nowhere to follow to",
                 ));
             };
-            let addr: SocketAddr = addr
-                .parse()
+            let addr = self
+                .resolve(&addr)
+                .await
                 .with_context(|| format!("the owner's address {addr:?} is not usable"))?;
             visited.push(redirect.node_id.clone());
             client = self
@@ -279,7 +300,7 @@ impl ClusterClient {
 
     /// How many shards a stream has, reconnecting once if the broker in hand
     /// cannot answer.
-    async fn stream_shard_count(
+    pub(crate) async fn stream_shard_count(
         &self,
         tenant_id: &str,
         namespace: &str,
@@ -289,15 +310,19 @@ impl ClusterClient {
         // that broker can be the one that just died. Reconnect and ask again
         // rather than reporting its death as an answer about the stream —
         // reconnecting is the whole reason this wrapper exists.
-        let shards = match self.stream_shards_once(tenant_id, namespace, stream).await {
+        let client = self.client().await;
+        let shards = match self
+            .stream_shards_once(&client, tenant_id, namespace, stream)
+            .await
+        {
             Ok(shards) => shards,
             Err(first) => {
-                self.reconnect().await.map_err(|reconnect_err| {
+                self.reconnect(&client).await.map_err(|reconnect_err| {
                     first.context(format!(
                         "and no other broker answered either: {reconnect_err:#}"
                     ))
                 })?;
-                self.stream_shards_once(tenant_id, namespace, stream)
+                self.stream_shards_once(&*self.client().await, tenant_id, namespace, stream)
                     .await
                     .with_context(|| format!("ask how many shards {stream} has"))?
             }
@@ -312,11 +337,11 @@ impl ClusterClient {
     /// Ask the broker in hand how many shards a stream has, once.
     async fn stream_shards_once(
         &self,
+        client: &Client,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
     ) -> Result<u32> {
-        let client = self.client().await;
         anyhow::ensure!(
             client.supports_stream_shards(),
             "this broker does not report stream shard counts, so the number of shards to \
@@ -326,5 +351,31 @@ impl ClusterClient {
             .stream_shards(tenant_id, namespace, stream)
             .await
             .with_context(|| format!("ask how many shards {stream} has"))
+    }
+
+    /// [`Client::read`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn read(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from: u64,
+        end: Option<u64>,
+        max_records: u32,
+    ) -> Result<crate::StreamPage> {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            shard,
+        );
+        self.on_group_shard(key, |client| async move {
+            client
+                .read(tenant_id, namespace, stream, shard, from, end, max_records)
+                .await
+        })
+        .await
     }
 }

@@ -2,7 +2,7 @@
 title: "Configuration Reference"
 ---
 
-Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/felix/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
+Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
 
 ## Configuration Methods
 
@@ -43,8 +43,6 @@ publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
 disable_timings: false
 control_stream_drain_timeout_ms: 50
-cache_conn_recv_window: 268435456
-cache_stream_recv_window: 67108864
 cache_send_window: 268435456
 event_batch_max_events: 64
 event_batch_max_bytes: 65536
@@ -54,13 +52,29 @@ pub_workers_per_conn: 4
 pub_queue_depth: 64
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
+pub_conn_total_inflight_bytes: 67108864
+pub_conn_recv_window: 16777216
+pub_stream_recv_window: 16777216
 subscriber_queue_capacity: 512
 max_subscriptions_per_conn: 4096
+max_subscriptions_per_conn_total: 16384
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
 max_subscriber_writer_lanes: 8
 subscriber_lane_shard: auto
 ```
+
+### How the file is read
+
+The broker, the control plane and `felix-client` read their files with the same rules:
+
+- Booleans are `true` and `false` only, in any case. `yes`, `no`, `on` and `off` are refused for a boolean setting.
+- Integers are decimal, `0x` hex or `0o` octal. A leading zero (`0777`) is refused, so it can't be read as YAML 1.1 octal.
+- `~`, `null` or an empty value leaves the setting at its default. So does an empty or comment-only file.
+- `<<` is an ordinary key, not a merge. The broker and control plane refuse it like any other key they don't know.
+- Anchors and aliases work. A duplicate key is refused, and so is a second document after `---`.
+- A tag the parser doesn't know (`!custom`) is refused. `!!binary` on a string setting is kept as written, not decoded.
+- A parse error names the key, line and column. A wrong-typed value isn't quoted, since it may be a token; an unknown enum value is.
 
 ## Network Configuration
 
@@ -99,7 +113,8 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 ```
 
-**Endpoints** (no authentication):
+**Endpoints** (no authentication, so bind it to an internal address or keep
+the port behind a network policy):
 - `/live`: always `ok` while the process runs
 - `/ready`: `ok`, or 503 `draining` once shutdown starts
 - `/metrics`: Prometheus metrics
@@ -150,6 +165,21 @@ controlplane_sync_interval_ms: 2000
 - **Stable clusters**: `5000-10000ms`
 
 ## Publishing Configuration
+
+### `record_publishers`
+
+**Description**: On a broker outside a cluster, store the principal that
+published each durable record. In a cluster, finalizing the
+`publisher_principal` fleet feature decides instead.
+
+**Type**: `bool`
+
+**Default**: `false`
+
+**Environment**: `FELIX_RECORD_PUBLISHERS` (`1`, `true`, `yes` = enabled)
+
+Writing one moves the stream's log to storage format v6, which an older broker
+cannot open.
 
 ### `ack_on_commit`
 
@@ -328,9 +358,14 @@ event_batch_max_bytes: 65536
 
 ### `event_batch_max_delay_us`
 
-**Description**: Maximum delay before flushing a subscription batch, counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load. A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. Tokio timers have 1 ms resolution,
+so a non-zero delay below 1000 µs waits until the next millisecond tick; `0`
+never waits on a timer.
 
 **Type**: `u64` (microseconds)
 
@@ -344,7 +379,7 @@ event_batch_max_delay_us: 250
 ```
 
 **Tuning**:
-- **Ultra-low latency**: `50-100us`
+- **Latency first**: `50-100us`
 - **Balanced**: `250-500us`
 - **High throughput**: `1000-5000us`
 
@@ -394,9 +429,51 @@ high fanout / large payload workloads.
 subscriber_queue_capacity: 512
 ```
 
+#### `subscriber_queue_capacity_max`
+
+**Description**: The largest queue capacity a subscriber may ask for on subscribe. A larger request is granted this value. Only the size is the subscriber's to choose; the overflow policy stays `subscriber_queue_policy`.
+
+**Type**: `usize` (count)
+
+**Default**: `4096`
+
+**Environment**: `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+
+```yaml
+subscriber_queue_capacity_max: 4096
+```
+
+#### `subscriber_queue_max_bytes`
+
+**Description**: Payload bytes one subscriber's queue in broker core may hold. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. A batch keeps counting after it leaves the queue, until the frame carrying it is written to the subscriber's QUIC stream, so the frames waiting in the writer lanes are bounded too. When either bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
+
+**Type**: `usize` (bytes)
+
+**Default**: `268435456` (256 MiB)
+
+**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES`
+
+```yaml
+subscriber_queue_max_bytes: 268435456
+```
+
+#### `subscriber_queue_max_bytes_total`
+
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber queue it sits in, which is what each queue keeps alive, so the real memory is at most this. Without it, each subscriber can hold up to `subscriber_queue_max_bytes` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `subscriber_queue_max_bytes: 0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
+
+**Type**: `usize` (bytes)
+
+**Default**: `0` (no bound)
+
+**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
+
+```yaml
+subscriber_queue_max_bytes_total: 0
+```
+
 #### `max_subscriptions_per_conn`
 
-**Description**: Max concurrent subscriptions a single QUIC connection may hold. `subscriber_queue_capacity` bounds the size of one subscription's buffer. This bounds how many subscriptions one connection can open in total. Without it, a connection issuing unlimited `Subscribe` requests could grow broker memory without limit.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. `subscriber_queue_capacity` bounds the size of one subscription's buffer; this bounds how many subscriptions there are. A plain client authenticates every stream as one identity, so for it this is the connection's cap. A client acting for many users over one connection (`Client::with_identity`) gets this many per user, so one user at the cap cannot take every slot. The users still share `max_subscriptions_per_conn_total`: with the defaults, four users at their cap fill it and a fifth is refused.
 
 **Type**: `usize` (count)
 
@@ -406,6 +483,20 @@ subscriber_queue_capacity: 512
 
 ```yaml
 max_subscriptions_per_conn: 4096
+```
+
+#### `max_subscriptions_per_conn_total`
+
+**Description**: Max concurrent subscriptions and cache watches one QUIC connection may hold across all its identities. Without it, a connection acting for many users could grow broker memory without limit. A subscription past it is refused with `max subscriptions per connection exceeded across identities`.
+
+**Type**: `usize` (count)
+
+**Default**: four times `max_subscriptions_per_conn` (`16384`). Startup refuses a value below `max_subscriptions_per_conn`.
+
+**Environment**: `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`
+
+```yaml
+max_subscriptions_per_conn_total: 16384
 ```
 
 #### `subscriber_queue_policy`
@@ -443,7 +534,7 @@ subscriber_writer_lanes: 4
 
 #### `subscriber_lane_queue_depth`
 
-**Description**: Bounded command queue depth per writer lane.
+**Description**: Frames the connection writer queues for one subscription before the subscription's queue policy applies. Also bounds the writer lanes and the connection writer's command queue, which wait when full rather than drop.
 
 **Type**: `usize` (count)
 
@@ -457,7 +548,7 @@ subscriber_lane_queue_depth: 64
 
 #### `subscriber_lane_queue_policy`
 
-**Description**: Backpressure policy for the writer-lane command queue (downstream of `subscriber_queue_policy`; gates the actual QUIC write).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `subscriber_queue_policy`; gates the actual QUIC write). `drop_new` drops the frame for that subscription alone, counted in `felix_sub_queue_dropped_total`; `block` stops the writer taking frames until it drains.
 
 **Type**: `enum` (`block`, `drop_new`, `drop_old`)
 
@@ -469,7 +560,7 @@ subscriber_lane_queue_depth: 64
 subscriber_lane_queue_policy: drop_new
 ```
 
-Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
+Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. `drop_old` behaves as `drop_new` here too. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
 
 #### `max_subscriber_writer_lanes`
 
@@ -597,46 +688,6 @@ sub_stream_mode: per_subscriber
 
 ## Cache Configuration
 
-### `cache_conn_recv_window`
-
-**Description**: Cache connection flow-control receive window.
-
-**Type**: `u64` (bytes)
-
-**Default**: `268435456` (256 MiB)
-
-**Environment**: `FELIX_CACHE_CONN_RECV_WINDOW`
-
-**Example**:
-```yaml
-cache_conn_recv_window: 268435456
-```
-
-**Notes**:
-- Per-connection receive credit
-- Multiplied by connection pool size
-- Affects burst tolerance
-
-### `cache_stream_recv_window`
-
-**Description**: Cache stream flow-control receive window.
-
-**Type**: `u64` (bytes)
-
-**Default**: `67108864` (64 MiB)
-
-**Environment**: `FELIX_CACHE_STREAM_RECV_WINDOW`
-
-**Example**:
-```yaml
-cache_stream_recv_window: 67108864
-```
-
-**Notes**:
-- Per-stream receive credit
-- Multiplied by streams per connection
-- Total credit = `stream_window × streams_per_conn × conn_pool`
-
 ### `cache_send_window`
 
 **Description**: Cache connection send window.
@@ -729,7 +780,7 @@ pub_inflight_bytes: 67108864
 
 ### `pub_conn_inflight_bytes`
 
-**Description**: Per-connection share of `pub_inflight_bytes`. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. `pub_conn_inflight_bytes` closes that gap: it's a second, independent byte-budget gate sized per connection, checked before the shared budget on every publish admission.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. This closes that gap: it is checked first on every publish admission, then `pub_conn_total_inflight_bytes`, then the shared budget. A plain client authenticates every stream as one identity, so for it this is the connection's budget. A client acting for many users over one connection (`Client::with_identity`) gets this much per user, so one user's unanswered publishes cannot take the whole connection. The users still share `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a fifth is refused or slowed.
 
 **Type**: `usize` (bytes)
 
@@ -746,9 +797,62 @@ pub_conn_inflight_bytes: 16777216
 - Set it below `pub_inflight_bytes` to have any effect. Equal lets one connection take the whole shared budget. Above is refused at startup.
 - Roughly `pub_inflight_bytes / N` for the expected number of concurrently active connections gives each a fair share while still allowing the shared budget to absorb bursts from fewer connections.
 
+### `pub_conn_total_inflight_bytes`
+
+**Description**: In-flight publish bytes one connection may hold across all its identities. Only a connection that acts for several users can reach it, since it is never below `pub_conn_inflight_bytes`.
+
+**Type**: `usize` (bytes)
+
+**Default**: four times `pub_conn_inflight_bytes`, capped at `pub_inflight_bytes` (64 MiB with the defaults). Startup refuses a value below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.
+
+**Environment**: `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`
+
+**Example**:
+```yaml
+pub_conn_total_inflight_bytes: 67108864
+```
+
+### `pub_conn_recv_window`
+
+**Description**: The QUIC connection-level receive window of the client listeners: how many bytes one client connection may have sent that the broker has not read yet. The client listeners carry publishes, subscriptions and cache requests on the same connections, and publishes are most of what clients send, so the window is sized from the publish budget.
+
+**Type**: `u64` (bytes)
+
+**Default**: `pub_conn_inflight_bytes` (16 MiB), or `max_frame_bytes` if that is larger
+
+**Environment**: `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
+
+**Example**:
+```yaml
+pub_conn_recv_window: 16777216
+```
+
+**Tuning**:
+- When ingress is full and `pub_ingress_wait` is on, the broker stops reading a connection's publishes. The client can then park up to this many more bytes in the broker's receive buffers before QUIC flow control stops it, so a connection holds at most `pub_conn_inflight_bytes` plus this window.
+- A bigger window costs broker memory and delays the moment a publisher feels backpressure. A smaller one can cap a connection's throughput on a path with a large bandwidth-delay product: 16 MiB covers 10 Gbit/s up to about 13 ms of round trip.
+- Must be at least `max_frame_bytes` and at least `pub_stream_recv_window`. Startup refuses anything else.
+
+### `pub_stream_recv_window`
+
+**Description**: The QUIC per-stream receive window of the client listeners.
+
+**Type**: `u64` (bytes)
+
+**Default**: the smaller of `pub_conn_recv_window` and `pub_conn_inflight_bytes` (16 MiB), and never below `max_frame_bytes`
+
+**Environment**: `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`
+
+**Example**:
+```yaml
+pub_stream_recv_window: 16777216
+```
+
+**Tuning**:
+- Must be at least `max_frame_bytes`, so one full-size frame fits in a stream's window, and no larger than `pub_conn_recv_window`. Startup refuses anything else.
+
 ### `publish_window`
 
-**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading the connection's publishes while this many are outstanding, so the client is slowed by QUIC flow control instead of being refused.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading a stream's publishes while this many are outstanding on it, so the client is slowed by QUIC flow control instead of being refused. Each stream has its own window, so a stream stuck behind a stalled shard does not stall the others on its connection.
 
 **Type**: `u32`
 
@@ -862,7 +966,7 @@ subsystem.
 **Environment**: `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`
 
 Keep `terminationGracePeriodSeconds` above this plus the predrain and handoff
-times. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+times. See [Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ### `shutdown_predrain_ms`
 
@@ -888,7 +992,7 @@ Shards still led when it expires fail over.
 
 **Environment**: `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
 
-See [Handing shards off](/felix/deployment/graceful-shutdown/#handing-shards-off).
+See [Handing shards off](/deployment/graceful-shutdown/#handing-shards-off).
 
 ## Client-Side Configuration
 
@@ -946,7 +1050,7 @@ FELIX_BROKER_CONFIG=/path/to/config.yml felix-broker --print-config
 ```
 
 The combinations refused at startup are listed under
-[Settings that are wrong together](/felix/reference/environment-variables/#settings-that-are-wrong-together).
+[Settings that are wrong together](/reference/environment-variables/#settings-that-are-wrong-together).
 
 ## Performance Profiles
 
@@ -973,7 +1077,6 @@ subscriber_writer_lanes: 4
 subscriber_lane_shard: auto
 subscriber_queue_capacity: 512
 disable_timings: false
-cache_conn_recv_window: 268435456
 ```
 
 ### High Throughput (batch-optimized)
@@ -995,8 +1098,8 @@ disable_timings: true
 ### High Memory (burst-tolerant)
 
 ```yaml
-cache_conn_recv_window: 536870912
-cache_stream_recv_window: 134217728
+pub_conn_recv_window: 268435456
+pub_stream_recv_window: 67108864
 cache_send_window: 536870912
 subscriber_queue_capacity: 2048
 subscriber_lane_queue_depth: 16384
@@ -1027,7 +1130,6 @@ event_batch_max_events: 64
 event_batch_max_delay_us: 250
 subscriber_writer_lanes: 4
 subscriber_lane_shard: auto
-cache_conn_recv_window: 268435456
 ```
 
 ### Production Cluster
@@ -1048,6 +1150,6 @@ subscriber_lane_shard: auto
 
 ## Next Steps
 
-- **Environment variables reference**: [Environment Variables](/felix/reference/environment-variables/)
-- **Troubleshooting issues**: [Troubleshooting Guide](/felix/reference/troubleshooting/)
-- **Performance tuning**: [Performance Guide](/felix/features/performance/)
+- **Environment variables reference**: [Environment Variables](/reference/environment-variables/)
+- **Troubleshooting issues**: [Troubleshooting Guide](/reference/troubleshooting/)
+- **Performance tuning**: [Performance Guide](/features/performance/)

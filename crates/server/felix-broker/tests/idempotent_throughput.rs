@@ -72,7 +72,7 @@ async fn durable_publish_throughput() {
         let started = Instant::now();
         for _ in 0..BATCHES {
             broker
-                .publish_batch_with_outcome(&plain, &payloads)
+                .publish_batch_with_outcome(&plain, &payloads, None)
                 .await
                 .expect("publish");
         }

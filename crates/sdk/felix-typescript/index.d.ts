@@ -26,9 +26,15 @@ export interface Event {
   skippedBefore: bigint;
 }
 
+/** The delivery `groupNack` hands back. A `GroupRecord` is one. */
+export interface GroupDelivery {
+  offset: bigint;
+  attempts: number;
+}
+
 /** One record handed out by a consumer group. */
 export interface GroupRecord {
-  /** What to pass to `groupAck` or `groupNack` to settle this record. */
+  /** What to pass to `groupAck` to settle this record. */
   offset: bigint;
   payload: Buffer;
   /**
@@ -37,6 +43,12 @@ export interface GroupRecord {
    * treat a retry differently. `0` means the broker did not report it.
    */
   attempts: number;
+  /**
+   * How many offsets directly below this one were settled without being
+   * delivered (generation starts, records retention removed). A hole with this
+   * count will not fill. `0n` from a broker that predates it.
+   */
+  skippedBefore: bigint;
 }
 
 /** One change observed by a cache watch. */
@@ -85,11 +97,12 @@ export interface ShardMoved {
 /**
  * An item from a sharded subscription.
  *
- * Exactly one of `event`, `lostError`, `recovered` and `shardMoved` is set, and
- * `shard` says which shard it concerns. A lost shard does not affect the
- * others: they keep delivering while that one is re-established, and it
- * resumes from its own last offset so nothing is skipped. A moved shard is
- * followed: its records carry on from the new owner, or a loss comes next.
+ * Exactly one of `event`, `lostError`, `recovered`, `shardMoved` and
+ * `streamDeleted` is set, and `shard` says which shard it concerns. A lost
+ * shard does not affect the others: they keep delivering while that one is
+ * re-established, and it resumes from its own last offset so nothing is
+ * skipped. A moved shard is followed: its records carry on from the new owner,
+ * or a loss comes next. A deleted stream ends the shard for good.
  */
 export interface ShardEvent {
   shard: number;
@@ -97,6 +110,7 @@ export interface ShardEvent {
   lostError: string | null;
   recovered: boolean | null;
   shardMoved: ShardMoved | null;
+  streamDeleted: boolean | null;
 }
 
 /** How much the broker must have done before a publish resolves. */
@@ -303,7 +317,9 @@ export declare class Client {
   /**
    * Connect to a cluster.
    *
-   * Any reachable seed address is enough; the client discovers the rest.
+   * Any reachable seed address is enough; the client discovers the rest. A
+   * `host:port` name is resolved again whenever no broker the client knows
+   * answers. A name that does not resolve now is an `InvalidArg` error.
    * TLS is not optional — QUIC has no unencrypted mode. Pass `caFile` to trust
    * a specific CA (what a self-signed development broker needs), or omit it to
    * use the operating system's trust store.
@@ -320,6 +336,18 @@ export declare class Client {
     caFile?: string,
     offerAlpn?: boolean,
   ): Promise<Client>;
+
+  /**
+   * A client that acts as another user over this client's connections.
+   *
+   * Every stream it opens authenticates with `tenantId` and `token`, and the
+   * broker checks its requests against that token's grants alone. It follows
+   * shards and failovers as this client does, reaching each broker over this
+   * client's connection to it, so a gateway serving many users holds one
+   * connection per broker. The token is fixed: build a new one when it
+   * expires. A refused token rejects here.
+   */
+  withIdentity(tenantId: string, token: string): Promise<Client>;
 
   /**
    * Publish one record.
@@ -512,6 +540,14 @@ export declare class Client {
     group: string,
     maxRecords?: number,
     waitMs?: number,
+    /**
+     * This member's name, stable across its restarts, 1 to 128 bytes. With
+     * `reclaim`, the records a previous process under the same name still
+     * held come back first, instead of after the visibility timeout. Only a
+     * connection's first such poll reclaims, so it is safe to leave set.
+     */
+    consumer?: string,
+    reclaim?: boolean,
   ): Promise<GroupRecord[]>;
 
   /** Finish a record: it will not be handed out again. */
@@ -524,14 +560,18 @@ export declare class Client {
     offset: bigint,
   ): Promise<void>;
 
-  /** Return a record for redelivery without waiting out its timeout. */
+  /**
+   * Return a record for redelivery without waiting out its timeout. Pass the
+   * record `groupPoll` returned: it names that delivery, and is refused once
+   * its claim has lapsed or the record has gone out again.
+   */
   groupNack(
     tenantId: string,
     namespace: string,
     stream: string,
     shard: number,
     group: string,
-    offset: bigint,
+    record: GroupDelivery,
   ): Promise<void>;
 
   /** Offsets this group gave up on after exhausting their attempts. */

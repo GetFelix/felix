@@ -11,7 +11,7 @@ pub struct CacheKey {
     pub cache: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct Cache {
     pub tenant_id: String,
     pub namespace: String,

@@ -5,6 +5,7 @@
 //! touched, is what stops two brokers accepting writes for the same key — the
 //! divergence the log-backed cache had no defence against.
 use bytes::Bytes;
+use felix_wire::internal::ForwardCacheOutcome;
 
 use crate::serving::forward::{CacheRequest, ForwardKey, ForwardTarget};
 use crate::serving::quic::client_error::ClientError;
@@ -124,6 +125,40 @@ pub(crate) async fn apply_cache_op(
     key: &str,
     request: CacheRequest,
 ) -> anyhow::Result<Option<Bytes>> {
+    apply_cache_request(
+        broker, quorum, ingress, peers, credential, tenant_id, namespace, cache, key, request,
+    )
+    .await
+    .map(|answer| answer.value)
+}
+
+/// What a cache operation answered.
+#[derive(Debug, Default)]
+pub(crate) struct CacheAnswer {
+    /// What a get found or a delete removed.
+    pub(crate) value: Option<Bytes>,
+    /// For a versioned request: whether it applied, and the version. `None`
+    /// from an owner that predates versions, which only a get falls back to.
+    pub(crate) outcome: Option<ForwardCacheOutcome>,
+}
+
+/// [`apply_cache_op`] with the whole answer, which a versioned request needs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_cache_request(
+    broker: &felix_broker::Broker,
+    quorum: (
+        Option<&felix_replication::quorum::QuorumMarks>,
+        std::time::Duration,
+    ),
+    ingress: Option<&IngressRouter>,
+    peers: Option<&felix_replication::peer::PeerPool>,
+    credential: &str,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    request: CacheRequest,
+) -> anyhow::Result<CacheAnswer> {
     match resolve_cache_route(ingress, tenant_id, namespace, cache, key).await {
         CacheRoute::Local {
             shard,
@@ -139,6 +174,10 @@ pub(crate) async fn apply_cache_op(
                 kind: ShardKind::Cache,
             };
             let (marks, quorum_timeout) = quorum;
+            let write = |fenced: &mut Option<FenceGuard>| {
+                fence::enter_or_keep(fenced, ingress, Some(&written), generation)
+                    .map_err(ClientError::from)
+            };
             Ok(match request {
                 CacheRequest::Put { value, ttl_ms } => {
                     let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
@@ -162,7 +201,7 @@ pub(crate) async fn apply_cache_op(
                         felix_replication::quorum::Access::Write,
                     )
                     .await?;
-                    None
+                    CacheAnswer::default()
                 }
                 CacheRequest::Get => {
                     // A read does not hold the fence, but it follows the lease,
@@ -188,7 +227,10 @@ pub(crate) async fn apply_cache_op(
                         felix_replication::quorum::Access::Read,
                     )
                     .await?;
-                    value
+                    CacheAnswer {
+                        value,
+                        outcome: None,
+                    }
                 }
                 CacheRequest::Delete => {
                     let fenced =
@@ -208,7 +250,92 @@ pub(crate) async fn apply_cache_op(
                         felix_replication::quorum::Access::Write,
                     )
                     .await?;
-                    removed
+                    CacheAnswer {
+                        value: removed,
+                        outcome: None,
+                    }
+                }
+                CacheRequest::PutIf {
+                    value,
+                    ttl_ms,
+                    condition,
+                } => {
+                    let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
+                    let fenced = write(&mut fenced)?;
+                    let written_if = cache_store
+                        .put_if(
+                            tenant_id, namespace, cache, shard, key, value, ttl, condition,
+                        )
+                        .await
+                        .map_err(storage)?;
+                    drop(fenced);
+                    // Waited on even when refused: the version a refusal
+                    // reports must be one a failover keeps.
+                    felix_replication::quorum::await_cache_quorum(
+                        broker,
+                        &written,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        felix_replication::quorum::Access::Write,
+                    )
+                    .await?;
+                    CacheAnswer {
+                        value: None,
+                        outcome: Some(outcome(written_if)),
+                    }
+                }
+                CacheRequest::DeleteIf { version } => {
+                    let fenced = write(&mut fenced)?;
+                    let deleted = cache_store
+                        .delete_if(tenant_id, namespace, cache, shard, key, version)
+                        .await
+                        .map_err(storage)?;
+                    drop(fenced);
+                    felix_replication::quorum::await_cache_quorum(
+                        broker,
+                        &written,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        felix_replication::quorum::Access::Write,
+                    )
+                    .await?;
+                    CacheAnswer {
+                        value: None,
+                        outcome: Some(outcome(deleted)),
+                    }
+                }
+                CacheRequest::GetVersioned => {
+                    drop(fenced);
+                    if !felix_replication::quorum::read_skips_lease(
+                        broker, &written, marks, ingress,
+                    )
+                    .await
+                    {
+                        refuse_read_on_lapse(ingress)?;
+                    }
+                    let found = cache_store
+                        .get_versioned(tenant_id, namespace, cache, shard, key)
+                        .await
+                        .map_err(storage)?;
+                    felix_replication::quorum::await_cache_quorum(
+                        broker,
+                        &written,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        felix_replication::quorum::Access::Read,
+                    )
+                    .await?;
+                    let version = found.as_ref().map(|found| found.version);
+                    CacheAnswer {
+                        value: found.map(|found| found.value),
+                        outcome: Some(ForwardCacheOutcome {
+                            applied: true,
+                            version,
+                        }),
+                    }
                 }
                 // Counter operations go through `apply_counter_op`, which owns the
                 // counter store; routing them here would answer from the wrong
@@ -236,7 +363,7 @@ pub(crate) async fn apply_cache_op(
                 .with_retry(felix_wire::RetryClass::Retry)
                 .into());
             };
-            crate::serving::forward::forward_cache_op(
+            crate::serving::forward::forward_cache_request(
                 pool,
                 &target,
                 &forward_key,
@@ -245,6 +372,10 @@ pub(crate) async fn apply_cache_op(
                 &request,
             )
             .await
+            .map(|ok| CacheAnswer {
+                value: ok.value,
+                outcome: ok.outcome,
+            })
             .map_err(anyhow::Error::from)
         }
         CacheRoute::Refused(reason) => Err(refused(&reason)),
@@ -408,6 +539,13 @@ fn refuse_read_on_lapse(ingress: Option<&IngressRouter>) -> Result<(), ClientErr
 
 fn refused(reason: &crate::shards::routing::Reason) -> anyhow::Error {
     ClientError::unavailable(reason, reason.to_string()).into()
+}
+
+fn outcome(written: felix_storage::ConditionalWrite) -> ForwardCacheOutcome {
+    ForwardCacheOutcome {
+        applied: written.applied,
+        version: written.version,
+    }
 }
 
 fn storage(err: impl std::fmt::Display) -> anyhow::Error {

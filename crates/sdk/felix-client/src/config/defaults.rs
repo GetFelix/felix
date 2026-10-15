@@ -23,6 +23,15 @@ pub(crate) const DEFAULT_PUBLISH_CHUNK_BYTES: usize = 16 * 1024;
 /// not free, and on the evidence it is not faster either.
 pub(crate) const DEFAULT_PUB_CONN_POOL: usize = 4;
 pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
+/// Publish streams a `ClusterClient` opens per broker for one shard each.
+///
+/// Sixteen covers every shard of a 16-shard stream, or of a few smaller ones,
+/// which is the shape a stall would otherwise spread across. Each costs a
+/// writer task, parked while the shard is quiet, and one of the 1024 streams
+/// the transport allows a connection by default. Shards past it share the
+/// pool as before, so a client publishing to many streams keeps a bounded
+/// number of streams open.
+pub(crate) const DEFAULT_PUB_SHARD_STREAMS: usize = 16;
 pub(crate) const DEFAULT_EVENT_CONN_POOL: usize = 8;
 pub(crate) const DEFAULT_CACHE_CONN_POOL: usize = 8;
 /// A cluster client's ceiling per broker. It starts at one connection; this

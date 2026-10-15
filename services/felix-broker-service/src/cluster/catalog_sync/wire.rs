@@ -131,6 +131,39 @@ pub(super) struct Stream {
     /// `Leader` -- the behaviour every stream had before this existed.
     #[serde(default)]
     pub(super) consistency: Option<String>,
+    /// Absent from a control plane that predates per-stream retention, which
+    /// reads as the broker's own bounds.
+    #[serde(default)]
+    pub(super) retention: Option<Retention>,
+}
+
+/// A stream's retention as the control plane stores it.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub(super) struct Retention {
+    #[serde(default)]
+    pub(super) max_age_seconds: Option<u64>,
+    #[serde(default)]
+    pub(super) max_size_bytes: Option<u64>,
+}
+
+impl Stream {
+    /// What the broker registers this stream with.
+    pub(super) fn metadata(&self) -> anyhow::Result<felix_broker::StreamMetadata> {
+        let retention = self.retention.as_ref();
+        // Zero is no bound. The control plane refuses it, and one stored
+        // before it did must not fail the whole sync.
+        let bound = |value: Option<u64>| value.filter(|value| *value > 0);
+        Ok(felix_broker::StreamMetadata {
+            durable: self.durable,
+            shards: self.shards,
+            consistency: super::apply::read_consistency(self.consistency.as_deref())?,
+            retention: felix_storage::log::Retention {
+                bytes: bound(retention.and_then(|r| r.max_size_bytes)),
+                age: bound(retention.and_then(|r| r.max_age_seconds))
+                    .map(std::time::Duration::from_secs),
+            },
+        })
+    }
 }
 
 /// Represents a cache as registered in the broker registry.

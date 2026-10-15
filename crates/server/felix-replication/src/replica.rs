@@ -82,21 +82,25 @@ impl ReplicaHandler {
     /// keeping, and the leader's copy is the one the majority holds. The
     /// records go, the generation history goes with them, and the answer is
     /// where the new copy begins.
-    pub async fn rebuild(&self, request: ReplicateRebuild) -> InternalMessage {
+    pub async fn rebuild(
+        &self,
+        sender: Option<&str>,
+        request: ReplicateRebuild,
+    ) -> InternalMessage {
         let correlation_id = request.correlation_id;
-        let log_kind = match request.log {
-            ReplicaLog::Stream => felix_broker::LogKind::Stream,
-            ReplicaLog::Cache => felix_broker::LogKind::Cache,
-            ReplicaLog::GroupCursors => felix_broker::LogKind::GroupCursors,
-            ReplicaLog::GroupDeadLetters => felix_broker::LogKind::GroupDeadLetters,
-            ReplicaLog::Counters => felix_broker::LogKind::Counters,
-        };
+        let log_kind = log_kind(request.log);
         let key = shard_key(&request.shard, log_kind);
         if let Some(refusal) = self.check_role(correlation_id, &key, request.shard.generation) {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, request.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                request.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -122,7 +126,7 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+            accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
             return refusal;
         }
@@ -139,8 +143,7 @@ impl ReplicaHandler {
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
         // The in-memory tail was built from the records that just went.
-        self.reset_stream_tail(&key, log_kind, request.base_offset)
-            .await;
+        self.reset_tail(&key, log_kind, request.base_offset).await;
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -212,7 +215,7 @@ impl ReplicaHandler {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
-            self.reset_stream_tail(key, log_kind, keep).await;
+            self.reset_tail(key, log_kind, keep).await;
         }
         tracing::warn!(
             stream = %key.stream,
@@ -245,31 +248,41 @@ impl ReplicaHandler {
             .copied()
     }
 
-    /// A stream's replay ring and next offset describe the records a rebuild
-    /// or truncation just dropped, so they are reset to where the log ends now.
-    async fn reset_stream_tail(
+    /// What the broker derived from a log's records -- a stream's replay ring
+    /// and next offset, a cache's index, a counter shard's sums -- describes
+    /// the records a rebuild or truncation just dropped, so it is reset to
+    /// where the log ends now.
+    async fn reset_tail(
         &self,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
         tail: u64,
     ) {
-        if log_kind == felix_broker::LogKind::Stream
-            && let Err(err) = self
-                .broker
-                .reset_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
-                .await
+        if let Err(err) = self
+            .broker
+            .reset_log(
+                log_kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                tail,
+            )
+            .await
         {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
+                log = ?log_kind,
                 error = %err,
-                "dropped records from the log but could not reset the stream's tail",
+                "dropped records from the log but could not reset what was read from them",
             );
         }
     }
 
     pub async fn bootstrap(
         &self,
+        sender: Option<&str>,
         request: ReplicateBootstrap,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
@@ -280,7 +293,13 @@ impl ReplicaHandler {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, request.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                request.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -310,7 +329,7 @@ impl ReplicaHandler {
         };
 
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+            accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
             return refusal;
         }
@@ -333,8 +352,7 @@ impl ReplicaHandler {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
-            self.reset_stream_tail(&key, log_kind, request.base_offset)
-                .await;
+            self.reset_tail(&key, log_kind, request.base_offset).await;
             (base, tail) = (request.base_offset, request.base_offset);
         }
 
@@ -388,6 +406,7 @@ impl ReplicaHandler {
 
     pub async fn apply(
         &self,
+        sender: Option<&str>,
         batch: ReplicateRecords,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
@@ -416,7 +435,13 @@ impl ReplicaHandler {
             return refusal;
         }
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, batch.shard.generation)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                batch.shard.generation,
+                sender,
+            )
             .await
         {
             return refusal;
@@ -446,7 +471,7 @@ impl ReplicaHandler {
         };
 
         if let Some(refusal) =
-            accept_sender(&log, correlation_id, &key, batch.shard.generation).await
+            accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
             return refusal;
         }
@@ -488,6 +513,8 @@ impl ReplicaHandler {
                     batch.checksum,
                     &batch.payloads,
                     &batch.marks,
+                    &batch.publishers,
+                    batch.times.as_deref().unwrap_or_default(),
                 )
                 .await
             }
@@ -551,17 +578,19 @@ impl ReplicaHandler {
                              generation and resumed replication",
                         );
                         metrics::record_replicated(metrics::OUTCOME_TRUNCATED);
-                        // The replay ring and next offset still describe the
-                        // dropped records, and the apply below only moves them
-                        // forward, so a tail that ends lower than before would
-                        // leave them for readers if this broker is promoted.
-                        self.reset_stream_tail(&key, log_kind, diverged_at).await;
+                        // What was read from the dropped records (a stream's
+                        // replay ring, a cache's index) still describes them,
+                        // and the apply below only moves it forward, so it
+                        // would be left for readers if this broker is promoted.
+                        self.reset_tail(&key, log_kind, diverged_at).await;
                         outcome = replication::apply(
                             &log,
                             batch.first_offset,
                             batch.checksum,
                             &batch.payloads,
                             &batch.marks,
+                            &batch.publishers,
+                            batch.times.as_deref().unwrap_or_default(),
                         )
                         .await;
                     }
@@ -603,6 +632,21 @@ impl ReplicaHandler {
                 )
             }
             Ok(Ok(applied)) => {
+                // Held like the leader's copy: this one counts toward the mark,
+                // and if it led, it would be the copy a client was promised.
+                if matches!(
+                    log_kind,
+                    felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+                ) {
+                    let hold = crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
+                    if let Err(err) = log.hold_retention_at_commit(hold).await {
+                        tracing::warn!(
+                            stream = %key.stream,
+                            error = %err,
+                            "could not write the retention hold through; it applies in memory",
+                        );
+                    }
+                }
                 // Only what this batch left level with the leader: past the
                 // durable offset nothing here has been compared.
                 if let Some(commit) = batch.commit_offset
@@ -714,23 +758,13 @@ impl ReplicaHandler {
     ///
     /// The generation is written to the shard's own log, stream or cache.
     /// Its cursor, dead-letter and counter logs check that one as well as
-    /// their own, so the fence covers them without a request each.
-    pub async fn fence(&self, request: Fence) -> InternalMessage {
+    /// their own, so the fence covers them without a request each. A
+    /// promoted leader fences those logs as well, after the shard's own, for
+    /// where each ends: the answer is that log's.
+    pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
-        let log_kind = match request.log {
-            ReplicaLog::Stream => felix_broker::LogKind::Stream,
-            ReplicaLog::Cache => felix_broker::LogKind::Cache,
-            other => {
-                metrics::record_replicated(metrics::OUTCOME_REFUSED);
-                return refused(
-                    correlation_id,
-                    ErrorCode::Malformed,
-                    0,
-                    format!("a fence names a shard's own log, not {other:?}"),
-                );
-            }
-        };
+        let log_kind = log_kind(request.log);
         let key = shard_key(&request.shard, log_kind);
         // The fence comes with a promotion, usually before this broker's
         // routing view has the new generation. Behind is the normal case here,
@@ -754,6 +788,27 @@ impl ReplicaHandler {
             )
             .await
         else {
+            // A broker without consumer groups holds no group state and can
+            // store none, so it answers as an empty log rather than leaving
+            // the leader waiting on a promise it has no log to keep.
+            if matches!(
+                log_kind,
+                felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters
+            ) && self.broker.group_reader().is_none()
+            {
+                if let Some(refusal) = self
+                    .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+                    .await
+                {
+                    return refusal;
+                }
+                return InternalMessage::FenceOk(FenceOk {
+                    correlation_id,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                });
+            }
             // Nowhere to keep the promise, so no promise: the leader must not
             // count this broker toward its majority.
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
@@ -764,6 +819,12 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) = self
+            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+            .await
+        {
+            return refusal;
+        }
         // A cache's counter log takes its leader's generation on its own, so
         // a newer leader that has only written counters has reached this
         // replica there and nowhere else. Refused, or an older leader's read
@@ -793,9 +854,10 @@ impl ReplicaHandler {
             }
         }
         // A fence at the generation already accepted changes nothing here: it
-        // is the leader confirming it still leads, once per read round.
+        // is the leader confirming it still leads, once per read round. From
+        // any other node it is refused below, by the ballot.
         let confirming = log.accepted_generation() == generation;
-        if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation).await {
+        if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
         // Read after the generation is on disk: a batch from the old leader
@@ -834,21 +896,10 @@ impl ReplicaHandler {
     ///
     /// Only for a leader at exactly the generation this replica last
     /// accepted, which is the one that fenced it.
-    pub async fn fetch(&self, request: ReplicateFetch) -> InternalMessage {
+    pub async fn fetch(&self, sender: Option<&str>, request: ReplicateFetch) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
-        let log_kind = match request.log {
-            ReplicaLog::Stream => felix_broker::LogKind::Stream,
-            ReplicaLog::Cache => felix_broker::LogKind::Cache,
-            other => {
-                return refused(
-                    correlation_id,
-                    ErrorCode::Malformed,
-                    0,
-                    format!("a fetch reads a shard's own log, not {other:?}"),
-                );
-            }
-        };
+        let log_kind = log_kind(request.log);
         let key = shard_key(&request.shard, log_kind);
         match self.router.replica_role(&key, generation) {
             ReplicaRole::Follower | ReplicaRole::Behind { .. } => {}
@@ -876,7 +927,16 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) = self
+            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+            .await
+        {
+            return refusal;
+        }
         let accepted = log.accepted_generation();
+        if let Some(refusal) = refuse_other_leader(&log, correlation_id, &key, generation, sender) {
+            return refusal;
+        }
         if accepted != generation {
             let code = if accepted > generation {
                 ErrorCode::FencedEpoch
@@ -894,7 +954,13 @@ impl ReplicaHandler {
             );
         }
         let max_bytes = (request.max_bytes as usize).clamp(1, MAX_FETCH_BYTES);
-        let records = match log.read_log_from(request.from_offset, max_bytes).await {
+        // A promoted leader reads a cursor log whole to take its groups, and
+        // compaction may have trimmed its head: what is left is all it needs.
+        let from_offset = match log_kind {
+            felix_broker::LogKind::GroupCursors => request.from_offset.max(log.base_offset()),
+            _ => request.from_offset,
+        };
+        let records = match log.read_log_from(from_offset, max_bytes).await {
             Ok(records) => records,
             Err(err) => {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
@@ -911,39 +977,54 @@ impl ReplicaHandler {
         } else {
             Vec::new()
         };
-        let first_offset = records
-            .first()
-            .map_or(request.from_offset, |record| record.offset);
+        let first_offset = records.first().map_or(from_offset, |record| record.offset);
+        let publishers = replication::publishers_to_wire(&records);
+        let times = (request.labelled && request.timed).then(|| {
+            records
+                .iter()
+                .map(|record| record.timestamp_micros)
+                .collect()
+        });
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
         let end = first_offset + payloads.len() as u64;
-        let batch = ReplicateRecords {
+        let mut batch = ReplicateRecords {
             correlation_id,
             shard: request.shard,
             first_offset,
-            checksum: felix_wire::internal::batch_checksum(&payloads, &marks),
+            checksum: felix_wire::internal::batch_checksum(&payloads, &marks, &publishers),
             payloads,
             marks,
             commit_offset: None,
             generations: request
                 .labelled
                 .then(|| generations_over(&log.generations(), first_offset, end)),
+            publishers,
+            times,
         };
+        crate::ship::carry_marks(&mut batch, log_kind, false);
         match log_kind {
             felix_broker::LogKind::Cache => InternalMessage::ReplicateCacheRecords(batch),
+            felix_broker::LogKind::Counters => InternalMessage::ReplicateCounterRecords(batch),
+            felix_broker::LogKind::GroupCursors => InternalMessage::ReplicateGroupRecords(batch),
+            felix_broker::LogKind::GroupDeadLetters => {
+                InternalMessage::ReplicateDeadLetterRecords(batch)
+            }
             _ if !batch.marks.is_empty() => InternalMessage::ReplicateMarkedRecords(batch),
             _ => InternalMessage::ReplicateRecords(batch),
         }
     }
 
     /// Refuse a sender to one of a shard's other logs once the shard's own
-    /// log has accepted a newer leader, which is where a fence is kept.
+    /// log has accepted a newer leader, or another leader at the sender's
+    /// generation, which is where a fence is kept.
     async fn check_shard_fence(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         let own = match log_kind {
             felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => return None,
@@ -956,6 +1037,9 @@ impl ReplicaHandler {
             .broker
             .shard_log(own, &key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await?;
+        if let Some(refusal) = refuse_other_leader(&log, correlation_id, key, generation, sender) {
+            return Some(refusal);
+        }
         let accepted = log.accepted_generation();
         (accepted > generation).then(|| {
             metrics::record_replicated(metrics::OUTCOME_FENCED);
@@ -1017,19 +1101,40 @@ impl ReplicaHandler {
     }
 }
 
-/// Refuse a sender older than a leader this log already accepted, and persist
-/// a newer one before anything it sends is stored or acknowledged.
+fn log_kind(log: ReplicaLog) -> felix_broker::LogKind {
+    match log {
+        ReplicaLog::Stream => felix_broker::LogKind::Stream,
+        ReplicaLog::Cache => felix_broker::LogKind::Cache,
+        ReplicaLog::GroupCursors => felix_broker::LogKind::GroupCursors,
+        ReplicaLog::GroupDeadLetters => felix_broker::LogKind::GroupDeadLetters,
+        ReplicaLog::Counters => felix_broker::LogKind::Counters,
+    }
+}
+
+/// Refuse a sender older than a leader this log already accepted, or another
+/// node at the generation it accepted, and persist a newer one, with its
+/// ballot, before anything it sends is stored or acknowledged.
 ///
 /// The routing view in `check_role` is rebuilt after a restart and may lag;
 /// this is what still refuses a leader this broker has seen superseded.
+/// `sender` is the node id the peer gave in its `Hello`, or `None` when this
+/// broker does not keep ballots, and then only the generation is checked.
 async fn accept_sender(
     log: &felix_broker::StreamLog,
     correlation_id: u64,
     key: &felix_router::ShardKey,
     generation: u64,
+    sender: Option<&str>,
 ) -> Option<InternalMessage> {
-    match log.accept_generation(generation).await {
+    match log.accept_generation(generation, sender).await {
         Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
+        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+            correlation_id,
+            key,
+            generation,
+            &leader,
+            sender,
+        )),
         Ok(GenerationCheck::Superseded { accepted }) => {
             tracing::warn!(
                 stream = %key.stream,
@@ -1058,6 +1163,52 @@ async fn accept_sender(
             ))
         }
     }
+}
+
+/// Refuse `sender` at `generation` when this log accepted that generation
+/// from another leader. Read only: a fetch and a shard's other logs take no
+/// ballot of their own here.
+fn refuse_other_leader(
+    log: &felix_broker::StreamLog,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    let sender_id = sender?;
+    if log.accepted_generation() != generation {
+        return None;
+    }
+    let leader = log.accepted_leader()?;
+    (*leader != *sender_id)
+        .then(|| promised_elsewhere(correlation_id, key, generation, &leader, sender))
+}
+
+/// A second node claiming a generation this replica accepted from another.
+/// Answered as fenced: whichever of the two reads it must not count this
+/// replica, and the control plane never names two, so one of them is stale.
+fn promised_elsewhere(
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    leader: &str,
+    sender: Option<&str>,
+) -> InternalMessage {
+    tracing::warn!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation,
+        promised = leader,
+        sender = sender.unwrap_or_default(),
+        "refusing a second leader at a generation this replica accepted from another",
+    );
+    metrics::record_replicated(metrics::OUTCOME_FENCED);
+    refused(
+        correlation_id,
+        ErrorCode::FencedEpoch,
+        0,
+        format!("this broker accepted generation {generation} from {leader}"),
+    )
 }
 
 /// Where a batch from a leader at `generation` must start for every record

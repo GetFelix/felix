@@ -40,7 +40,7 @@ tell it missed anything.
 
 This is the demo to run first if you want to know why Felix exists rather than
 what it can do. Then run its counterpart,
-[Local State Divergence](/felix/demos/state-divergence/), which shows what this trade-off
+[Local State Divergence](/demos/state-divergence/), which shows what this trade-off
 costs a consumer that holds a local copy of state.
 
 ## The question it answers
@@ -69,7 +69,7 @@ and this demo runs both so the trade-off is visible instead of theoretical.
   it is what makes the drops observable. Felix offers stronger options: a
   durable stream replays by offset, and a queue redelivers on visibility
   timeout with bounded attempts and a dead-letter destination. Picking one of
-  those is what the [state divergence](/felix/demos/state-divergence/) demo
+  those is what the [state divergence](/demos/state-divergence/) demo
   measures the cost of.
 
 ## Architecture
@@ -147,7 +147,7 @@ Read the two blocks together:
   everyone, and all three finish in lockstep.
 
 Neither is the correct answer. Quoting
-[how Felix works](/felix/development/how-felix-works/): *"dropping isolates healthy
+[how Felix works](/development/how-felix-works/): *"dropping isolates healthy
 publishers and subscribers from a slow consumer; blocking preserves delivery but can
 let one slow subscriber throttle every producer of that stream."*
 
@@ -165,7 +165,7 @@ chain, and each checkpoint has its own knob and its own default:
 
 Leaving any of them on the shedding default means loss happens there first and the
 ones downstream never matter. The lossless configuration requires all four. See
-[backpressure internals](/felix/development/internals-concurrency/) for the full set
+[backpressure internals](/development/internals-concurrency/) for the full set
 of six checkpoints and why each exists.
 
 ## Failure injection

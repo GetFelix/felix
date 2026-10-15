@@ -37,7 +37,9 @@
 pub mod client;
 mod cluster;
 mod config;
+pub mod container;
 pub mod controlplane;
+pub mod credentials;
 mod fault;
 pub mod history;
 mod node;
@@ -51,5 +53,6 @@ pub mod wait;
 pub use cluster::{Assignment, Cluster};
 pub use config::{CacheSpec, ClusterConfig, StreamSpec};
 pub use controlplane::ControlPlane;
+pub use credentials::Credentials;
 pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
 pub use node::{BrokerNode, broker_binary};

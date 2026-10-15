@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::{AsyncCacheWatch, AsyncShardedSubscription, AsyncSubscription};
 use crate::args::{parse_ack, parse_addrs, parse_start};
 use crate::errors::to_py_err;
-use crate::types::{CacheWatchFilter, OwnedGroupRecord};
+use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 
 /// A connection to a Felix cluster, for asyncio.
 ///
@@ -56,11 +56,37 @@ impl AsyncClient {
         let server_name = server_name.to_string();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = ClusterClient::connect(&seeds, &server_name, config)
+            let inner = ClusterClient::connect_seeds(
+                &seeds,
+                &server_name,
+                config,
+                ReconnectPolicy::default(),
+            )
+            .await
+            .map_err(to_py_err)?;
+            Ok(AsyncClient {
+                inner: Arc::new(inner),
+            })
+        })
+    }
+
+    /// Resolve to a client that acts as another user over this client's
+    /// connections. See the synchronous `Client.with_identity`.
+    fn with_identity<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        token: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let identity = inner
+                .with_identity_token(tenant_id, token)
                 .await
                 .map_err(to_py_err)?;
             Ok(AsyncClient {
-                inner: Arc::new(inner),
+                inner: Arc::new(identity),
             })
         })
     }
@@ -173,8 +199,7 @@ impl AsyncClient {
         let value = Bytes::copy_from_slice(value);
         let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .cache_put(&tenant_id, &namespace, &cache, &key, value, ttl_ms)
                 .await
                 .map_err(to_py_err)
@@ -197,8 +222,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            let value = client
+            let value = inner
                 .cache_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)?;
@@ -277,8 +301,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            let value = client
+            let value = inner
                 .cache_delete(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)?;
@@ -303,8 +326,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_add(&tenant_id, &namespace, &cache, &key, delta)
                 .await
                 .map_err(to_py_err)
@@ -327,8 +349,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)
@@ -339,7 +360,7 @@ impl AsyncClient {
 
     /// Take up to `max_records` for this group, waiting up to `wait` seconds.
     /// See the synchronous `Client.group_poll` for what the options mean.
-    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0))]
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false))]
     fn group_poll<'py>(
         &self,
         py: Python<'py>,
@@ -350,6 +371,8 @@ impl AsyncClient {
         group: &str,
         max_records: u32,
         wait: f64,
+        consumer: Option<String>,
+        reclaim: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = (
@@ -359,14 +382,16 @@ impl AsyncClient {
             group.to_string(),
         );
         let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
+        let member = consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim });
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let records = inner
-                .group_poll_wait(
+                .group_poll_as(
                     &tenant_id,
                     &namespace,
                     &stream,
                     shard,
                     &group,
+                    member.as_ref(),
                     max_records,
                     wait,
                 )
@@ -402,7 +427,8 @@ impl AsyncClient {
         )
     }
 
-    /// Hand one record back for immediate redelivery.
+    /// Hand one record back for immediate redelivery. Refused once its claim
+    /// has lapsed or the record has gone out again.
     fn group_nack<'py>(
         &self,
         py: Python<'py>,
@@ -411,18 +437,22 @@ impl AsyncClient {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: PyRef<'_, GroupRecord>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        self.settle(
-            py,
-            tenant_id,
-            namespace,
-            stream,
-            shard,
-            group,
-            offset,
-            Settle::Nack,
-        )
+        let record = record.delivery();
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            group.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     /// Offsets this group gave up on, lowest first.
@@ -558,8 +588,7 @@ impl AsyncClient {
             stream.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .stream_shards(&tenant_id, &namespace, &stream)
                 .await
                 .map_err(to_py_err)
@@ -661,11 +690,6 @@ impl AsyncClient {
                         .group_ack(&tenant_id, &namespace, &stream, shard, &group, offset)
                         .await
                 }
-                Settle::Nack => {
-                    client
-                        .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
-                        .await
-                }
                 Settle::Discard => {
                     client
                         .group_discard(&tenant_id, &namespace, &stream, shard, &group, offset)
@@ -682,12 +706,11 @@ impl AsyncClient {
     }
 }
 
-/// Which settle a group call is making. One helper serves all four because
+/// Which settle a group call is making. One helper serves all three because
 /// they differ only in the client method they reach.
 #[derive(Clone, Copy)]
 enum Settle {
     Ack,
-    Nack,
     Discard,
     Redrive,
 }

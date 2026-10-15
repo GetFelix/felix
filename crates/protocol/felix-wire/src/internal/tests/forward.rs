@@ -8,10 +8,12 @@ fn an_empty_cached_value_is_not_a_miss() {
     let empty = InternalMessage::ForwardCacheOk(ForwardCacheOk {
         correlation_id: 42,
         value: Some(Bytes::new()),
+        outcome: None,
     });
     let miss = InternalMessage::ForwardCacheOk(ForwardCacheOk {
         correlation_id: 42,
         value: None,
+        outcome: None,
     });
 
     let empty_bytes = empty.encode().expect("encode");
@@ -29,6 +31,7 @@ fn an_unknown_cache_value_presence_byte_is_refused() {
     let ok = InternalMessage::ForwardCacheOk(ForwardCacheOk {
         correlation_id: 42,
         value: None,
+        outcome: None,
     });
     let mut bytes = ok.encode().expect("encode").to_vec();
     let last = bytes.len() - 1;
@@ -47,6 +50,7 @@ fn an_unknown_cache_operation_is_refused() {
         value: Bytes::new(),
         ttl_ms: 0,
         credential: String::new(),
+        condition: None,
     });
     let bytes = op.encode().expect("encode").to_vec();
     let position = bytes
@@ -135,4 +139,58 @@ fn a_forward_ok_carries_the_batch_offsets() {
         ForwardPublishOk::new(1, Some((0, 0))).offsets(),
         Some((0, 0))
     );
+}
+
+/// A conditional request travels as its own kind, with or without a
+/// credential, and its answer as another; an unconditional one keeps the
+/// kinds and bytes it always had.
+#[test]
+fn a_conditional_cache_op_round_trips_as_its_own_kind() {
+    let conditional = |credential: &str, condition| ForwardCacheOp {
+        correlation_id: 42,
+        shard: shard(),
+        op: CacheOpKind::Put,
+        key: "lease".to_string(),
+        value: Bytes::from_static(b"worker-1"),
+        ttl_ms: 30_000,
+        credential: credential.to_string(),
+        condition: Some(condition),
+    };
+    for message in [
+        conditional("", ForwardCacheCondition::Absent),
+        conditional("eyJ.token.sig", ForwardCacheCondition::Version(7)),
+        conditional("eyJ.token.sig", ForwardCacheCondition::Unconditional),
+    ] {
+        let message = InternalMessage::ForwardCacheOp(message);
+        assert_eq!(message.kind(), Kind::ConditionalForwardCacheOp);
+        let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
+
+    for outcome in [
+        ForwardCacheOutcome {
+            applied: true,
+            version: Some(9),
+        },
+        ForwardCacheOutcome {
+            applied: false,
+            version: None,
+        },
+    ] {
+        let answer = InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id: 42,
+            value: Some(Bytes::from_static(b"v")),
+            outcome: Some(outcome),
+        });
+        assert_eq!(answer.kind(), Kind::ConditionalForwardCacheOk);
+        let decoded = InternalMessage::decode(answer.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, answer);
+    }
+
+    let plain = InternalMessage::ForwardCacheOk(ForwardCacheOk {
+        correlation_id: 42,
+        value: None,
+        outcome: None,
+    });
+    assert_eq!(plain.kind(), Kind::ForwardCacheOk);
 }

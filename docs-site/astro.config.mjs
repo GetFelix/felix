@@ -3,8 +3,8 @@ import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
 
 export default defineConfig({
-  site: 'https://gabloe.github.io',
-  base: '/felix',
+  site: 'https://docs.getfelix.dev',
+  base: '/',
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({
@@ -42,11 +42,11 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/gabloe/felix',
+          href: 'https://github.com/GetFelix/felix',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/gabloe/felix/edit/main/docs-site/',
+        baseUrl: 'https://github.com/GetFelix/felix/edit/main/docs-site/',
       },
       lastUpdated: true,
       sidebar: [
@@ -58,7 +58,9 @@ export default defineConfig({
             { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
+            { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Installation', slug: 'getting-started/installation' },
+            { label: 'Docker or Podman', slug: 'getting-started/containers' },
           ],
         },
         {
@@ -99,6 +101,17 @@ export default defineConfig({
             { label: 'Rust', slug: 'clients/rust' },
             { label: 'Python', slug: 'clients/python' },
             { label: 'TypeScript', slug: 'clients/typescript' },
+            { label: 'Browsers (felix-gateway)', slug: 'clients/browsers' },
+          ],
+        },
+        {
+          label: 'Built on Felix',
+          collapsed: true,
+          items: [
+            { label: 'Overview', slug: 'built-on-felix/overview' },
+            { label: 'felix-canvas', slug: 'built-on-felix/canvas' },
+            { label: 'felix-webhook-relay', slug: 'built-on-felix/webhook-relay' },
+            { label: 'felix-arena', slug: 'built-on-felix/arena' },
           ],
         },
         {
@@ -142,6 +155,7 @@ export default defineConfig({
             { label: 'Backup and Restore', slug: 'deployment/backup-and-restore' },
             { label: 'Graceful Shutdown', slug: 'deployment/graceful-shutdown' },
             { label: 'Upgrades & Compatibility', slug: 'deployment/upgrades' },
+            { label: 'Diagnosing a Cluster', slug: 'deployment/diagnosing' },
           ],
         },
         {

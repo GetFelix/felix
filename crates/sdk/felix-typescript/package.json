@@ -1,6 +1,6 @@
 {
   "name": "felix-client",
-  "version": "0.6.0-preview",
+  "version": "0.6.0-preview.7",
   "description": "Node.js/TypeScript bindings for the Felix client, over the Rust client rather than a reimplementation of it",
   "keywords": [
     "felix",
@@ -14,14 +14,14 @@
   ],
   "license": "Apache-2.0",
   "author": "Gabriel Loewen",
-  "homepage": "https://gabloe.github.io/felix/clients/typescript/",
+  "homepage": "https://docs.getfelix.dev/clients/typescript/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gabloe/felix.git",
+    "url": "https://github.com/GetFelix/felix.git",
     "directory": "crates/sdk/felix-typescript"
   },
   "bugs": {
-    "url": "https://github.com/gabloe/felix/issues"
+    "url": "https://github.com/GetFelix/felix/issues"
   },
   "main": "index.js",
   "types": "index.d.ts",
@@ -54,10 +54,10 @@
     "test": "node --test test/errors.test.mjs test/conformance.test.mjs"
   },
   "optionalDependencies": {
-    "felix-client-darwin-arm64": "0.6.0-preview",
-    "felix-client-darwin-x64": "0.6.0-preview",
-    "felix-client-linux-arm64-gnu": "0.6.0-preview",
-    "felix-client-linux-x64-gnu": "0.6.0-preview",
-    "felix-client-win32-x64-msvc": "0.6.0-preview"
+    "felix-client-darwin-arm64": "0.6.0-preview.7",
+    "felix-client-darwin-x64": "0.6.0-preview.7",
+    "felix-client-linux-arm64-gnu": "0.6.0-preview.7",
+    "felix-client-linux-x64-gnu": "0.6.0-preview.7",
+    "felix-client-win32-x64-msvc": "0.6.0-preview.7"
   }
 }

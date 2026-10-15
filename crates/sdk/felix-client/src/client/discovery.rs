@@ -1,19 +1,25 @@
-//! What a broker can tell a [`Client`] about the cluster: its brokers, and how
-//! many shards a stream or cache has. Each question refuses to be asked of a
-//! broker that did not advertise it.
+//! What a broker can tell a [`Client`] about the cluster: its brokers, how
+//! many shards a stream or cache has, and who owns each. Each question
+//! refuses to be asked of a broker that did not advertise it.
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
-use crate::connection::OpenedStream;
+use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
     /// True if this broker answers [`Client::topology`].
     pub fn supports_topology(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_TOPOLOGY)
+    }
+
+    /// Whether this broker answers acknowledged publishes after the write when
+    /// [`crate::ClientConfig::ack_on_commit`] asks it to.
+    pub fn supports_ack_on_commit(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_ACK_ON_COMMIT)
     }
 
     /// Whether this broker answers [`Client::stream_shards`].
@@ -24,6 +30,11 @@ impl Client {
     /// Whether this broker answers [`Client::cache_shards`].
     pub fn supports_cache_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_CACHE_SHARDS)
+    }
+
+    /// Whether this broker answers [`Client::shard_owners`].
+    pub fn supports_shard_owners(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_SHARD_OWNERS)
     }
 
     /// Ask the broker which brokers a client may connect to.
@@ -117,52 +128,19 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        let OpenedStream {
-            mut send,
-            mut recv,
-            lease: _lease,
-            ..
-        } = self.open_event_stream().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        write_message(
-            &mut send,
-            Message::StreamShards {
-                tenant_id: tenant_id.to_string(),
-                namespace: namespace.to_string(),
-                stream: stream.to_string(),
-                request_id,
-            },
+        ask_stream_routing(
+            &self.event_node,
+            &self.credentials,
+            request_id,
+            self.runtime_config.max_frame_bytes,
+            tenant_id,
+            namespace,
+            stream,
         )
         .await
-        .context("send stream shards request")?;
-        let mut scratch = BytesMut::with_capacity(4 * 1024);
-        let answer =
-            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
-        let _ = send.finish();
-        match answer {
-            Some(Message::StreamShardsView {
-                shards, routing, ..
-            }) => Ok((shards, routing.unwrap_or_default())),
-            Some(Message::Error {
-                message,
-                code,
-                retry,
-                detail,
-            }) => Err(crate::error::refused(
-                "stream shards rejected",
-                message,
-                code,
-                retry,
-                detail,
-            )),
-            Some(other) => Err(anyhow::anyhow!(
-                "unexpected stream shards response: {other:?}"
-            )),
-            None => Err(anyhow::anyhow!("stream shards response missing")),
-        }
     }
 
     /// How many shards a cache was placed with.
@@ -225,5 +203,159 @@ impl Client {
             )),
             None => Err(anyhow::anyhow!("cache shards response missing")),
         }
+    }
+
+    /// Which broker owns each shard of a stream or cache, as this broker's
+    /// routing snapshot sees it: one [`ShardOwner`](crate::ShardOwner) per
+    /// shard, in shard order.
+    ///
+    /// Empty means this broker knows nothing of it. A broker not in a cluster
+    /// answers one shard with no node id, since it serves everything itself.
+    /// A shard nobody can serve right now has no node id and says why in
+    /// `unavailable`. The answer is a snapshot and can be stale the way a
+    /// redirect can; a request sent on it is still routed correctly.
+    ///
+    /// Fails without sending anything when the broker did not advertise
+    /// [`felix_wire::FEATURE_SHARD_OWNERS`].
+    pub async fn shard_owners(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        kind: crate::ShardKind,
+    ) -> Result<Vec<crate::ShardOwner>> {
+        if !self.supports_shard_owners() {
+            anyhow::bail!("broker does not report shard owners");
+        }
+        if tenant_id != self.auth_tenant_id {
+            return Err(anyhow::anyhow!(
+                "tenant mismatch: client auth is scoped to {}",
+                self.auth_tenant_id
+            ));
+        }
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
+        let request_id = self
+            .cache_request_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        write_message(
+            &mut send,
+            Message::ShardOwners {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                kind,
+                request_id,
+            },
+        )
+        .await
+        .context("send shard owners request")?;
+        let mut scratch = BytesMut::with_capacity(4 * 1024);
+        let answer =
+            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
+                .await?;
+        let _ = send.finish();
+        match answer {
+            Some(Message::ShardOwnersView { owners, .. }) => Ok(owners),
+            Some(Message::Error {
+                message,
+                code,
+                retry,
+                detail,
+            }) => Err(crate::error::refused(
+                "shard owners rejected",
+                message,
+                code,
+                retry,
+                detail,
+            )),
+            Some(other) => Err(anyhow::anyhow!(
+                "unexpected shard owners response: {other:?}"
+            )),
+            None => Err(anyhow::anyhow!("shard owners response missing")),
+        }
+    }
+}
+
+/// Ask a broker for a stream's width and mapping. Takes the event connections
+/// rather than the client, so a publisher can ask too.
+pub(super) async fn ask_stream_routing(
+    event_node: &NodeConnections,
+    credentials: &Credentials,
+    request_id: u64,
+    max_frame_bytes: usize,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    let mut opened = event_node.open_as(credentials).await?;
+    let answer = ask_stream_routing_on(
+        &mut opened,
+        request_id,
+        max_frame_bytes,
+        tenant_id,
+        namespace,
+        stream,
+    )
+    .await;
+    let _ = opened.send.finish();
+    answer
+}
+
+/// [`ask_stream_routing`] on a stream already open, which stays open for the
+/// next question. One question at a time: answers are read in order.
+pub(super) async fn ask_stream_routing_on(
+    opened: &mut OpenedStream,
+    request_id: u64,
+    max_frame_bytes: usize,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    write_message(
+        &mut opened.send,
+        Message::StreamShards {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            request_id,
+        },
+    )
+    .await
+    .context("send stream shards request")?;
+    let mut scratch = BytesMut::with_capacity(4 * 1024);
+    let answer = read_message_with_limit(&mut opened.recv, &mut scratch, max_frame_bytes).await?;
+    match answer {
+        Some(Message::StreamShardsView {
+            shards,
+            routing,
+            request_id: answered,
+        }) => {
+            anyhow::ensure!(
+                answered == request_id,
+                "stream shards answered request {answered}, not {request_id}"
+            );
+            Ok((shards, routing.unwrap_or_default()))
+        }
+        Some(Message::Error {
+            message,
+            code,
+            retry,
+            detail,
+        }) => Err(crate::error::refused(
+            "stream shards rejected",
+            message,
+            code,
+            retry,
+            detail,
+        )),
+        Some(other) => Err(anyhow::anyhow!(
+            "unexpected stream shards response: {other:?}"
+        )),
+        None => Err(anyhow::anyhow!("stream shards response missing")),
     }
 }

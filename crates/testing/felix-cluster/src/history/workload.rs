@@ -49,13 +49,17 @@ const ENTITY: &[u8] = b"history";
 /// How long a client may take to reach a broker before trying again.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Consecutive failed operations after which a client reconnects from the
-/// current address book: a restarted broker listens on new ports, so the
-/// addresses a client started with go stale.
+/// Consecutive failed operations over a client's connection after which it
+/// reconnects from the current address book: a restarted broker listens on
+/// new ports, so the addresses a client started with go stale.
 const FAILURES_BEFORE_RECONNECT: u32 = 3;
 
 /// Sends of one idempotent batch before its value is recorded as unknown.
 const IDEMPOTENT_ATTEMPTS: u32 = 3;
+
+/// How long a client that is stopping waits for the publishes it already
+/// sent to be answered.
+const SETTLE_SENDS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a read with no known tail waits for one more record.
 const READ_IDLE: Duration = Duration::from_millis(500);
@@ -102,7 +106,7 @@ impl Workload {
         Self {
             tenant_id: cluster.tenant_id.clone(),
             namespace: cluster.namespace.clone(),
-            token: cluster.client_token.clone(),
+            token: cluster.client_token(),
             cache: campaign.cache.clone(),
             keys: campaign.keys.clone(),
             bases: RwLock::new(Vec::new()),
@@ -450,35 +454,55 @@ impl Client<'_> {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 continue;
             };
-            self.run_connected(&cluster).await;
+            self.run_connected(&Arc::new(cluster), &addrs).await;
         }
     }
 
     /// Run operations over one connection until it looks dead or the run ends.
-    async fn run_connected(&mut self, cluster: &ClusterClient) {
+    async fn run_connected(&mut self, cluster: &Arc<ClusterClient>, connected_to: &[SocketAddr]) {
         let w = self.workload;
-        let mut producer: Option<IdempotentProducer<'_>> = None;
+        let mut producer: Option<IdempotentProducer> = None;
         let mut failures = 0;
-        while !w.stopped() && failures < FAILURES_BEFORE_RECONNECT {
+        let mut stale = false;
+        while !w.stopped() && !stale && failures < FAILURES_BEFORE_RECONNECT {
             let roll = self.rng.below(100);
-            let ok = if roll < READ_PERCENT {
-                self.read().await
+            // Reads and cache ops open their own connection, so they say
+            // nothing about whether `cluster` is still alive.
+            let (ok, on_connection) = if roll < READ_PERCENT {
+                (self.read().await, false)
             } else if roll < READ_PERCENT + CACHE_PERCENT {
-                self.cache_op().await
+                (self.cache_op().await, false)
             } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT {
-                self.commit(cluster).await
+                (self.commit(cluster).await, true)
             } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT + COMMIT_READ_PERCENT {
-                self.commit_read(cluster).await
+                (self.commit_read(cluster).await, true)
             } else {
-                match self.kind {
+                let ok = match self.kind {
                     ClientKind::Plain => self.append_plain(cluster).await,
                     ClientKind::Idempotent => self.append_idempotent(cluster, &mut producer).await,
-                }
+                };
+                (ok, true)
             };
-            failures = if ok { 0 } else { failures + 1 };
+            if on_connection {
+                // A broker restarted on new ports since this connection was
+                // made: every later op on it would wait out `op_timeout`.
+                stale = !ok && w.addrs() != connected_to;
+                failures = if ok { 0 } else { failures + 1 };
+            }
             let think = self.rng.between(Duration::ZERO, Duration::from_millis(20));
             tokio::time::sleep(think).await;
         }
+        // A publish whose call timed out is still sent: the producer's task
+        // keeps re-sending its batch, and the client's writer keeps what it
+        // queued. Left running, a value recorded as unknown can land after
+        // the final read, and a subscriber catching up is then delivered a
+        // record the final log does not hold.
+        // A producer stuck re-sending to brokers that restarted on new ports
+        // is stopped instead.
+        if let Some(producer) = producer {
+            let _ = producer.close_within(SETTLE_SENDS_TIMEOUT).await;
+        }
+        let _ = tokio::time::timeout(SETTLE_SENDS_TIMEOUT, cluster.finish()).await;
     }
 
     async fn append_plain(&mut self, cluster: &ClusterClient) -> bool {
@@ -506,10 +530,10 @@ impl Client<'_> {
         self.record_append(invoke, list, value, outcome)
     }
 
-    async fn append_idempotent<'c>(
+    async fn append_idempotent(
         &mut self,
-        cluster: &'c ClusterClient,
-        producer: &mut Option<IdempotentProducer<'c>>,
+        cluster: &Arc<ClusterClient>,
+        producer: &mut Option<IdempotentProducer>,
     ) -> bool {
         let w = self.workload;
         if producer.is_none() {
@@ -527,6 +551,7 @@ impl Client<'_> {
         let value = w.next_value.fetch_add(1, Ordering::Relaxed);
         let invoke = w.now();
         let mut outcome = AppendOutcome::Info;
+        let mut in_doubt = false;
         for _ in 0..IDEMPOTENT_ATTEMPTS {
             let sent = tokio::time::timeout(
                 w.op_timeout,
@@ -536,15 +561,23 @@ impl Client<'_> {
             match sent {
                 Ok(Ok(offset)) => {
                     outcome = AppendOutcome::Ok { offset };
+                    in_doubt = false;
                     break;
                 }
                 // The same batch under the same sequence cannot land twice.
-                Ok(Err(_)) => continue,
-                // A cancelled publish leaves the producer refusing everything.
-                Err(_) => break,
+                Ok(Err(_)) => {
+                    in_doubt = true;
+                    continue;
+                }
+                // A dropped publish still runs to its answer, and the
+                // producer re-sends it itself if that answer is in doubt.
+                Err(_) => {
+                    in_doubt = false;
+                    break;
+                }
             }
         }
-        if outcome == AppendOutcome::Info {
+        if in_doubt {
             // Its sequence is in doubt, and only this value may be sent
             // under it; a fresh producer is the way on to the next one.
             *producer = None;

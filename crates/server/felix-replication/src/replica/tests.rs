@@ -15,11 +15,14 @@ use tempfile::TempDir;
 use super::*;
 
 mod fence;
+mod groups;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";
 const LOCAL: &str = "broker-b";
+/// The leader every batch and fence comes from, as its `Hello` named it.
+const SENDER: Option<&str> = Some("broker-a");
 
 fn node(node_id: &str, port: u16) -> NodeRef {
     NodeRef {
@@ -94,6 +97,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     ReplicateRecords {
+        times: None,
         correlation_id: 1,
         shard: ShardRef {
             tenant_id: TENANT.to_string(),
@@ -103,11 +107,12 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             generation,
         },
         first_offset,
-        checksum: batch_checksum(&payloads, &[]),
+        checksum: batch_checksum(&payloads, &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     }
 }
 
@@ -126,7 +131,11 @@ async fn a_follower_at_the_leaders_epoch_stores_the_batch() {
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
 
     let answer = handler
-        .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
     match answer {
@@ -148,7 +157,7 @@ async fn a_leader_at_an_older_epoch_is_fenced() {
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 5));
 
     let answer = handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     let refused = refusal(&answer);
@@ -167,7 +176,7 @@ async fn a_follower_behind_the_epoch_refuses_retryably() {
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 3));
 
     let answer = handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     let refused = refusal(&answer);
@@ -183,7 +192,7 @@ async fn a_broker_outside_the_replica_set_is_refused() {
     let handler = ReplicaHandler::new(broker, router_with(&["broker-c"], 4));
 
     let answer = handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
@@ -203,7 +212,7 @@ async fn an_unknown_shard_is_treated_as_a_late_watch() {
     let handler = ReplicaHandler::new(broker, router);
 
     let answer = handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     let refused = refusal(&answer);
@@ -218,11 +227,15 @@ async fn a_gap_names_the_offset_to_resume_from() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
     let answer = handler
-        .apply(batch(4, 7, &["h"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 7, &["h"]), felix_broker::LogKind::Stream)
         .await;
 
     let refused = refusal(&answer);
@@ -237,11 +250,16 @@ async fn a_conflict_is_reported_as_divergence() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
     handler
-        .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(4, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
 
     let answer = handler
         .apply(
+            SENDER,
             batch(4, 0, &["a", "DIFFERENT"]),
             felix_broker::LogKind::Stream,
         )
@@ -261,7 +279,7 @@ async fn a_replica_without_durable_storage_refuses() {
     let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
 
     let answer = handler
-        .apply(batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
 
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
@@ -280,7 +298,7 @@ async fn every_answer_carries_the_requests_correlation_id() {
         request.correlation_id = 99;
         assert_eq!(
             handler
-                .apply(request, felix_broker::LogKind::Stream)
+                .apply(SENDER, request, felix_broker::LogKind::Stream)
                 .await
                 .correlation_id(),
             99
@@ -317,7 +335,7 @@ mod bootstrap {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         match answer {
@@ -345,7 +363,7 @@ mod bootstrap {
             .expect("an empty log at 0");
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         match answer {
@@ -353,7 +371,11 @@ mod bootstrap {
             other => panic!("expected an acknowledgement, got {:?}", other.kind()),
         }
         let answer = handler
-            .apply(batch(4, BASE, &["a"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, BASE, &["a"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         match answer {
             InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, BASE + 1),
@@ -368,11 +390,15 @@ mod bootstrap {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         let answer = handler
-            .apply(batch(4, BASE, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, BASE, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         match answer {
@@ -389,11 +415,15 @@ mod bootstrap {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
-            .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         let refused = refusal(&answer);
@@ -414,6 +444,7 @@ mod bootstrap {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
             .apply(
+                SENDER,
                 batch(4, 0, &["a", "b", "c", "d"]),
                 felix_broker::LogKind::Stream,
             )
@@ -421,7 +452,7 @@ mod bootstrap {
 
         // The leader has trimmed below 2 and offers from there.
         let answer = handler
-            .bootstrap(offer(4, 2), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, 2), felix_broker::LogKind::Stream)
             .await;
 
         match answer {
@@ -444,11 +475,11 @@ mod bootstrap {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         // Place the log high, then offer from far below it.
         handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         let answer = handler
-            .bootstrap(offer(4, 10), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, 10), felix_broker::LogKind::Stream)
             .await;
 
         let refused = refusal(&answer);
@@ -468,10 +499,10 @@ mod bootstrap {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
 
         handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         match answer {
@@ -489,7 +520,7 @@ mod bootstrap {
         let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 5));
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
@@ -502,7 +533,7 @@ mod bootstrap {
         let handler = ReplicaHandler::new(broker, router_with(&["broker-c"], 4));
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
@@ -515,7 +546,7 @@ mod bootstrap {
         let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
 
         let answer = handler
-            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .bootstrap(SENDER, offer(4, BASE), felix_broker::LogKind::Stream)
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
@@ -568,21 +599,34 @@ mod divergence {
         // Generation 4: two records both leaders agree on, then an orphan the
         // old leader never got acknowledged.
         handler
-            .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         handler
-            .apply(batch(4, 2, &["orphan"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 2, &["orphan"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         // The old leader dies and generation 5 reuses offset 2. Nothing here
         // is committed, so the new leader is sent back to compare from 0.
         advance_to(&router, 5);
         let answer = handler
-            .apply(batch(5, 2, &["committed"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 2, &["committed"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         assert_eq!(refusal(&answer).expected_offset, 0);
         let answer = handler
             .apply(
+                SENDER,
                 batch(5, 0, &["a", "b", "committed"]),
                 felix_broker::LogKind::Stream,
             )
@@ -625,13 +669,18 @@ mod divergence {
         let handler = ReplicaHandler::new(Arc::clone(&broker), Arc::clone(&router));
 
         handler
-            .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b", "c"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         // Generation 5 compares 0..3 and appends at 3, so the history says 5
         // begins there.
         advance_to(&router, 5);
         handler
             .apply(
+                SENDER,
                 batch(5, 0, &["a", "b", "c", "d"]),
                 felix_broker::LogKind::Stream,
             )
@@ -639,7 +688,11 @@ mod divergence {
 
         // Now a batch disagreeing at offset 1 — well before generation 5.
         let answer = handler
-            .apply(batch(5, 1, &["different"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 1, &["different"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         let refused = refusal(&answer);
@@ -665,11 +718,16 @@ mod divergence {
         let handler = ReplicaHandler::new(Arc::clone(&broker), Arc::clone(&router));
 
         handler
-            .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         let answer = handler
             .apply(
+                SENDER,
                 batch(4, 0, &["a", "DIFFERENT"]),
                 felix_broker::LogKind::Stream,
             )
@@ -696,6 +754,7 @@ mod divergence {
             let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
             handler
                 .apply(
+                    SENDER,
                     batch(4, 0, &["a", "b", "orphan-1", "orphan-2"]),
                     felix_broker::LogKind::Stream,
                 )
@@ -729,7 +788,11 @@ mod divergence {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
         // From 0, so the whole older-generation tail is compared.
         let answer = handler
-            .apply(batch(5, 0, &["a", "b", "x"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 0, &["a", "b", "x"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         match &answer {
             InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, 3),
@@ -761,7 +824,12 @@ mod divergence {
                 }
             }
         }
-        served.extend(resumed.backlog.iter().cloned());
+        served.extend(
+            resumed
+                .backlog
+                .iter()
+                .map(|record| (record.offset, record.payload.clone())),
+        );
         let served: Vec<(u64, String)> = served
             .into_iter()
             .map(|(offset, payload)| (offset, String::from_utf8(payload.to_vec()).expect("utf8")))
@@ -797,7 +865,11 @@ mod divergence {
             .expect("append");
 
         let answer = handler
-            .apply(batch(4, 0, &["different"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["different"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
@@ -832,10 +904,14 @@ mod rebuild {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
-            .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b", "c"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
-        let answer = handler.rebuild(request(4, 500)).await;
+        let answer = handler.rebuild(SENDER, request(4, 500)).await;
 
         match answer {
             InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, 500),
@@ -861,12 +937,20 @@ mod rebuild {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
-            .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b", "c"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
-        handler.rebuild(request(4, 500)).await;
+        handler.rebuild(SENDER, request(4, 500)).await;
 
         let answer = handler
-            .apply(batch(4, 500, &["x", "y"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 500, &["x", "y"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         match answer {
@@ -883,6 +967,7 @@ mod rebuild {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
             .bootstrap(
+                SENDER,
                 felix_wire::internal::ReplicateBootstrap {
                     correlation_id: 1,
                     shard: request(4, 0).shard,
@@ -892,17 +977,17 @@ mod rebuild {
             )
             .await;
         handler
-            .apply(batch(4, 900, &["a"]), felix_broker::LogKind::Stream)
+            .apply(SENDER, batch(4, 900, &["a"]), felix_broker::LogKind::Stream)
             .await;
 
-        let answer = handler.rebuild(request(4, 100)).await;
+        let answer = handler.rebuild(SENDER, request(4, 100)).await;
 
         match answer {
             InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, 100),
             other => panic!("expected an acknowledgement, got {:?}", other.kind()),
         }
         let answer = handler
-            .apply(batch(4, 100, &["b"]), felix_broker::LogKind::Stream)
+            .apply(SENDER, batch(4, 100, &["b"]), felix_broker::LogKind::Stream)
             .await;
         match answer {
             InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, 101),
@@ -918,10 +1003,14 @@ mod rebuild {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
         handler
-            .apply(batch(5, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 0, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
-        let answer = handler.rebuild(request(4, 500)).await;
+        let answer = handler.rebuild(SENDER, request(4, 500)).await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
         let log = broker
@@ -943,7 +1032,7 @@ mod rebuild {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(broker, router_with(&["broker-c"], 4));
 
-        let answer = handler.rebuild(request(4, 500)).await;
+        let answer = handler.rebuild(SENDER, request(4, 500)).await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     }
@@ -992,7 +1081,7 @@ mod replica_state {
             let broker = broker_on(dir.path());
             let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
             let answer = handler
-                .apply(batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+                .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
                 .await;
             assert!(matches!(answer, InternalMessage::ReplicateOk(_)));
         }
@@ -1001,7 +1090,11 @@ mod replica_state {
         let broker = broker_on(dir.path());
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         let answer = handler
-            .apply(batch(4, 1, &["stale"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 1, &["stale"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
@@ -1017,6 +1110,7 @@ mod replica_state {
 
         handler
             .apply(
+                SENDER,
                 committed(4, 0, &["a", "b"], 10),
                 felix_broker::LogKind::Stream,
             )
@@ -1040,10 +1134,15 @@ mod replica_state {
         let router = router_with(&[LOCAL], 4);
         let handler = ReplicaHandler::new(Arc::clone(&broker), Arc::clone(&router));
         handler
-            .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         handler
             .apply(
+                SENDER,
                 committed(4, 2, &["acked"], 3),
                 felix_broker::LogKind::Stream,
             )
@@ -1064,7 +1163,11 @@ mod replica_state {
             &nodes,
         );
         let answer = handler
-            .apply(batch(5, 2, &["other"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 2, &["other"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
@@ -1097,18 +1200,23 @@ mod replica_state {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
             .apply(
+                SENDER,
                 committed(4, 0, &["a", "b", "c"], 2),
                 felix_broker::LogKind::Stream,
             )
             .await;
 
-        let answer = handler.rebuild(rebuild_from(4, 0)).await;
+        let answer = handler.rebuild(SENDER, rebuild_from(4, 0)).await;
 
         assert_eq!(resumes_at(&answer), 0, "the leader re-ships from its base");
         assert_eq!(stored(&broker).await, vec!["a", "b"]);
 
         let answer = handler
-            .apply(batch(4, 0, &["a", "b", "x"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["a", "b", "x"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         assert_eq!(resumes_at(&answer), 3);
         assert_eq!(stored(&broker).await, vec!["a", "b", "x"]);
@@ -1138,14 +1246,19 @@ mod replica_state {
         log.advance_commit_offset(2).await.expect("commit");
 
         let answer = handler
-            .apply(batch(5, 2, &["other"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(5, 2, &["other"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
 
-        let answer = handler.rebuild(rebuild_from(5, 0)).await;
+        let answer = handler.rebuild(SENDER, rebuild_from(5, 0)).await;
         assert_eq!(resumes_at(&answer), 0);
         let answer = handler
             .apply(
+                SENDER,
                 batch(5, 0, &["a", "b", "other"]),
                 felix_broker::LogKind::Stream,
             )
@@ -1163,18 +1276,26 @@ mod replica_state {
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
             .apply(
+                SENDER,
                 committed(4, 0, &["a", "b", "c"], 2),
                 felix_broker::LogKind::Stream,
             )
             .await;
-        assert_eq!(resumes_at(&handler.rebuild(rebuild_from(4, 0)).await), 0);
+        assert_eq!(
+            resumes_at(&handler.rebuild(SENDER, rebuild_from(4, 0)).await),
+            0
+        );
 
         let answer = handler
-            .apply(batch(4, 0, &["A", "b", "x"]), felix_broker::LogKind::Stream)
+            .apply(
+                SENDER,
+                batch(4, 0, &["A", "b", "x"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
 
-        let answer = handler.rebuild(rebuild_from(4, 0)).await;
+        let answer = handler.rebuild(SENDER, rebuild_from(4, 0)).await;
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
         assert_eq!(stored(&broker).await, vec!["a", "b"]);
     }
@@ -1206,13 +1327,18 @@ async fn a_newer_leader_compares_what_an_older_generation_left() {
     let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     let mut first = batch(4, 0, &["a", "b"]);
     first.commit_offset = Some(2);
-    old.apply(first, felix_broker::LogKind::Stream).await;
-    old.apply(batch(4, 2, &["stale"]), felix_broker::LogKind::Stream)
+    old.apply(SENDER, first, felix_broker::LogKind::Stream)
         .await;
+    old.apply(
+        SENDER,
+        batch(4, 2, &["stale"]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
 
     let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
     let answer = new
-        .apply(batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
         .await;
     let refused = refusal(&answer);
     assert_eq!(refused.code, ErrorCode::LogGap);
@@ -1221,8 +1347,12 @@ async fn a_newer_leader_compares_what_an_older_generation_left() {
         "sent back past the commit offset"
     );
 
-    new.apply(batch(6, 2, &["c", "d"]), felix_broker::LogKind::Stream)
-        .await;
+    new.apply(
+        SENDER,
+        batch(6, 2, &["c", "d"]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
     assert_eq!(held(&broker).await, ["a", "b", "c", "d"]);
 }
 
@@ -1235,6 +1365,7 @@ async fn comparing_an_older_generation_over_several_batches_still_repairs() {
     let (broker, _dir) = broker_with_storage().await;
     let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     old.apply(
+        SENDER,
         batch(4, 0, &["a", "b", "c", "stale"]),
         felix_broker::LogKind::Stream,
     )
@@ -1242,19 +1373,27 @@ async fn comparing_an_older_generation_over_several_batches_still_repairs() {
 
     let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
     let answer = new
-        .apply(batch(6, 4, &["e"]), felix_broker::LogKind::Stream)
+        .apply(SENDER, batch(6, 4, &["e"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(refusal(&answer).expected_offset, 0);
     let answer = new
-        .apply(batch(6, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .apply(
+            SENDER,
+            batch(6, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
         .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{:?}",
         answer.kind()
     );
-    new.apply(batch(6, 2, &["c", "d", "e"]), felix_broker::LogKind::Stream)
-        .await;
+    new.apply(
+        SENDER,
+        batch(6, 2, &["c", "d", "e"]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
     assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e"]);
 }
 
@@ -1305,6 +1444,7 @@ mod labels {
 
         let answer = handler
             .apply(
+                SENDER,
                 labelled(5, 0, &["a", "b", "c"], &[(1, 0), (3, 2), (5, 3)]),
                 felix_broker::LogKind::Stream,
             )
@@ -1332,6 +1472,7 @@ mod labels {
             let offset = offset as u64;
             let answer = handler
                 .apply(
+                    SENDER,
                     labelled(5, offset, &[value], &[(1, 0)]),
                     felix_broker::LogKind::Stream,
                 )
@@ -1343,6 +1484,7 @@ mod labels {
         }
         let answer = handler
             .apply(
+                SENDER,
                 labelled(5, 3, &["d"], &[(1, 0), (5, 3)]),
                 felix_broker::LogKind::Stream,
             )
@@ -1368,6 +1510,7 @@ mod labels {
 
         handler
             .apply(
+                SENDER,
                 labelled(5, 0, &["a"], &[(2, 0)]),
                 felix_broker::LogKind::Stream,
             )
@@ -1407,5 +1550,94 @@ mod labels {
         );
         assert_eq!(over(10, 12), [(5, 9)]);
         assert!(generations_over(&[], 0, 3).is_empty());
+    }
+}
+
+/// A follower of a `Quorum` stream holds its retention at its commit offset,
+/// as the leader does: it counts toward the mark, and promoted, it is the
+/// copy a client was promised.
+mod retention {
+    use super::*;
+
+    async fn follower_of(consistency: felix_broker::ConsistencyLevel) -> (Arc<Broker>, TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = felix_broker::DurableStorage::open(
+            dir.path(),
+            LogConfig {
+                segment_size_bytes: 128,
+                index_spacing_bytes: 64,
+                fsync_mode: FsyncMode::None,
+                preallocate_segments: false,
+                retention_bytes: Some(256),
+                retention_check_interval: std::time::Duration::from_secs(3600),
+                ..LogConfig::default()
+            },
+        )
+        .expect("storage");
+        let broker =
+            Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+        broker.register_tenant(TENANT).await.expect("tenant");
+        broker
+            .register_namespace(TENANT, NAMESPACE)
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    consistency,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+        (broker, dir)
+    }
+
+    /// The base retention leaves after forty records, shipped in batches of
+    /// four, with the leader's commit offset at 2.
+    async fn base_after_retention(consistency: felix_broker::ConsistencyLevel) -> u64 {
+        let (broker, _dir) = follower_of(consistency).await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        let values: Vec<String> = (0..40).map(|i| format!("value-{i:03}")).collect();
+        for (i, chunk) in values.chunks(4).enumerate() {
+            let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let mut records = batch(4, i as u64 * 4, &chunk);
+            records.commit_offset = Some(2);
+            let answer = handler
+                .apply(SENDER, records, felix_broker::LogKind::Stream)
+                .await;
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{:?}",
+                answer.kind()
+            );
+        }
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        log.enforce_retention_now().await.expect("retention");
+        log.base_offset()
+    }
+
+    #[tokio::test]
+    async fn a_quorum_follower_keeps_what_is_above_its_commit_offset() {
+        let base = base_after_retention(felix_broker::ConsistencyLevel::Quorum).await;
+        assert!(
+            base <= 2,
+            "retention trimmed to {base}, past the commit offset 2"
+        );
+    }
+
+    /// A `Leader` stream acknowledges before shipping, so there is no mark to
+    /// protect and retention applies in full.
+    #[tokio::test]
+    async fn a_leader_follower_is_not_held() {
+        let base = base_after_retention(felix_broker::ConsistencyLevel::Leader).await;
+        assert!(base > 2, "retention was held on a `Leader` stream");
     }
 }

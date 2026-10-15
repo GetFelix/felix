@@ -45,6 +45,7 @@ async fn write(dir: &std::path::Path, marked: bool) {
                 payload: payload.clone(),
                 timestamp_micros: 1,
                 mark,
+                publisher: None,
             })
             .collect();
         log.append(&records).await.expect("append");

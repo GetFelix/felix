@@ -16,6 +16,38 @@ pub struct BrokerEndpoint {
     pub addr: String,
 }
 
+/// Whether a shard question is about a stream or a cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShardKind {
+    Stream,
+    Cache,
+}
+
+/// Who owns one shard, as one broker's routing snapshot sees it.
+///
+/// Can be stale the way any routing answer can: a shard that moved after the
+/// snapshot was taken is described where it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardOwner {
+    pub shard: u32,
+    /// The owning broker's node id. Absent when no broker can serve the shard
+    /// right now (`unavailable` says why), or when the answering broker is not
+    /// in a cluster and serves every shard itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// `host:port` the owner serves clients on, or absent when the cluster has
+    /// not been told where clients reach it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    /// The ownership epoch this describes. `0` from a broker not in a cluster.
+    pub generation: u64,
+    /// Why no broker can serve the shard right now, as the `reason` of a
+    /// `shard_unavailable` error (`not_assigned`, `owner_unavailable`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
 /// How a publish asks to be acknowledged. `None` asks for no answer at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,14 +57,16 @@ pub enum AckMode {
     PerBatch,
 }
 
-/// Why a `publish_idempotent` was not appended.
+/// Why a `publish_idempotent`, `publish_if` or conditional `commit` was not
+/// appended.
 ///
 /// Each names a different remedy, which is why they are not one string. A
 /// gap means the producer skipped ahead and must not continue as if it had
 /// not; an unknown producer means this broker holds nothing to check against
 /// and the producer must start again with a new id; an expired sequence is a
-/// re-send from further back than the broker remembers; and not-leader means
-/// the batch went to a broker that does not hold the shard's sequences.
+/// re-send from further back than the broker remembers; an offset mismatch
+/// means another write landed first; and not-leader means the batch went to
+/// a broker that does not lead the shard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishRefusalReason {
@@ -55,6 +89,15 @@ pub enum PublishRefusalReason {
     /// offered `FEATURE_SEQUENCE_REUSED`; any other client is answered as if
     /// it had re-sent the batch held.
     SequenceReused,
+    /// A `publish_if` or conditional `commit` expected the shard's next
+    /// offset to be something else. Nothing was written and no offset was
+    /// consumed. `tail` is the next offset as the broker checked it,
+    /// including any record a promotion wrote, so it is where a writer that
+    /// still owns the shard tries again.
+    OffsetMismatch {
+        /// The shard's next offset.
+        tail: u64,
+    },
     /// This broker does not lead the shard, and only the leader holds the
     /// sequences; the batch has to go to the broker named here.
     NotLeader {
@@ -116,6 +159,42 @@ pub struct GroupRecord {
     /// exactly the retry handling it wanted.
     #[serde(default)]
     pub attempts: u32,
+    /// How many offsets directly below this one the broker settled without
+    /// delivering: generation-start records, and records retention removed
+    /// before the group reached them. So a consumer can tell a hole that will
+    /// never fill from a record still to come. Sent only to a client that
+    /// negotiated `FEATURE_GROUP_SKIPPED`, and left out when `0`, so any other
+    /// client gets the frame it always got.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_before: u64,
+    /// The principal that published the record, when the broker recorded
+    /// one. Sent only to a client that negotiated `FEATURE_GROUP_PUBLISHER`,
+    /// and left out when there is none, so any other client gets the frame
+    /// it always got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    /// Sent only to a client that negotiated `FEATURE_RECORD_TIMESTAMPS`, so
+    /// any other client gets the frame it always got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_micros: Option<u64>,
+}
+
+/// One record a `stream_read` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamRecord {
+    pub offset: u64,
+    #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+    pub payload: Bytes,
+    /// The principal that published the record, when the broker recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    pub timestamp_micros: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// One change to a stream shard's keyed state, as a `commit` carries it.
@@ -130,4 +209,17 @@ pub enum StateChange {
     Delete {
         key: String,
     },
+}
+
+/// What a `cache_put_if` requires of the key's current entry.
+///
+/// JSON is `"absent"` or `{"version": n}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheCondition {
+    /// The key has no live entry: never written, deleted, or expired.
+    Absent,
+    /// The key's live entry has exactly this version, as a `cache_value` or a
+    /// `cache_condition_result` reported it.
+    Version(u64),
 }

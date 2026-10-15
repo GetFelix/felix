@@ -55,6 +55,8 @@ async fn claimed_one() -> (Leader, PublishContext) {
         GROUP,
         1,
         Duration::ZERO,
+        None,
+        None,
     )
     .await
     .expect("served before the move");
@@ -77,7 +79,18 @@ async fn an_ack_after_the_fence_is_refused() {
     let (mut leader, publish_ctx) = claimed_one().await;
     leader.fence_move(&leader::stream_key(DURABLE));
 
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
+        Settle::DeadLetter,
+    ] {
         assert!(
             settle(
                 &leader.broker,
@@ -93,7 +106,7 @@ async fn an_ack_after_the_fence_is_refused() {
             )
             .await
             .is_err(),
-            "a settle (finish: {finish}) landed after the fence closed"
+            "a settle ({finish:?}) landed after the fence closed"
         );
     }
     assert_eq!(committed(&leader).await, None, "the cursor moved");
@@ -107,7 +120,18 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
     let lease = leader.hold_lease();
     lease.surrender();
 
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
+        Settle::DeadLetter,
+    ] {
         let refused = settle(
             &leader.broker,
             &publish_ctx,
@@ -125,7 +149,7 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
         assert_eq!(
             refused.code(),
             &felix_wire::ErrorCode::ShardUnavailable,
-            "finish: {finish}"
+            "{finish:?}"
         );
     }
     assert_eq!(committed(&leader).await, None, "the cursor moved");
@@ -141,7 +165,7 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("renewed");
@@ -172,7 +196,7 @@ async fn a_claim_from_before_the_move_is_still_settled() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("the pre-move claim is settled");
@@ -198,7 +222,18 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
         )
         .await
         .expect("publish");
-    for finish in [true, false] {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: None,
+        },
+        Settle::DeadLetter,
+    ] {
         for (offset, code, retry) in [
             (
                 2,
@@ -228,7 +263,7 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
             assert_eq!(
                 (refused.code(), refused.retry()),
                 (&code, retry),
-                "offset {offset}, finish: {finish}"
+                "offset {offset}, {finish:?}"
             );
         }
     }
@@ -278,6 +313,8 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
             GROUP,
             10,
             Duration::ZERO,
+            None,
+            None,
         )
         .await
         .expect("poll")
@@ -311,6 +348,8 @@ async fn a_poll_after_the_fence_is_refused() {
             GROUP,
             1,
             Duration::ZERO,
+            None,
+            None,
         )
         .await
         .is_err(),
@@ -375,6 +414,8 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
         GROUP,
         1,
         Duration::ZERO,
+        None,
+        None,
     )
     .await
     .expect("poll");
@@ -395,6 +436,8 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
                 GROUP,
                 1,
                 Duration::from_secs(5),
+                None,
+                None,
             )
             .await
         }
@@ -432,6 +475,8 @@ fn waiting_poll(
             10,
             Duration::from_secs(60),
             NEVER,
+            None,
+            None,
         )
         .await
     })
@@ -488,6 +533,8 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         GROUP,
         10,
         Duration::ZERO,
+        None,
+        None,
     )
     .await
     .expect("poll");
@@ -505,7 +552,10 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         0,
         GROUP,
         0,
-        false,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
     )
     .await
     .expect("nack");
@@ -536,9 +586,155 @@ async fn a_poll_at_the_cap_is_woken_by_an_ack() {
         0,
         GROUP,
         0,
-        true,
+        Settle::Ack,
     )
     .await
     .expect("ack");
     assert_eq!(answered(waiting, "an ack").await, vec![1]);
+}
+
+/// **A member that restarts under its name gets its records back at once.**
+/// The first process claimed a record and died; the next, polling as the
+/// same member with `reclaim`, is handed that record rather than the newer one
+/// behind it, without waiting out the visibility timeout.
+#[tokio::test]
+async fn a_restarted_member_reclaims_what_it_held() {
+    let leader = Leader::start().await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            &[Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+        )
+        .await
+        .expect("publish");
+    let publish_ctx = context(&leader);
+    let as_member = |connection, reclaim| {
+        felix_broker::GroupConsumer::new("", "snapshotter", connection, reclaim)
+    };
+    let poll_one = |member: felix_broker::GroupConsumer| {
+        let broker = Arc::clone(&leader.broker);
+        let publish_ctx = publish_ctx.clone();
+        async move {
+            poll(
+                &broker,
+                &publish_ctx,
+                None,
+                TENANT,
+                NAMESPACE,
+                DURABLE,
+                0,
+                GROUP,
+                1,
+                Duration::ZERO,
+                Some(&member),
+                None,
+            )
+            .await
+            .expect("poll")
+        }
+    };
+
+    let held = poll_one(as_member(1, false)).await;
+    assert_eq!(held[0].payload.as_ref(), b"first");
+
+    let back = poll_one(as_member(2, true)).await;
+    assert_eq!(back[0].offset, held[0].offset);
+    assert_eq!(back[0].attempts, 2);
+}
+
+async fn seek_to(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+    start: StartPosition,
+    if_new: bool,
+) -> Result<felix_broker::Seek, ClientError> {
+    seek(
+        &leader.broker,
+        publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        start,
+        if_new,
+    )
+    .await
+}
+
+/// A seek or a delete writes group state, so the fence refuses it like an
+/// ack.
+#[tokio::test]
+async fn a_seek_or_delete_after_the_fence_is_refused() {
+    let (mut leader, publish_ctx) = claimed_one().await;
+    leader.fence_move(&leader::stream_key(DURABLE));
+
+    assert!(
+        seek_to(&leader, &publish_ctx, StartPosition::Latest, false)
+            .await
+            .is_err(),
+        "a seek landed after the fence closed"
+    );
+    assert!(
+        delete(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            GROUP,
+        )
+        .await
+        .is_err(),
+        "a delete landed after the fence closed"
+    );
+    assert_eq!(committed(&leader).await, None, "the cursor moved");
+}
+
+/// `earliest` and `latest` are the ends of what the shard holds, and an
+/// offset outside them is refused rather than clamped.
+#[tokio::test]
+async fn a_seek_lands_inside_the_log() {
+    let (leader, publish_ctx) = claimed_one().await;
+
+    let latest = seek_to(&leader, &publish_ctx, StartPosition::Latest, false)
+        .await
+        .expect("latest");
+    assert_eq!(latest.offset, 2);
+    let earliest = seek_to(&leader, &publish_ctx, StartPosition::Earliest, false)
+        .await
+        .expect("earliest");
+    assert_eq!(earliest.offset, 0);
+    let past = seek_to(&leader, &publish_ctx, StartPosition::Offset(3), false)
+        .await
+        .expect_err("past the tail");
+    assert_eq!(past.code(), &felix_wire::ErrorCode::InvalidRequest);
+    assert_eq!(committed(&leader).await, Some(0));
+}
+
+#[tokio::test]
+async fn describe_reports_the_tail_and_the_claims() {
+    let (leader, publish_ctx) = claimed_one().await;
+
+    let (snapshot, tail) = describe(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+    )
+    .await
+    .expect("describe");
+    assert_eq!(tail, 2);
+    assert_eq!(snapshot.committed, None);
+    assert_eq!(snapshot.in_flight, 1);
 }

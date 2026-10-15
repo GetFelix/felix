@@ -59,6 +59,48 @@ pub trait StorageApi: Debug + Send + Sync {
         key: &str,
     ) -> Result<Option<Bytes>>;
 
+    /// Store `value` only if the key's current entry meets `condition`.
+    ///
+    /// The check and the write are atomic per key: no other write to the key
+    /// can land between them. An expired entry counts as absent. Applied, the
+    /// answer carries the version this put wrote; refused, the key's current
+    /// version, or `None` when it has none. Durable as [`Self::put`] is.
+    async fn put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite>;
+
+    /// Remove the key only if its current version is `version`, atomically as
+    /// [`Self::put_if`] checks. Refused, the answer carries the current
+    /// version; applied, `None`.
+    async fn delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite>;
+
+    /// The key's current value and version, for a caller about to make a
+    /// conditional write. Misses and failures as [`Self::get`].
+    async fn get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>>;
+
     /// Remove the key, returning the value it had. Fails as [`Self::put`] does.
     async fn delete(
         &self,
@@ -68,6 +110,13 @@ pub trait StorageApi: Debug + Send + Sync {
         shard: u32,
         key: &str,
     ) -> Result<Option<Bytes>>;
+
+    /// Whether this store keeps each shard as a log. When it does, a `None`
+    /// from [`Self::shard_log`] means the log could not be opened, not that
+    /// there is none.
+    fn has_log(&self) -> bool {
+        false
+    }
 
     /// The log backing one cache shard, when the cache is log-backed.
     ///
@@ -111,6 +160,53 @@ pub trait StorageApi: Debug + Send + Sync {
         Ok(())
     }
 
+    /// Drop one shard's index, so the next touch rebuilds it from the log.
+    /// For replication after it cut records from the log. A no-op for a
+    /// store with no log.
+    async fn forget_index(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hold one cache's logs at the commit offset, or lift the hold: for a
+    /// cache whose consistency became `Quorum`, or stopped being it. Applies
+    /// to its shards already open, written through before this returns, and
+    /// to every one opened later. A no-op for a store with no log.
+    async fn set_retention_hold(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _hold: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Every shard this store has open, as tenant, namespace, cache, shard.
+    /// Empty for a store with no log, whose expiry stays lazy.
+    fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        Vec::new()
+    }
+
+    /// Write a delete for keys whose TTL has passed, so watches see them go.
+    /// See `LogCache::expire_due`. A no-op for a store with no log.
+    async fn expire_due(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+        _limit: usize,
+        _keep_going: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Install the observer every applied write is reported to.
     ///
     /// `false` means this store cannot observe writes, and the caller must not
@@ -118,6 +214,20 @@ pub trait StorageApi: Debug + Send + Sync {
     /// is built on log offsets, and a store with no log has none to report.
     fn set_change_observer(&self, _observer: std::sync::Arc<dyn CacheObserver>) -> bool {
         false
+    }
+
+    /// The offset below which every write to one shard has been applied, and
+    /// its watchers told; `None` from a store with no log. A watch joins here
+    /// rather than at the log's tail: a write already in the log but not yet
+    /// applied is in no snapshot, and its change is still to come.
+    async fn applied_through(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+    ) -> Result<Option<u64>> {
+        Ok(None)
     }
 
     /// Every live key in one shard with its current value and offset, for a
@@ -179,4 +289,33 @@ pub struct CacheSnapshotEntry {
     pub offset: u64,
     /// Absolute Unix milliseconds; zero means it never expires.
     pub expires_at_millis: u64,
+}
+
+/// What a conditional write requires of the key's current entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheCondition {
+    /// The key has no live entry: never written, deleted, or expired.
+    Absent,
+    /// The key's live entry has exactly this version.
+    Version(u64),
+}
+
+/// The answer to a conditional write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConditionalWrite {
+    /// The condition held and the write was made.
+    pub applied: bool,
+    /// After an applied put, the version it wrote. Otherwise the key's
+    /// current version, `None` when it has no live entry.
+    pub version: Option<u64>,
+}
+
+/// A value and the version a conditional write would compare against.
+///
+/// A version only grows for a key and is never reused, so seeing the same one
+/// twice means nothing was written in between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedValue {
+    pub value: Bytes,
+    pub version: u64,
 }

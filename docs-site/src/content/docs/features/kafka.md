@@ -19,7 +19,7 @@ Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker.
 
 The reference for the protocol side, including every error code and why groups
 and transactions are refused, is
-[`docs/kafka-compatibility.md`](https://github.com/gabloe/felix/blob/main/docs/kafka-compatibility.md).
+[`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md).
 
 ## What works
 
@@ -78,7 +78,7 @@ FELIX_TOKEN=$(curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exc
   | jq -r .felix_token)
 ```
 
-See [Security](/felix/features/security/) for how tokens and permissions work.
+See [Security](/features/security/) for how tokens and permissions work.
 
 ### 4. Connect
 
@@ -259,7 +259,7 @@ so a pipeline that routes on the Kafka key needs the value parsed instead.
 Where it stops: anything that manages its own consumption through a group. Kafka
 Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker all do, and none of
 them will run. To split a stream's records across several workers inside Felix,
-use a [Felix consumer group](/felix/features/queues/) through a Felix client. To
+use a [Felix consumer group](/features/queues/) through a Felix client. To
 checkpoint and resume, a Felix subscription can start from an offset and every
 event it delivers carries one.
 
@@ -501,7 +501,7 @@ leader has no Kafka listener is reported as having no leader.
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Connections one source IP may hold, checked before the total. `0` is unlimited. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a connection has to finish SASL before it is closed. Until then each request is capped at 64 KiB. |
 
-The listener's metrics are on the [Observability](/felix/features/observability/)
+The listener's metrics are on the [Observability](/features/observability/)
 page, under `felix_kafka_*`.
 
 ## Troubleshooting
@@ -586,8 +586,9 @@ certificate from it.
 **SASL fails with "the client certificate is not issued to the token's
 subject".** The broker has `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, and the
 certificate the client presented names neither `felix:principal:<sub>` (a URI
-SAN) nor a DNS or IP name matching the token's `sub`. Issue the client's
-certificate to the principal its token is for.
+SAN) nor a DNS or IP name matching the token's `sub`, nor the actor of a
+delegated token. Issue the client's certificate to the principal its token is
+for.
 
 **Connection closed right after connecting.** The client and broker disagree
 about TLS: a `SASL_SSL` client against a broker with `FELIX_KAFKA_TLS=false`, or

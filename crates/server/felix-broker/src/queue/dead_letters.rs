@@ -9,7 +9,9 @@
 //! Durable, and written before the group's cursor moves past the record. The
 //! other order would let a crash in between leave the cursor beyond a record
 //! nothing says was ever attempted, which is a silent skip rather than a
-//! dead letter.
+//! dead letter. The two logs flush separately, so the cursor also records
+//! how far this log reached (see `cursors`), and is put back before it is
+//! served if this log no longer reaches that far.
 //!
 //! A key → latest-value projection again, like the cursors themselves. **One
 //! log per stream shard**, exactly as the cursors are shaped, with the group
@@ -64,7 +66,7 @@ impl DeadLetters {
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         Ok(Self {
-            entries: LogCache::open(&root, config).map_err(storage_error)?,
+            entries: LogCache::open(&root, config).map_err(BrokerError::from)?,
             legacy_root: root,
             locks: SyncMutex::new(HashMap::new()),
             #[cfg(test)]
@@ -100,7 +102,7 @@ impl DeadLetters {
                 None,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Offsets `group` has given up on, lowest first. Redriven ones are not
@@ -117,7 +119,7 @@ impl DeadLetters {
                         key.shard,
                     )
                     .await
-                    .map_err(storage_error)?
+                    .map_err(BrokerError::from)?
                     .into_iter()
                     .filter_map(|entry| entry.parse::<u64>().ok()),
             );
@@ -165,7 +167,7 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?
+            .map_err(BrokerError::from)?
             .is_some();
         if !listed {
             return Ok(false);
@@ -180,7 +182,7 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(true)
     }
 
@@ -200,7 +202,7 @@ impl DeadLetters {
                     &entry,
                 )
                 .await
-                .map_err(storage_error)?;
+                .map_err(BrokerError::from)?;
         }
         Ok(())
     }
@@ -228,7 +230,7 @@ impl DeadLetters {
                         &entry,
                     )
                     .await
-                    .map_err(storage_error)?;
+                    .map_err(BrokerError::from)?;
                 return Ok(true);
             }
             Some(_) => return Ok(false),
@@ -249,8 +251,55 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(removed.is_some())
+    }
+
+    /// Drop every entry `group` has on this shard, dead or redriven, for a
+    /// group being deleted. Returns how many went. The records stay in the
+    /// stream's log.
+    pub async fn forget_group(&self, key: &GroupKey) -> Result<usize> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let prefix = format!("{}\u{1f}", key.group);
+        let entries: Vec<String> = self
+            .entries
+            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(BrokerError::from)?
+            .into_iter()
+            .filter(|entry| entry.key.starts_with(&prefix))
+            .map(|entry| entry.key)
+            .collect();
+        let mut removed = 0;
+        for entry in &entries {
+            self.entries
+                .delete_checked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    entry,
+                )
+                .await
+                .map_err(BrokerError::from)?;
+            removed += 1;
+        }
+        if let Some(legacy) = self.legacy(key) {
+            let scope = legacy_scope(key);
+            for entry in legacy
+                .keys(&key.tenant_id, &key.namespace, &scope, key.shard)
+                .await
+                .map_err(BrokerError::from)?
+            {
+                let deleted = legacy
+                    .delete_checked(&key.tenant_id, &key.namespace, &scope, key.shard, &entry)
+                    .await
+                    .map_err(BrokerError::from)?;
+                removed += usize::from(deleted.is_some());
+            }
+        }
+        Ok(removed)
     }
 
     /// The log a shard's dead letters are written to.
@@ -267,7 +316,30 @@ impl DeadLetters {
         self.entries
             .shard_log(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
+    }
+
+    /// Where this shard's dead-letter log ends and the generations that wrote
+    /// it, synced first: what a cursor written next may need beneath it, or
+    /// what a stored cursor is checked against.
+    pub(crate) async fn synced_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<super::cursors::DeadLetterLog> {
+        let log = crate::durable::StreamLog::from_log(
+            self.shard_log(tenant_id, namespace, stream, shard).await?,
+        );
+        let end = log.tail_offset().await?;
+        if log.unsynced_bytes() > 0 {
+            log.sync().await?;
+        }
+        Ok(super::cursors::DeadLetterLog {
+            end,
+            epochs: log.generations(),
+        })
     }
 
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent.
@@ -282,7 +354,22 @@ impl DeadLetters {
         self.entries
             .shard_log_at(tenant_id, namespace, stream, shard, base_offset)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
+    }
+
+    /// Forget what was read from a shard's log, for replication after it cut
+    /// records from it. The next read replays the log.
+    pub(crate) async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        self.entries
+            .forget_index(tenant_id, namespace, stream, shard)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Close a shard's dead-letter log, for a shard this broker no longer
@@ -297,17 +384,19 @@ impl DeadLetters {
         self.entries
             .close_shard(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Flush every open dead-letter log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        self.entries.shutdown().await.map_err(storage_error)
+        self.entries.shutdown().await.map_err(BrokerError::from)
     }
 
+    /// Settled, because callers write based on it under the shard lock, and a
+    /// cancelled caller's write may still be landing.
     async fn state(&self, key: &GroupKey, entry: &str) -> Result<Option<bytes::Bytes>> {
         self.entries
-            .get_checked(
+            .get_settled_checked(
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
@@ -315,7 +404,7 @@ impl DeadLetters {
                 entry,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     async fn put(&self, key: &GroupKey, entry: &str, value: &'static [u8]) -> Result<()> {
@@ -330,7 +419,7 @@ impl DeadLetters {
                 None,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// This group's entries in the per-shard log that are redriven, or not.
@@ -340,7 +429,7 @@ impl DeadLetters {
             .entries
             .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await
-            .map_err(storage_error)?
+            .map_err(BrokerError::from)?
             .into_iter()
             .filter(|entry| (entry.value.as_ref() == REDRIVEN) == redriven)
             .filter_map(|entry| entry.key.strip_prefix(&prefix)?.parse().ok())
@@ -383,10 +472,6 @@ fn entry_key(group: &str, offset: u64) -> String {
 /// How the earlier layout named a `(stream, group)` log.
 fn legacy_scope(key: &GroupKey) -> String {
     format!("{}\u{1f}{}", key.stream, key.group)
-}
-
-fn storage_error(err: felix_storage::StorageError) -> BrokerError {
-    BrokerError::Storage(err.to_string())
 }
 
 #[cfg(test)]

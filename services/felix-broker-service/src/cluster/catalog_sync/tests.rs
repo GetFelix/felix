@@ -4,6 +4,7 @@ mod apply;
 mod consistency;
 mod fetch;
 mod pass;
+mod retention;
 mod seeding;
 mod start_sync;
 

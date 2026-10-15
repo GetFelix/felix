@@ -239,7 +239,7 @@ async fn a_deposed_leader_ends_its_subscriptions_and_readers_follow() {
         .map(|id| cluster.node(&id).expect("node").client_addr)
         .collect();
     let reader = Arc::new(
-        felix_cluster::client::connect_cluster(&entry, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect_cluster(&entry, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("reader"),
     );

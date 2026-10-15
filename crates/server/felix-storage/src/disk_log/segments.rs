@@ -20,9 +20,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) use super::sealed::SealedEntry;
-use super::sealed::{SealedFiles, SealedLocator};
+use super::sealed::SealedFiles;
+pub(super) use super::sealed::SealedLocator;
 use crate::io::read_at;
-use crate::log::{AppendRecord, LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
+#[cfg(test)]
+use crate::log::AppendRecord;
+use crate::log::{LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
 use crate::segment::{
     ReadBudget, SegmentReader, SegmentWriter, index_file_name, segment_file_name,
 };
@@ -153,34 +156,13 @@ impl SegmentSet {
             .collect()
     }
 
-    /// [`Self::append_within`] with no background roll in flight, for tests
-    /// that drive the set directly.
+    /// Append a batch, rolling to a new segment first if it would not fit, for
+    /// tests that drive the set directly. The log stages and writes in two
+    /// steps instead; see `LogInner::append_now`.
     #[cfg(test)]
     pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
-        self.append_within(records, false)
-    }
-
-    /// Append a batch, rolling to a new segment first if it would not fit.
-    ///
-    /// A batch is never split across segments: offsets stay contiguous either
-    /// way, but keeping a batch whole means one `write` call and one index
-    /// update per append regardless of where the boundary falls.
-    ///
-    /// `roll_pending` must be what the caller just passed to
-    /// [`Self::would_roll_within`]. Rolling at the configured size while a
-    /// background roll is sealing would sync this segment ahead of the retired
-    /// one, and a power loss could then keep this one and lose that one's tail.
-    pub(super) fn append_within(
-        &mut self,
-        records: &[AppendRecord],
-        roll_pending: bool,
-    ) -> Result<(Offset, Offset)> {
         self.check_open()?;
-        // An empty active segment must accept the batch even when it is
-        // oversized — otherwise a record larger than `segment_size_bytes` could
-        // never be written at all. Such a record gets a segment to itself and
-        // the next append rolls again.
-        if self.would_roll_within(records, roll_pending) {
+        if self.would_roll_within(records, false) {
             self.roll_for(records)?;
         }
         self.active.append(records)
@@ -255,6 +237,25 @@ impl SegmentSet {
                 .collect(),
             files: Arc::clone(&self.files),
         }
+    }
+
+    /// Every sealed segment, oldest first, with the generation they were
+    /// taken at, for an offload pass to copy without the lock.
+    pub(super) fn sealed_locators(&self) -> (u64, Vec<SealedLocator>) {
+        (
+            self.generation,
+            self.sealed
+                .iter()
+                .map(|entry| entry.locator(&self.dir, self.config.index_spacing_bytes))
+                .collect(),
+        )
+    }
+
+    /// Whether `descriptor` is still a sealed segment of this log.
+    pub(super) fn holds_sealed(&self, descriptor: &SegmentDescriptor) -> bool {
+        self.sealed
+            .iter()
+            .any(|entry| &entry.descriptor == descriptor)
     }
 
     /// Drop `ids` from the head of the list, stopping at the first that is no
@@ -376,21 +377,26 @@ impl RetentionPlan {
     /// Head-only and whole-segment: partial segments are never rewritten,
     /// which is what lets recovery keep trusting "valid bytes end at EOF". The
     /// active segment is never a candidate, so a log always retains at least
-    /// the records written since the last roll. Runs without the lock: an age
-    /// check reads the newest record of each candidate, which may be cold.
+    /// the records written since the last roll. Nor is a segment holding any
+    /// offset at or above `floor`. Runs without the lock: an age check reads
+    /// the newest record of each candidate, which may be cold.
     pub(super) fn choose(
         &self,
-        config: &LogConfig,
+        bounds: crate::log::Retention,
+        floor: Option<Offset>,
         now_micros: u64,
         label: &str,
     ) -> Result<Vec<SegmentId>> {
-        let max_bytes = config.retention_bytes;
-        let max_age_micros = config
-            .retention_age
+        let max_bytes = bounds.bytes;
+        let max_age_micros = bounds
+            .age
             .map(|age| age.as_micros().min(u128::from(u64::MAX)) as u64);
         let mut total_bytes = self.total_bytes;
         let mut chosen = Vec::new();
         for candidate in &self.candidates {
+            if floor.is_some_and(|floor| candidate.descriptor().last_offset >= floor) {
+                break;
+            }
             let over_size = max_bytes.is_some_and(|max| total_bytes > max);
             let too_old = match max_age_micros {
                 // The newest record decides: a segment is only expired once

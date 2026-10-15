@@ -66,6 +66,7 @@ pub(crate) async fn old_swap(dir: &Path, config: LogConfig, live: Vec<bytes::Byt
                 payload,
                 timestamp_micros: 0,
                 mark: Default::default(),
+                publisher: None,
             }],
         )
         .await

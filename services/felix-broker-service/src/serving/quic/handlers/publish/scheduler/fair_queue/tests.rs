@@ -155,3 +155,77 @@ fn an_idle_tenant_does_not_bank_turns() {
         .collect();
     assert_eq!(order, ["b/0", "a/0", "b/0", "a/0", "b/0", "a/0"]);
 }
+
+#[test]
+fn a_running_lane_hands_out_its_queued_jobs_in_order() {
+    let mut queue = queue(64, 32);
+    for n in 0..5 {
+        queue.push("a", "a/0", n, 10).expect("room");
+    }
+    let (lane, first) = queue.pop().expect("a job");
+    assert_eq!(first, 0);
+    let more = queue.take_more(&lane, 3, |_, _| true);
+    assert_eq!(more, [1, 2, 3], "at most `max`, from the front");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.queued_for("a"), 1);
+    // The lane is still running, so its last job waits for it.
+    assert!(queue.pop().is_none());
+    queue.complete(&lane);
+    assert_eq!(drain(&mut queue), [("a/0", 4)]);
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn taking_more_stops_at_the_first_job_refused() {
+    let mut queue = queue(64, 32);
+    for n in 0..5 {
+        queue.push("a", "a/0", n, 10).expect("room");
+    }
+    let (lane, _) = queue.pop().expect("a job");
+    // Job 2 cannot join, so job 3 must not jump it.
+    let more = queue.take_more(&lane, 8, |job, _| *job != 2);
+    assert_eq!(more, [1]);
+    queue.complete(&lane);
+    assert_eq!(drain(&mut queue), [("a/0", 2), ("a/0", 3), ("a/0", 4)]);
+}
+
+#[test]
+fn taking_a_lanes_last_job_leaves_nothing_behind() {
+    let mut queue = queue(64, 32);
+    queue.push("a", "a/0", 0, 10).expect("room");
+    queue.push("a", "a/0", 1, 10).expect("room");
+    let (lane, _) = queue.pop().expect("a job");
+    assert_eq!(queue.take_more(&lane, 8, |_, _| true), [1]);
+    assert_eq!(queue.queued_for("a"), 0);
+    queue.complete(&lane);
+    assert!(queue.is_empty());
+    assert!(queue.pop().is_none());
+}
+
+/// A tenant pays for what it takes, so taking a lane's backlog in one go
+/// buys it no more than popping it one job at a time would have.
+#[test]
+fn jobs_taken_together_are_paid_for_in_later_turns() {
+    let mut queue = queue(64, 32);
+    for n in 0..8 {
+        queue.push("a", "a/0", n, QUANTUM).expect("room");
+    }
+    for n in 0..8 {
+        queue.push("b", "b/0", n, QUANTUM).expect("room");
+    }
+    let (lane, _) = queue.pop().expect("a's turn");
+    assert_eq!(lane, "a/0");
+    // Three more quanta than a's turn earned.
+    assert_eq!(queue.take_more(&lane, 3, |_, _| true).len(), 3);
+    queue.complete(&lane);
+    let lanes: Vec<_> = drain(&mut queue)
+        .into_iter()
+        .take(4)
+        .map(|(lane, _)| lane)
+        .collect();
+    assert_eq!(
+        lanes,
+        ["b/0", "b/0", "b/0", "b/0"],
+        "a took four turns' worth at once and should sit out until b caught up"
+    );
+}

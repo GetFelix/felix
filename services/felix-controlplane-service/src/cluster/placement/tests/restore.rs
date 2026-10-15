@@ -383,9 +383,79 @@ fn a_quorum_restore_waits_for_what_the_old_set_holds() {
     let level = Reports {
         offsets: [("broker-b".to_string(), 90), ("broker-d".to_string(), 100)].into(),
         tail: Some(100),
-        ..Reports::default()
+        ..Reports::level(&["broker-d"])
     };
     let (decision, _) = decide(quorum("orders"), &nodes, existing, &level);
+    assert!(
+        matches!(decision, Decision::Move(MoveStep::Seat { .. }, _)),
+        "{decision:?}"
+    );
+}
+
+/// **A `Quorum` cache's counters.** The report's offsets are the cache log's
+/// alone. A copy level on it but missing an acknowledged counter update is
+/// left out of the caught-up set, and it is not seated until it is named
+/// there: seated, it would count toward a majority it could not lead.
+#[test]
+fn a_quorum_cache_restore_waits_for_the_counter_log() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        gone("broker-c", 10 * MINUTE),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut existing = restoring(
+        "broker-a",
+        &["broker-b", "broker-c", "broker-d"],
+        "broker-d",
+    );
+    existing.key.stream = "sessions".to_string();
+    existing.key.kind = ShardKind::Cache;
+    existing.generation = 3;
+    let cache = Cache {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+        display_name: "sessions".to_string(),
+        shards: 1,
+        replication_factor: 3,
+        consistency: ConsistencyLevel::Quorum,
+    };
+    let decide = |reports: &Reports| {
+        let plan = plan(
+            &[],
+            std::slice::from_ref(&cache),
+            &nodes,
+            std::slice::from_ref(&existing),
+            reports,
+        );
+        assert_eq!(plan.shards.len(), 1);
+        plan.shards[0].decision.clone()
+    };
+    // Level on the cache log, which is empty when the cache holds only
+    // counters, but not on the counter log.
+    let offsets: BTreeMap<String, u64> =
+        [("broker-b".to_string(), 0), ("broker-d".to_string(), 0)].into();
+    let without_counters = Reports {
+        offsets: offsets.clone(),
+        tail: Some(0),
+        ..Reports::level(&["broker-b"])
+    };
+    let decision = decide(&without_counters);
+    assert!(
+        matches!(
+            decision,
+            Decision::Waiting(Blocked::DestinationCatchingUp { .. })
+        ),
+        "seated without the counter log: {decision:?}"
+    );
+
+    let with_counters = Reports {
+        offsets,
+        tail: Some(0),
+        ..Reports::level(&["broker-b", "broker-d"])
+    };
+    let decision = decide(&with_counters);
     assert!(
         matches!(decision, Decision::Move(MoveStep::Seat { .. }, _)),
         "{decision:?}"
@@ -650,4 +720,75 @@ async fn a_restore_resumes_after_a_control_plane_restart() {
         .expect("get");
     assert_eq!(seated.replicas, ["broker-b", "broker-d"]);
     assert_eq!(seated.joining, None);
+}
+
+/// **Placed with its leader alone.** A shard placed while one broker was live
+/// gets brokers later. Its leader reports with no followers to name (#1153),
+/// and that report is what starts the first copy; each copy then joins and is
+/// seated in turn until the shard is at its factor.
+#[tokio::test]
+async fn a_shard_placed_with_its_leader_alone_is_topped_up_once_brokers_join() {
+    let store = cluster(&["broker-a"]).await;
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the three-shard stream");
+    store
+        .create_stream(replicated_stream("orders", 1, 3))
+        .await
+        .expect("stream");
+    let liveness = NodeLivenessConfig::default();
+    let assignment = || async {
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get")
+    };
+
+    reconcile_once(&store, &liveness, MovePolicy::default()).await;
+    let placed = assignment().await;
+    assert_eq!(
+        (placed.leader.as_str(), placed.replicas.len()),
+        ("broker-a", 0)
+    );
+
+    for (i, id) in ["broker-b", "broker-c"].iter().enumerate() {
+        let mut joined = node(id, NodeLifecycle::Live, None);
+        joined.spec.advertise_addr = format!("10.0.0.5:{}", 7600 + i);
+        store.register_node(joined).await.expect("node");
+    }
+    reconcile_once(&store, &liveness, MovePolicy::default()).await;
+    assert_eq!(
+        assignment().await,
+        placed,
+        "a copy was added before the leader reported at its generation"
+    );
+
+    let mut seated = Vec::new();
+    let mut current = placed;
+    for _ in 0..2 {
+        // What the leader reports with nobody, or only seated copies, behind it.
+        super::reconciler::report(&store, current.generation, &[], false).await;
+        reconcile_once(&store, &liveness, MovePolicy::default()).await;
+        let started = assignment().await;
+        let joining = started.joining.clone().expect("a restore started");
+        assert_eq!(started.move_reason, Some(MoveReason::Restore));
+        assert!(!seated.contains(&joining) && joining != "broker-a");
+
+        seated.push(joining);
+        let level: Vec<&str> = seated.iter().map(String::as_str).collect();
+        super::reconciler::report(&store, started.generation, &level, false).await;
+        reconcile_once(&store, &liveness, MovePolicy::default()).await;
+        current = assignment().await;
+        assert_eq!(current.joining, None, "the copy was not seated");
+        assert_eq!(current.replicas, seated);
+    }
+    assert_eq!(current.leader, "broker-a");
+    let mut held = current.replicas.clone();
+    held.sort();
+    assert_eq!(held, ["broker-b", "broker-c"]);
 }

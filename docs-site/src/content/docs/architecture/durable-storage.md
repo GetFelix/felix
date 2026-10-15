@@ -70,7 +70,7 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>L: encode batch, one write() to the page cache
+    L->>L: on the append thread, encode batch, one write() to the page cache
 
     alt FsyncMode::OnCommit
         L->>D: fsync (shared with concurrent appends)
@@ -89,6 +89,17 @@ acknowledged to the publisher but lost in a crash is a silent hole in a log that
 consumers believe they have read. Writing first turns a storage failure into a
 failed publish, which the publisher can retry. A storage error can never produce
 a success acknowledgement.
+
+### Where the write runs
+
+The `write()` into the page cache usually takes microseconds, but once Linux
+throttles a process that dirties pages faster than the device takes them, it
+blocks for up to hundreds of milliseconds. So no Tokio worker makes it. Each
+log has an append thread, and every append runs there in offset order while
+the publisher awaits the result. The write runs with the segment lock
+released, so readers and flushes never wait on the disk behind it, and a flush
+takes its bound on the same thread, behind the appends already queued, so
+group commit covers all of them.
 
 ## Durability policies
 
@@ -131,7 +142,7 @@ graph TB
 
 ### Appending, and reading back
 
-![The active segment and the index derived from it. Records are appended one after another with ascending offsets; index entries are emitted only for the first record and thereafter every four kibibytes, so the index is sparse. A read for an offset binary-searches the index for the greatest entry at or below it, seeks to that byte position, and scans forward over real records until it reaches the one it wants.](/felix/diagrams/log-append.svg)
+![The active segment and the index derived from it. Records are appended one after another with ascending offsets; index entries are emitted only for the first record and thereafter every four kibibytes, so the index is sparse. A read for an offset binary-searches the index for the greatest entry at or below it, seeks to that byte position, and scans forward over real records until it reaches the one it wants.](/diagrams/log-append.svg)
 
 Each record carries its own length, logical offset, timestamp and a CRC-32 over
 its header and payload. The length comes first and is covered by the checksum, so
@@ -149,7 +160,7 @@ missing, short, or stale index costs a rebuild rather than a wrong answer. It is
 also why a freshly written index can safely skip its fsync.
 
 A new replication leader also writes a generation-start record into the log
-(see the [format specification](/felix/architecture/storage-format/)). It takes
+(see the [format specification](/architecture/storage-format/)). It takes
 an offset like any other record. `read_range` returns it, but only replication
 reads the log that way (`StreamLog::read_log_from`), because it ships and
 compares the log exactly as stored. Subscribers and every other reader go
@@ -158,7 +169,7 @@ of one offset where each one sits.
 
 ### Sealing, rolling, and retention
 
-![A shard's log over time. The active segment fills until it reaches the segment size limit, then is sealed: data and index synced, the preallocated tail trimmed away, and a new active segment opened at the next offset. Later the retention timer deletes the oldest sealed segment whole, base_offset advances to the start of the next surviving segment, and a read below that offset is answered with a Trimmed error naming the oldest surviving offset.](/felix/diagrams/log-lifecycle.svg)
+![A shard's log over time. The active segment fills until it reaches the segment size limit, then is sealed: data and index synced, the preallocated tail trimmed away, and a new active segment opened at the next offset. Later the retention timer deletes the oldest sealed segment whole, base_offset advances to the start of the next surviving segment, and a read below that offset is answered with a Trimmed error naming the oldest surviving offset.](/diagrams/log-lifecycle.svg)
 
 A shard's log is one **active** segment plus any number of **sealed** ones.
 Rollover is decided *before* a write, from the projected size, so one append is
@@ -166,12 +177,26 @@ always one `write` call and a batch never spans two segments. Sealing syncs the
 data and the index, then trims the preallocated tail so the file on disk is
 exactly its contents.
 
+The active segment reserves blocks ahead of its writes without changing the
+file's size. It starts with 1 MiB and doubles the reservation each time its
+records pass half of it, up to the segment size, so an idle stream holds 1 MiB
+per shard rather than a whole segment. The extension runs off the append path
+and is best effort: a failed one is logged and later writes allocate their own
+blocks.
+
 Retention deletes whole sealed segments from the head only. It never deletes a
 partial segment or the active one, so a log always retains at least what
 was written since its last roll. `base_offset` then advances, and a read below
 it is `Trimmed { requested, oldest }` rather than an empty answer, so a
 resuming subscriber can tell "those records existed and are gone" from
 "nothing here yet".
+
+On a `Quorum` shard retention also stops at the commit offset, on the leader and
+on every follower: a segment holding a record a majority may not have yet is
+kept, however far over its bound the log is. Without that, a follower rebuilt
+at the leader's new base would count as holding records nobody had, and a
+waiting publish would be acknowledged for them. Compaction's head trims stop
+at the same place. `Leader` streams are not held.
 
 The segments go oldest first, with a directory sync after each unlink, so a
 power loss partway through a sweep leaves a longer log rather than a gap that
@@ -183,7 +208,10 @@ live below it to the tail (a put of the same value, or a counter checkpoint),
 flushes, and deletes the sealed segments below the seal point, oldest first.
 No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
-`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`. A cache's pass then writes its key
+index to `keys.idx`, so the next open replays only the log past it; one that
+does not match the log is ignored (see
+[the storage format](/architecture/storage-format/#keysidx-a-caches-key-index)).
 
 A shard with `<shard>.compacting` or `<shard>.retired` siblings, left by a
 directory-swap compaction that stopped partway, is settled on open: a missing
@@ -191,7 +219,7 @@ shard directory is restored from `<shard>.retired`, and leftover siblings are
 deleted.
 
 The full byte layout, versioning rules, and corruption verdicts are in the
-[Durable Segment Format specification](/felix/architecture/storage-format/).
+[Durable Segment Format specification](/architecture/storage-format/).
 
 ## Resuming a subscription
 
@@ -203,7 +231,7 @@ carries its offset, so the client has something to checkpoint.
 The hard part is joining history to live delivery without losing a record in
 between, and the ordering that does it is not the obvious one.
 
-![Two orderings for joining stored history to live delivery. Reading history first and registering the live subscription afterwards leaves a window with no subscriber in it, so a publish landing there is never delivered. Registering first, clamped to the oldest offset the replay ring holds, captures that publish; the older range is only then read from disk, and it is closed because nothing can grow it.](/felix/diagrams/subscribe-join.svg)
+![Two orderings for joining stored history to live delivery. Reading history first and registering the live subscription afterwards leaves a window with no subscriber in it, so a publish landing there is never delivered. Registering first, clamped to the oldest offset the replay ring holds, captures that publish; the older range is only then read from disk, and it is closed because nothing can grow it.](/diagrams/subscribe-join.svg)
 
 Registering first pins the live edge. Everything below it is a closed range that
 nothing can grow, so the disk read that follows cannot race a publish. Do it
@@ -236,7 +264,8 @@ Four properties hold:
 
 1. **A torn tail is repaired.** A crash mid-append leaves a partial record at the
    end of the newest segment. It was never acknowledged under any policy, so it
-   is truncated away.
+   is truncated away. A log whose only segment never got its header, because
+   the disk filled while the log was being created, starts again empty.
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start
    beats losing acknowledged records quietly.
@@ -250,6 +279,11 @@ segments only past their last index entry. Every read verifies the checksum of
 every record it returns, so bit rot in cold data is still caught, though when it
 is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
+
+Recovery plans every repair before it makes any, and
+`felix-broker inspect segments` runs that plan alone: it reports what startup would
+do with a data directory, read-only, without a broker. See
+[Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 
 Anything that deletes segments does it one synced unlink at a time, in an
 order that keeps the chain whole. Retention and compaction go oldest first.
@@ -290,7 +324,7 @@ Throughput still scales with concurrency because of group commit. An
 it. 253 → 14,387 records/second from concurrency 1 → 64 is a 57× gain from the
 same code path, and batching on top reaches 185,905.
 
-![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](/felix/diagrams/group-commit.svg)
+![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](/diagrams/group-commit.svg)
 
 The lock protocol behind that picture (who flushes, and what the others find
 when they wake):
@@ -302,19 +336,26 @@ sequenceDiagram
     participant C as append C
     participant L as flush lock
     participant D as Device
+    participant M as durable bound
 
     A->>L: acquire
-    B->>L: (queued)
-    C->>L: (queued)
+    B->>L: (queued, watching the bound)
+    C->>L: (queued, watching the bound)
     A->>D: fsync
     D-->>A: durable through offset N
+    A->>M: publish N
     A->>L: release
-    Note over B,C: wake, find their target<br/>already durable,<br/>return without flushing
+    M-->>B: covered
+    M-->>C: covered
+    Note over B,C: return together<br/>without flushing
 ```
+
+The others wait on the lock and on the durable bound at once, so one flush
+wakes them all together rather than one after another through the lock.
 
 The full matrix, the regression budget, and the reasoning behind each
 optimisation are in
-[the performance document](https://github.com/gabloe/felix/blob/main/docs/storage-performance.md).
+[the performance document](https://github.com/GetFelix/felix/blob/main/docs/storage-performance.md).
 
 ## Configuration
 
@@ -326,7 +367,7 @@ optimisation are in
 | `FELIX_DURABLE_SEGMENT_BYTES` | `268435456` | Rollover size |
 | `FELIX_DURABLE_INDEX_SPACING_BYTES` | `4096` | Sparse index interval |
 | `FELIX_DURABLE_MAX_RECORDS_PER_READ` | `10000` | Record cap on one range read |
-| `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks at creation |
+| `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks ahead of the writes: 1 MiB at creation, doubling as the segment fills |
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
 | `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` | `67108864` | I/O budget for cache and counter compaction; `0` is unlimited |
@@ -345,9 +386,10 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | --- | --- |
 | `felix_storage_append_duration_seconds` | how long a durable publish takes end to end |
 | `felix_storage_sync_duration_seconds` | how much of that is the device |
-| `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
+| `felix_storage_sync_batch_appends` | group-commit fan-in in records per flush; near 1 under single-record load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
+| `felix_storage_full_total` | writes and log creations refused because the disk or quota was full; none of them wrote anything |
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
 
@@ -367,15 +409,23 @@ printing wrong numbers.
 
 ## Limits today
 
-- **Retention is broker-wide and off by default.** `FELIX_DURABLE_RETENTION_BYTES`
-  and `FELIX_DURABLE_RETENTION_SECONDS` bound each durable stream shard. A
-  stream's own retention policy is accepted and recorded, and nothing acts on
-  it.
-- **No tiered storage.** `TieredStore` and its companions are declared traits
-  with no implementation. There is no hot/cold split and no cold-tier read path;
-  every read comes from local segments. Sealed segments are immutable and carry
-  a whole-file checksum, and reads already route per segment, so a cold tier
-  can slot in at that seam when it is built.
+- **Retention is off by default.** A stream's own `retention` bounds its shard
+  logs, and a bound it leaves unset comes from `FELIX_DURABLE_RETENTION_BYTES`
+  or `FELIX_DURABLE_RETENTION_SECONDS`. A patch takes effect without a restart.
+- **Offload, but no cold reads.** With `FELIX_DURABLE_OFFLOAD_DIR` set, a
+  stream log's sealed segments are copied to that directory, checked by size
+  and CRC-32, and recorded in a per-shard `offload.manifest` before retention
+  may delete them. Keys start with the broker's node id (`FELIX_NODE_ID`, or an
+  id kept in `node-id` under the data directory), so brokers can share one
+  offload directory. A crash at any step leaves the local segment or a recorded
+  copy. Nothing reads the copies yet, so a read below the local head is still
+  `Trimmed`, and the only backend is a local directory. A missing or
+  read-only offload directory does not stop a log from opening or taking
+  publishes, but retention keeps every segment without a copy until the
+  directory is back, so an outage grows local disk; watch
+  `felix_storage_offload_held_bytes` and see
+  [Diagnosing a cluster](/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on).
+  See `docs/durable-storage.md`, "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

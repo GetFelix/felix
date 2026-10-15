@@ -31,6 +31,14 @@ The broker and the control plane each serve Prometheus text on their own
 metrics endpoint (`metrics_bind` on the broker; `/metrics`, plus `/live` and
 `/ready` for probes).
 
+The broker's metrics listener is plain HTTP with no authentication. It
+carries counts and the listings below (`/replication/halted`,
+`/backup/offsets`), which name tenants, streams and brokers, and nothing that
+changes state. Keep it on an internal network that only Prometheus and your
+operators reach. Anything that needs a principal, such as a shard's live state
+from `felixctl inspect`, goes over the authenticated client listener instead;
+see [Diagnosing a cluster](/deployment/diagnosing/).
+
 ```yaml
 # prometheus.yml
 scrape_configs:
@@ -53,6 +61,7 @@ felix_broker_ingress_dropped_total          # fire-and-forget publishes dropped:
 felix_broker_ingress_rejected_total         # (telemetry)
 felix_broker_acked_publishes_dropped_total  # by reason: acked on enqueue, then not written
 felix_broker_publish_worker_restarts_total  # publish executors replaced after a panic; should stay 0
+felix_broker_publish_claim_jobs             # durable publishes claimed as one append; near 1 means lanes are not backing up
 felix_tenant_publish_queue_full_total       # by tenant and action (refused/dropped): no room in the publish queue
 felix_client_publish_forwarded_total        # client: publishes the broker had to relay (telemetry)
 felix_broker_json_publishes_total            # by frame: publishes still on JSON
@@ -99,15 +108,20 @@ throughput.
 felix_subscribe_requests_total              # (telemetry)
 felix_sub_queue_enqueued_total
 felix_sub_queue_dropped_total               # records lost to slow consumers
+felix_sub_queue_byte_dropped_total{bound}   # of those, records the byte bound turned away
 felix_sub_queue_drop_old_emulated_total     # DropOld configured, DropNew behavior
 felix_sub_queue_len
+felix_sub_queue_bytes                       # payload bytes held in subscriber queues and writer lanes
 felix_sub_conn_queue_depth                  # histogram: commands waiting for a connection's writer
 felix_sub_connection_subscribers            # subscribers across all connections
 felix_subscriber_disconnect_total
 ```
 
 `felix_sub_queue_dropped_total` increasing is the signal that a subscriber is
-missing records. On a durable stream the subscriber can detect this itself
+missing records. When `felix_sub_queue_byte_dropped_total` rises with it, the
+queue filled by bytes rather than by entries: large records, with `bound` saying
+whether the subscriber's own bound (`subscriber`) or the broker-wide one
+(`broker`) was full. On a durable stream the subscriber can detect this itself
 from offset gaps and resume; on an ephemeral stream this counter is the only
 witness.
 
@@ -141,7 +155,7 @@ subscriber's writer, before the network. The first `FELIX_TENANT_METRICS_MAX`
 tenants (100 by default) keep their own label for the life of the process;
 the rest share `_overflow`, so a non-zero overflow counter means the busiest
 tenant may be hiding there. Quotas are set with the `FELIX_TENANT_PUBLISH_*`
-variables in the [environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas).
+variables in the [environment reference](/reference/environment-variables/#connection-limits-and-tenant-quotas).
 
 **Is durability the bottleneck?** Compare append time against sync time, and
 watch the group-commit fan-in:
@@ -149,14 +163,16 @@ watch the group-commit fan-in:
 ```prometheus
 felix_storage_append_duration_seconds
 felix_storage_sync_duration_seconds
-felix_storage_sync_batch_appends       # appends served per device flush
+felix_storage_sync_batch_appends       # records made durable per device flush
 felix_storage_unsynced_bytes           # what a crash would lose right now
 felix_storage_sync_failures_total      # non-zero: acknowledged durability in doubt
+felix_storage_full_total               # writes refused on a full disk; nothing written
 ```
 
 If sync dominates append, the fsync policy is the cost. A
-`sync_batch_appends` near 1 under concurrent load means appends are
-serializing on the device instead of sharing a flush.
+`sync_batch_appends` near 1 under concurrent single-record publishes means
+appends are serializing on the device instead of sharing a flush. It counts
+records, so a client batch of N reads N on its own.
 
 **Is the cluster healthy?** Membership from both sides, replication, and
 leases:
@@ -172,17 +188,27 @@ felix_broker_replication_rebuilding         # halted followers the leader is reb
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
 felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
-felix_broker_promotions_opened_total       # by path: fenced (a majority took the new leader's generation) or lease
+felix_broker_promotions_opened_total       # every new leadership, by path: fenced (a majority took the new leader's generation) or lease
 felix_broker_promotion_truncated_total      # a promoted leader dropped its own records a replica's newer log superseded
 felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
 felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
+felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations (start time until one succeeds)
+felix_revocation_feed_poll_errors_total     # failed polls of that feed
 ```
 
+**Alert on `time() - felix_revocation_feed_last_success_seconds`** growing past
+a few sync intervals. While a broker cannot poll the revocation feed it does not
+learn of revocations: a revoked token is still accepted for new sessions until
+it expires (at most one access TTL), and streams it already opened keep running
+until the feed is back. The broker also logs a warning when polls start
+failing and every minute after. See
+[Revocation](/features/security/#revocation).
+
 **Are Kafka clients being served?** Only when the Kafka listener is on
-(`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/felix/features/kafka/)):
+(`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/features/kafka/)):
 
 ```prometheus
 felix_kafka_connections                     # gauge: Kafka connections open now
@@ -243,7 +269,7 @@ seated. Alert when either stays above zero for longer than the restore delay
 plus the time a shard takes to copy. `felix-controlplane admin replication`
 (or `GET /v1/placement/replication`) lists which shards, which members are
 unavailable, and where a copy is going. See
-[Restoring the replication factor](/felix/deployment/moving-shards/#restoring-the-replication-factor).
+[Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).
 
 A halted replica (below) does not count as a copy: it is in no quorum.
 `felix_shard_replicas_halted` counts them, and the replication listing names
@@ -295,7 +321,7 @@ A healthy broker answers `[]`, not 404.
 
 The same listener answers `GET /backup/offsets`: the committed offset of every
 log of every shard the broker leads, which is what a backup point records (see
-[Backup and restore](/felix/deployment/backup-and-restore/)).
+[Backup and restore](/deployment/backup-and-restore/)).
 
 ### Bootstrap attempts
 
@@ -359,7 +385,7 @@ touches nothing outside the process. A liveness probe drives restarts, and
 restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
-stops working. See [Graceful shutdown](/felix/deployment/graceful-shutdown/).
+stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
 
 ## Distributed tracing
 
@@ -371,7 +397,7 @@ export nothing. An unreachable collector does not stop a broker from serving:
 failed exports are logged by the exporter and the spans are dropped.
 
 **Configuration** is by environment variable. Felix does take a YAML config file
-(`FELIX_BROKER_CONFIG`, see [Configuration](/felix/reference/configuration/)),
+(`FELIX_BROKER_CONFIG`, see [Configuration](/reference/configuration/)),
 but it has no tracing keys. The exporter speaks OTLP over gRPC (tonic) and is
 configured entirely through the standard OTel variables:
 

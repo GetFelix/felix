@@ -6,7 +6,7 @@ title: "Rust Client SDK"
 and the cluster client, over multiplexed QUIC connections. This page covers
 setup, configuration, and common patterns.
 
-The Python and TypeScript clients bind to it. See [Choosing a Client](/felix/clients/overview/) for those bindings
+The Python and TypeScript clients bind to it. See [Choosing a Client](/clients/overview/) for those bindings
 and for how a new language is gated on a conformance suite.
 
 ## Installation
@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let publisher = client.publisher().await?;
 
     // Publish a message
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     publisher
         .publish(
             "acme",           // tenant_id
@@ -118,6 +118,9 @@ let config = ClientConfig {
     
     // Publish sharding
     publish_sharding: PublishSharding::HashStream,
+    // ClusterClient only: streams of their own for up to this many shards
+    // per broker (0 turns them off)
+    publish_shard_streams: 16,
 
     ..ClientConfig::optimized_defaults(quinn)
 };
@@ -125,6 +128,73 @@ let config = ClientConfig {
 let addr: SocketAddr = "127.0.0.1:5000".parse()?;
 let client = Client::connect(addr, "localhost", config).await?;
 ```
+
+### Acting for many users
+
+A gateway that serves many users, each with their own Felix token, can hold one
+`Client` and give each user a handle that shares its connections:
+
+```rust
+use std::sync::Arc;
+use felix_client::{RefreshingToken, TokenProvider};
+
+let gateway = Client::connect(addr, "localhost", config).await?;
+
+// Every stream alice's handle opens authenticates with alice's token, and the
+// broker checks each of her requests against her grants, not the gateway's.
+let alice_tokens: Arc<dyn TokenProvider> =
+    Arc::new(RefreshingToken::with_initial(alice_token, refresh_alice));
+let alice = gateway.with_identity("t1", alice_tokens).await?;
+let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+
+// A fixed token, for a handle that will not outlive it.
+let bob = gateway.with_identity_token("t1", bob_token).await?;
+```
+
+Refresh each chain from one place at a time and keep the newest refresh token.
+Two concurrent refreshes of one token both succeed within the control plane's
+reuse grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`), but the older result
+is a replay once the window ends.
+
+A handle opens one publish stream and one cache stream and no connections, so
+the gateway's connection count stays the same however many users it serves.
+One user's token expiring stops only that user's new streams, and revoking the
+user ends only that user's open ones.
+Dropping a handle closes its streams. The gateway's own token only opens the
+connections, so it needs no permissions: a gateway holding `token.delegate`
+can use a connection-only token from the control plane
+([docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#the-gateways-own-connections)).
+
+A refused publish or cache request ends the stream it was sent on, as on any
+client, so a handle that has had one refused cannot publish or reach the cache
+afterwards; build a new one. The broker gives each user on a connection their
+own subscription cap and publish byte budget, so one user at a limit leaves the
+others room. The whole connection also has a ceiling that its users share, four
+users' worth by default (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` and
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`): four users at their limits
+use all of it, and a fifth is refused or slowed. If more users than that can be
+at full load at once, raise the ceilings or spread the users over more than one
+`Client`. Users also share the connections' flow-control windows, so read every
+subscription promptly or drop it. A broker that binds tokens to client certificates accepts a user's token on
+the gateway's certificate only once the control plane has delegated it to the
+gateway (`/token/delegate`).
+
+`ClusterClient::with_identity` and `with_identity_token` do the same for a
+cluster. The handle is a `ClusterClient` that follows moved shards, redirects
+and failed brokers as the gateway's does, and reaches each broker over the
+gateway's connection to it, opening one only where the gateway has none. A
+user whose subscription's shard moves to another broker keeps the
+subscription, and the gateway still holds one connection per broker:
+
+```rust
+let gateway = ClusterClient::connect(&seeds, "broker.internal", config).await?;
+let alice = Arc::new(gateway.with_identity("t1", alice_tokens).await?);
+let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+```
+
+Its routing state is its own, learned from its own requests, and when a
+broker's connection is rebuilt the handle moves to the new one on its next
+request there. See [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#many-users-over-one-client).
 
 ### TLS and ALPN
 
@@ -140,9 +210,24 @@ let config = ClientConfig::optimized_defaults(quinn);
 
 A broker with `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that offer
 `felix/1`. A broker older than ALPN support refuses them, so offer it only once
-every broker you connect to is current. If you build the rustls config yourself
-(for a client certificate, say), set `alpn_protocols` to
-`vec![felix_wire::CLIENT_ALPN.to_vec()]` to offer it.
+every broker you connect to is current.
+
+To trust a private CA and present a client certificate, read both from PEM
+files:
+
+```rust
+use std::sync::Arc;
+use felix_client::{ClientIdentity, quic_client_config_with_identity, root_store_from_pem_file};
+
+let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
+let identity = ClientIdentity::from_pem_files("client.pem", "client.key")?;
+let quinn = quic_client_config_with_identity(Some(roots), identity, true)?;
+```
+
+`ClientIdentity::new` takes a chain and key you already hold. Each loader
+names the file it could not use. For anything else, build the rustls config
+yourself and set `alpn_protocols` to `vec![felix_wire::CLIENT_ALPN.to_vec()]`
+to offer `felix/1`.
 
 ### Configuration Tuning
 
@@ -181,7 +266,7 @@ let config = ClientConfig {
 
 ```rust
 // Fire-and-forget (no ack)
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish("acme", "prod", "events", b"message".to_vec(), AckMode::None)
@@ -200,7 +285,17 @@ as it was queued instead of once it was written (a `Leader` stream with
 `ack_on_commit` off), when the stream has no log, and against a broker older
 than the offset flag. An unacknowledged publish always returns `None`. On a
 `Quorum` stream the offset is where the batch was committed, and a re-sent
-`IdempotentProducer` batch reports where the first copy landed.
+`IdempotentProducer` batch reports where the first copy landed. Only the
+broker that owns the shard acknowledges before writing; a publish forwarded
+through another broker is answered after the write and has its offset, so one
+stream can return both.
+
+To get the offset of every acknowledged publish without turning
+`FELIX_ACK_ON_COMMIT` on for the whole broker, set `ack_on_commit: true` in the
+`ClientConfig`. That client's connections ask for commit acks
+(`FEATURE_ACK_ON_COMMIT`), and every other client on the broker keeps the
+broker's default. `Client::supports_ack_on_commit()` says whether the broker
+honours it; one that predates it answers as before.
 
 ### The routing key decides the shard
 
@@ -273,7 +368,7 @@ For high-throughput publishing, use the `Publisher` API:
 
 ```rust
 use felix_client::Publisher;
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 // Create publisher (uses ClientConfig settings)
 let publisher = client.publisher().await?;
@@ -305,6 +400,58 @@ PublishSharding::HashStream
 same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
+
+Under `HashStream` the client goes one step further: each shard of a stream
+gets a stream of its own. The broker answers a stream's pipelined publishes in
+order, so shards sharing a stream would wait on the slowest; on separate
+streams a shard stalled on a quorum holds up only itself. Each shard stream
+is placed on the least-loaded connection, so a busy multi-shard stream
+spreads over the client's connections and the broker's listeners instead of
+riding one. The stream opens on the shard's first publish, which pays one
+extra round trip to authenticate it, and stays open. A client keeps at most
+`publish_shard_streams` of them per broker (16 by default,
+`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
+
+Each broker connection asks for a stream's width on its first keyed publish
+to it (one more round trip) and picks a key's stream from that answer alone,
+whoever publishes: a plain publisher, a `ClusterClient` or an idempotent
+producer. So two of them never put one key on two writers. If the width
+cannot be learned, every keyed publish to that stream goes on shard 0's
+stream, as one writer.
+
+A stream deleted and created again at another width makes the kept width
+stale, and two keys that now share a shard could go out on two writers. A
+broker advertising `FEATURE_PUBLISH_WIDTH` is told the width each keyed batch
+was routed by and refuses one routed by a width the stream no longer has, so
+nothing sent that way is written. An acknowledged publish fails with
+`stale_width` (`Retry`), and the client drops the width so a retry asks for
+the new one. A fire-and-forget publish is dropped; the client asks for a
+width again every 5 seconds while it publishes to the stream, so it catches
+up without a refusal to read. A refusal with `not_found` also drops the
+width. Against an older broker the width is kept until `not_found`, as
+before.
+
+A `ClusterClient` keeps its own widths, to pick the broker for a key, and an
+idempotent producer numbers each shard's batches by one. Both are dropped and
+asked again the same way, and a batch is routed and declared by the width that
+picked its broker or numbered it, so the broker that takes it checks that
+width. Under a new width a producer starts the stream's sequences again under
+a fresh producer id for that stream, so they never meet sequences a leader
+still holds. While a batch on the stream is in doubt it does not: the batch
+may have landed, and only a re-send under the width and id it was numbered by
+is answered as a duplicate. Until it settles, a re-send under a width that
+has gone is refused with an error that says so. If the width will not come
+back, `abandon_in_doubt(tenant, namespace, stream)` gives those batches up
+and numbers the stream afresh under a new id; an abandoned batch may land
+twice. `IdempotentProducer::producer_id`
+keeps returning the first id; `producer_id_for(tenant, namespace, stream)`
+returns the one a stream's batches go out under.
+
+The ordering guarantee is per shard: every publish one client makes to one
+shard goes through one writer and one QUIC stream, so the shard holds them in
+the order they were issued. Unkeyed publishes are all shard 0, so a stream
+published without keys, like a single-shard stream, keeps total order and
+stays on one connection per client.
 
 ### Errors you can act on
 
@@ -346,7 +493,7 @@ can write it twice; `Retry`, `RetryAfter` and `Redirect` mean nothing was
 applied. A broker that predates error codes returns the same failures as plain
 errors with the same text, so treat a missing `BrokerError` as "no code", not as
 success. The codes and their classes are listed under
-[Error codes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes).
+[Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
 
 `ClusterClient` already acts on the class before an error reaches you:
 
@@ -357,7 +504,8 @@ success. The codes and their classes are listed under
 - `Retry` and `Redirect` (`shard_unavailable`, `draining`, `not_leader`) from a
   cached shard owner drop that owner and go straight to the entry broker, even
   from `publish`, since nothing was applied. From the entry broker the retrying
-  paths back off.
+  paths back off. `stale_claim` and `stale_width` back off too: neither says
+  the owner is wrong.
 - `RetryAfter` backs off for at least `retry_after_ms`. `not_found` is retried
   for 5 s from the first one, long enough for a newly promoted broker to hear
   about the stream from the control plane and no longer.
@@ -366,7 +514,7 @@ success. The codes and their classes are listed under
 
 A broker without error codes gets the old handling: only a credential failure
 is final, and everything else is retried. The full table is under "Retries" in
-[the multi-node client guide](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md#retries).
+[the multi-node client guide](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#retries).
 
 `SubscribeCursorError` carries more than the other clients get:
 
@@ -389,11 +537,32 @@ a lost acknowledgement lands once.
 
 Rust only: neither binding wraps this yet.
 
+The producer keeps a handle on its client, so `idempotent_producer` is called
+on an `Arc<ClusterClient>` (or `Arc<Client>`), and the producer it returns can
+be stored or moved into a task without borrowing anything.
+
 ```rust
+let cluster = Arc::new(cluster);
 let producer = cluster.idempotent_producer().await?;
 
 producer
     .publish("acme", "prod", "orders", payload)
+    .await?;
+```
+
+`publish_keyed` and `publish_batch_keyed` take a routing key, which picks the
+shard as it does for a plain keyed publish. The leader numbers batches per
+shard, so the producer keeps one sequence per shard: keys on the same shard
+share it, and an unkeyed batch is shard 0's. The producer works out the shard
+itself from the stream's width, asked once of a broker advertising
+`FEATURE_STREAM_SHARDS`, and fails without sending if it cannot learn it.
+Under a `ClusterClient` each shard's batches go on that shard's own publish
+stream, as its other publishes do; a plain `Client`'s producer stays on the
+hashed pool with the rest of that client's publishes.
+
+```rust
+producer
+    .publish_keyed("acme", "prod", "orders", Bytes::from("customer-42"), payload)
     .await?;
 ```
 
@@ -406,7 +575,7 @@ let batches: Vec<Vec<Vec<u8>>> = orders.iter().map(|order| vec![order.encode()])
 producer.publish_batches("acme", "prod", "orders", batches).await?;
 ```
 
-The window is whatever the broker granted the connection
+The window is whatever the broker granted the stream
 (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
 remembers 64 sequences per producer. The broker answers a pipelining stream in
 the order it sent the batches, so when one fails the producer knows it is the
@@ -450,22 +619,26 @@ but the leader itself: a new leader answers `UnknownProducer`, and the producer
 starts again under a new id rather than being told a batch landed that nobody
 can vouch for.
 
-:::caution[Do not race this against a timeout]
-`publish_batch` is not cancel-safe. Dropping the future mid-send leaves the sequence in doubt: the batch may
-have been appended under it, and the cursor still points at it. A broker that
-predates `sequence_reused` answers a remembered sequence *without appending*,
-so reusing it there would discard a different batch and report success; a
-current broker refuses it, but the producer cannot tell which it has.
+:::note[Dropping a publish does not cancel it]
+The producer sends from a task of its own, in the order calls were made, and a
+call only hands its batches over and waits for the answer. Dropping the call's
+future, in a `tokio::time::timeout`, a `select!` or a handler whose client hung
+up, leaves the batch going out under its sequence and the producer usable.
+Because the batch may still land after you stopped waiting, **do not publish it
+again**. If its answer is in doubt and nobody is waiting for it, the producer
+re-sends it itself before the next batch on that shard; if that re-send fails
+too, the next call fails without sending and tries again on the call after.
 
-So a cancelled publish **stops the producer**: the next call refuses and says
-why, and you take a fresh id. A producer is cheap to re-initialise.
+Dropping the producer lets what it was handed finish. `close().await` waits for
+that, which is the call to make before a process exits.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same
-reason, but the producer still has the batch. The next call on that stream must
-be the same batch: it goes out under the same sequence and lands once. A call
-with a different batch fails without sending anything, so either re-send until
-it succeeds or take a fresh id.
+reason, but the producer still has the batch. The next call on that shard must
+be the same batch, with the same key: it goes out under the same sequence and
+lands once. A call with a different batch, or another key on the same shard,
+fails without sending anything, so either re-send until it succeeds or take a
+fresh id.
 
 ## Subscribing
 
@@ -505,8 +678,121 @@ pub struct Event {
     /// Offsets just before `offset` that hold no event. Non-zero only on the
     /// first event after a leader change.
     pub skipped_before: u64,
+    /// Who published it, when `ClientConfig::publishers` asked and the broker
+    /// recorded one.
+    pub publisher: Option<Arc<str>>,
+    /// When the broker appended it, in microseconds since the Unix epoch,
+    /// when `ClientConfig::timestamps` asked. `None` on an in-memory stream.
+    pub timestamp_micros: Option<u64>,
 }
 ```
+
+### Who published an event
+
+Set `publishers: true` in the `ClientConfig` and each event says who published
+it: `event.publisher` is the subject of the token the broker accepted the
+write from. Group records carry the same value as `publisher`. Off by default,
+since it adds the principal to every batch.
+
+```rust
+let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
+config.publishers = true;
+let client = Client::connect(addr, "localhost", config).await?;
+let mut inputs = client.subscribe("arena", "match-7", "inputs").await?;
+while let Some(event) = inputs.next_event().await? {
+    let Some(player) = event.publisher.as_deref() else {
+        continue; // written before the broker recorded publishers
+    };
+    apply_input(player, &event.payload);
+}
+```
+
+That is the broker vouching that the write came from that principal; it says
+nothing about the payload's contents. An in-memory stream always reports it. A
+durable stream reports it only for records written once the broker stores
+publishers (the `publisher_principal` fleet feature, or
+`FELIX_RECORD_PUBLISHERS=true` on a single broker), and then on replay and to
+consumer groups as well.
+
+### Sizing the broker's queue for a subscription
+
+Each subscription has a bounded queue on the broker. Set
+`broker_sub_queue_capacity` in the `ClientConfig` to ask for a different size
+than the stream's default, counted in published batches. The broker clamps it
+to its `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and the subscription reports what
+it got:
+
+```rust
+config.broker_sub_queue_capacity = Some(4096);
+let client = Client::connect(addr, "localhost", config).await?;
+let subscription = client.subscribe("acme", "prod", "webhooks").await?;
+// `None` from a broker that predates the option: the stream's default applies.
+let granted = subscription.queue_capacity();
+```
+
+It applies to every subscription the client opens, including the ones a
+`ClusterClient` reopens after a move or a lag. A larger queue makes drops
+rarer; it does not change what happens on a drop, which the stream's policy
+decides (see [When a subscription falls behind](#when-a-subscription-falls-behind)).
+
+### When an event was written, and replaying from a time
+
+Set `timestamps: true` in the `ClientConfig` and each event from a durable
+stream carries `event.timestamp_micros`: when the broker appended it, in
+microseconds since the Unix epoch. Group records carry the same value as
+`timestamp_micros`. Off by default, since it adds eight bytes to every event.
+
+To replay from a time, look up the offset and subscribe there.
+`offset_for_time` works whether or not `timestamps` is set:
+
+```rust
+let start = client
+    .offset_for_time("acme", "prod", "webhooks", 0, since_micros)
+    .await?;
+let position = match start {
+    Some(offset) => StartPosition::Offset(offset),
+    // Nothing that recent yet.
+    None => StartPosition::Latest,
+};
+let mut replay = client
+    .subscribe_from("acme", "prod", "webhooks", Some(position))
+    .await?;
+```
+
+The answer is the first record on that shard appended at or after the time,
+and the oldest record when the time is older than all of them. Times come from
+the leading broker's clock, so the search is exact while that clock only moves
+forward, and close otherwise. `client.supports_offset_for_time()` says whether
+the broker answers it.
+
+### Reading a range and stopping
+
+`subscribe_from` keeps going into live delivery. To load a fixed slice, such as
+a match's events up to a snapshot offset, read it page by page instead. No
+subscription is opened:
+
+```rust
+let mut from = start;
+while from < end {
+    let page = client
+        .read("acme", "prod", "matches", 0, from, Some(end), 500)
+        .await?;
+    if page.records.is_empty() {
+        break; // nothing committed past here yet
+    }
+    for record in &page.records {
+        apply(record.offset, &record.payload);
+    }
+    from = page.next_offset;
+}
+```
+
+Continue from `next_offset` rather than the last offset plus one, since offsets
+that hold no record are passed over. A page holds at most `max_records` (`0`
+for the broker's cap) and is capped in size by the broker. A start below what
+retention kept, or past the tail, fails with `SubscribeCursorError`.
+`ClusterClient::read` does the same against whichever broker leads the shard,
+and `client.supports_read()` says whether the broker answers it.
 
 ### Offsets are how you notice a drop
 
@@ -616,8 +902,9 @@ A rebalance or a drain can move a stream's shard to another broker. The old
 owner delivers everything it committed, then ends the subscription with a
 `shard_moved` frame saying where the shard went and where to resume.
 
-`ClusterClient::subscribe` and `subscribe_from` return a `ClusterSubscription`
-that follows the shard on its own: `next_event` resubscribes on the new owner
+`ClusterClient::subscribe` and `subscribe_from` (shard 0), and
+`subscribe_shard` (a shard you name), return a `ClusterSubscription` that
+follows the shard on its own: `next_event` resubscribes on the new owner
 and carries on. On a durable stream it resumes at
 `max(last delivered offset + 1, resume_from)`, so nothing is repeated or
 skipped; an in-memory stream resumes at the new owner's tail. `moves()` counts
@@ -632,10 +919,51 @@ while let Some(event) = subscription.next_event().await? {
 if let Some(moved) = subscription.shard_moved() {
     // Resubscribe at the larger of `moved.resume_from` and your last offset
     // + 1, on `moved.addr` if it is set, or via any broker, which redirects.
+} else if subscription.stream_deleted() {
+    // The stream was deleted: there is nothing to resubscribe to.
 }
 ```
 
-See [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
+A `ClusterSubscription` does not follow a deleted stream: `next_event` returns
+`None` and `stream_deleted()` says why.
+
+See [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
+
+### When a subscription falls behind
+
+Under `DropNew` or `DropOld`, a subscriber that cannot keep up loses records,
+in the broker's queue for it or in the client's own. On a durable stream the
+subscription then ends: `next_event` returns the events queued before the drop
+and then a `SubscriptionLagged` error whose `resume_from` is where the
+broker's queue first dropped. It comes as soon as the drop happens, not with
+the next publish. Resubscribe after the last event you received, not at
+`resume_from`: the broker can also drop a frame on its way out to a slow
+subscriber without reporting it, and that frame can sit below `resume_from`.
+
+```rust
+let mut last = None;
+loop {
+    match subscription.next_event().await {
+        Ok(Some(event)) => {
+            last = event.offset;
+            handle(&event);
+        }
+        Ok(None) => break,
+        Err(err) => match err.downcast_ref::<felix_client::SubscriptionLagged>() {
+            // Subscribe again after the last record; the log still has the rest.
+            Some(lagged) => {
+                break resubscribe_from(last.map_or(lagged.resume_from, |last| last + 1));
+            }
+            None => return Err(err),
+        },
+    }
+}
+```
+
+`ClusterSubscription` does this itself, so a slow reader catches up from the
+log instead of losing records. An in-memory stream has no offsets, so it keeps
+dropping as before; `felix_client_sub_queue_dropped_total` and
+`felix_client_sub_dispatch_dropped_total` count those drops.
 
 ### Multiple Subscriptions
 
@@ -775,6 +1103,38 @@ Needs a broker advertising `FEATURE_CACHE_DELETE`. The client returns an error
 rather than probing, because a broker that does not advertise
 `FEATURE_UNSUPPORTED` ends its control loop on an unrecognised message type.
 
+### Conditional writes
+
+```rust
+use felix_client::CacheCondition;
+
+// Read, change, and write back only if nobody wrote in between.
+loop {
+    let Some(current) = client
+        .cache_get_versioned("acme", "prod", "config", "endpoints")
+        .await?
+    else {
+        break;
+    };
+    let edited = edit(&current.value);
+    let result = client
+        .cache_put_if("acme", "prod", "config", "endpoints", edited, None,
+            CacheCondition::Version(current.version))
+        .await?;
+    if result.applied {
+        break;
+    }
+}
+```
+
+`CacheCondition::Absent` writes only if the key has no live entry, which is
+how to take a lease or claim an idempotency key. `cache_delete_if` removes a
+key only at a given version. A refusal is `applied: false` with the key's
+current version, not an error. Needs a broker advertising
+`FEATURE_CACHE_CONDITIONAL`; `ClusterClient` has the same three calls and never
+resends a conditional write after a lost answer. See
+[Conditional writes](/features/cache/#9-conditional-writes).
+
 ### Watch
 
 Subscribe to changes for one key or key prefix. Each change carries its
@@ -820,6 +1180,12 @@ while let Some(item) = watch.recv().await {
 }
 ```
 
+When `recv` returns `None` without either, the broker either closed the
+stream or ended the watch with an error, and `watch.refusal()` holds that error
+as a `BrokerError`. A `revoked` code there means the credential the watch was
+opened with was revoked; watch again with a fresh token. A subscription ended
+for the same reason returns the `BrokerError` from `next_event`.
+
 A resume whose history compaction has collapsed begins with each matching
 key's current value instead, and `watch.resnapshot()` says so. Needs a broker
 advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache send.
@@ -827,7 +1193,7 @@ advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache se
 moved shard itself: `ShardMoved` arrives as a notice and the changes carry on
 from the new owner, none repeated or skipped. A prefix watch reads one shard; on a multi-shard cache use
 `ClusterClient::watch_cache_sharded` (see [Clusters](#clusters)).
-See [Cache Features](/felix/features/cache/#7-keyed-watch) for the full
+See [Cache Features](/features/cache/#7-keyed-watch) for the full
 contract.
 
 ### Retained Watch
@@ -930,7 +1296,7 @@ loop {
             Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
             // Hand it back for immediate redelivery rather than waiting out the
             // visibility timeout.
-            Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
+            Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", &record).await?,
         }
     }
 }
@@ -957,6 +1323,67 @@ for offset in offsets {
 
 A dead letter is a **pointer, not a copy**: the record is still in the stream's
 log at that offset, readable by an ordinary replay.
+
+### Creating, moving and deleting a group
+
+A group starts at offset 0 on its first poll unless it was created first. These
+need `FEATURE_GROUP_ADMIN` (`Client::supports_group_admin`):
+
+```rust
+use felix_wire::StartPosition;
+
+// Left alone if the group already exists, so safe on every start.
+client.group_create("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Latest).await?;
+
+// Replay everything the shard still holds.
+client.group_seek("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Earliest).await?;
+
+let info = client.group_describe("acme", "prod", "jobs", 0, "fulfilment").await?;
+println!("committed {:?}, {} behind", info.committed, info.lag());
+
+let existed = client.group_delete("acme", "prod", "jobs", 0, "fulfilment").await?;
+```
+
+A seek voids the claims standing when it lands, so an ack for a record the
+group now owes fails with `stale_claim`. `ClusterClient` has the same calls per
+shard, and `group_create_stream`, `group_seek_stream`, `group_describe_stream`
+and `group_delete_stream` for every shard of a stream.
+
+A consumer can also manage each claim itself on a broker that advertises
+`FEATURE_GROUP_CLAIM_CONTROL` (`Client::supports_group_claim_control`):
+
+```rust
+use std::time::Duration;
+use felix_client::GroupPollOptions;
+
+// Claims from this poll stand for five minutes instead of the broker's default.
+let options = GroupPollOptions {
+    visibility: Some(Duration::from_secs(300)),
+    ..Default::default()
+};
+let records = client
+    .group_poll_with("acme", "prod", "jobs", 0, "fulfilment", 10, &options)
+    .await?;
+
+for record in &records {
+    // Still working: keep the claim for another minute.
+    client
+        .group_extend("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(60))
+        .await?;
+    // Back off before the next try,
+    client
+        .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(30))
+        .await?;
+    // or give up on it now: it is listed as a dead letter and can be redriven.
+    // client.group_dead_letter("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?;
+}
+```
+
+An extension or a nack, delayed or not, is refused with `stale_claim` once the
+claim has lapsed and the record has been handed out again: each names the
+delivery by `record.attempts`. The client refuses a delay or a visibility
+to a broker without the bit, which would ignore it. `ClusterClient` has the
+same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`.
 
 ### What a group needs
 
@@ -1009,8 +1436,30 @@ assert!(matches!(
 
 `CommitError::EventCount` refuses a commit without exactly one event, and
 `CommitError::Unsupported` a broker that did not advertise
-`FEATURE_ATOMIC_COMMIT`. What atomic does and does not cover is in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+`FEATURE_ATOMIC_COMMIT`.
+
+`commit_if` and `publish_if` write only at an expected offset, the shard's
+next, for a single writer that must not append after it has been replaced:
+
+```rust
+use felix_client::ConditionalWrite;
+
+let mut next = 0;
+match cluster
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], next)
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    ConditionalWrite::Refused { tail } => { /* lost the stream; it is at `tail` */ }
+}
+```
+
+A refusal is an answer, not an error, and writes nothing. Both need
+`FEATURE_PUBLISH_CONDITIONAL`, and fail without sending anything against a
+broker that did not advertise it. `ClusterClient` follows the leader; neither
+is forwarded between brokers. Do not resend one whose answer was lost: read
+the shard at the expected offset instead. What atomic does and does not cover is in
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Clusters
 
@@ -1049,6 +1498,8 @@ while let Some(item) = subscription.next().await {
         ShardEvent::ShardRecovered { shard } => info!(shard, "shard back"),
         // Followed to its new owner; records carry on from there.
         ShardEvent::ShardMoved { shard, .. } => info!(shard, "shard moved"),
+        // The stream is gone; this shard is not reopened.
+        ShardEvent::StreamDeleted { shard } => info!(shard, "stream deleted"),
         _ => {}                            // `ShardEvent` is non-exhaustive
     }
 }
@@ -1063,8 +1514,25 @@ backoff; the call fails only if some shard is still refused after the last attem
 **Ordering is per shard only.** Merging cannot restore an order that never
 existed. Resumption is a vector: `positions()` returns one offset per
 shard, and `resubscribe_sharded` takes it back. See
-[Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
+[Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
+
+`Client::shard_owners(tenant, namespace, name, ShardKind::Stream)` (or
+`ShardKind::Cache`) says which broker owns each shard: one `ShardOwner` per
+shard with its node id, client address and generation, from the answering
+broker's routing snapshot. It needs `FEATURE_SHARD_OWNERS`.
+
+Cache and counter calls (`cache_put`, `cache_get`, `cache_delete`,
+`counter_add`, `counter_get`) are on `ClusterClient` too. Each goes to the owner
+of the key's shard, asked once per cache with `shard_owners`, and otherwise
+through the broker in use, which forwards. A write that may have been applied
+is not sent twice, as for `publish`; a failed read is asked again once.
+
+An `AckMode::None` publish returns once it is queued. Call
+`ClusterClient::finish()` before exiting: it waits until everything queued on
+every broker the client holds has been written, then closes the publish
+streams, so publishing through that client afterwards fails.
+`Publisher::finish()` does the same for one `Client`.
 
 Prefix watches on a multi-shard cache work the same way. `watch_cache_sharded`
 opens one watch per shard and merges them. The retained version sends
@@ -1090,6 +1558,25 @@ let policy = ReconnectPolicy {
 };
 let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
 ```
+
+When every address the client holds has stopped answering, it resolves names
+again and dials what is new: seeds given as `host:port` names, and the names
+brokers advertised. That is what gets it back in after a rollout gives every
+broker a new IP. `connect_with_policy` takes `SocketAddr`s, which have no name
+to resolve; `connect_seeds` takes `Seed`s, which can be either:
+
+```rust
+use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+
+let seeds: Vec<Seed> = vec!["felix.prod.svc.cluster.local:5000".parse()?];
+let client =
+    ClusterClient::connect_seeds(&seeds, "localhost", config, ReconnectPolicy::default()).await?;
+```
+
+Names are resolved at most once a second for a client and its identities,
+all at once, each bounded to 2 s, and without holding the lock operations
+read the client through. A name has at most one system lookup running, so one
+that hangs does not stop the others resolving. See `docs/multi-node-client.md`.
 
 ## Telemetry
 
@@ -1146,7 +1633,7 @@ runtime: the client's tasks live on the runtime that created it, so a client
 built on a throwaway runtime dies with that runtime.
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::net::SocketAddr;
 use tokio::sync::OnceCell;
 
@@ -1182,7 +1669,7 @@ async fn publish_with_retry(
     data: &[u8],
     max_retries: u32
 ) -> Result<()> {
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     let publisher = client.publisher().await?;
     for attempt in 0..max_retries {
         match publisher
@@ -1224,7 +1711,7 @@ fn safe_to_resend(error: &anyhow::Error) -> bool {
 ### Batching for Throughput
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use tokio::time::{interval, Duration};
 
 async fn batching_publisher(client: &Client) -> Result<()> {
@@ -1306,7 +1793,7 @@ Reuse one client (its pools are the expensive part), batch publishes when
 latency permits, pipeline cache requests, and keep the subscription loop
 non-blocking by spawning slow work instead of stalling the reader. Tune
 anything else from a measurement; see
-[Benchmarks](/felix/features/benchmarks/).
+[Benchmarks](/features/benchmarks/).
 
 ## API Reference Summary
 
@@ -1318,9 +1805,14 @@ anything else from a measurement; see
 | Idempotent publish | `idempotent_producer()` | Safe resend after `OutcomeUnknown` |
 | Subscribe | `subscribe()` | Event consumption |
 | Cache put / get / delete | `cache_put()`, `cache_get()`, `cache_delete()` | Key-value with TTL |
+| Conditional cache writes | `cache_put_if()`, `cache_delete_if()`, `cache_get_versioned()` | Leases, idempotency keys, compare-and-set |
 | Cache watch | `watch_cache()`, `watch_cache_retained()` | Follow changes to a key or prefix |
 | Counters | `counter_add()`, `counter_get()` | Durable counters |
 | Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
 | Cluster | `ClusterClient::connect()` | Multi-broker, reconnects and follows redirects |
+| One shard | `ClusterClient::subscribe_shard()` | Follow a chosen shard through moves |
+| Flush | `ClusterClient::finish()`, `Publisher::finish()` | Before exit, after `AckMode::None` |
+| Shard owners | `Client::shard_owners()` | Which broker owns each shard |
+| Mutual TLS | `quic_client_config_with_identity()` | Present a client certificate |
 
 For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).

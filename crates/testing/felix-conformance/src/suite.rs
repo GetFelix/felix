@@ -28,7 +28,7 @@ use fixture::{
 };
 use raw::{run_cache, run_pubsub};
 use sdk::{run_client_cache, run_client_pubsub};
-use shard_move::{MOVED_STREAM, run_shard_move};
+use shard_move::{DELETED_STREAM, MOVED_STREAM, run_shard_move, run_stream_deleted};
 
 pub(crate) const MAX_TEST_FRAME_BYTES: usize = 64 * 1024;
 
@@ -38,8 +38,17 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     // Durable storage for the fault scenarios, which need offsets to resume
     // from and to check for gaps.
     let storage_dir = tempfile::tempdir().context("create a storage directory")?;
-    let storage = DurableStorage::open(storage_dir.path(), LogConfig::default())?;
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    let storage = DurableStorage::open(storage_dir.path().join("streams"), LogConfig::default())?;
+    // Counters for the cache fault scenario, which adds to one.
+    let counters = felix_storage::CounterStore::open(
+        storage_dir.path().join("counters"),
+        LogConfig::default(),
+    )?;
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(storage)
+            .with_counters(Arc::new(counters)),
+    );
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
@@ -50,6 +59,9 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
         .await?;
     broker
         .register_stream("t1", "default", MOVED_STREAM, Default::default())
+        .await?;
+    broker
+        .register_stream("t1", "default", DELETED_STREAM, Default::default())
         .await?;
     broker
         .register_stream(
@@ -93,6 +105,7 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     run_client_commit(addr, cert.clone(), &auth).await?;
     run_ack_offsets(&connection, &auth, ack_on_commit).await?;
     run_shard_move(&connection, &auth, &broker).await?;
+    run_stream_deleted(&connection, &auth, &broker).await?;
     run_link_faults(&broker, addr, build_client_config(cert, &auth)?).await?;
 
     drop(connection);

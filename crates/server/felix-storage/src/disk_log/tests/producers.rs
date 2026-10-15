@@ -314,8 +314,9 @@ async fn the_rest_of_a_batch_is_written_only_while_it_is_open_at_the_tail() {
     let rest = batch.split_off(1);
     log.append(&batch).await.expect("append");
 
-    let pending = log
-        .continue_pending(4, 0, &rest[..1])
+    let order = std::sync::Arc::new(crate::CommitSequencer::new(1));
+    let (pending, _turn) = log
+        .continue_claimed(4, 0, &rest[..1], &order)
         .await
         .expect("continue")
         .expect("open at the tail");
@@ -334,7 +335,7 @@ async fn the_rest_of_a_batch_is_written_only_while_it_is_open_at_the_tail() {
         .await
         .expect("append");
     let refused = log
-        .continue_pending(4, 0, &rest[1..])
+        .continue_claimed(4, 0, &rest[1..], &order)
         .await
         .expect("continue");
     assert!(refused.is_none());

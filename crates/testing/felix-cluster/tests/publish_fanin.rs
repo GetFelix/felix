@@ -95,7 +95,7 @@ async fn concurrent_publishers_over_quic_share_a_flush() {
             felix_cluster::client::connect_cluster(
                 &cluster.broker_addrs(),
                 &cluster.tenant_id,
-                &cluster.client_token,
+                &cluster.client_token(),
             )
             .await
             .expect("connect"),

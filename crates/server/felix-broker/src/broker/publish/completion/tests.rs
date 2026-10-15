@@ -60,11 +60,11 @@ async fn a_cancelled_completion_still_reaches_the_ring_and_subscribers() {
         .expect("cursor");
 
     let first = broker
-        .claim_publish(&handle, &[Bytes::from_static(b"first")])
+        .claim_publish(&handle, &[Bytes::from_static(b"first")], None)
         .await
         .expect("claim first");
     let second = broker
-        .claim_publish(&handle, &[Bytes::from_static(b"second")])
+        .claim_publish(&handle, &[Bytes::from_static(b"second")], None)
         .await
         .expect("claim second");
     let abandoned =
@@ -111,11 +111,11 @@ async fn a_publish_superseded_by_a_reset_is_not_applied() {
         .expect("handle");
 
     let first = broker
-        .claim_publish(&handle, &[Bytes::from_static(b"first")])
+        .claim_publish(&handle, &[Bytes::from_static(b"first")], None)
         .await
         .expect("claim first");
     let second = broker
-        .claim_publish(&handle, &[Bytes::from_static(b"second")])
+        .claim_publish(&handle, &[Bytes::from_static(b"second")], None)
         .await
         .expect("claim second");
     let parked = {

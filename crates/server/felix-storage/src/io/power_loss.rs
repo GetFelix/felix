@@ -31,7 +31,7 @@ pub(crate) mod trigger;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -77,6 +77,15 @@ pub(crate) struct SyncCounts {
 pub(crate) struct PowerLoss {
     root: PathBuf,
     state: Mutex<Durable>,
+    /// Parks the next file capture between its read and its record.
+    #[cfg(test)]
+    park_next_capture: Mutex<Option<ParkedCapture>>,
+}
+
+#[cfg(test)]
+struct ParkedCapture {
+    parked: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 /// What the device holds, as of the last flush of each thing.
@@ -84,13 +93,79 @@ pub(crate) struct PowerLoss {
 struct Durable {
     files: HashMap<Inode, Vec<u8>>,
     dirs: HashMap<PathBuf, BTreeMap<OsString, Entry>>,
+    /// The ticket of the capture each entry above was read by. Two flushes of
+    /// one file can overlap, and the one that started reading later saw more:
+    /// its read must not be replaced by the other's.
+    file_tickets: HashMap<Inode, u64>,
+    dir_tickets: HashMap<PathBuf, u64>,
+    next_ticket: u64,
     counts: SyncCounts,
 }
 
+impl Durable {
+    /// A ticket for a capture about to read. Taken before the read, so a
+    /// higher ticket's read saw everything a lower one's could have.
+    fn ticket(&mut self) -> u64 {
+        self.next_ticket += 1;
+        self.next_ticket
+    }
+}
+
+/// One file, for as long as it exists. The inode number alone is not enough:
+/// a filesystem hands a freed number to the next file it creates, and the
+/// model still needs the old file's bytes for a name whose unlink was not
+/// flushed. The birth time tells the two apart wherever the filesystem
+/// records one (ext4, xfs, btrfs), but it comes from a coarse clock, so an
+/// unlink and create within a few milliseconds can share it. The inode
+/// generation, which ext4 and others bump on reuse, covers that case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Inode {
     dev: u64,
     ino: u64,
+    born: Option<std::time::SystemTime>,
+    /// `None` where the filesystem does not answer `FS_IOC_GETVERSION`.
+    generation: Option<u32>,
+}
+
+impl Inode {
+    fn of(meta: &std::fs::Metadata, file: &File) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            born: meta.created().ok(),
+            generation: generation(file),
+        }
+    }
+
+    /// For a directory listing: the key of the file or directory at `path`,
+    /// built from one descriptor so the stat and the generation describe the
+    /// same file. `None` for anything else or if it cannot be opened.
+    fn at(path: &Path) -> Option<(Self, bool)> {
+        // O_NONBLOCK so a racing swap to a fifo cannot stall the open.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        (meta.is_dir() || meta.is_file()).then(|| (Self::of(&meta, &file), meta.is_dir()))
+    }
+}
+
+/// `FS_IOC_GETVERSION`, i.e. `_IOR('v', 1, long)`. The kernel writes an `int`.
+const FS_IOC_GETVERSION: u64 = 0x8008_7601;
+
+fn generation(file: &File) -> Option<u32> {
+    let mut value: libc::c_int = 0;
+    // SAFETY: the request writes one `int` through the pointer.
+    let rc = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            FS_IOC_GETVERSION as _,
+            &mut value as *mut libc::c_int,
+        )
+    };
+    (rc == 0).then_some(value as u32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +183,8 @@ impl PowerLoss {
         let this = Arc::new(Self {
             root,
             state: Mutex::new(durable),
+            #[cfg(test)]
+            park_next_capture: Mutex::new(None),
         });
         let mut observers = OBSERVERS.lock();
         observers.retain(|observer| observer.strong_count() > 0);
@@ -176,14 +253,14 @@ impl PowerLoss {
 
     fn capture_file(&self, file: &File, kind: SyncKind) {
         let Ok(meta) = file.metadata() else { return };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&meta, file);
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
         let path = format!("/proc/self/fd/{}", file.as_raw_fd());
-        let captured = self.state.lock().files.get(&inode).map(Vec::len);
+        let (ticket, captured) = {
+            let mut state = self.state.lock();
+            (state.ticket(), state.files.get(&inode).map(Vec::len))
+        };
         // Only a file that has not shrunk is read from where the last capture
         // ended. The segment writer truncates only to rewind a failed append,
         // which the harness heals with a restart and a fresh observer.
@@ -196,7 +273,22 @@ impl PowerLoss {
         let Ok(tail) = read_from(&path, from) else {
             return;
         };
+        #[cfg(test)]
+        self.park_if_asked();
         let mut state = self.state.lock();
+        match kind {
+            SyncKind::Data => state.counts.data += 1,
+            SyncKind::All => state.counts.all += 1,
+            SyncKind::Uring => state.counts.uring += 1,
+        }
+        if state
+            .file_tickets
+            .get(&inode)
+            .is_some_and(|newer| *newer > ticket)
+        {
+            return;
+        }
+        state.file_tickets.insert(inode, ticket);
         let spliced = match state.files.get_mut(&inode) {
             Some(bytes) if from > 0 && bytes.len() >= from => {
                 bytes.truncate(from);
@@ -217,18 +309,50 @@ impl PowerLoss {
             };
             state.files.insert(inode, whole);
         }
-        match kind {
-            SyncKind::Data => state.counts.data += 1,
-            SyncKind::All => state.counts.all += 1,
-            SyncKind::Uring => state.counts.uring += 1,
-        }
     }
 
     fn capture_dir(&self, dir: &Path) {
+        let ticket = self.state.lock().ticket();
         let Ok(listing) = list(dir) else { return };
         let mut state = self.state.lock();
-        state.dirs.insert(dir.to_path_buf(), listing);
         state.counts.dir += 1;
+        if state
+            .dir_tickets
+            .get(dir)
+            .is_some_and(|newer| *newer > ticket)
+        {
+            return;
+        }
+        state.dir_tickets.insert(dir.to_path_buf(), ticket);
+        state.dirs.insert(dir.to_path_buf(), listing);
+    }
+
+    /// Park the next file capture after it has read the file and before it
+    /// records what it read, until the returned sender sends (or is dropped).
+    /// The receiver hears when it has parked.
+    #[cfg(test)]
+    pub(crate) fn park_next_capture(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (parked, on_parked) = std::sync::mpsc::channel();
+        let (release, on_release) = std::sync::mpsc::channel();
+        *self.park_next_capture.lock() = Some(ParkedCapture {
+            parked,
+            release: on_release,
+        });
+        (on_parked, release)
+    }
+
+    #[cfg(test)]
+    fn park_if_asked(&self) {
+        let Some(park) = self.park_next_capture.lock().take() else {
+            return;
+        };
+        let _ = park.parked.send(());
+        // Bounded, so a test that never releases fails rather than hangs.
+        let _ = park
+            .release
+            .recv_timeout(std::time::Duration::from_secs(10));
     }
 }
 
@@ -303,18 +427,24 @@ fn list(dir: &Path) -> std::io::Result<BTreeMap<OsString, Entry>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         // A file removed between the listing and the stat is simply not there.
+        // Typed before opening, so devices and fifos are never opened.
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
-        if meta.is_dir() {
-            listing.insert(entry.file_name(), Entry::Dir(inode));
-        } else if meta.is_file() {
-            listing.insert(entry.file_name(), Entry::File(inode));
+        if !(meta.is_dir() || meta.is_file()) {
+            continue;
         }
+        let Some((inode, is_dir)) = Inode::at(&entry.path()) else {
+            continue;
+        };
+        listing.insert(
+            entry.file_name(),
+            if is_dir {
+                Entry::Dir(inode)
+            } else {
+                Entry::File(inode)
+            },
+        );
     }
     Ok(listing)
 }

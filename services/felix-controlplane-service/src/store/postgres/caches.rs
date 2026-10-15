@@ -3,7 +3,10 @@ use serde_json::Value;
 use sqlx::FromRow;
 
 use super::codec::{DbCache, consistency_to_str, parse_consistency};
-use super::{PostgresStore, is_unique_violation, page_fetch};
+use super::{
+    CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
+    is_unique_violation, page_fetch,
+};
 use crate::model::{Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest};
 use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
@@ -104,18 +107,22 @@ pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreRes
 }
 
 pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreResult<Cache> {
-    let mut tx = store.pool.begin().await?;
-    let ns_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM namespaces WHERE tenant_id = $1 AND namespace = $2)",
-    )
-    .bind(&cache.tenant_id)
-    .bind(&cache.namespace)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !ns_exists {
-        return Err(StoreError::NotFound("namespace".into()));
-    }
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
+    super::ensure_namespace(&mut tx, &cache.tenant_id, &cache.namespace).await?;
+    insert_cache(&mut tx, &cache).await?;
+    tx.commit().await?;
+    metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
+    store.refresh_counts().await?;
+    Ok(cache)
+}
 
+/// The row and its `Created` change, inside the caller's transaction, which
+/// must hold the feed lock (`begin_feed_write`).
+/// `Conflict` when the cache exists.
+pub(super) async fn insert_cache(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cache: &Cache,
+) -> StoreResult<()> {
     let insert = sqlx::query(
         r#"INSERT INTO caches (tenant_id, namespace, cache, display_name, shards, replication_factor, consistency)
                VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -127,11 +134,14 @@ pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreRe
     .bind(cache.shards as i32)
     .bind(cache.replication_factor as i32)
     .bind(consistency_to_str(&cache.consistency))
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await;
     if let Err(err) = insert {
         if is_unique_violation(&err) {
-            return Err(StoreError::Conflict("cache exists".into()));
+            return Err(StoreError::Conflict(format!(
+                "cache {} exists",
+                cache.cache
+            )));
         }
         return Err(StoreError::Unexpected(err.into()));
     }
@@ -143,15 +153,10 @@ pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreRe
     .bind(&cache.tenant_id)
     .bind(&cache.namespace)
     .bind(&cache.cache)
-    .bind(serde_json::to_value(&cache).ok())
-    .execute(&mut *tx)
-    .await
-    ?;
-
-    tx.commit().await?;
-    metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
-    store.refresh_counts().await?;
-    Ok(cache)
+    .bind(serde_json::to_value(cache).ok())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn patch_cache(
@@ -159,7 +164,7 @@ pub(super) async fn patch_cache(
     key: &CacheKey,
     patch: CachePatchRequest,
 ) -> StoreResult<Cache> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     let current = sqlx::query_as::<_, DbCache>(
         r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR UPDATE"#,
     )
@@ -215,7 +220,7 @@ pub(super) async fn patch_cache(
 }
 
 pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<()> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     let removed =
         sqlx::query(r#"DELETE FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3"#)
             .bind(&key.tenant_id)
@@ -246,10 +251,14 @@ pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> Store
 }
 
 pub(super) async fn cache_snapshot(store: &PostgresStore) -> StoreResult<Snapshot<Cache>> {
+    // One REPEATABLE READ snapshot for the rows and `next_seq`, or a change
+    // committed between the two reads is counted but missing.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbCache>(
         r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches ORDER BY tenant_id, namespace, cache"#,
     )
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
     let items = rows
@@ -266,10 +275,8 @@ pub(super) async fn cache_snapshot(store: &PostgresStore) -> StoreResult<Snapsho
             })
         })
         .collect::<StoreResult<Vec<_>>>()?;
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM cache_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
+    let next_seq = feed_head(&mut tx, CatalogFeed::Caches).await?;
+    tx.commit().await?;
     Ok(Snapshot { items, next_seq })
 }
 
@@ -277,12 +284,16 @@ pub(super) async fn cache_changes(
     store: &PostgresStore,
     since: u64,
 ) -> StoreResult<ChangeSet<CacheChange>> {
+    // The page and `head` from one snapshot, so a short page means the feed
+    // really had nothing more.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, CacheChangeRow>(
         r#"SELECT seq, op, tenant_id, namespace, cache, payload FROM cache_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
     let mut items = Vec::with_capacity(rows.len());
@@ -306,9 +317,12 @@ pub(super) async fn cache_changes(
             cache,
         });
     }
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM cache_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
-    Ok(ChangeSet { items, next_seq })
+    let head = feed_head(&mut tx, CatalogFeed::Caches).await?;
+    tx.commit().await?;
+    Ok(ChangeSet::page(
+        items,
+        store.changes_limit(),
+        head,
+        |change| change.seq,
+    ))
 }

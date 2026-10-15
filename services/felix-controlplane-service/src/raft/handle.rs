@@ -38,6 +38,9 @@ pub struct RaftHandle {
     pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
     /// What each member last reported it can apply ([`super::version`]).
     pub(super) versions: Arc<std::sync::Mutex<super::version::Versions>>,
+    /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
+    /// leader after a stop, so leadership checks read this first.
+    pub(super) stopped: Arc<AtomicBool>,
 }
 
 impl RaftHandle {
@@ -84,7 +87,11 @@ impl RaftHandle {
         let raft = Raft::new(
             settings.node_id,
             config,
-            network::HttpNetworkFactory::new(&settings.security, settings.peer_addrs.clone())?,
+            network::HttpNetworkFactory::new(
+                &settings.security,
+                settings.peer_addrs.clone(),
+                settings.heartbeat_interval,
+            )?,
             log_store,
             state_machine,
         )
@@ -134,6 +141,7 @@ impl RaftHandle {
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions: Arc::default(),
+            stopped: Arc::default(),
         })
     }
 
@@ -141,7 +149,7 @@ impl RaftHandle {
         let metrics = self.raft.metrics().borrow().clone();
         RaftStatus {
             id: self.id,
-            leader: metrics.current_leader,
+            leader: metrics.current_leader.filter(|_| !self.is_stopped()),
             term: metrics.current_term,
             last_applied_index: metrics.last_applied.map(|log_id| log_id.index),
             voters: metrics.membership_config.membership().voter_ids().collect(),
@@ -257,7 +265,12 @@ impl RaftHandle {
 
     /// Stop participating. In-flight proposals fail; disk state remains, so
     /// the next [`RaftHandle::start`] with the same data dir resumes.
+    ///
+    /// From the call on, this member no longer reports leadership or answers
+    /// leader-only requests.
     pub async fn shutdown(&self) -> Result<()> {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.raft
             .shutdown()
             .await

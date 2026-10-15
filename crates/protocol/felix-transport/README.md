@@ -1,6 +1,6 @@
 # felix-transport
 
-QUIC transport primitives shared by [Felix](https://github.com/gabloe/felix)
+QUIC transport primitives shared by [Felix](https://github.com/GetFelix/felix)
 clients and brokers: endpoint construction, connection and stream lifetime, and
 the datagram sizing that decides whether a connection is fast or stalled. TLS is
 the caller's: an endpoint is built from the quinn server or client config it is
@@ -21,7 +21,7 @@ loopback MTU pin, which needs the headroom to absorb bursts.
 
 ## Documentation
 
-- [QUIC transport](https://gabloe.github.io/felix/features/quic-transport/)
-- [Environment variables](https://gabloe.github.io/felix/reference/environment-variables/)
+- [QUIC transport](https://docs.getfelix.dev/features/quic-transport/)
+- [Environment variables](https://docs.getfelix.dev/reference/environment-variables/)
 
 Apache-2.0.

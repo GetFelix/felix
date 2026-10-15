@@ -73,6 +73,21 @@ pub struct FelixClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
     pub perms: Vec<String>,
+    /// Who may present this token for `sub` (RFC 8693 `act`). Set only on a
+    /// token minted by delegation (`/token/delegate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub act: Option<Actor>,
+    /// Who may have this token delegated to them (RFC 8693 `may_act`). Set
+    /// when the exchange that started the token's chain named an actor;
+    /// `/token/delegate` refuses a caller it does not name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may_act: Option<Actor>,
+}
+
+/// An RFC 8693 actor claim: the principal a delegated token was issued to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Actor {
+    pub sub: String,
 }
 
 /// A tenant signing key: raw 32-byte Ed25519 seed, its derived public key,
@@ -201,24 +216,92 @@ pub fn mint_token_for(
     ttl: Duration,
     audience: &str,
 ) -> Result<String, TokenError> {
-    keys.validate()?;
+    mint_token_may_act(keys, tenant_id, principal_id, perms, ttl, audience, None)
+}
+
+/// [`mint_token_for`], naming `may_act` as the one principal that may have
+/// the token delegated to it.
+///
+/// # Errors
+/// As [`mint_token_for`].
+pub fn mint_token_may_act(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    principal_id: &str,
+    perms: Vec<String>,
+    ttl: Duration,
+    audience: &str,
+    may_act: Option<&str>,
+) -> Result<String, TokenError> {
     let now = now_epoch_seconds();
-    let exp = now + ttl.as_secs() as i64;
     let claims = FelixClaims {
         iss: ISSUER.to_string(),
         aud: audience.to_string(),
         sub: principal_id.to_string(),
         tid: tenant_id.to_string(),
-        exp,
+        exp: now + ttl.as_secs() as i64,
         iat: now,
         jti: None,
         perms,
+        act: None,
+        may_act: may_act.map(|sub| Actor {
+            sub: sub.to_string(),
+        }),
     };
+    sign(keys, tenant_id, &claims)
+}
 
+/// Mint a broker token for `subject` that names `actor` as who may present
+/// it, expiring at `exp` (seconds since the epoch). The caller decides the
+/// permissions and expiry; see `auth::delegate`.
+///
+/// # Errors
+/// As [`mint_token_for`].
+pub fn mint_delegated_token(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    subject: &str,
+    actor: &str,
+    perms: Vec<String>,
+    exp: i64,
+) -> Result<String, TokenError> {
+    let claims = FelixClaims {
+        iss: ISSUER.to_string(),
+        aud: BROKER_AUDIENCE.to_string(),
+        sub: subject.to_string(),
+        tid: tenant_id.to_string(),
+        exp,
+        iat: now_epoch_seconds(),
+        jti: None,
+        perms,
+        act: Some(Actor {
+            sub: actor.to_string(),
+        }),
+        may_act: None,
+    };
+    sign(keys, tenant_id, &claims)
+}
+
+/// Sign `claims` as they are, for tests that need a token issued in the past.
+#[cfg(test)]
+pub(crate) fn sign_claims(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    claims: &FelixClaims,
+) -> Result<String, TokenError> {
+    sign(keys, tenant_id, claims)
+}
+
+fn sign(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    claims: &FelixClaims,
+) -> Result<String, TokenError> {
+    keys.validate()?;
     let mut header = Header::new(keys.current.alg);
     header.kid = Some(keys.current.kid.clone());
     let encoding_key = key_cache().encoding_key(tenant_id, &keys.current)?;
-    Ok(jsonwebtoken::encode(&header, &claims, &encoding_key)?)
+    Ok(jsonwebtoken::encode(&header, claims, &encoding_key)?)
 }
 
 /// [`verify_token_for`] accepting only the broker audience.

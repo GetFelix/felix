@@ -173,10 +173,11 @@ pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
 /// carried them.
 ///
 /// Offered by a *client*; a broker that grants it answers `publish_window`
-/// in `AuthOk`, the most acknowledged publishes one connection may have
-/// unanswered across all its streams. The broker stops reading a
-/// connection's publishes while that many are outstanding, so a client that
-/// sends more is slowed by flow control rather than refused. Without the
+/// in `AuthOk`, the most acknowledged publishes that may be unanswered at
+/// once: across the whole connection, or on each stream when the broker also
+/// advertises `FEATURE_STREAM_PUBLISH_WINDOW`. The broker stops reading
+/// publishes while that many are outstanding, so a client that sends more is
+/// slowed by flow control rather than refused. Without the
 /// bit, answers come in completion order and the request id is the only
 /// correlation, as before.
 ///
@@ -193,6 +194,140 @@ pub const FEATURE_PUBLISH_PIPELINE: u32 = 0x0000_8000;
 /// broker that implements it even before its fleet enables `atomic_commit`;
 /// until then a commit is refused with an error that says so.
 pub const FEATURE_ATOMIC_COMMIT: u32 = 0x0001_0000;
+/// The broker's `publish_window` is per stream, not per connection.
+///
+/// Advertised by a *broker*, like `FEATURE_CACHE_DELETE`, alongside
+/// `FEATURE_PUBLISH_PIPELINE`. Each pipelining stream then has its own window,
+/// so a stream whose publishes are stuck behind a stalled shard holds only its
+/// own slots and the connection's other streams keep publishing. Without the
+/// bit the window is shared by every stream on the connection, which is what a
+/// client must assume of a broker that predates it.
+pub const FEATURE_STREAM_PUBLISH_WINDOW: u32 = 0x0002_0000;
+
+/// The broker answers `shard_owners`: which broker owns each shard of a
+/// stream or cache.
+///
+/// Advertised by a *broker*, like `FEATURE_CACHE_SHARDS`. A client learns an
+/// owner otherwise only by sending something to the shard and being
+/// redirected or forwarded.
+pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
+
+/// The client wants each acknowledged publish answered after its write, with
+/// its offset, rather than when it is queued.
+///
+/// Offered by a *client*, which is the side asking, and advertised by a
+/// broker that honours it, which is how the client learns its acks mean what
+/// it asked. The same answer a broker gives everyone under
+/// `FELIX_ACK_ON_COMMIT=true`, for this connection only. A client offers it
+/// only when its application asked: it trades latency for the offset, so
+/// clients do not offer every bit they know here, as they do elsewhere.
+pub const FEATURE_ACK_ON_COMMIT: u32 = 0x0008_0000;
+
+/// The broker records which member holds each claim when a `group_poll`
+/// names its `consumer`, and takes back that member's claims on `reclaim`.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A broker that
+/// predates it ignores both fields, so a client checks this before relying on
+/// a reclaim.
+pub const FEATURE_GROUP_CONSUMER: u32 = 0x0010_0000;
+
+/// The client can read `subscription_lagged` on an event stream.
+///
+/// Offered by a *client*, like `FEATURE_SHARD_MOVED`. A broker that sees it
+/// ends a durable-stream subscription at the first record its queue for that
+/// subscriber dropped, with `subscription_lagged` naming that offset, so a
+/// subscriber learns it fell behind even when nothing is published after the
+/// drop. Any other client keeps the old behaviour: the subscription carries
+/// on and the drop shows only as a jump in offsets. A broker advertises the
+/// bit too, so a client knows whether to expect it.
+pub const FEATURE_SUBSCRIPTION_LAGGED: u32 = 0x0020_0000;
+
+/// The client reads `skipped_before` on a `GroupRecord`.
+///
+/// Offered by a *client* and advertised by a broker that reports it, which
+/// is how the client learns that an absent field means `0` rather than "not
+/// reported". A client that did not offer it gets the record without the
+/// field, so its frames are byte-identical to the ones it always got.
+pub const FEATURE_GROUP_SKIPPED: u32 = 0x0040_0000;
+
+/// The client reads `publisher` on a `GroupRecord`.
+///
+/// Offered by a *client*, like `FEATURE_GROUP_SKIPPED`, and advertised by a
+/// broker that reports it. A client that did not offer it gets records
+/// without the field, byte-identical to the ones it always got. The event
+/// batch counterpart is the frame flag `FLAG_EVENT_BATCH_PUBLISHER`.
+pub const FEATURE_GROUP_PUBLISHER: u32 = 0x0080_0000;
+
+/// The broker serves `group_seek`, `group_describe` and `group_delete`:
+/// creating a group at a chosen position, moving it, reading where it stands,
+/// and deleting it.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A bit of its own
+/// for the reason the dead-letter bit is: a broker that predates these
+/// requests has no arm for them.
+pub const FEATURE_GROUP_ADMIN: u32 = 0x0100_0000;
+
+/// The broker answers `cache_put_if` and `cache_delete_if`, and puts a
+/// `version` on a `cache_value` answering a get.
+///
+/// Advertised by a *broker*: these are requests, and an older broker has no
+/// arm for them. A conditional put is a new message rather than a field on
+/// `cache_put` because an older broker ignores unknown fields, and would make
+/// the write unconditionally and report success. Offered by a *client* too:
+/// the version rides `cache_value` only for a client that offered the bit, so
+/// any other client's gets are byte-identical to what they were.
+pub const FEATURE_CACHE_CONDITIONAL: u32 = 0x0200_0000;
+
+/// Record append times: the broker answers `offset_for_time`, and a group
+/// record carries `timestamp_micros`.
+///
+/// Advertised by a *broker*: `offset_for_time` is a request, and an older
+/// broker has no arm for it. Offered by a *client*: the time rides
+/// `group_record` only for a client that offered the bit, so any other
+/// client's records are byte-identical to what they were. The event batch
+/// counterpart is the frame flag `FLAG_EVENT_BATCH_TIMESTAMPS`.
+pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
+
+/// A consumer controls its own claims: `group_extend` keeps a claim
+/// standing, `group_dead_letter` gives up on a record, `delay_ms` on
+/// `group_nack` owes a record again only after a delay, `attempts` on
+/// `group_nack` hands back only the delivery it names, and `visibility_ms`
+/// on `group_poll` sets how long that poll's claims stand.
+///
+/// Advertised by a *broker*. A client checks it before sending `delay_ms` or
+/// `visibility_ms`, not only before the new requests: an older broker ignores
+/// an unknown field, so it would nack at once or claim for its own timeout,
+/// and say nothing.
+pub const FEATURE_GROUP_CLAIM_CONTROL: u32 = 0x0800_0000;
+
+/// The broker answers `publish_if`, and honours `expected_offset` on
+/// `commit`: a write made only if the shard's next offset is the one the
+/// writer expects, refused otherwise with `publish_refused` naming the tail.
+///
+/// Advertised by a *broker*. A client checks it before sending
+/// `expected_offset` on a commit, not only before `publish_if`: an older
+/// broker ignores an unknown field, so it would commit unconditionally and
+/// say nothing. For the same reason the conditional publish is a message of
+/// its own rather than a field on `publish_batch`.
+pub const FEATURE_PUBLISH_CONDITIONAL: u32 = 0x1000_0000;
+
+/// The broker answers `stream_read`: one page of a durable stream shard's
+/// committed records, without registering a subscriber.
+///
+/// Advertised by a *broker*: `stream_read` is a request, and an older broker
+/// has no arm for it.
+pub const FEATURE_STREAM_READ: u32 = 0x2000_0000;
+
+/// A subscriber sizes its own broker-side queue: `queue_capacity` on
+/// `subscribe`, answered by the granted `queue_capacity` on `subscribed`.
+///
+/// Advertised by a *broker*. An older broker ignores the field and gives the
+/// stream's default, so a client checks the bit to know whether to expect the
+/// answer. Only the capacity is the subscriber's to choose; what happens when
+/// the queue is full stays the stream's policy, so no subscriber can make a
+/// publisher wait for it.
+pub const FEATURE_SUBSCRIBE_QUEUE: u32 = 0x4000_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -210,11 +345,111 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_UNSUPPORTED
     | FEATURE_SEQUENCE_REUSED
     | FEATURE_PUBLISH_PIPELINE
-    | FEATURE_ATOMIC_COMMIT;
+    | FEATURE_ATOMIC_COMMIT
+    | FEATURE_STREAM_PUBLISH_WINDOW
+    | FEATURE_SHARD_OWNERS
+    | FEATURE_ACK_ON_COMMIT
+    | FEATURE_GROUP_CONSUMER
+    | FEATURE_SUBSCRIPTION_LAGGED
+    | FEATURE_GROUP_SKIPPED
+    | FEATURE_GROUP_PUBLISHER
+    | FEATURE_GROUP_ADMIN
+    | FEATURE_CACHE_CONDITIONAL
+    | FEATURE_RECORD_TIMESTAMPS
+    | FEATURE_GROUP_CLAIM_CONTROL
+    | FEATURE_PUBLISH_CONDITIONAL
+    | FEATURE_STREAM_READ
+    | FEATURE_SUBSCRIBE_QUEUE;
+
+/// The broker answers `shard_inspect` and `subscriptions_list`: its own view
+/// of one shard, and of the subscriptions it serves, for an operator holding
+/// `node.view:cluster:*`.
+///
+/// The first bit of the extended word, so it travels in `server_features_hi`.
+/// Advertised by a *broker*, like every request-shaped feature: an older
+/// broker has no arm for the request.
+pub const FEATURE_INSPECT: u32 = 0x0000_0001;
+
+/// The client can read `stream_deleted` on an event stream.
+///
+/// An extended bit, in `client_features_hi` / `server_features_hi`. Offered
+/// by a *client*, like `FEATURE_SHARD_MOVED`: the message is the last frame
+/// of a subscription whose stream was deleted, so the client stops rather
+/// than looks for the stream elsewhere. A client that did not offer the bit
+/// sees the stream end after its last event, as it always has. A broker
+/// advertises it too, so a client knows a stream that ends without one was
+/// not ended by a delete.
+pub const FEATURE_STREAM_DELETED: u32 = 0x0000_0002;
+
+/// The broker takes `publish_width` and checks keyed publishes against it.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*:
+/// `publish_width` is a request, and an older broker has no arm for it. A
+/// client that sees the bit declares the width it routed each stream's keyed
+/// publishes by, and asks it again when the broker refuses one with
+/// `stale_width`.
+pub const FEATURE_PUBLISH_WIDTH: u32 = 0x0000_0004;
+
+/// Every extended feature bit this version implements: bits that travel in
+/// `client_features_hi` / `server_features_hi` rather than the first word.
+pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT | FEATURE_STREAM_DELETED | FEATURE_PUBLISH_WIDTH;
+
+/// The peer reads the other side's extended feature word.
+///
+/// The last bit of the first word, and the only way a peer learns that the
+/// `_hi` words exist: an old decoder ignores a field it does not know, so
+/// sending one costs nothing, but a peer that sends `server_features_hi` to a
+/// client that never asked changes that client's frame for nothing.
+///
+/// Set only through [`offer_features`] and [`answer_features`], which set it
+/// when there is an extended word to send. It is not in `KNOWN_FEATURES`, so a
+/// peer that knows no extended feature sends the frame it always did.
+pub const FEATURE_EXTENDED: u32 = 0x8000_0000;
 
 /// True if `features` advertises `feature`.
+///
+/// Works the same on the extended word: pass the `_hi` word and a bit from
+/// `KNOWN_FEATURES_HI`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {
     features & feature == feature
+}
+
+/// What a client puts in `client_features` and `client_features_hi` to offer
+/// `features` and the extended `features_hi`.
+///
+/// The extended word and its marker are sent only when there is something in
+/// it, so a client that knows no extended feature sends the frame it always
+/// did.
+pub fn offer_features(features: u32, features_hi: u32) -> (u32, Option<u32>) {
+    match features_hi {
+        0 => (features, None),
+        hi => (features | FEATURE_EXTENDED, Some(hi)),
+    }
+}
+
+/// What a broker puts in `server_features` and `server_features_hi`, given
+/// what it serves and the `client_features` the client offered.
+///
+/// The extended word goes only to a client that set `FEATURE_EXTENDED`. Any
+/// other client could not read it, and gets the frame it always got.
+pub fn answer_features(features: u32, features_hi: u32, peer_features: u32) -> (u32, Option<u32>) {
+    if supports_feature(peer_features, FEATURE_EXTENDED) {
+        offer_features(features, features_hi)
+    } else {
+        (features & !FEATURE_EXTENDED, None)
+    }
+}
+
+/// The extended word a peer sent, read alongside its first word.
+///
+/// Counted only when the first word carries `FEATURE_EXTENDED`; absent means
+/// none, as it does for the first word.
+pub fn peer_features_hi(features: u32, features_hi: Option<u32>) -> u32 {
+    if supports_feature(features, FEATURE_EXTENDED) {
+        features_hi.unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

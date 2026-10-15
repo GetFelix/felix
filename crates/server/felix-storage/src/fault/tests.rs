@@ -35,6 +35,22 @@ fn the_file_names_a_delay_and_a_failure() {
     );
 }
 
+#[test]
+fn the_file_names_a_write_delay() {
+    assert_eq!(
+        FileSetting::parse("write_delay_ms=150\nwrite=eio_once\n"),
+        FileSetting {
+            write: WriteFailure::IoOnce,
+            write_delay: Duration::from_millis(150),
+            ..FileSetting::default()
+        },
+    );
+    assert_eq!(
+        FileSetting::parse("write_delay_ms=soon").write_delay,
+        Duration::ZERO
+    );
+}
+
 /// A value it does not know is less of a fault, not a different one.
 #[test]
 fn an_unknown_failure_mode_is_no_failure() {

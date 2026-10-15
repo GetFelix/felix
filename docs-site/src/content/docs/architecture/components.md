@@ -10,7 +10,7 @@ either. This page walks through each component and what it owns.
 
 Together they serve **streams, caches and queues**. These are three readings of
 one append-only log rather than three subsystems, as
-[Projections](/felix/architecture/projections/) explains.
+[Projections](/architecture/projections/) explains.
 
 ```mermaid
 graph TB
@@ -92,7 +92,7 @@ Every Felix message is wrapped in a fixed 12-byte header:
 - **Version**: Protocol version (currently 1)
 - **Flags**: Selects the payload layout: binary publish batch, binary event batch,
   acked publish, publish ack. See
-  [Wire Protocol](/felix/architecture/wire-protocol/) for the full table.
+  [Wire Protocol](/architecture/wire-protocol/) for the full table.
 - **Length**: Payload size in bytes (up to 4 GiB)
 
 ### Design Decisions
@@ -171,6 +171,7 @@ graph TB
 - `FELIX_EVENT_CONN_RECV_WINDOW`: Per-connection receive window (default: 256 MiB)
 - `FELIX_EVENT_STREAM_RECV_WINDOW`: Per-stream receive window (default: 64 MiB)
 - `FELIX_EVENT_SEND_WINDOW`: Per-connection send window (default: 256 MiB)
+- `FELIX_BROKER_PUB_CONN_RECV_WINDOW` and `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`: the broker's receive windows on its client listeners (default: the 16 MiB per-connection publish budget)
 
 :::caution[Memory Implications]
 Window sizes multiply with pool sizes. An event connection pool of 8 with 256 MiB windows can commit up to 2 GiB of receive buffers under burst load. Tune carefully for your workload.
@@ -255,19 +256,19 @@ Each stream shard runs one publish at a time, so executors beyond the number of 
 This section is a conceptual overview. For an accurate, function-by-function
 walkthrough with file references, including exactly how admission,
 stream resolution, and fanout work, see
-[Internals: The Publish Path](/felix/development/internals-publish/).
+[Internals: The Publish Path](/development/internals-publish/).
 :::
 ### Subscription Management
 
 Each subscription's broker-core state is a channel slot in its stream's
 subscriber registry, plus a dedicated feeder task and QUIC event stream.
-See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
+See [Internals: Subscribe & Fanout](/development/internals-subscribe/)
 for the exact types (`SubscriptionReceiver`, `WriterLaneManager`,
 `run_lane_feeder`) and handshake sequence.
 
 **Isolation guarantees**:
 
-- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy; see [backpressure internals](/felix/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
+- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy; see [backpressure internals](/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
 - Per-subscription buffering with configurable depth (`subscriber_queue_capacity`)
 - Independent flow control per subscription stream
 - Dropped events are counted in `felix_subscribe_dropped_total`
@@ -303,12 +304,12 @@ sequenceDiagram
 
 **Batching behavior**:
 
-- Events are accumulated up to `event_batch_max_events` (default: 64)
-- Or until `event_batch_max_delay_us` elapses (default: 250 µs)
-- Or until `event_batch_max_bytes` is reached (default: 64 KB)
+- A batch takes the events already queued for the subscriber and flushes when none are left, so a lone event is sent at once
+- Up to `event_batch_max_events` (default: 64) or `event_batch_max_bytes` (default: 64 KB)
+- Under load (the previous batch found events queued), it also waits up to `event_batch_max_delay_us` (default: 250 µs) for more
 
 :::note[Want the real code path?]
-See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
+See [Internals: Subscribe & Fanout](/development/internals-subscribe/)
 for the exact mechanics of `DeliveryEnvelope`, `shared_event_frame()`,
 writer lanes, and the connection-writer pipelining that schedules the
 actual QUIC writes.
@@ -330,8 +331,9 @@ The cache provides low-latency key-value operations with TTL:
 - Lazy expiration on access, against an absolute expiry that survives a restart
 - Two backends. Without durable storage: an in-memory hash map, lost on restart,
   evicted best-effort under pressure. With it: a log, read through an index of
-  key to latest offset that is rebuilt from the log rather than trusted from
-  disk, and compacted rather than evicted
+  key to latest offset that is rebuilt from the log (starting from a snapshot
+  compaction wrote, once it checks out against the log), and compacted rather
+  than evicted
 - Sharded and routed, so exactly one broker owns each key, and replicated with
   the machinery that replicates a stream
 
@@ -355,10 +357,16 @@ has capacity for more work.
   claim up to `max_records`, optionally waiting for work rather than spinning on
   empty polls
 - `group_ack(…, offset)`: finish a record
-- `group_nack(…, offset)`: hand one back for immediate redelivery, rather than
-  waiting out the visibility timeout
+- `group_nack(…, offset, attempts)`: hand one back for immediate redelivery,
+  rather than waiting out the visibility timeout, or with `delay_ms` only after
+  a delay. `attempts` names the delivery, so a late nack is refused
+- `group_extend(…, offset, attempts, extend_ms)` / `group_dead_letter(…, offset)`:
+  keep a claim standing while the work goes on, or give up on the record
 - `group_dead_letters(…)` / `group_discard(…, offset)` / `group_redrive(…, offset)`:
   list what the group gave up on, drop one, or put one back in play
+- `group_seek(…, start, if_new)` / `group_describe(…)` / `group_delete(…)`:
+  create a group at a chosen position or move it, read its cursor and what it
+  has in flight, or delete it
 
 They travel on the **control stream**, like publish and subscribe setup.
 
@@ -388,8 +396,8 @@ They travel on the **control stream**, like publish and subscribe setup.
   promoted replica resumes where the group had reached and still lists what the
   group gave up on
 
-See [Queues](/felix/features/queues/) for the API and
-[the demo](/felix/demos/queue-semantics/) for it running.
+See [Queues](/features/queues/) for the API and
+[the demo](/demos/queue-semantics/) for it running.
 
 ## felix-storage: Storage Abstraction
 
@@ -440,13 +448,10 @@ the oldest segments are discarded, and a subscription resuming below the oldest
 retained offset is answered with a typed error naming that offset rather than
 silently restarting at the tail.
 
-:::caution[A stream's `retention` field is not enforced]
-The control plane accepts a per-stream `RetentionPolicy` (`max_age_seconds`,
-`max_size_bytes`) and stores it, but no broker code reads it. What a durable log
-actually obeys is the broker-wide configuration above, whatever a stream
-declares. This is the same shape as `DeliveryGuarantee`: declared in metadata,
-not wired to behaviour. Do not rely on it.
-:::
+A stream's own `RetentionPolicy` in the control plane (`max_age_seconds`,
+`max_size_bytes`) overrides those bounds for that stream's logs, one bound at a
+time: a bound it leaves unset is the broker's. A patch reaches logs that are
+already open, so it needs no restart. Zero is refused.
 
 ## felix-replication: Broker-to-Broker Replication
 
@@ -458,7 +463,7 @@ that lost records or was rebuilt names the offset it wants and the leader
 resumes there. For a `Quorum` stream it also decides when a write is on a
 majority. It does not depend on the broker service: the service passes in its
 serving state, write fence and node credential through small traits. The design is in
-[`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+[`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md).
 
 ## Control Plane: Metadata Management
 
@@ -485,7 +490,7 @@ gives one order to every metadata write.
 - **Raft**: every instance holds the metadata. Writes are proposed to the Raft
   leader (a follower forwards them) and apply in log order on every member.
   Reads, including broker watches, are served from the member's local state.
-  See [Metadata Raft](/felix/architecture/metadata-raft/).
+  See [Metadata Raft](/architecture/metadata-raft/).
 
 Under Postgres:
 
@@ -633,7 +638,7 @@ Each component exposes its own configuration surface:
 | **felix-replication** | Peer transport, quorum publish timeout, replica rebuild concurrency and rate |
 | **Control Plane** | Storage backend (Postgres pool or Raft group), readiness probe timings, reconcile interval |
 
-See the [Performance Tuning](/felix/features/performance/) guide for detailed configuration examples.
+See the [Performance Tuning](/features/performance/) guide for detailed configuration examples.
 
 ## Design Principles
 

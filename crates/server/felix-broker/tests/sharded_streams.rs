@@ -213,7 +213,7 @@ async fn a_closed_shard_lets_go_of_its_log_and_reopens_from_disk() {
         .expect("open shard 2");
 
     broker
-        .close_stream_shard(TENANT, NAMESPACE, STREAM, 1)
+        .close_stream_shard(TENANT, NAMESPACE, STREAM, 1, None)
         .await
         .expect("close");
 

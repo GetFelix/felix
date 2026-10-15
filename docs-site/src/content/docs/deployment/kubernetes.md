@@ -4,30 +4,33 @@ description: "Install the control plane and a broker cluster with the Helm chart
 ---
 
 Felix ships a Helm chart, at
-[`deploy/helm/felix`](https://github.com/gabloe/felix/tree/main/deploy/helm/felix),
+[`deploy/helm/felix`](https://github.com/GetFelix/felix/tree/main/deploy/helm/felix),
 that renders the control plane and a broker cluster with the shape the design
 assumes: StatefulSets for stable broker identity, a volume per broker, the
 probes and drain behaviour the binaries already ship, and the budgets and
 policies that keep a rolling operation from taking a shard's replicas with it.
 Every environment variable it wires is real and in the
-[environment reference](/felix/reference/environment-variables/). The chart
+[environment reference](/reference/environment-variables/). The chart
 invents none.
 
-The chart names `ghcr.io/gabloe/felix-broker` and
-`ghcr.io/gabloe/felix-controlplane`, which releases publish and which pull
-without credentials. The image tag defaults to the chart's `appVersion`.
+The chart names `ghcr.io/getfelix/felix-broker` and
+`ghcr.io/getfelix/felix-controlplane`, which releases publish and which pull
+without credentials. Releases before 0.6.0-preview.2 are under
+`ghcr.io/gabloe`, the project's previous owner, and so are their charts' image
+names and signatures. The image tag defaults to the chart's `appVersion`.
 
-On `main` that is `0.6.0-preview`, which no release carries, so a default
-install from `main` asks for an image that does not exist. The chart on `main`
-also sets variables that the `0.5.0` binaries do not read (the zone and peer
-opt-out settings among them), so pinning `image.tag=0.5.0` under it is not a
-match either. Use one of these:
+On `main` that is the next version, which is published only once it is
+released, so a default install from `main` can ask for an image that does not
+exist yet. The chart on `main` can also set variables an older release's
+binaries do not read, so pinning an older `image.tag` under it is not a match
+either. Use one of these:
 
 - **A release.** Check out the release tag and install the chart from there.
-  Its `appVersion` is that release's image tag (`v0.5.0` renders
-  `ghcr.io/gabloe/felix-broker:0.5.0`), and its templates match those binaries.
+  Its `appVersion` is that release's image tag (`v0.6.0-preview.7` renders
+  `ghcr.io/getfelix/felix-broker:0.6.0-preview.7`), and its templates match those
+  binaries.
 - **`main`.** Build both images from the same commit as the chart (the
-  [Docker Compose page](/felix/deployment/docker-compose/) has the build
+  [Docker Compose page](/deployment/docker-compose/) has the build
   commands), push them to a registry your cluster can reach, and point
   `image.registry` at it.
 
@@ -41,7 +44,7 @@ workflow's OIDC identity, so there is no key to store or rotate and the
 signature names the workflow that produced the image. Verify before you pin:
 
 ```bash
-cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
+cosign verify ghcr.io/getfelix/felix-broker:0.6.0-preview.7 \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   --certificate-identity-regexp='^https://github.com/gabloe/felix/\.github/workflows/release\.yml@refs/tags/v'
 ```
@@ -70,6 +73,10 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 | Control plane | Deployment over Postgres, or a StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; under Raft, members reach each other on `8444`, token-authenticated, which nothing else needs |
 | Postgres | Outside the chart | Whatever you run it on | The control plane only |
 | Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`, `/replication/halted`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
+
+The `8080` metrics ports have no authentication. They expose names of tenants,
+streams and brokers, so keep them reachable from Prometheus and operators only,
+never from clients or the internet.
 
 What depends on what, in the order it matters during an incident:
 
@@ -105,7 +112,7 @@ clients are.
   provisioned IOPS is the usual choice (`gp3`, `pd-ssd`, `Premium_LRS`).
 - **A Postgres** with one writable endpoint and synchronous replication, or
   the Raft backend. What the database must provide, and what a failover looks
-  like from Felix, is on [Control-plane HA](/felix/deployment/control-plane-ha/).
+  like from Felix, is on [Control-plane HA](/deployment/control-plane-ha/).
   The chart does not deploy a database.
 - A CNI that enforces `NetworkPolicy`, or the policy is inert.
 - For peer mTLS: cert-manager and
@@ -198,7 +205,7 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 ```
 
 Then exchange an IdP token for the broker principal (the
-[token exchange](/felix/features/security/#token-exchange-oidc--felix) flow)
+[token exchange](/features/security/#token-exchange-oidc--felix) flow)
 and put the Felix token in a Secret:
 
 ```bash
@@ -368,14 +375,14 @@ helm upgrade felix deploy/helm/felix -n felix --reuse-values \
 
 Renewals are picked up from disk without a restart. Whichever mode, the
 internal port is never on a routable Service, and the NetworkPolicy admits it
-from broker pods only. [`docs/threat-model-internal.md`](https://github.com/gabloe/felix/blob/main/docs/threat-model-internal.md)
+from broker pods only. [`docs/threat-model-internal.md`](https://github.com/GetFelix/felix/blob/main/docs/threat-model-internal.md)
 sets out what is and is not defended in each mode.
 
 ## Operations
 
 ### Rolling upgrade
 
-The order, and why, is on [Upgrades & Compatibility](/felix/deployment/upgrades/):
+The order, and why, is on [Upgrades & Compatibility](/deployment/upgrades/):
 control plane first, then brokers, clients whenever. The chart's budgets and
 update strategies make `helm upgrade` do that order one pod at a time, but a
 new broker image should still wait on the previous broker being back in its
@@ -416,7 +423,7 @@ draining is a failover per shard it leads, and a follower slot that stays
 pointed at a broker that no longer exists. The budget refuses a value it
 cannot keep a quorum under. What a move does, how long it takes, the exact
 wait check and what to watch are on
-[Adding, draining and removing brokers](/felix/deployment/scaling/).
+[Adding, draining and removing brokers](/deployment/scaling/).
 
 ### Replacing a broker's volume
 
@@ -458,7 +465,7 @@ The control plane's metadata lives in the database (back it up whole, restore
 it whole) or, under Raft, in the members' volumes: snapshot those at the
 storage layer, and keep the state file the group was seeded from, since
 `felix-controlplane migrate import --overwrite` onto a fresh group is the
-recovery beyond quorum loss (see [Metadata Raft](/felix/architecture/metadata-raft/)).
+recovery beyond quorum loss (see [Metadata Raft](/architecture/metadata-raft/)).
 That state file holds every tenant's signing-key seeds in plaintext, so keep it
 as secret as the keys, and an export taken while metadata is being written is not
 a consistent point.
@@ -467,7 +474,7 @@ consistent backup: nothing coordinates them with each other or with the
 metadata, and a leader's copy can hold records no majority acknowledged. Take a
 backup point with `felix-controlplane admin backup-point`, copy each leader's
 shard directories against it, and cut them back with `felix-broker
-restore-point` on restore. See [Backup and restore](/felix/deployment/backup-and-restore/).
+restore-point` on restore. See [Backup and restore](/deployment/backup-and-restore/).
 
 ## Troubleshooting
 
@@ -479,14 +486,20 @@ restore-point` on restore. See [Backup and restore](/felix/deployment/backup-and
 | Control plane not ready, liveness fine | The store: Postgres unreachable, or the database is behind the build's migrations. That is readiness doing its job. |
 | Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the `-raft-formed` ConfigMap is left from an earlier release whose volumes are gone. Delete it and restart the members, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
 | Raft members log `raft peer request ... refused` | The members disagree on the peer token or the cluster id; both must be the same on every member. |
+| Leader logs `error replication to target=N` with `peer answered 404` (or another status) | Member N's peer address points at something that is not its peer listener, or member N rejects the leader (401/403). The leader retries it about once a second until it answers. |
 | `helm upgrade` refused with a message about budgets, drains, or members | Deliberate. The message names the values that are wrong together. |
 | PVC `Pending` | No default StorageClass, or the named one does not exist in this zone. |
 | Peer mTLS pods stuck in `ContainerCreating` | cert-manager-csi-driver is not installed, or the Issuer cannot sign. `kubectl describe pod` shows the CSI error. |
 
+For a shard that is not serving, a lagging or halted follower, or a client
+that is refused, [Diagnosing a cluster](/deployment/diagnosing/) goes symptom
+by symptom.
+
 ## Next Steps
 
-- **Monitor deployment**: [Observability Guide](/felix/features/observability/)
-- **Control-plane HA**: [what the database must provide](/felix/deployment/control-plane-ha/)
-- **Graceful shutdown**: [what the probes and drain do](/felix/deployment/graceful-shutdown/)
-- **Configure fully**: [Configuration Reference](/felix/reference/configuration/)
-- **Secure deployment**: [Security Guide](/felix/features/security/)
+- **Diagnose problems**: [Diagnosing a cluster](/deployment/diagnosing/)
+- **Monitor deployment**: [Observability Guide](/features/observability/)
+- **Control-plane HA**: [what the database must provide](/deployment/control-plane-ha/)
+- **Graceful shutdown**: [what the probes and drain do](/deployment/graceful-shutdown/)
+- **Configure fully**: [Configuration Reference](/reference/configuration/)
+- **Secure deployment**: [Security Guide](/features/security/)

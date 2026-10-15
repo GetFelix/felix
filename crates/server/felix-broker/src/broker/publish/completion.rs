@@ -16,6 +16,9 @@
 //! `stream/committed.rs`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::task::Poll;
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -23,14 +26,23 @@ use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::shards::StreamHandle;
 use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
-use crate::stream::{DeliveryEnvelope, HeldBatch, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
+use crate::stream::{
+    DeliveryEnvelope, HeldBatch, HeldBytes, Pass, QueuedDelivery, StreamState, SubQueuePolicy,
+    SubscriberEntry,
+};
 use crate::telemetry::{t_histogram, t_now_if};
 use crate::timings;
+
+/// How often a release with batches still held looks at the bound without
+/// being kicked.
+const RELEASE_RECHECK: Duration = Duration::from_millis(250);
 
 /// Everything left to do for one claimed batch, and how far it has got.
 pub(super) struct Completion {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    publisher: Option<Bytes>,
+    timestamp_micros: Option<u64>,
     commit: Option<Arc<[StateOp]>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
@@ -53,6 +65,10 @@ struct Delivery {
     first_offset: Option<u64>,
     /// The next subscriber to hand it to.
     next: usize,
+    /// Under `Block`, subscribers passed over because their queue was full,
+    /// by index into `senders`. They are waited on once everyone with room
+    /// has the batch.
+    full: Vec<usize>,
     sent: usize,
     closed: Vec<u64>,
 }
@@ -66,6 +82,8 @@ impl Completion {
         let ClaimedPublish {
             handle,
             payloads,
+            publisher,
+            timestamp_micros,
             commit,
             durable,
             sample,
@@ -73,6 +91,8 @@ impl Completion {
         Self {
             handle,
             payloads,
+            publisher,
+            timestamp_micros,
             commit,
             durable,
             sample,
@@ -89,6 +109,8 @@ impl Completion {
         Self {
             handle,
             payloads: batch.payloads,
+            publisher: batch.publisher,
+            timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             durable: None,
             sample: false,
@@ -143,6 +165,8 @@ impl Completion {
         }
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
+            publisher: self.publisher.take(),
+            timestamp_micros: self.timestamp_micros,
             first_offset,
             commit: self.commit.take(),
         };
@@ -238,6 +262,8 @@ impl Completion {
                 turn,
                 self.log_capacity,
                 self.commit.as_deref(),
+                self.publisher.as_ref(),
+                self.timestamp_micros,
             )
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
@@ -251,9 +277,16 @@ impl Completion {
             senders,
             // The offsets travel with the batch, so live delivery reports them
             // exactly as replay does.
-            envelope: DeliveryEnvelope::with_offsets(&self.payloads, first_offset, skipped_before),
+            envelope: DeliveryEnvelope::published(
+                &self.payloads,
+                first_offset,
+                skipped_before,
+                self.publisher.clone(),
+                self.timestamp_micros,
+            ),
             first_offset,
             next: 0,
+            full: Vec::new(),
             sent: 0,
             closed: Vec::new(),
         });
@@ -262,51 +295,51 @@ impl Completion {
 
     /// Hand the batch to every subscriber the ring append saw, starting from
     /// the first one not yet served. One envelope is shared by all of them.
+    ///
+    /// Under `Block` a full queue is skipped on the first pass and waited on
+    /// after it, so a subscriber with room never waits behind a full one.
     async fn fan_out(&mut self) {
         let fanout_start = t_now_if(self.sample);
         let stream_state = &self.handle.state;
         let delivery = self.delivery.as_mut().expect("appended before fanout");
         let item_count = delivery.envelope.len();
+        let bytes = delivery.envelope.payload_bytes();
         while let Some(subscriber) = delivery.senders.get(delivery.next) {
             match stream_state.subscriber_queue_policy {
-                SubQueuePolicy::Block => {
-                    // The one await in the fanout. `next` only moves once the
-                    // subscriber is served, so a resumed finisher retries it.
-                    if let Ok(permit) = subscriber.sender.reserve().await {
-                        metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                        stream_state.increment_queue_depth(item_count);
-                        permit.send(QueuedDelivery::new(
-                            delivery.envelope.clone(),
-                            Arc::clone(&stream_state.queued_items),
-                        ));
-                        delivery.sent += item_count;
-                    } else {
-                        delivery.closed.push(subscriber.id);
-                    }
-                }
-                SubQueuePolicy::DropNew | SubQueuePolicy::DropOld => {
-                    match subscriber.sender.try_reserve() {
-                        Ok(permit) => {
-                            metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                            stream_state.increment_queue_depth(item_count);
-                            permit.send(QueuedDelivery::new(
-                                delivery.envelope.clone(),
-                                Arc::clone(&stream_state.queued_items),
-                            ));
+                SubQueuePolicy::Block => match subscriber.sender.try_reserve() {
+                    Ok(permit) => match subscriber.bytes.try_hold(bytes) {
+                        Ok(held) => {
+                            enqueue(stream_state, permit, &delivery.envelope, held);
                             delivery.sent += item_count;
                         }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            metrics::counter!("felix_subscribe_dropped_total")
-                                .increment(item_count as u64);
-                            metrics::counter!("felix_sub_queue_dropped_total")
-                                .increment(item_count as u64);
-                            if matches!(
-                                stream_state.subscriber_queue_policy,
-                                SubQueuePolicy::DropOld
-                            ) {
-                                metrics::counter!("felix_sub_queue_drop_old_emulated_total")
-                                    .increment(item_count as u64);
+                        Err(_) => delivery.full.push(delivery.next),
+                    },
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        delivery.full.push(delivery.next);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        delivery.closed.push(subscriber.id);
+                    }
+                },
+                SubQueuePolicy::DropNew | SubQueuePolicy::DropOld => {
+                    match subscriber.sender.try_reserve() {
+                        Ok(permit) => match subscriber.bytes.try_hold(bytes) {
+                            Ok(held) => {
+                                enqueue(stream_state, permit, &delivery.envelope, held);
+                                delivery.sent += item_count;
                             }
+                            // Dropping the permit gives the entry back.
+                            Err(bound) => {
+                                metrics::counter!(
+                                    "felix_sub_queue_byte_dropped_total",
+                                    "bound" => bound.label()
+                                )
+                                .increment(item_count as u64);
+                                record_drop(stream_state, subscriber, &delivery.envelope);
+                            }
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            record_drop(stream_state, subscriber, &delivery.envelope);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                             delivery.closed.push(subscriber.id);
@@ -316,12 +349,100 @@ impl Completion {
             }
             delivery.next += 1;
         }
+        if !delivery.full.is_empty() {
+            wait_for_full(stream_state, delivery).await;
+        }
         if let Some(start) = fanout_start {
             let fanout_ns = start.elapsed().as_nanos() as u64;
             timings::record_enqueue_ns(fanout_ns);
             timings::record_fanout_ns(fanout_ns);
             t_histogram!("broker_publish_fanout_total_ns").record(fanout_ns as f64);
         }
+    }
+}
+
+/// Wait on every subscriber `fan_out` found full at once, and queue the
+/// batch for each as it gets room.
+///
+/// The only awaits in the fanout. A subscriber leaves `full` only once it is
+/// served, so a resumed finisher waits on just the ones still left.
+async fn wait_for_full(stream_state: &StreamState, delivery: &mut Delivery) {
+    let senders = Arc::clone(&delivery.senders);
+    let item_count = delivery.envelope.len();
+    let bytes = delivery.envelope.payload_bytes();
+    let mut waits: Vec<_> = delivery
+        .full
+        .iter()
+        .map(|&index| {
+            let subscriber = &senders[index];
+            Box::pin(async move {
+                let room = match subscriber.sender.reserve().await {
+                    Ok(permit) => Some((permit, subscriber.bytes.hold(bytes).await)),
+                    Err(_) => None,
+                };
+                (index, room)
+            })
+        })
+        .collect();
+    std::future::poll_fn(|cx| {
+        waits.retain_mut(|wait| {
+            let Poll::Ready((index, room)) = wait.as_mut().poll(cx) else {
+                return true;
+            };
+            match room {
+                Some((permit, held)) => {
+                    enqueue(stream_state, permit, &delivery.envelope, held);
+                    delivery.sent += item_count;
+                }
+                None => delivery.closed.push(senders[index].id),
+            }
+            delivery.full.retain(|&full| full != index);
+            false
+        });
+        if waits.is_empty() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
+fn enqueue(
+    stream_state: &StreamState,
+    permit: tokio::sync::mpsc::Permit<'_, QueuedDelivery>,
+    envelope: &DeliveryEnvelope,
+    held: HeldBytes,
+) {
+    metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
+    stream_state.increment_queue_depth(envelope.len());
+    permit.send(QueuedDelivery::new(
+        envelope.clone(),
+        Arc::clone(&stream_state.queued_items),
+        held,
+    ));
+}
+
+/// Count a batch the subscriber's queue had no room for, by entries or by
+/// bytes. The lag note is what turns it into an offset gap the subscriber
+/// can see.
+fn record_drop(
+    stream_state: &StreamState,
+    subscriber: &SubscriberEntry,
+    envelope: &DeliveryEnvelope,
+) {
+    let item_count = envelope.len() as u64;
+    if let Some(base) = envelope.base_offset() {
+        subscriber.lag.dropped(base);
+    }
+    subscriber.stats.dropped(item_count);
+    metrics::counter!("felix_subscribe_dropped_total").increment(item_count);
+    metrics::counter!("felix_sub_queue_dropped_total").increment(item_count);
+    if matches!(
+        stream_state.subscriber_queue_policy,
+        SubQueuePolicy::DropOld
+    ) {
+        metrics::counter!("felix_sub_queue_drop_old_emulated_total").increment(item_count);
     }
 }
 
@@ -339,7 +460,8 @@ pub(crate) fn spawn_release(handle: &StreamHandle) {
 }
 
 /// Append and fan out, in order, every held batch the bound covers, until
-/// none is left that it does.
+/// nothing is held. A kick wakes it; so does a recheck, since the bound can
+/// move without one.
 ///
 /// One per stream at a time (`CommitHold` sees to it), which is what keeps
 /// released batches in offset order across subscribers and the ring.
@@ -349,8 +471,19 @@ async fn release(handle: StreamHandle) {
     loop {
         state.held.begin_pass();
         let bound = state.read_bound();
-        let Some(ready) = state.held.take_ready(bound) else {
-            return;
+        let ready = match state.held.take_ready(bound) {
+            Pass::Ready(ready) => ready,
+            Pass::Done => return,
+            Pass::Wait => {
+                // A closed shard's held batches go nowhere; dropping them
+                // ends this release on the next pass.
+                if !state.active.load(Ordering::Acquire) {
+                    state.held.discard();
+                    continue;
+                }
+                let _ = tokio::time::timeout(RELEASE_RECHECK, state.held.woken()).await;
+                continue;
+            }
         };
         for batch in ready {
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);

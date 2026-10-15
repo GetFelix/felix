@@ -77,6 +77,7 @@ async fn a_fenced_owner_is_forgotten_and_the_publish_rerouted() -> Result<()> {
             node_id: "broker-old".into(),
             generation: 1,
             client: owner_client,
+            width: None,
         },
     );
 
@@ -215,6 +216,7 @@ async fn a_subscribe_waits_out_a_shard_that_is_still_opening() -> Result<()> {
                 subscription_id: 0,
                 start_offset: None,
                 live_offset: None,
+                queue_capacity: None,
             }
         }
     })?;
@@ -282,5 +284,35 @@ async fn a_fenced_redirect_target_sends_the_subscribe_back() -> Result<()> {
     assert_eq!(entry.subscribes(), 2, "the entry broker is asked again");
     let broker = err.downcast_ref::<BrokerError>().expect("typed");
     assert_eq!(broker.code, ErrorCode::Forbidden);
+    Ok(())
+}
+
+/// **A chosen shard is subscribed to on its owner.** The redirect is for that
+/// shard, and the shard number travels on both asks.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_chosen_shard_follows_its_own_redirect() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let owner = StubBroker::start_with(server_config.clone(), |_| Message::Subscribed {
+        subscription_id: 0,
+        start_offset: None,
+        live_offset: None,
+        queue_capacity: None,
+    })?;
+    let owner_addr = owner.addr.to_string();
+    let entry = StubBroker::start_with(server_config, move |_| Message::NotLeader {
+        node_id: "broker-2".into(),
+        addr: Some(owner_addr.clone()),
+        generation: 1,
+    })?;
+    let cluster = Arc::new(cluster(&entry, build_client_config_with_overrides(cert, 1)?).await?);
+
+    let subscription = cluster
+        .subscribe_shard("t1", "default", "orders", 3, None)
+        .await?;
+
+    assert_eq!(entry.subscribed_shards(), [Some(3)]);
+    assert_eq!(owner.subscribed_shards(), [Some(3)]);
+    assert_eq!(subscription.client().dialled(), owner.addr);
     Ok(())
 }

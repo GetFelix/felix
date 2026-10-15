@@ -2,7 +2,8 @@
 //!
 //! The interesting property is not "does it parse" but "does it lie": recovery
 //! is permitted to discard a torn tail and nothing else, so any log it does
-//! return must be a contiguous, self-consistent prefix.
+//! return must be a contiguous, self-consistent prefix. And the plan offline
+//! inspection reads must be the verdict startup then reaches.
 
 #![no_main]
 
@@ -58,4 +59,8 @@ fuzz_target!(|data: &[u8]| {
         Err(StorageError::Corruption(_)) | Err(StorageError::Io(_)) => {}
         Err(other) => panic!("unexpected error kind: {other}"),
     }
+
+    // Property 4: planning recovery writes nothing and predicts what
+    // recovering the same directory then does.
+    felix_storage::fuzzing::recovery_plan_agrees(dir.path(), repair_checksum_tail);
 });

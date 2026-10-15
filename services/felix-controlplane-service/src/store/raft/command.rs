@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 4;
+pub const METADATA_VERSION: u16 = 9;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -313,6 +313,36 @@ pub enum MetaCommand {
     FinalizeFleetFeature {
         feature: String,
     },
+    /// Streams and caches created together: one entry, so every member
+    /// applies all of them or, on a conflict or a missing namespace, none.
+    /// Level 5.
+    CreateResources {
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    },
+    /// Revoke principals' broker tokens issued at or before `revoked_at`,
+    /// which the proposer decided. Level 7.
+    RevokePrincipals {
+        tenant_id: String,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    },
+    /// An auth change and the revocation it calls for, in one entry, so no
+    /// member applies one without the other. Level 9.
+    ChangeAuthAndRevoke {
+        tenant_id: String,
+        change: crate::store::AuthChange,
+        revocation: crate::store::Revocation,
+    },
+    /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
+    /// `next`, in one entry. Level 9.
+    RotateRefreshToken {
+        tenant_id: String,
+        token_id: String,
+        /// The proposer's clock, as for `TakeRefreshToken`.
+        now_secs: i64,
+        next: RefreshToken,
+    },
 }
 
 impl MetaCommand {
@@ -341,6 +371,9 @@ impl MetaCommand {
                 3
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
+            Self::CreateResources { .. } => 5,
+            Self::RevokePrincipals { .. } => 7,
+            Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -469,6 +502,15 @@ pub enum MetaResponse {
     NotLeaderReport,
     /// The placement lease is held by someone else and has not expired.
     NoPlacementLease,
+    /// A principal's revocation cutoff, as the leader holds it. Only ever an
+    /// answer to a leader request, never written to the log.
+    RevokedAt {
+        cutoffs: Vec<Option<i64>>,
+    },
+    /// A refresh token as the leader holds it, unspent. Leader requests only.
+    RefreshToken {
+        token: Option<RefreshToken>,
+    },
 }
 
 /// `StoreError`, flattened into something that serializes and compares.

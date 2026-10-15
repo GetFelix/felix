@@ -13,7 +13,8 @@
 //!
 //! Pure logic with the clock passed in, so every rule here is testable without
 //! waiting for one.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// One group's position on one shard.
@@ -33,8 +34,12 @@ pub(crate) struct GroupTracker {
     in_flight: BTreeMap<u64, Instant>,
     /// The same claims ordered by when they lapse, so finding the lapsed ones
     /// costs what lapsed rather than everything in flight. Kept in step with
-    /// `in_flight` by `hand_out` and `take_in_flight`, the only two writers.
+    /// `in_flight` by `hold`, `take_in_flight` and `expire`, the only writers.
     lapses: BTreeSet<(Instant, u64)>,
+    /// Offsets in `in_flight` that a consumer nacked with a delay. Held only
+    /// so they are owed later; nobody holds the claim, so it cannot be
+    /// extended.
+    delayed: BTreeSet<u64>,
     /// Acknowledged, but above an offset that is not. Held until the run below
     /// them closes, because the cursor can only move over a contiguous prefix:
     /// advancing past a gap would drop a record nobody has finished.
@@ -50,6 +55,17 @@ pub(crate) struct GroupTracker {
     /// yet finished. Settling one has to clear that record too, or every
     /// later leader would redeliver it again.
     redriven: BTreeSet<u64>,
+    /// Which named member holds each claim, and on which connection. Kept in
+    /// step with `in_flight`.
+    holders: BTreeMap<u64, Holder>,
+    /// Each named member with a claim standing or reserved. Also interns the
+    /// member's key, so its claims share one allocation.
+    members: HashMap<Arc<MemberKey>, MemberState>,
+    /// Runs of offsets settled without being delivered (generation starts,
+    /// trimmed records), keyed by the end of the run, which is exclusive, to
+    /// the start. What a record at that end reports as skipped before it.
+    /// Dropped once the cursor is past the record that follows the run.
+    skipped: BTreeMap<u64, u64>,
     /// Most times a record is handed out before it is given up on.
     ///
     /// Without a bound a record that always fails is redelivered for ever and
@@ -72,13 +88,33 @@ impl GroupTracker {
             inherited_below: None,
             in_flight: BTreeMap::new(),
             lapses: BTreeSet::new(),
+            delayed: BTreeSet::new(),
             acked_ahead: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
             redriven: BTreeSet::new(),
+            holders: BTreeMap::new(),
+            members: HashMap::new(),
+            skipped: BTreeMap::new(),
             max_attempts: max_attempts.max(1),
             max_in_flight: usize::MAX,
         }
+    }
+
+    /// A group just moved to `committed` by an operator. Every claim made
+    /// before the move is void, so unlike [`Self::new`] it inherits none: a
+    /// late settle from an old claim above `committed` is refused rather than
+    /// taken as finishing a record the group now owes.
+    pub(crate) fn moved_to(committed: u64, max_attempts: u32) -> Self {
+        let mut tracker = Self::new(committed, max_attempts);
+        tracker.inherited_below = Some(committed);
+        tracker
+    }
+
+    /// How many offsets are handed out and unsettled, and how many are owed
+    /// again after a nack or a lapsed claim.
+    pub(crate) fn outstanding(&self) -> (usize, usize) {
+        (self.in_flight.len(), self.redeliver.len())
     }
 
     /// Bound how many offsets may be handed out and unsettled at once.
@@ -117,9 +153,20 @@ impl GroupTracker {
     }
 
     /// Everything below this is finished.
-    #[cfg(test)]
     pub(crate) fn committed(&self) -> u64 {
         self.committed
+    }
+
+    /// [`Self::claim_as`] for a consumer that did not name itself.
+    #[cfg(test)]
+    pub(crate) fn claim(
+        &mut self,
+        tail: u64,
+        max: usize,
+        now: Instant,
+        visibility: Duration,
+    ) -> Claim {
+        self.claim_as(tail, max, now, visibility, None)
     }
 
     /// Take up to `max` offsets to deliver, claimed until `now + visibility`.
@@ -129,14 +176,23 @@ impl GroupTracker {
     /// are precisely the records a consumer already failed to finish once.
     ///
     /// `tail` is the shard's log tail: nothing at or above it exists yet.
-    pub(crate) fn claim(
+    ///
+    /// A `consumer` that named itself has its claims recorded as its own. Its
+    /// first poll with `reclaim` on a connection newer than any that reclaimed
+    /// before reserves the claims it holds from older connections, left by a
+    /// process that restarted. Those go to that connection ahead of anything
+    /// else, over as many polls as it takes, until each is delivered or its
+    /// claim lapses.
+    pub(crate) fn claim_as(
         &mut self,
         tail: u64,
         max: usize,
         now: Instant,
         visibility: Duration,
+        consumer: Option<&GroupConsumer>,
     ) -> Claim {
         self.expire(now);
+        let holder = consumer.map(|consumer| self.register(consumer));
 
         let wanted = max.min(MAX_CLAIM);
         let room = self.max_in_flight.saturating_sub(self.in_flight.len());
@@ -148,6 +204,9 @@ impl GroupTracker {
             capped: false,
         };
 
+        if let Some(holder) = &holder {
+            self.take_reserved(holder, max, deadline, &mut claim);
+        }
         while claim.offsets.len() < max
             && let Some(offset) = self.redeliver.iter().next().copied()
         {
@@ -161,7 +220,7 @@ impl GroupTracker {
                 claim.dead_lettered.push(DeadLettered { offset, attempts });
                 continue;
             }
-            self.hand_out(offset, deadline);
+            self.hand_out(offset, deadline, holder.as_ref());
             claim.offsets.push(offset);
         }
 
@@ -175,8 +234,17 @@ impl GroupTracker {
             {
                 continue;
             }
-            self.hand_out(offset, deadline);
+            self.hand_out(offset, deadline, holder.as_ref());
             claim.offsets.push(offset);
+        }
+
+        if let Some(holder) = &holder
+            && self
+                .members
+                .get(&holder.member)
+                .is_some_and(|state| state.held == 0)
+        {
+            self.members.remove(&holder.member);
         }
 
         // Only when the cap is what stopped it: work was left behind that the
@@ -211,9 +279,24 @@ impl GroupTracker {
         while self.acked_ahead.remove(&self.committed) {
             self.committed += 1;
         }
+        let committed = self.committed;
+        self.skipped.retain(|&end, _| end >= committed);
         // `high_water` can lag when a group is created above its acks.
         self.high_water = self.high_water.max(self.committed);
         (self.committed != before).then_some(self.committed)
+    }
+
+    /// Note that `offset` was settled without being delivered, before
+    /// settling it.
+    pub(crate) fn skip(&mut self, offset: u64) {
+        let start = self.skipped.remove(&offset).unwrap_or(offset);
+        self.skipped.insert(offset + 1, start);
+    }
+
+    /// How many offsets directly below `offset` were settled without being
+    /// delivered.
+    pub(crate) fn skipped_before(&self, offset: u64) -> u64 {
+        self.skipped.get(&offset).map_or(0, |start| offset - start)
     }
 
     /// Give one offset back without finishing it. It is owed again at once,
@@ -225,6 +308,59 @@ impl GroupTracker {
         }
         self.take_in_flight(offset);
         self.redeliver.insert(offset);
+    }
+
+    /// Give one offset back, to be owed again at `deadline` rather than at
+    /// once. It keeps a place in flight until then, so it counts against the
+    /// in-flight cap, and its attempt was counted when it was handed out.
+    pub(crate) fn nack_after(&mut self, offset: u64, deadline: Instant) {
+        if offset < self.committed || self.acked_ahead.contains(&offset) {
+            return;
+        }
+        self.take_in_flight(offset);
+        self.redeliver.remove(&offset);
+        self.hold(offset, deadline);
+        self.delayed.insert(offset);
+    }
+
+    /// Move the claim on `offset` to lapse at `deadline` instead. Returns
+    /// whether it was moved.
+    ///
+    /// Only for the delivery that made the claim, the `attempts`th: once a
+    /// claim lapses the record can be handed out again, and the new claim is
+    /// someone else's to extend. A delayed nack is not a claim either.
+    pub(crate) fn extend(
+        &mut self,
+        offset: u64,
+        attempts: u32,
+        now: Instant,
+        deadline: Instant,
+    ) -> bool {
+        if !self.claim_stands(offset, attempts, now) {
+            return false;
+        }
+        if let Some(lapses) = self.in_flight.get(&offset).copied() {
+            self.lapses.remove(&(lapses, offset));
+        }
+        self.hold(offset, deadline);
+        true
+    }
+
+    /// Whether the claim the `attempts`th delivery of `offset` made still
+    /// stands at `now`. A delayed nack is not a claim.
+    pub(crate) fn claim_stands(&mut self, offset: u64, attempts: u32, now: Instant) -> bool {
+        self.expire(now);
+        self.attempts(offset) == attempts
+            && !self.delayed.contains(&offset)
+            && self.in_flight.contains_key(&offset)
+    }
+
+    /// Whether `offset` is still to be finished: handed out and unsettled, or
+    /// owed. Below the cursor only a redriven record is.
+    pub(crate) fn in_play(&self, offset: u64) -> bool {
+        self.in_flight.contains_key(&offset)
+            || self.redeliver.contains(&offset)
+            || (offset >= self.committed && !self.acked_ahead.contains(&offset))
     }
 
     /// Put a record the group gave up on back in play, its attempt count reset.
@@ -309,6 +445,8 @@ impl GroupTracker {
         {
             self.lapses.pop_first();
             self.in_flight.remove(&offset);
+            self.delayed.remove(&offset);
+            self.release_holder(offset);
             self.redeliver.insert(offset);
         }
     }
@@ -320,16 +458,118 @@ impl GroupTracker {
         self.in_flight.len()
     }
 
-    fn hand_out(&mut self, offset: u64, deadline: Instant) {
+    fn hand_out(&mut self, offset: u64, deadline: Instant, holder: Option<&Holder>) {
+        // Counted before the old claim is dropped, so a member taking back its
+        // own claim never drops to holding nothing, which would forget it.
+        if let Some(holder) = holder {
+            self.members
+                .entry(Arc::clone(&holder.member))
+                .or_default()
+                .held += 1;
+        }
         // A redelivery replaces the claim it was owed under, if one stands.
         self.take_in_flight(offset);
+        self.hold(offset, deadline);
+        if let Some(holder) = holder {
+            self.holders.insert(offset, holder.clone());
+        }
+        *self.attempts.entry(offset).or_insert(0) += 1;
+    }
+
+    /// Keep `offset` in flight until `deadline`. Any earlier entry in
+    /// `lapses` is the caller's to remove.
+    fn hold(&mut self, offset: u64, deadline: Instant) {
         self.in_flight.insert(offset, deadline);
         self.lapses.insert((deadline, offset));
-        *self.attempts.entry(offset).or_insert(0) += 1;
+    }
+
+    /// Record `consumer` as a member, and make its reservation if this poll
+    /// is the reclaim. Returns what its claims are recorded under.
+    fn register(&mut self, consumer: &GroupConsumer) -> Holder {
+        let member = match self.members.get_key_value(&consumer.member) {
+            Some((member, _)) => Arc::clone(member),
+            None => {
+                let member = Arc::clone(&consumer.member);
+                self.members
+                    .insert(Arc::clone(&member), MemberState::default());
+                member
+            }
+        };
+        let holder = Holder {
+            member,
+            connection: consumer.connection,
+        };
+        let state = self.members.get_mut(&holder.member).expect("registered");
+        // Once per connection, and never by an older connection than the last
+        // to reclaim: a client that sets `reclaim` on every poll, or a second
+        // live process under the same name, would otherwise keep taking claims
+        // still being worked on, an attempt each time.
+        if consumer.reclaim && state.reclaimed_on < consumer.connection {
+            state.reclaimed_on = consumer.connection;
+            state.reserved = self
+                .holders
+                .iter()
+                .filter(|(_, held)| {
+                    held.member == holder.member && held.connection < consumer.connection
+                })
+                .map(|(offset, _)| *offset)
+                .collect();
+        }
+        holder
+    }
+
+    /// Hand `holder` the claims its reclaim reserved, lowest offset first, as
+    /// many as fit. A reserved claim that lapsed or settled since is skipped;
+    /// a lapsed one is already owed to the whole group.
+    fn take_reserved(&mut self, holder: &Holder, max: usize, deadline: Instant, claim: &mut Claim) {
+        while claim.offsets.len() < max {
+            let Some(state) = self.members.get_mut(&holder.member) else {
+                return;
+            };
+            if state.reclaimed_on != holder.connection {
+                return;
+            }
+            let Some(offset) = state.reserved.pop_first() else {
+                return;
+            };
+            let still_held = self.holders.get(&offset).is_some_and(|held| {
+                held.member == holder.member && held.connection != holder.connection
+            });
+            if !still_held {
+                continue;
+            }
+            let attempts = self.attempts.get(&offset).copied().unwrap_or(0);
+            if attempts >= self.max_attempts {
+                // As for an owed record: the caller settles it once the dead
+                // letter is durable.
+                self.take_in_flight(offset);
+                claim.dead_lettered.push(DeadLettered { offset, attempts });
+                continue;
+            }
+            self.hand_out(offset, deadline, Some(holder));
+            claim.offsets.push(offset);
+        }
+    }
+
+    /// Forget who held `offset`. A member left holding nothing is forgotten
+    /// too, along with anything still reserved for it, which by then has all
+    /// lapsed or settled.
+    fn release_holder(&mut self, offset: u64) {
+        let Some(holder) = self.holders.remove(&offset) else {
+            return;
+        };
+        if let Some(state) = self.members.get_mut(&holder.member) {
+            state.held = state.held.saturating_sub(1);
+            if state.held == 0 {
+                self.members.remove(&holder.member);
+            }
+        }
     }
 
     /// Drop the claim on `offset`, returning whether there was one.
     fn take_in_flight(&mut self, offset: u64) -> bool {
+        self.release_holder(offset);
+        self.delayed.remove(&offset);
         match self.in_flight.remove(&offset) {
             Some(deadline) => {
                 self.lapses.remove(&(deadline, offset));
@@ -338,6 +578,60 @@ impl GroupTracker {
             None => false,
         }
     }
+}
+
+/// A group member that names itself when it polls.
+///
+/// A member is its name together with the principal it authenticated as, so
+/// a name chosen by one principal never reaches the claims of another.
+#[derive(Debug, Clone)]
+pub struct GroupConsumer {
+    member: Arc<MemberKey>,
+    connection: u64,
+    reclaim: bool,
+}
+
+impl GroupConsumer {
+    /// `name`, polling as `principal` on `connection`. Connection ids must
+    /// grow with each new connection: a reclaim takes only what older ones
+    /// hold. `reclaim` asks for those claims back; it takes effect on the
+    /// connection's first such poll and is ignored after.
+    pub fn new(principal: &str, name: &str, connection: u64, reclaim: bool) -> Self {
+        Self {
+            member: Arc::new(MemberKey {
+                principal: principal.into(),
+                name: name.into(),
+            }),
+            connection,
+            reclaim,
+        }
+    }
+}
+
+/// Who a named member is: the principal and the name it chose.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct MemberKey {
+    principal: Box<str>,
+    name: Box<str>,
+}
+
+/// The member holding a claim, and the connection it claimed on.
+#[derive(Debug, Clone)]
+struct Holder {
+    member: Arc<MemberKey>,
+    connection: u64,
+}
+
+/// One named member's standing in a group.
+#[derive(Debug, Default)]
+struct MemberState {
+    /// How many claims it holds.
+    held: usize,
+    /// The newest connection that reclaimed. An older one cannot.
+    reclaimed_on: u64,
+    /// Claims that connection's reclaim took from older ones, not yet handed
+    /// back to it.
+    reserved: BTreeSet<u64>,
 }
 
 /// Most offsets one claim hands out, whatever the client asked for. A request

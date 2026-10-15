@@ -100,6 +100,7 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
                 addr: Some(b.addr.to_string()),
                 generation: 1,
             },
+            None,
         )
         .await;
     cluster
@@ -140,6 +141,7 @@ async fn connections_grow_to_the_ceiling_under_concurrent_load() -> Result<()> {
         subscription_id: 0,
         start_offset: None,
         live_offset: None,
+        queue_capacity: None,
     })?;
     let mut config = default_config(cert)?;
     config.publish_conn_pool = 1;

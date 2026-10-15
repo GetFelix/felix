@@ -1,12 +1,17 @@
-# syntax=docker/dockerfile:1.7
 # The control plane, as a container.
 #
 # Built from the workspace root
 # (`docker build -f docker/controlplane.Dockerfile .`). Same two-stage shape as
 # the broker image.
 
+# Docker Hub by default. CI passes a mirror of the same official images
+# (`--build-arg BASE_REGISTRY=mirror.gcr.io/library`) to stay clear
+# of Docker Hub's anonymous pull limit. There is no `# syntax=` line for the
+# same reason: BuildKit's built-in frontend handles the cache mounts below.
+ARG BASE_REGISTRY=docker.io/library
+
 # --- build ---------------------------------------------------------------
-FROM rust:1.97-bookworm AS build
+FROM ${BASE_REGISTRY}/rust:1.97-bookworm AS build
 WORKDIR /felix
 
 COPY . .
@@ -21,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/release/${BIN}" /usr/local/bin/felix-controlplane
 
 # --- runtime -------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM ${BASE_REGISTRY}/debian:bookworm-slim AS runtime
 
 # ca-certificates: two reasons, not one — the control plane fetches an IdP's
 #   JWKS over TLS, and it connects to Postgres, which is usually TLS too.

@@ -22,12 +22,12 @@ Detailed RBAC mutation/delegation rules and canonical grammar are documented in 
 Felix supports any OIDC-compliant IdP that exposes a JWKS endpoint (either via OIDC discovery or a direct `jwks_url`) and uses an allowed upstream OIDC signing algorithm.
 
 Supported upstream OIDC JWT signing algorithms:
-- `ES256` (default)
-- `RS256`, `RS384`, `RS512`
+- `ES256` and `RS256` (the default)
+- `RS384`, `RS512`
 - `PS256`, `PS384`, `PS512`
 
 Control plane configuration:
-- YAML: `oidc_allowed_algorithms: ["ES256"]`
+- YAML: `oidc_allowed_algorithms: ["ES256", "RS256"]`
 - Env: `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,...`
 
 This includes common providers like:
@@ -62,6 +62,10 @@ Claims:
 - `tid`: tenant id
 - `exp`, `iat`
 - `perms`: array of permission strings
+- `act` (delegated tokens only): `{"sub": "<actor>"}`, the gateway that may
+  present the token (see [Delegated tokens](#delegated-tokens))
+- `may_act` (optional): `{"sub": "<actor>"}`, the one gateway that may have the
+  token delegated to it
 
 Algorithm:
 - **EdDSA (Ed25519)** (tenant-specific signing key).
@@ -109,6 +113,10 @@ Objects:
 - Namespace: `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - Stream: `stream:{tenant_id}/{namespace}/{stream}`, `stream:{tenant_id}/{namespace}/*`, or `stream:{tenant_id}/*/*`
 - Cache: `cache:{tenant_id}/{namespace}/{cache}`, `cache:{tenant_id}/{namespace}/*`, or `cache:{tenant_id}/*/*`
+- Cache keys: `cache:{tenant_id}/{namespace}/{cache}/{key}` for one key, or
+  `.../{prefix}*` for every key starting with `prefix` (a plain string prefix,
+  so `user:1*` covers `user:10`). `cache.read` and `cache.write` only. See
+  [Granting cache keys](security/rbac.md#granting-cache-keys).
 - Cluster: `cluster:*` (see [Cluster scope](#cluster-scope))
 - Node: `node:{node_id}`, one broker
 
@@ -124,6 +132,10 @@ Actions:
   or one group's `group:{tenant_id}/{namespace}/{stream}/{group}`
 - `node.view`: cluster-scoped only
 - `node.manage`: over `node:{node_id}` or `cluster:*`
+- `token.delegate`: over `tenant:{tenant_id}`, to exchange a user's broker
+  token for one naming the caller as its actor (`/token/delegate`). Only the
+  control plane checks it, it is never put in a broker token, and
+  `tenant.manage` does not imply it.
 
 Consumer-group operations are split in two, over the stream's object:
 
@@ -232,11 +244,16 @@ Example:
    covers: asking for `stream:t1/payments/orders` out of a
    `stream:t1/payments/*` grant yields the one stream. A resource outside every
    grant, or one that is not an RBAC object, yields nothing; the filter never
-   widens.
+   widens. The two filters combine as a cross product: every kept action on
+   every kept resource. `permissions` names `action:object` pairs instead and
+   narrows each one separately, so one token can subscribe to one stream and
+   publish to another. See [Narrowing by pairs](#narrowing-by-pairs).
 7) A Felix access token is minted for the requested `audience`, along with a
    refresh token, and both are returned.
 
-If no permissions remain, the exchange returns `403`.
+If no permissions remain, the exchange returns `403`. The one exception is a
+delegating gateway's connection-only token; see
+[The gateway's own connections](#the-gateways-own-connections).
 
 A token whose `kid` is not in the cached JWKS triggers a re-fetch, since that
 usually means the IdP rotated keys. That lookup happens before the signature
@@ -245,6 +262,54 @@ token. Each JWKS URL is therefore re-fetched at most once every 30 seconds;
 concurrent misses wait for the one fetch in progress, and a miss inside the
 window is refused without contacting the IdP. A key the IdP rotates in is
 accepted within 30 seconds of its first use. Fetches time out after 10 seconds.
+
+### Narrowing by pairs
+
+`permissions` is a list of `action:object` strings, in the grammar RBAC
+policies use. For each pair, the control plane takes every granted permission
+with exactly that action and narrows its object to what the pair names, by the
+same rule `resources` uses. The token holds the union of the results.
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+With `stream.subscribe` and `stream.publish` granted on `stream:t1/rooms/*`,
+this token holds exactly the two pairs. A pair can never add to what RBAC
+grants:
+
+- An action the principal is not granted yields nothing. Matching is exact on
+  the action string, so a `stream.manage` grant does not answer a
+  `stream.publish` pair.
+- A pair broader than the grant keeps the grant as it is. Asking for
+  `stream.subscribe:namespace:t1/rooms` with only `stream:t1/rooms/a` granted
+  yields `stream:t1/rooms/a`.
+- Pairs do not borrow from each other. With subscribe granted on `a` and
+  publish on `b`, asking for publish on `a` and subscribe on `b` yields nothing
+  and the exchange answers `403`.
+
+`permissions` must be sent with `"requested": []` and without a non-empty
+`resources`; anything else is a `400`, as is a pair that does not parse or
+names an unknown action. The empty `requested` is there for control planes
+that predate `permissions`. Such an instance ignores the field it does not
+know, and without `requested: []` it would mint the principal's full rights.
+With it, it narrows to nothing and refuses with `403`. The refresh record
+stores `requested: []` next to the pairs for the same reason, so an older
+instance refreshing the chain refuses instead of widening it.
+
+Under the Raft store the pairs are a metadata version 5 field. Until every
+control-plane member reports that version, an exchange or dev token with
+`permissions` is refused with `409` before anything is written; exchanges
+without it are unaffected.
+
+A pair's object can be anything an RBAC policy object can be, and it is
+narrowed by the same containment rules the broker checks against.
 
 ## Staying authenticated: refresh
 
@@ -264,11 +329,31 @@ Three properties make that safe:
   database read yields nothing presentable.
 - **Every refresh token is single-use.** Refreshing spends the one presented and
   hands back its replacement. A stolen copy is worth one use, not a month of
-  them.
+  them. Every check that can fail runs before the spend, and the spend and the
+  replacement are one store write, so a refresh that fails with an error leaves
+  the token presented unspent. (Under Raft, until every member is at metadata
+  version 9 the spend and the replacement are two writes.) A refresh refused
+  for lost permissions ends the chain instead, below.
 - **A replay revokes the whole chain.** Nobody legitimately presents a spent
   token, so seeing one means two parties hold the chain. Both lose it, and the
   genuine holder re-exchanges. This is what makes single use *detect* theft
   rather than merely limit it.
+- **Except a retry within the reuse grace window.** A refresh can commit and
+  still lose its answer, as when a Raft write times out and commits later.
+  The client's retry presents a spent token with the right secret. Within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default) of that spend, and while
+  the token that replaced it is still unused, the retry spends that
+  replacement and gets a new one instead of ending the chain. Two concurrent
+  refreshes of one token take the same path: both succeed, but each spends the
+  other's result, so the older one is a replay once the window ends. Outside
+  the window, or once the replacement was used, it is a replay. Below Raft
+  metadata level 9 the window does nothing, because the fallback rotation
+  records no successor, so a lost answer still ends the chain until every
+  member is at level 9. The
+  cost is that replay detection is blind for the window: a thief who presents
+  a stolen token within it, before the genuine holder uses the replacement,
+  gets a working chain, and the genuine holder's next refresh is the one
+  treated as a replay. Set it to `0` to turn the window off.
 
 Permissions are re-evaluated against current RBAC on every refresh, never
 carried over from the previous token. A grant removed after a token was issued
@@ -282,8 +367,8 @@ The group claims presented at exchange are recorded on the refresh token,
 because group-derived grants cannot be recomputed without them. They are claims
 to re-check, not permissions to reuse.
 
-So is the exchange's narrowing: its `requested` actions, `resources` hints and
-`audience`. A refresh applies the same narrowing to current RBAC, so a narrowed
+So is the exchange's narrowing: its `requested` actions, `resources` hints,
+`permissions` pairs and `audience`. A refresh applies the same narrowing to current RBAC, so a narrowed
 token's refresh token never yields more than the narrowed token did, and the
 chain keeps its audience for life. Asking a refresh for a different audience is
 a `400`; exchange again for the other one. A refresh token issued before the
@@ -294,8 +379,9 @@ always did.
 is stolen and *never used*; one that is used produces a replay, which ends the
 chain immediately.
 
-To cut off a principal without waiting out any token's expiry, revoke its
-refresh tokens for the tenant; every chain it holds ends at once:
+To cut off a principal without waiting out any token's expiry, revoke it.
+Every refresh chain it holds ends at once, and so does every broker stream its
+broker tokens opened (see [Revoking a principal](#revoking-a-principal)):
 
 ```
 POST /v1/tenants/{tenant_id}/refresh-tokens/revoke
@@ -305,10 +391,134 @@ Content-Type: application/json
 { "principal_id": "<the principal's sub>" }
 ```
 
-The answer is `{"revoked": <n>}`, the number of live tokens it ended. Access
-tokens already minted stay valid until they expire, which is what the short
-access TTL bounds. Removing the principal's groupings stops the next refresh
-too, and ends its chain.
+The answer is `{"revoked": <n>}`, the number of live refresh tokens it ended.
+Its broker tokens are refused from then on, and brokers end the streams they
+opened within about one sync interval. Its `felix-controlplane` tokens stay
+valid until they expire, which is what the short access TTL bounds. A `409`
+means some control-plane member predates revocations: the refresh tokens are
+revoked, the broker sessions are not, and the call is safe to repeat once the
+upgrade finishes. Removing the principal's groupings stops the next refresh
+too, and ends its chain. `"principal_id": "*"` revokes the broker tokens of
+every principal of the tenant.
+
+### Revoking a principal
+
+A revocation is a cutoff time recorded for one principal of a tenant. Every
+broker token of that principal issued at or before it is refused, and every
+stream such a token opened is ended. A delegated token is also revoked when its
+actor is. These record one:
+
+- `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`, for the principal named.
+- Removing a policy (`DELETE /v1/tenants/{t}/rbac/policies`), for the policy's
+  subject and everyone who reaches it through role assignments.
+- Removing a role assignment (`DELETE /v1/tenants/{t}/rbac/groupings`), for
+  the assignment's user and everyone who reaches it.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts, for every
+  principal of the tenant. Narrowing means dropping an audience or changing
+  the subject or groups claim; replacing means changing `jwks_url` or
+  `discovery_url`, since the old key source is no longer trusted. Adding an
+  audience, or anything else that only widens, revokes nobody.
+
+When the subjects a removal reaches include an IdP group (`group:...`), the
+control plane cannot tell who its members are, so the revocation covers every
+principal of the tenant (`principal_id` `*`). Every broker session in the
+tenant then has to authenticate again. The change and its revocation are one
+store write (one Raft entry, one Postgres transaction), so either both happen
+or neither does, and a failed request is safe to retry.
+
+Under Raft, a group with a member below metadata version 9 makes them two
+writes, as older builds did. If the second one fails, the change stands and the
+sessions it reached keep their rights; below version 7 it is skipped with a
+warning. To end them by hand, call `refresh-tokens/revoke` with the principals
+the change reached, or with `"principal_id": "*"` for the whole tenant.
+
+Brokers poll `GET /v1/principal-revocations/changes?since=<n>` on the catalog
+sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), with the same
+`node.view:cluster:*` credential. The feed holds each principal once, at its
+latest revocation, so `since=0` is the whole set. When a broker learns of one:
+
+- An `Auth` with a revoked token is refused with the `revoked` error code.
+- An open control stream gets an `error` with `revoked` and is closed. A uni
+  publish stream is closed.
+- A subscription or cache watch gets an `error` with `revoked` as its last frame
+  on its event stream. A client that did not offer error codes gets the same
+  frame without the code. The Rust client yields it from `next_event` as a
+  `BrokerError`, and from `CacheWatch::refusal` after the watch ends.
+- A Kafka connection is closed at its next request, and a new SASL login with
+  the token is refused.
+- A forwarded publish or cache operation carrying the token is refused by the
+  owner.
+
+Revocation ends sessions; it does not narrow them. A client that still holds
+some rights gets a token minted under the current rules from its next refresh
+and opens its streams again with it. Token times are whole seconds, so the
+control plane holds a mint that falls in the same second as a revocation of
+its principal until that second has passed (at most two seconds, for clock
+skew between members). `/token/delegate` refuses a subject token issued at or
+before a revocation of its subject or of the caller, and a caller whose own
+token was issued at or before a revocation of it. `actor_token` on
+`/token/exchange` is checked the same way (see
+[Delegated tokens](#delegated-tokens)). A revocation of a gateway does not end
+the refresh chains of the users behind it, since RBAC edits that merely reach
+the gateway, or the whole tenant, record one; the gateway needs a
+`felix-controlplane` token minted after it to delegate again.
+
+#### While a broker cannot reach the feed
+
+Revocation fails open on a broker that cannot poll the feed. A revocation made
+meanwhile is not enforced there until a poll succeeds again:
+
+- A new `Auth` with a revoked token is accepted until the token expires. A
+  revoked token was minted before the revocation and expires at most
+  `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` (900 s by default) after it was minted,
+  so this lasts at most one access TTL past the revocation.
+- A stream already open keeps running until the feed is back, however long
+  that takes, because an open stream outlives its token's expiry. The first
+  successful poll ends it.
+
+The broker logs a warning when a poll fails, again every minute while polls
+keep failing, and an info line when the feed is back.
+`felix_revocation_feed_poll_errors_total` counts failed polls, and
+`felix_revocation_feed_last_success_seconds` is the Unix time of the last good
+one, or of when the broker started following the feed if no poll has
+succeeded yet, so a feed that is down from the start still shows a growing
+age. Alert on `time() - felix_revocation_feed_last_success_seconds` growing
+past a few sync intervals.
+
+A broker does not refuse new streams while the feed is down. It verifies
+tokens with keys it already holds, so the data plane keeps working through a
+control-plane outage. Refusing would turn every such outage into a data-plane
+one to guard against a revocation that may not have happened, and it would not
+end the open streams, which are the larger exposure.
+
+#### Clocks
+
+A cutoff and a token's `iat` are both wall-clock seconds, taken by whichever
+control-plane member served the request: the cutoff by the member that took
+the revoke call or the RBAC removal, `iat` by the member that minted the token.
+Under the Raft store, and with several replicas over one Postgres, these can be
+different machines. `/token/exchange`, `/token/delegate` and `/token/refresh`
+read cutoffs on the Raft leader after a read-index, so they see every
+revocation already acknowledged, whatever the asking member has applied. A
+read that fails fails the request, before a refresh token is spent. While the
+leader predates that read, a member reads its own state, and its apply lag
+adds to the window below.
+
+That leaves clock skew. A token minted just before a revocation, on a member
+whose clock runs `d` seconds ahead of the member that took the revocation, can
+carry an `iat` up to `d` seconds after the cutoff and survive it. A member
+whose clock is behind fails the other way: once the two-second mint wait runs
+out, it mints tokens the cutoff refuses.
+
+Keep the members' clocks synchronized; token expiry checks already rely on
+that, with 5 s of leeway. A monotonic revocation number in place of a time
+would remove the skew, but it needs a new claim that every broker checks, so
+Felix does not do that.
+
+A broker that cannot reach the control plane learns of revocations when it can
+again. The feed is kept across a restore or a `migrate`, so a revoked token that
+has not expired stays revoked. Revoking needs every Raft member at metadata
+version 7.
 
 ### In the Rust client
 
@@ -323,7 +533,10 @@ time a stream authenticates.
 (normally the `/token/refresh` call above). It fetches a new one when two
 thirds of the current token's lifetime has passed, based on `exp`. If a fetch
 fails it keeps using the current token until that expires. If the broker
-refuses a token, the client asks for a new one and retries once.
+refuses a token, the client asks for a new one and retries once. Keep one
+refresh in flight per chain, and keep the newest refresh token: two concurrent
+refreshes both succeed within the reuse grace window, but each spends the
+other's result, so the older one is a replay once the window ends.
 
 ```rust,ignore
 config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
@@ -332,10 +545,218 @@ config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
 )));
 ```
 
-The broker only checks the token when a stream opens, so a stream that is
-already open keeps working after the token expires. Forwarded publishes are the
-exception. When a broker forwards a publish to the shard owner, the owner checks
-the token the publish stream opened with and rejects it once it has expired.
+The broker checks the token when a stream opens, so a stream that is already
+open keeps working after the token expires. A revocation does end it; see
+[Revoking a principal](#revoking-a-principal). Forwarded publishes are also
+checked again. When a broker forwards a publish to the shard owner, the owner
+checks the token the publish stream opened with and rejects it once it has
+expired or been revoked.
+
+### Many users over one client
+
+A gateway that acts for many users, each with their own Felix token, does not
+need a `Client` per user. `Client::with_identity(tenant_id, token_provider)`
+returns a client that shares the parent's connections and authenticates every
+stream it opens with the user's token. `with_identity_token` takes a fixed
+token instead.
+
+```rust,ignore
+let gateway = Client::connect(addr, "broker", gateway_config).await?;
+let alice = gateway.with_identity("t1", alice_tokens).await?;
+// Checked against alice's grants, not the gateway's.
+alice.cache_get("t1", "app", "sessions", "alice:profile").await?;
+```
+
+This works because the broker authenticates streams, not connections. Each
+QUIC stream sends its own `Auth` and gets its own session, and every request on
+it is checked against that session's token. Streams for different users can
+share a connection without one user's grants covering another's request. No
+wire change or feature bit is involved, so every broker version serves it.
+
+How an identity behaves:
+
+- It opens one publish stream and one cache stream before `with_identity`
+  returns, so a refused token fails there. Subscriptions, cache watches and
+  group requests open their own streams under the same token, as on any client.
+- Its token provider is asked for a token on each stream open. One user's token
+  expiring stops only that user's new streams, and revoking the user ends only
+  that user's streams. A refused `Auth` closes one stream, never the connection.
+- Dropping it closes its streams and leaves the connections to the gateway and
+  the other users.
+- A refused publish or cache request ends the stream it came on, on every
+  client. With one stream of each, the identity can no longer publish or reach
+  the cache after that, so a gateway that forwards requests a user may not make
+  should build a new identity after a refusal.
+- Each identity has its own limits on both sides. The client gives every
+  identity its own `publish_inflight_bytes`. The broker keys its per-connection
+  limits by tenant and token subject: each user on a connection gets
+  `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` of unanswered publish bytes and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` subscriptions and cache watches, so one
+  user at either limit is refused or slowed without taking the others' room.
+  The connection as a whole is capped at
+  `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (four users' worth, at most
+  `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (four users' worth), and the users
+  share that ceiling: four users at their limits use all of it, and a fifth is
+  refused or slowed. A gateway that can have more users than that at full load
+  should raise the ceilings or spread its users over more than one `Client`.
+  A user's share is dropped once they have no stream, subscription or publish
+  in flight on the connection.
+- The connections' QUIC flow-control windows are shared. A subscription the
+  gateway does not read can slow delivery to the other users on that
+  connection, so drain each one promptly or drop it.
+- With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, the gateway's certificate is
+  presented with every user's token, and a user's own token is refused there.
+  The gateway exchanges each user's token for a delegated one first; see
+  [Delegated tokens](#delegated-tokens).
+- `ClusterClient::with_identity` and `with_identity_token` do the same across
+  a cluster. The result is a `ClusterClient` with its own routing state that
+  reaches each broker over the parent's connection to it, so it follows moved
+  shards, redirects and failovers without a connection per user. When the
+  parent's connection to a broker is rebuilt, the identity's streams there are
+  reopened on the new one at its next request. The limits above apply on each
+  broker. The Python and TypeScript clients expose it as `with_identity` and
+  `withIdentity`, with a fixed token.
+
+### Delegated tokens
+
+A delegated token is a user's broker token reissued to name the gateway that
+presents it: `sub` is still the user, and `act: {"sub": "<gateway principal>"}`
+names the actor (RFC 8693). The broker authorizes it with the user's
+permissions, as any token. Subject binding is the one place `act` matters: a
+client certificate binds a token whose `sub` it was issued to, or whose
+`act.sub` it was issued to, by the same `felix:principal:` URI or DNS/IP rules.
+Without `act`, only `sub` binds, so a gateway's certificate carries a user's
+token only after delegation. The claim is signed with the rest of the token,
+so nobody but the control plane can add it.
+
+A user's token can only be delegated to the gateway it was minted for. When
+the gateway exchanges the user's IdP token at `/token/exchange`, it sends its
+own `felix-controlplane` token as `actor_token`. The control plane checks that
+the actor token is valid for the tenant and holds `token.delegate` on it, and
+mints the user's broker token with `may_act: {"sub": "<gateway principal>"}`
+(RFC 8693, section 4.4). An actor token that does not verify for the tenant
+or lacks `token.delegate` is refused with `403` and code `actor_refused`. So
+is one issued at or before a revocation of its principal, or whose principal
+current RBAC no longer grants `token.delegate`: the token's claims alone are
+not enough, since a gateway's `felix-controlplane` token stays valid for its
+whole TTL after the gateway is revoked. The code is `actor_refused`,
+never `forbidden`, so the gateway can tell a problem with its own credential
+from a user without permissions. Every token refreshed from that exchange's refresh
+token carries the same claim, and the refresh checks that current RBAC still
+grants the gateway `token.delegate`. If it does not, the refresh is refused
+with `403` and the chain ends; the user exchanges again through a gateway that
+can still delegate. A revocation of the gateway alone does not end the chain:
+`/token/delegate` checks it against the gateway's own token instead.
+`/token/delegate` refuses a subject token whose
+`may_act.sub` is not the caller, so a broker token taken from a browser, a log
+or another gateway cannot be bound to a different gateway's certificate.
+
+```mermaid
+sequenceDiagram
+    participant G as Gateway
+    participant CP as Control plane
+    participant B as Broker
+    G->>CP: /token/exchange, Bearer user's IdP token, actor_token = gateway's token
+    CP-->>G: user's broker token with may_act.sub = gateway
+    G->>CP: /token/delegate, Bearer gateway's token, subject_token = that token
+    CP->>CP: may_act.sub equals the caller?
+    CP-->>G: delegated token with act.sub = gateway
+    G->>B: Auth with the delegated token over the gateway's certificate
+```
+
+A subject token without `may_act` is refused too, unless the control plane
+runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. That switch lets
+any holder of `token.delegate` delegate any `may_act`-less broker token of the
+tenant it has, which is how delegation behaved before `may_act`; turn it on
+only while gateways move to `actor_token`, and off again after. A token whose
+`may_act` names another actor is refused either way.
+
+Under the Raft store the actor is kept with the refresh token as a metadata
+version 6 field. Until every control-plane member reports that version, an
+exchange with `actor_token` is refused with `409` before anything is written.
+
+```http
+POST /v1/tenants/{tenant_id}/token/delegate
+Authorization: Bearer <the gateway's felix-controlplane token>
+Content-Type: application/json
+
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "subject_token": "<the user's felix-broker token>",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "permissions": ["stream.publish:stream:t1/app/alice-feed"]
+}
+```
+
+```json
+{
+  "access_token": "<jwt>",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+- The caller is the actor. Its token must be a `felix-controlplane` token for
+  the same tenant carrying `token.delegate:tenant:{tenant_id}`, issued after
+  any revocation of the caller, and current RBAC must still grant the caller
+  `token.delegate`. The caller's IdP groups are not known here, so a grant
+  to an IdP group counts for a caller whose token carries the permission when
+  the group's issuer is one the tenant trusts (a bare legacy group name only
+  while `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` is on). Removing such a
+  grant, or the issuer, revokes the whole tenant, which the revocation check
+  catches. A caller refused for either reason gets `403` with code
+  `actor_refused`; mint a new `felix-controlplane` token and try again.
+- `subject_token` must be a `felix-broker` token of that tenant that is not
+  itself delegated (one hop only), and its `may_act` must name the caller.
+- The result is never wider than the subject token: the same tenant and
+  subject, its permissions or the subset `permissions` keeps (narrowed as on
+  `/token/exchange`, never widened), and an expiry no later than the subject
+  token's or `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` from now, whichever is sooner.
+- There is no refresh token. When the user's token is refreshed, delegate the
+  new one.
+- `400` for a wrong `grant_type` or `subject_token_type` or a malformed
+  permission, `401` for a missing or invalid caller token, `403` for a caller
+  without `token.delegate` (in its token or in current RBAC) or whose token
+  predates a revocation of it, a subject token that does not verify, belongs to
+  another tenant, is already delegated, or names another actor or none in
+  `may_act`, or nothing left after narrowing.
+
+### The gateway's own connections
+
+The gateway's shared connections authenticate with a broker token of the
+gateway's own principal before any user's delegated token rides on them. That
+token is only there to open the connection: every request is checked against
+the user's token on its stream. It should therefore carry no permissions.
+
+A principal that holds `token.delegate:tenant:{tenant_id}` can exchange for a
+connection-only broker token by asking for no permissions at all:
+
+```json
+{ "requested": [], "permissions": [] }
+```
+
+The token has the gateway's `sub` and an empty `perms`. The broker accepts it
+on `Auth`, which is all the connection needs, and refuses every request made
+with it. Under subject binding its `sub` matches the gateway's certificate.
+
+- Only a `felix-broker` token, and only for a holder of `token.delegate` on the
+  whole tenant. Anyone else asking for no permissions gets `403`
+  `no permissions`, as before, so the refusal still catches a misconfigured
+  grant.
+- The gateway has to ask for it. An ordinary exchange by the same principal
+  still refuses an empty result, since `token.delegate` never reaches a broker
+  token.
+- Refresh keeps it connection-only and checks `token.delegate` again. Once the
+  grant is removed, the next refresh is refused and the refresh chain ends.
+- The request is the pair narrowing with no pairs. A control plane that
+  predates connection-only tokens narrows it to nothing and refuses it with
+  `403`, never minting a wider token. Under the Raft store it needs the
+  metadata version pair narrowing needs, and answers `409` until then.
+
+A delegating gateway's principal therefore needs `token.delegate` and no
+broker grant.
 
 ## Bootstrap Mode (Day-0)
 
@@ -425,12 +846,20 @@ Bootstrap tokens **never** authorize normal admin endpoints.
    path segment. Concurrent misses for one tenant share a single request, a
    failed fetch is remembered for 5 seconds, at most 8 fetches run at once, and
    each has a 5 second timeout. A fetched JWKS is cached for an hour.
+
+   The broker also fetches the JWKS of every tenant in its catalog once the
+   first catalog sync lands, before it reports ready, spending at most 5
+   seconds on it. A broker that restarts and then loses the control plane can
+   still verify tokens of tenants it had not served yet, including the token a
+   peer forwards with a client's write.
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`
    - `exp/nbf`
    - `tid` matches connection tenant
 4) Broker parses `perms` once at connect time and enforces per operation using keyMatch2.
+   A cache request is also checked against its key, or a prefix watch against
+   its prefix, so a key-scoped grant covers only the keys it names.
 
 ## Data Stored Per Tenant
 
@@ -616,7 +1045,18 @@ Content-Type: application/json
 ```
 
 All three fields are optional. `audience` is `felix-broker` (the default) or
-`felix-controlplane`; anything else is `400`.
+`felix-controlplane`; anything else is `400`. To name action and resource
+pairs instead, send `"permissions": ["stream.subscribe:stream:t1/rooms/a", ...]`
+with `"requested": []`, as described in
+[Narrowing by pairs](#narrowing-by-pairs).
+
+A gateway exchanging a user's sign-in for a token it will delegate also sends
+`"actor_token": "<its own felix-controlplane token>"` (and optionally
+`"actor_token_type": "urn:ietf:params:oauth:token-type:jwt"`). The broker token
+then carries `may_act` naming the gateway; see
+[Delegated tokens](#delegated-tokens). A delegating gateway asks for its own
+connection-only broker token with `"requested": [], "permissions": []`; see
+[The gateway's own connections](#the-gateways-own-connections).
 
 Response:
 
@@ -756,6 +1196,8 @@ p, role:tenant-admin, tenant-a, tenant:tenant-a, tenant.manage
 p, role:tenant-admin, tenant-a, tenant:tenant-a, rbac.policy.manage
 p, role:payments-admin, tenant-a, namespace:tenant-a/payments, ns.manage
 p, role:publisher, tenant-a, stream:tenant-a/payments/*, stream.publish
+p, role:room1, tenant-a, cache:tenant-a/rooms/state/room1/*, cache.read
+p, role:room1, tenant-a, cache:tenant-a/rooms/state/room1/*, cache.write
 
 # groupings (g)
 # g, <user>, <role>, <tenant>
@@ -767,6 +1209,7 @@ g, p:bob, role:payments-admin, tenant-a
 
 - `401 Unauthorized`: invalid or missing upstream token
 - `403 Forbidden`: tenant not allowed, issuer not allowed, or no permissions
+  (except a delegating gateway's connection-only token)
 - `500 Internal Server Error`: unexpected backend failures
 
 ## Future Work

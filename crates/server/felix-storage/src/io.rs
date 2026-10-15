@@ -26,10 +26,11 @@
 //! Every platform-specific call degrades to a correct no-op or to the portable
 //! equivalent, so an unsupported target loses performance and never correctness.
 //!
-//! A log's flushes run on its own thread (`flusher`), or on Linux can be
-//! submitted to `io_uring` instead (`uring_fsync`).
+//! A log's appends and flushes each run on a thread of its own
+//! (`log_thread`), and on Linux the flushes can be submitted to `io_uring`
+//! instead (`uring_fsync`).
 
-pub(crate) mod flusher;
+pub(crate) mod log_thread;
 #[cfg(all(
     target_os = "linux",
     any(test, debug_assertions, feature = "fault-injection")
@@ -113,13 +114,21 @@ pub(crate) fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Resu
     Ok(())
 }
 
-/// Reserve `len` bytes of blocks for `file` without changing its logical length.
+/// Reserve blocks for the `len` bytes of `file` from `offset` without changing
+/// its logical length.
 ///
 /// Best effort: an unsupported filesystem leaves the file untouched and appends
 /// simply allocate as they go, which is correct but slower.
-pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
+pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
     if len == 0 {
         return Ok(());
+    }
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    {
+        crate::fault::refresh();
+        if let Some(err) = crate::fault::injected_no_space() {
+            return Err(err);
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -129,7 +138,12 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
         // SAFETY: `fd` is a live descriptor owned by `file` for the duration of
         // the call, and the remaining arguments are plain integers.
         let rc = unsafe {
-            libc::fallocate(file.as_raw_fd(), FALLOC_FL_KEEP_SIZE, 0, len as libc::off_t)
+            libc::fallocate(
+                file.as_raw_fd(),
+                FALLOC_FL_KEEP_SIZE,
+                offset as libc::off_t,
+                len as libc::off_t,
+            )
         };
         if rc != 0 {
             let err = io::Error::last_os_error();
@@ -153,6 +167,9 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::io::AsRawFd;
+        // `F_PEOFPOSMODE` counts from the end of what is already allocated,
+        // so a reservation that extends an earlier one passes only its delta.
+        let _ = offset;
         let mut store = libc::fstore_t {
             fst_flags: libc::F_ALLOCATECONTIG,
             fst_posmode: libc::F_PEOFPOSMODE,
@@ -175,7 +192,7 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = file;
+        let _ = (file, offset);
         Ok(())
     }
 }
@@ -334,6 +351,9 @@ pub(crate) fn write_all(mut file: &File, buf: &[u8]) -> io::Result<()> {
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
+        if let Some(delay) = crate::fault::write_delay() {
+            std::thread::sleep(delay);
+        }
         if let Some(err) = crate::fault::injected_write_failure() {
             file.write_all(&buf[..buf.len() / 2])?;
             return Err(err);

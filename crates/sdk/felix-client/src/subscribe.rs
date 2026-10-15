@@ -45,8 +45,9 @@ pub struct Subscription {
     bench_embed_ts: bool,
     start_offset: Option<u64>,
     live_offset: Option<u64>,
+    queue_capacity: Option<u32>,
     /// Filled by the dispatch task before it closes the event queue.
-    shard_moved: Arc<OnceLock<ShardMoved>>,
+    ended: Arc<OnceLock<Ended>>,
 }
 
 impl Subscription {
@@ -56,10 +57,23 @@ impl Subscription {
         self
     }
 
+    pub(crate) fn with_queue_capacity(mut self, queue_capacity: Option<u32>) -> Self {
+        self.queue_capacity = queue_capacity;
+        self
+    }
+
+    /// The broker-side queue capacity the broker granted, in published
+    /// batches, when [`crate::ClientConfig::broker_sub_queue_capacity`] asked
+    /// for one. `None` means the stream's default: none was asked for, or the
+    /// broker predates the option.
+    pub fn queue_capacity(&self) -> Option<u32> {
+        self.queue_capacity
+    }
+
     /// The first offset this subscription delivers.
     ///
-    /// `None` for a plain tail subscribe, an in-memory stream, or an older
-    /// broker.
+    /// `None` for an in-memory stream, or from a broker older than event
+    /// offsets. A plain tail subscribe reports the tail, as `Latest` does.
     pub fn start_offset(&self) -> Option<u64> {
         self.start_offset
     }
@@ -82,14 +96,32 @@ impl Subscription {
     /// `Some` means resubscribe where it says, `None` means the stream simply
     /// closed. [`crate::ClusterClient::subscribe`] does this on its own.
     pub fn shard_moved(&self) -> Option<&ShardMoved> {
-        self.shard_moved.get()
+        match self.ended.get() {
+            Some(Ended::Moved(moved)) => Some(moved),
+            _ => None,
+        }
+    }
+
+    /// Whether the subscription ended because its stream was deleted.
+    ///
+    /// Set before [`Self::next_event`] returns `None`, like
+    /// [`Self::shard_moved`]. There is nothing to resubscribe to. Always
+    /// `false` against a broker that does not advertise
+    /// [`felix_wire::FEATURE_STREAM_DELETED`], where a delete ends the stream
+    /// like any other close.
+    pub fn stream_deleted(&self) -> bool {
+        matches!(self.ended.get(), Some(Ended::Deleted))
     }
 
     /// The next event, or `None` once the broker has closed the event stream.
     ///
     /// Losing the connection is an error, [`crate::SubscriptionLost`], not
-    /// `None`. An error is the last thing a subscription yields: the pipeline
-    /// stops after reporting it.
+    /// `None`. So is falling behind on a durable stream: when the broker's
+    /// queue for this subscription or this client's own drops records, the
+    /// events before the drop are yielded and then
+    /// [`crate::SubscriptionLagged`] says where to resume. An error is the
+    /// last thing a subscription yields: the pipeline stops after reporting
+    /// it.
     pub async fn next_event(&mut self) -> Result<Option<Event>> {
         #[cfg(feature = "telemetry")]
         {
@@ -106,7 +138,13 @@ impl Subscription {
             return Ok(None);
         };
         match queued {
-            QueuedEvent::Payload(payload, offset, skipped_before) => {
+            QueuedEvent::Payload {
+                payload,
+                offset,
+                skipped_before,
+                publisher,
+                timestamp_micros,
+            } => {
                 record_e2e_latency(
                     &payload,
                     #[cfg(feature = "telemetry")]
@@ -119,6 +157,8 @@ impl Subscription {
                     payload,
                     offset,
                     skipped_before,
+                    publisher,
+                    timestamp_micros,
                 }))
             }
             QueuedEvent::Error(err) => Err(err),
@@ -182,6 +222,21 @@ pub struct Event {
     /// dropped, the next jump counts those offsets as dropped too: a drop is
     /// still reported, only its size is overstated.
     pub skipped_before: u64,
+    /// The principal that published this event: the subject of the token
+    /// the broker accepted the write from. `None` unless
+    /// [`crate::ClientConfig::publishers`] asked for it, and for an event
+    /// whose broker did not record one.
+    ///
+    /// It says the broker accepted the write from that principal, which is
+    /// as far as the broker can vouch. It says nothing about who wrote the
+    /// payload's contents, and a principal allowed to publish can publish
+    /// anything.
+    pub publisher: Option<Arc<str>>,
+    /// When the broker appended this event's record, in microseconds since
+    /// the Unix epoch, by the clock of the broker that led the shard. `None`
+    /// unless [`crate::ClientConfig::timestamps`] asked for it, and for an
+    /// in-memory stream, which stores no time.
+    pub timestamp_micros: Option<u64>,
 }
 
 /// Where a subscription's shard went, sent by the broker as the last frame
@@ -202,10 +257,23 @@ pub struct ShardMoved {
     pub generation: u64,
 }
 
+/// Why the broker ended a subscription, when it said.
+#[derive(Debug)]
+enum Ended {
+    Moved(ShardMoved),
+    Deleted,
+}
+
 enum QueuedEvent {
-    /// A payload, for a durable stream the log offset it sits at, and how
-    /// many offsets just before it hold no event.
-    Payload(Bytes, Option<u64>, u64),
+    /// A payload, for a durable stream the log offset it sits at, how many
+    /// offsets just before it hold no event, and who published it.
+    Payload {
+        payload: Bytes,
+        offset: Option<u64>,
+        skipped_before: u64,
+        publisher: Option<Arc<str>>,
+        timestamp_micros: Option<u64>,
+    },
     Error(anyhow::Error),
 }
 

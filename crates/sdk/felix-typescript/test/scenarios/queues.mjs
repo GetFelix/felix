@@ -177,14 +177,7 @@ export default function register(ctx) {
       assert.ok(mine.length > 0, "nothing to hand back");
       const firstAttempts = mine[0].attempts;
 
-      await client.groupNack(
-        fixture.tenant_id,
-        fixture.namespace,
-        stream,
-        0,
-        group,
-        mine[0].offset,
-      );
+      await client.groupNack(fixture.tenant_id, fixture.namespace, stream, 0, group, mine[0]);
 
       const redelivered = await pollUntil(client, fixture, group, 1);
       const again = redelivered.filter((record) => record.payload.toString() === payload);

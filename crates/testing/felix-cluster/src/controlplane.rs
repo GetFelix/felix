@@ -11,6 +11,11 @@
 //! The consequence is worth stating plainly: **the control plane is not under
 //! test as a process.** Its router, store, placement, and HTTP contract all are.
 //! What is not exercised is its `main`, its own configuration, and its shutdown.
+//!
+//! It runs on its own multi-thread runtime rather than the test's. Broker
+//! leases are renewed only by heartbeats answered within a few hundred
+//! milliseconds, and a test's runtime (often single-threaded) also drives every
+//! client the test opens, so sharing it lets test load lapse a lease.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +28,20 @@ use felix_controlplane_service::store::memory::InMemoryStore;
 use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfig};
 use tokio_util::sync::CancellationToken;
 
+use crate::credentials::{Credentials, TOKEN_TTL};
 use crate::ports;
+
+/// `policy` without the settle window. A test starts the brokers it wants
+/// before it places, so a wall-clock wait for more would only make a test
+/// that places on fewer than a stream's factor slower and timing-dependent.
+fn unsettled(
+    policy: felix_controlplane_service::cluster::placement::MovePolicy,
+) -> felix_controlplane_service::cluster::placement::MovePolicy {
+    felix_controlplane_service::cluster::placement::MovePolicy {
+        settle_millis: None,
+        ..policy
+    }
+}
 
 /// Liveness tuned for a harness: brokers are local, so a lapsed heartbeat means
 /// a broker that actually stopped rather than a slow network. Short windows make
@@ -39,6 +57,9 @@ const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     shard_reconcile_interval_ms: 500,
 };
 
+/// How long [`Runtime::stop`] waits for the runtime's threads to exit.
+const RUNTIME_STOP: Duration = Duration::from_secs(5);
+
 /// A running control plane, and the keys to mint credentials against it.
 pub struct ControlPlane {
     pub base_url: String,
@@ -50,11 +71,13 @@ pub struct ControlPlane {
     placement: std::sync::Mutex<Option<Duration>>,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
+    runtime: Runtime,
 }
 
 impl ControlPlane {
     /// Start the control plane, holding the signing keys it will issue against.
     pub async fn start(tenant_id: &str) -> Result<Self> {
+        crate::cluster::capture_control_plane();
         let store = Arc::new(InMemoryStore::new(StoreConfig {
             changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
             change_retention_max_rows: Some(10_000),
@@ -144,31 +167,43 @@ impl ControlPlane {
         };
         let placement_wakes = Arc::clone(&state.placement_wakes);
 
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("bind control plane on {addr}"))?;
-        let addr = listener
-            .local_addr()
-            .context("read control plane address")?;
+        let runtime = Runtime::new()?;
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, build_router(state).into_make_service())
-                .with_graceful_shutdown(async move { serve_shutdown.cancelled().await })
-                .await;
-        });
+        let sweep_store = Arc::clone(&store);
+        let (task, addr) = runtime
+            .handle()
+            .spawn(async move {
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .with_context(|| format!("bind control plane on {addr}"))?;
+                let addr = listener
+                    .local_addr()
+                    .context("read control plane address")?;
+                let sweep_shutdown = serve_shutdown.clone();
+                let task = tokio::spawn(async move {
+                    let _ = axum::serve(listener, build_router(state).into_make_service())
+                        .with_graceful_shutdown(async move { serve_shutdown.cancelled().await })
+                        .await;
+                });
 
-        // Expiry has to run, or a stopped broker stays `live` forever and no
-        // failure test can observe it leaving.
-        let expiry = felix_controlplane_service::cluster::membership::spawn_expiry_sweep(
-            Arc::clone(&store)
-                as Arc<dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync>,
-            LIVENESS,
-            felix_controlplane_service::raft::LeadershipGate::Always,
-            shutdown.clone(),
-        );
-        // Owned by the same token; nothing waits on it separately.
-        drop(expiry);
+                // Expiry has to run, or a stopped broker stays `live` forever
+                // and no failure test can observe it leaving.
+                let expiry = felix_controlplane_service::cluster::membership::spawn_expiry_sweep(
+                    sweep_store
+                        as Arc<
+                            dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync,
+                        >,
+                    LIVENESS,
+                    felix_controlplane_service::raft::LeadershipGate::Always,
+                    sweep_shutdown,
+                );
+                // Owned by the same token; nothing waits on it separately.
+                drop(expiry);
+                anyhow::Ok((task, addr))
+            })
+            .await
+            .context("start control plane")??;
 
         Ok(Self {
             base_url: format!("http://{addr}"),
@@ -178,6 +213,7 @@ impl ControlPlane {
             placement: std::sync::Mutex::new(None),
             shutdown,
             task,
+            runtime,
         })
     }
 
@@ -206,121 +242,11 @@ impl ControlPlane {
             .context("seed tenant signing keys")
     }
 
-    /// A credential for one broker: manage its own membership, and read the
-    /// cluster's assignments and node catalog.
+    /// Credentials for `tenant_id`, signed with this control plane's keys.
     ///
-    /// Scoped to `node:{node_id}` on purpose, which is what a real deployment
-    /// would hand it — a broker presenting this for another node is refused.
-    pub fn node_token(&self, tenant_id: &str, node_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            &format!("p:{node_id}"),
-            vec![
-                format!("node.manage:node:{node_id}"),
-                // Assignments and `/v1/nodes` both require this; without it a
-                // broker cannot learn who owns what, or where they are.
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint node token")
-    }
-
-    /// A credential for a client publishing and subscribing in `tenant_id`.
-    ///
-    /// Stream permissions only. A broker validates every action in a token it is
-    /// presented, and rejects the whole token if one is not a client-facing
-    /// action — so a cluster-scoped permission here would make this credential
-    /// unusable for its actual purpose.
-    pub fn client_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-client",
-            vec![
-                format!("stream.publish:stream:{tenant_id}/*/*"),
-                format!("stream.subscribe:stream:{tenant_id}/*/*"),
-                format!("cache.read:cache:{tenant_id}/*/*"),
-                format!("cache.write:cache:{tenant_id}/*/*"),
-            ],
-            Duration::from_secs(3600),
-        )
-        .context("mint client token")
-    }
-
-    /// A credential for the harness itself, against the control plane's HTTP
-    /// API: create metadata, and read membership and ownership.
-    ///
-    /// Separate from [`Self::client_token`] because the two are presented to
-    /// different services, which accept different actions.
-    pub fn admin_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            "p:harness-admin",
-            vec![
-                format!("tenant.manage:tenant:{tenant_id}"),
-                format!("ns.manage:namespace:{tenant_id}/*"),
-                format!("stream.manage:stream:{tenant_id}/*/*"),
-                format!("cache.manage:cache:{tenant_id}/*/*"),
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint admin token")
-    }
-
-    /// A credential that may operate consumer groups: redrive and discard dead
-    /// letters, which a consumer's `stream.subscribe` does not allow.
-    pub fn group_operator_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-group-operator",
-            vec![format!("group.manage:stream:{tenant_id}/*/*")],
-            Duration::from_secs(3600),
-        )
-        .context("mint group operator token")
-    }
-
-    /// A credential that may subscribe but not publish.
-    ///
-    /// For asserting that a forwarded publish is still authorized: a check done
-    /// only at the ingress broker, or done there and then trusted by the owner,
-    /// would let this through.
-    pub fn subscribe_only_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-reader",
-            vec![format!("stream.subscribe:stream:{tenant_id}/*/*")],
-            Duration::from_secs(3600),
-        )
-        .context("mint subscribe-only token")
-    }
-
-    /// A credential that can change any node's membership.
-    ///
-    /// Separate from [`Self::admin_token`], which only reads: draining a broker
-    /// is a write, and the control plane requires `node.manage` over a scope
-    /// containing the node. A test that moves a shard needs this; nothing else
-    /// should. It also reads, so a test can list the moves it made.
-    pub fn operator_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            "p:harness-operator",
-            vec![
-                "node.manage:cluster:*".to_string(),
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint operator token")
+    /// They stay valid across [`Self::restart`], which keeps the keys.
+    pub fn credentials(&self, tenant_id: &str) -> Credentials {
+        Credentials::new(self.keys.clone(), tenant_id, TOKEN_TTL)
     }
 
     /// Place any unassigned shard onto a live broker.
@@ -357,7 +283,7 @@ impl ControlPlane {
         for node in read.nodes.iter_mut().filter(|node| node.node_id == down) {
             node.status.lifecycle = NodeLifecycle::Down;
         }
-        Ok(read.plan(MovePolicy::default()))
+        Ok(read.plan(unsettled(MovePolicy::default())))
     }
 
     /// Step placement once under an explicit move policy.
@@ -368,7 +294,7 @@ impl ControlPlane {
         felix_controlplane_service::cluster::placement::reconcile_once(
             self.store.as_ref(),
             &LIVENESS,
-            policy,
+            unsettled(policy),
         )
         .await
     }
@@ -457,12 +383,13 @@ impl ControlPlane {
     /// [`Self::restart`].
     pub fn run_placement(&self, interval: Duration) {
         *self.placement.lock().expect("placement lock") = Some(interval);
+        let _runtime = self.runtime.handle().enter();
         drop(
             felix_controlplane_service::cluster::placement::spawn_reconciler(
                 Arc::clone(&self.store)
                     as Arc<dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync>,
                 LIVENESS,
-                felix_controlplane_service::cluster::placement::MovePolicy::default(),
+                unsettled(felix_controlplane_service::cluster::placement::MovePolicy::default()),
                 interval,
                 "felix-cluster".to_string(),
                 felix_controlplane_service::raft::LeadershipGate::Always,
@@ -482,6 +409,47 @@ impl ControlPlane {
         // fault rather than a teardown.
         self.task.abort();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.task).await;
+        // Stopping the runtime also drops the connection tasks `axum::serve`
+        // spawned, which aborting the serve task alone leaves running.
+        self.runtime.stop().await;
+    }
+}
+
+/// The control plane's runtime, stopped without blocking when dropped.
+///
+/// Dropping a `tokio::runtime::Runtime` blocks, and panics inside async code,
+/// which is where a `Cluster` is usually dropped.
+struct Runtime(Option<tokio::runtime::Runtime>);
+
+impl Runtime {
+    fn new() -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("felix-cluster-controlplane")
+            .enable_all()
+            .build()
+            .context("build control plane runtime")?;
+        Ok(Self(Some(runtime)))
+    }
+
+    fn handle(&self) -> &tokio::runtime::Handle {
+        self.0.as_ref().expect("runtime is running").handle()
+    }
+
+    /// Shut down every task and wait for the worker threads to exit.
+    async fn stop(mut self) {
+        if let Some(runtime) = self.0.take() {
+            let _ =
+                tokio::task::spawn_blocking(move || runtime.shutdown_timeout(RUNTIME_STOP)).await;
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -505,3 +473,6 @@ impl StoppedControlPlane {
         Ok(control_plane)
     }
 }
+
+#[cfg(test)]
+mod tests;

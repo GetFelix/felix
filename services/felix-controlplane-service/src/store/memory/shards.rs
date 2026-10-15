@@ -212,18 +212,9 @@ pub(super) async fn shard_assignment_changes(
     since: u64,
 ) -> StoreResult<ChangeSet<ShardAssignmentChange>> {
     let state = store.shards.read().await;
-    let items = state
+    Ok(state
         .changes
-        .items
-        .iter()
-        .filter(|item| item.seq >= since)
-        .take(store.limit())
-        .cloned()
-        .collect();
-    Ok(ChangeSet {
-        items,
-        next_seq: state.changes.next_seq,
-    })
+        .page(since, store.limit(), |change| change.seq))
 }
 
 pub(super) async fn record_replica_report(

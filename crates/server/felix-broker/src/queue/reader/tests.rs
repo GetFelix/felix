@@ -8,6 +8,8 @@ use crate::durable::{DurableStorage, StreamLog};
 use crate::queue::DeadLetters;
 use crate::queue::tracker::MAX_CLAIM;
 
+mod dependencies;
+
 const T: &str = "t1";
 const NS: &str = "ns";
 const S: &str = "orders";
@@ -100,20 +102,20 @@ async fn a_group_reads_only_below_the_commit_point() {
 
     let first = fx
         .reader
-        .poll_below(&key(), &fx.log, 1, 10, now)
+        .poll_below(&key(), &fx.log, 1, 10, now, None, None)
         .await
         .expect("poll");
     assert_eq!(payloads(&first), vec!["a"]);
     let nothing = fx
         .reader
-        .poll_below(&key(), &fx.log, 1, 10, now)
+        .poll_below(&key(), &fx.log, 1, 10, now, None, None)
         .await
         .expect("poll");
     assert!(nothing.is_empty(), "handed out past the commit point");
 
     let rest = fx
         .reader
-        .poll_below(&key(), &fx.log, 3, 10, now)
+        .poll_below(&key(), &fx.log, 3, 10, now, None, None)
         .await
         .expect("poll");
     assert_eq!(payloads(&rest), vec!["b", "c"]);
@@ -882,3 +884,91 @@ async fn a_trailing_generation_start_does_not_stall_a_group() {
     fx.reader.ack(&key, 0).await.expect("ack");
     assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(2));
 }
+
+/// **A record says how many offsets below it were settled without delivery.**
+/// Generation-start records are not a client's, so the record after a run of
+/// them reports the run, and a consumer can tell the hole will not fill. The
+/// run is reported again after a poll that ended on it.
+#[tokio::test]
+async fn a_record_after_generation_starts_reports_them_as_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a"]).await;
+    fx.log.append_generation_start(2).await.expect("start");
+    fx.log.append_generation_start(3).await.expect("start");
+    publish(&fx.log, &["b"]).await;
+
+    let claimed = fx
+        .reader
+        .poll(&key(), &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+
+    assert_eq!(payloads(&claimed), vec!["a", "b"]);
+    let skipped: Vec<(u64, u64)> = claimed
+        .iter()
+        .map(|c| (c.offset, c.skipped_before))
+        .collect();
+    assert_eq!(skipped, vec![(0, 0), (3, 2)]);
+}
+
+/// A poll that settles a run and stops short of the record after it leaves
+/// the count for the poll that delivers that record.
+#[tokio::test]
+async fn the_skip_count_survives_into_the_next_poll() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    fx.log.append_generation_start(2).await.expect("start");
+    publish(&fx.log, &["a"]).await;
+    let now = Instant::now();
+
+    let first = fx.reader.poll(&key(), &fx.log, 1, now).await.expect("poll");
+    assert!(
+        first.is_empty(),
+        "the one offset claimed was a generation start"
+    );
+    let second = fx.reader.poll(&key(), &fx.log, 1, now).await.expect("poll");
+    assert_eq!(
+        second
+            .iter()
+            .map(|c| (c.offset, c.skipped_before))
+            .collect::<Vec<_>>(),
+        vec![(1, 1)]
+    );
+}
+
+/// A record's publisher is stored with it, so a group hands it out with the
+/// record, as a subscriber's replay does.
+#[tokio::test]
+async fn a_group_hands_out_each_records_publisher() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["anonymous"]).await;
+    let alice = Bytes::from_static(b"alice");
+    let pending = fx
+        .log
+        .begin_append_marked_at(
+            1,
+            &[Bytes::from_static(b"from alice")],
+            &[],
+            &[Some(alice.clone())],
+            &[],
+        )
+        .await
+        .expect("append")
+        .expect("at the tail");
+    fx.log.commit(&pending).await.expect("commit");
+
+    let claimed = fx
+        .reader
+        .poll(&key(), &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+
+    assert_eq!(payloads(&claimed), vec!["anonymous", "from alice"]);
+    assert_eq!(claimed[0].publisher, None);
+    assert_eq!(claimed[1].publisher, Some(alice));
+}
+
+mod admin;
+mod claim_control;

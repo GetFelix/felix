@@ -68,6 +68,10 @@ pub enum BrokerError {
     /// exists to prevent.
     #[error("durable storage error: {0}")]
     Storage(String),
+    /// The disk or quota under durable storage is full. Nothing was written,
+    /// so the same request can succeed once space is freed.
+    #[error("durable storage is full: {0}")]
+    StorageFull(String),
     /// An idempotent batch skipped ahead of the sequence this broker expected.
     /// What was skipped is not here, so continuing past it would leave a hole
     /// the producer believes is filled.
@@ -94,6 +98,11 @@ pub enum BrokerError {
     /// acknowledged or handed back.
     #[error("offset {offset} was not handed out by this group (next is {next})")]
     GroupOffsetNotHandedOut { offset: u64, next: u64 },
+    /// A consumer asked to extend a group claim that no longer stands: it
+    /// lapsed, the record was handed out again, or the group's state was
+    /// rebuilt since. The record is owed to the group, not to this consumer.
+    #[error("the claim on offset {offset} no longer stands")]
+    GroupClaimLapsed { offset: u64 },
     /// The shard's log was reset (this broker became a follower, or its log
     /// was rebuilt) while the publish waited for its turn. Nothing reached
     /// the ring or a subscriber, but the records were written to the old log,
@@ -116,6 +125,18 @@ pub enum BrokerError {
     /// one has nowhere to put them.
     #[error("an atomic commit needs a durable stream")]
     CommitNeedsDurableStream,
+    /// A conditional publish or commit expected the shard's next offset to be
+    /// `expected`, and it is `tail`. Nothing was written and no offset was
+    /// consumed.
+    #[error("expected the shard's next offset to be {expected}, but it is {tail}")]
+    OffsetMismatch { expected: u64, tail: u64 },
+    /// A conditional publish with no records. The check is made by writing,
+    /// so an empty batch would check nothing.
+    #[error("a conditional publish needs at least one record")]
+    EmptyConditionalPublish,
+    /// An expected offset needs offsets, and a stream with no log has none.
+    #[error("an expected offset needs a durable stream")]
+    ExpectedOffsetNeedsDurableStream,
     /// The shard's state view could not be rebuilt because commits kept
     /// landing while it read. Retry.
     #[error("the shard's state is being rebuilt; retry")]
@@ -138,6 +159,15 @@ pub enum NotReadable {
 
 /// Shorthand for results carrying a [`BrokerError`].
 pub type Result<T> = std::result::Result<T, BrokerError>;
+
+impl From<felix_storage::StorageError> for BrokerError {
+    fn from(err: felix_storage::StorageError) -> Self {
+        match err {
+            felix_storage::StorageError::Full(_) => BrokerError::StorageFull(err.to_string()),
+            other => BrokerError::Storage(other.to_string()),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

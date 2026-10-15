@@ -14,7 +14,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 . "${here}/sessions/${SESSION}.env"
 ref="${1:?usage: deploy-loadgen.sh <ref>}"
-sha="$(git ls-remote https://github.com/gabloe/felix "${ref}" | awk 'NR==1{print $1}')"
+sha="$(git ls-remote https://github.com/GetFelix/felix "${ref}" | awk 'NR==1{print $1}')"
 [ -n "${sha}" ] || sha="${ref}"
 read -r -a vms <<< "${LOADGENS}"
 

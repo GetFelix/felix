@@ -7,7 +7,7 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
-use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, ReadRange};
+use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, ReadRange, Retention};
 
 fn config() -> LogConfig {
     LogConfig {
@@ -31,6 +31,7 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     }
 }
 
@@ -212,4 +213,179 @@ async fn a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss() {
         recovered.shutdown().await.expect("shutdown");
     }
     provider.shutdown().await.expect("shutdown");
+}
+
+/// **A stream's own retention bounds its logs and no other stream's**, both
+/// the shards already open when it is set and the ones opened after.
+#[tokio::test]
+async fn a_streams_retention_bounds_only_its_own_logs() {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 80,
+        index_spacing_bytes: 32,
+        retention_check_interval: Duration::from_secs(3600),
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path(), config).expect("provider");
+    let orders = provider.open_shard(&shard("orders")).expect("open");
+    let events = provider.open_shard(&shard("events")).expect("open");
+
+    let bound = Retention {
+        bytes: Some(crate::segment::SEGMENT_HEADER_LEN + 120),
+        age: None,
+    };
+    provider
+        .set_stream_retention("t", "ns", "orders", bound)
+        .expect("set retention");
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("orders")
+        })
+        .expect("open");
+    assert_eq!(later.retention(), bound);
+    assert_eq!(events.retention(), Retention::default());
+
+    for log in [&orders, &events] {
+        for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            log.append(&[record(payload)]).await.expect("append");
+        }
+    }
+    assert!(
+        orders
+            .enforce_retention_now()
+            .await
+            .expect("sweep")
+            .segments_deleted
+            > 0
+    );
+    assert!(orders.base_offset() > 0);
+    assert_eq!(
+        events
+            .enforce_retention_now()
+            .await
+            .expect("sweep")
+            .segments_deleted,
+        0
+    );
+    assert_eq!(events.base_offset(), 0);
+}
+
+/// A bound the stream leaves unset comes from the provider's configuration,
+/// and a zero is refused rather than read as "keep nothing".
+#[tokio::test]
+async fn a_streams_retention_falls_back_per_bound_and_refuses_zero() {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        retention_age: Some(Duration::from_secs(60)),
+        retention_check_interval: Duration::from_secs(3600),
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path(), config).expect("provider");
+    let orders = provider.open_shard(&shard("orders")).expect("open");
+
+    provider
+        .set_stream_retention(
+            "t",
+            "ns",
+            "orders",
+            Retention {
+                bytes: Some(1 << 20),
+                age: None,
+            },
+        )
+        .expect("set retention");
+    assert_eq!(
+        orders.retention(),
+        Retention {
+            bytes: Some(1 << 20),
+            age: Some(Duration::from_secs(60)),
+        }
+    );
+
+    let zero = Retention {
+        bytes: Some(0),
+        age: None,
+    };
+    assert!(matches!(
+        provider.set_stream_retention("t", "ns", "orders", zero),
+        Err(StorageError::InvalidConfig(_))
+    ));
+}
+
+/// Looking up a log that is not open neither opens it nor creates its
+/// directory, so a read-only caller leaves nothing behind.
+#[tokio::test]
+async fn looking_for_an_open_log_creates_nothing() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    let before: Vec<_> = std::fs::read_dir(dir.path()).expect("read").collect();
+
+    assert!(provider.opened_shard(&shard("orders")).is_none());
+    let after: Vec<_> = std::fs::read_dir(dir.path()).expect("read").collect();
+    assert_eq!(before.len(), after.len());
+
+    provider.open_shard(&shard("orders")).expect("open");
+    assert!(provider.opened_shard(&shard("orders")).is_some());
+    provider.close_shard(&shard("orders")).await.expect("close");
+    assert!(provider.opened_shard(&shard("orders")).is_none());
+}
+
+/// A stream's hold reaches its open shards at once, and the ones opened
+/// later before their first sweep. Other streams keep their own.
+#[tokio::test]
+async fn a_streams_retention_hold_reaches_open_and_later_shards() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    let open = provider.open_shard(&shard("s")).expect("open");
+    let other = provider.open_shard(&shard("other")).expect("open");
+
+    provider
+        .set_stream_retention_hold("t", "ns", "s", true)
+        .await
+        .expect("hold");
+    assert!(open.retention_held_at_commit());
+    assert!(!other.retention_held_at_commit());
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("s")
+        })
+        .expect("open");
+    assert!(later.retention_held_at_commit());
+
+    provider
+        .set_stream_retention_hold("t", "ns", "s", false)
+        .await
+        .expect("lift");
+    assert!(!open.retention_held_at_commit());
+    assert!(!later.retention_held_at_commit());
+}
+
+/// A provider configured to lift every hold, as a broker that does not
+/// replicate is, ignores a stream asking for one.
+#[tokio::test]
+async fn a_lifted_provider_ignores_a_streams_hold() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(
+        dir.path(),
+        LogConfig {
+            retention_hold: crate::log::RetentionHold::Lifted,
+            ..config()
+        },
+    )
+    .expect("provider");
+    let open = provider.open_shard(&shard("s")).expect("open");
+    provider
+        .set_stream_retention_hold("t", "ns", "s", true)
+        .await
+        .expect("hold");
+    assert!(!open.retention_held_at_commit());
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("s")
+        })
+        .expect("open");
+    assert!(!later.retention_held_at_commit());
 }

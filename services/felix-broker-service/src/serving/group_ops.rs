@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
-use felix_wire::GroupRecord;
+use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
@@ -48,6 +48,8 @@ pub(crate) async fn poll(
     group: &str,
     max_records: usize,
     wait: Duration,
+    consumer: Option<&felix_broker::GroupConsumer>,
+    visibility: Option<Duration>,
 ) -> Result<Vec<GroupRecord>, ClientError> {
     poll_rechecking(
         broker,
@@ -61,6 +63,8 @@ pub(crate) async fn poll(
         max_records,
         wait,
         WAIT_RECHECK,
+        consumer,
+        visibility,
     )
     .await
 }
@@ -79,6 +83,8 @@ async fn poll_rechecking(
     max_records: usize,
     wait: Duration,
     recheck: Duration,
+    consumer: Option<&felix_broker::GroupConsumer>,
+    visibility: Option<Duration>,
 ) -> Result<Vec<GroupRecord>, ClientError> {
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
@@ -130,6 +136,8 @@ async fn poll_rechecking(
                 committed.unwrap_or(u64::MAX),
                 max_records,
                 Instant::now(),
+                consumer,
+                visibility,
             )
             .await
             .map_err(storage);
@@ -145,6 +153,11 @@ async fn poll_rechecking(
                     offset: claimed.offset,
                     payload: claimed.payload,
                     attempts: claimed.attempts,
+                    skipped_before: claimed.skipped_before,
+                    publisher: claimed
+                        .publisher
+                        .map(|publisher| String::from_utf8_lossy(&publisher).into_owned()),
+                    timestamp_micros: Some(claimed.timestamp_micros),
                 })
                 .collect());
         }
@@ -243,7 +256,126 @@ pub(crate) async fn manage_dead_letter(
     )))
 }
 
-/// Finish a record, or hand it back.
+/// Move a group to `start` on one shard, or with `if_new` create it there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn seek(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+    start: StartPosition,
+    if_new: bool,
+) -> Result<felix_broker::Seek, ClientError> {
+    let (reader, log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    let earliest = log.base_offset();
+    let latest = read_end(broker, publish_ctx, &owned, &log).await?;
+    let offset = match start {
+        StartPosition::Earliest => earliest,
+        StartPosition::Latest => latest,
+        // Below the head the records are gone, and the group would count each
+        // as dropped work. Past the committed tail the offset may not hold the
+        // record it will after a failover.
+        StartPosition::Offset(offset) if offset < earliest => {
+            return Err(ClientError::invalid(format!(
+                "offset {offset} is below the oldest record shard {shard} holds, {earliest}"
+            )));
+        }
+        StartPosition::Offset(offset) if offset > latest => {
+            return Err(ClientError::invalid(format!(
+                "offset {offset} is past the committed tail of shard {shard}, {latest}"
+            )));
+        }
+        StartPosition::Offset(offset) => offset,
+    };
+    let seek = reader.seek(&key, offset, if_new).await.map_err(storage)?;
+    owned.confirm(publish_ctx).await?;
+    Ok(seek)
+}
+
+/// Where a group stands on one shard, and the shard's committed tail.
+pub(crate) async fn describe(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
+    let (reader, log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let snapshot = reader.describe(&key).await.map_err(storage)?;
+    let tail = read_end(broker, publish_ctx, &owned, &log).await?;
+    Ok((snapshot, tail))
+}
+
+/// Delete a group on one shard. Returns whether there was anything to delete.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn delete(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+) -> Result<bool, ClientError> {
+    let (reader, _log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    let existed = reader.delete(&key).await.map_err(storage)?;
+    owned.confirm(publish_ctx).await?;
+    Ok(existed)
+}
+
+/// The end of what a group may be handed on this shard: the tail, held to
+/// the quorum mark on a shard that has one, as a poll is.
+async fn read_end(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    owned: &Owned,
+    log: &felix_broker::StreamLog,
+) -> Result<u64, ClientError> {
+    let key = &owned.key;
+    let committed = felix_replication::quorum::read_bound(
+        broker
+            .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
+            .await,
+        key,
+        publish_ctx.marks.as_deref(),
+        publish_ctx.ingress.as_deref(),
+    );
+    let tail = log.tail_offset().await.map_err(storage)?;
+    Ok(tail
+        .min(committed.unwrap_or(u64::MAX))
+        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+}
+
+/// What a consumer does with a record it was handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Settle {
+    Ack,
+    /// Hand it back, owed again after `delay`. With `attempts`, only while
+    /// the claim that delivery made still stands.
+    Nack {
+        delay: Duration,
+        attempts: Option<u32>,
+    },
+    /// Give up on it.
+    DeadLetter,
+}
+
+/// Finish a record, hand it back, or give up on it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn settle(
     broker: &Broker,
@@ -257,7 +389,7 @@ pub(crate) async fn settle(
     shard: u32,
     group: &str,
     offset: u64,
-    finish: bool,
+    action: Settle,
 ) -> Result<(), ClientError> {
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
@@ -270,10 +402,24 @@ pub(crate) async fn settle(
         .inherit_below(&key, tail)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    let settled = if finish {
-        reader.ack(&key, offset).await
-    } else {
-        reader.nack(&key, offset).await
+    let settled = match action {
+        Settle::Ack => reader.ack(&key, offset).await,
+        Settle::Nack { delay, attempts } => {
+            reader
+                .nack_after(&key, offset, attempts, delay, Instant::now())
+                .await
+        }
+        Settle::DeadLetter => match reader.dead_letter(&key, offset).await {
+            Ok(true) => Ok(()),
+            // Refused rather than answered as done: the consumer would look
+            // for a dead letter that is not there.
+            Ok(false) => {
+                return Err(ClientError::invalid(format!(
+                    "offset {offset} of {group} is already finished, so it was not dead-lettered"
+                )));
+            }
+            Err(err) => Err(err),
+        },
     };
     let Err(err) = settled else {
         return owned.confirm(publish_ctx).await;
@@ -290,6 +436,51 @@ pub(crate) async fn settle(
         ));
     }
     Err(ClientError::from_broker(&err, err.to_string()))
+}
+
+/// Keep a claim standing for `by` from now.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn extend(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+    offset: u64,
+    attempts: u32,
+    by: Duration,
+) -> Result<(), ClientError> {
+    let (reader, log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    // Claims are leader memory, so this writes nothing durable. It is still
+    // fenced: an extension landing after the shard moved would be lost
+    // without the consumer hearing of it.
+    let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    let tail = log.tail_offset().await.map_err(storage)?;
+    reader
+        .inherit_below(&key, tail)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
+    match reader
+        .extend(&key, offset, attempts, by, Instant::now())
+        .await
+    {
+        Ok(()) => owned.confirm(publish_ctx).await,
+        // Handed out by a predecessor and not known here: not a claim this
+        // broker can extend, and the record will be delivered again.
+        Err(err @ felix_broker::BrokerError::GroupOffsetNotHandedOut { .. }) if offset < tail => {
+            Err(ClientError::new(
+                felix_wire::ErrorCode::StaleClaim,
+                format!("{err}; the claim is stale and the record will be delivered again"),
+            )
+            .with_retry(felix_wire::RetryClass::Fatal))
+        }
+        Err(err) => Err(ClientError::from_broker(&err, err.to_string())),
+    }
 }
 
 /// A shard this broker led when a group operation was admitted.

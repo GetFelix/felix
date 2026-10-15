@@ -58,7 +58,7 @@ async fn commit(broker: &Broker, event: &'static [u8], ops: Vec<StateOp>) -> u64
         .await
         .expect("handle");
     let outcome = broker
-        .commit_to_handle(&handle, Bytes::from_static(event), ops)
+        .commit_to_handle(&handle, Bytes::from_static(event), ops, None)
         .await
         .expect("commit");
     outcome.offsets.expect("offsets").0
@@ -140,6 +140,7 @@ fn a_reader_sees_a_commit_record_as_its_event() {
         checksum: 0,
         payload: stored.clone(),
         mark,
+        publisher: None,
     };
     assert_eq!(client_record(record(RecordMark::Commit)).payload, "event");
     assert_eq!(client_record(record(RecordMark::None)).payload, stored);
@@ -268,7 +269,11 @@ async fn a_restarted_ring_replays_a_commit_as_its_event() {
         .await
         .expect("subscribe");
     assert!(resumed.history.is_none(), "served from the ring");
-    let payloads: Vec<_> = resumed.backlog.iter().map(|(_, p)| p.clone()).collect();
+    let payloads: Vec<_> = resumed
+        .backlog
+        .iter()
+        .map(|record| record.payload.clone())
+        .collect();
     assert_eq!(payloads, ["placed"]);
 }
 
@@ -315,7 +320,7 @@ async fn an_ephemeral_stream_refuses_a_commit() {
         .await
         .expect("handle");
     let refused = broker
-        .commit_to_handle(&handle, Bytes::from_static(b"e"), Vec::new())
+        .commit_to_handle(&handle, Bytes::from_static(b"e"), Vec::new(), None)
         .await;
     assert!(matches!(
         refused,

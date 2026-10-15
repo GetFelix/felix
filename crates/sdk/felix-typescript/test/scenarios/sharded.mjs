@@ -216,15 +216,16 @@ export default function register(ctx) {
       assert.ok(item !== null, "a sharded subscription yielded nothing");
       assert.equal(typeof item.shard, "number", "every item must name its shard");
       const kinds = [
-        item.event ? "record" : null,
-        item.lostError ? "lost" : null,
-        item.recovered ? "recovered" : null,
-        item.shardMoved ? "moved" : null,
+        item.event !== null ? "record" : null,
+        item.lostError !== null ? "lost" : null,
+        item.recovered !== null ? "recovered" : null,
+        item.shardMoved !== null ? "moved" : null,
+        item.streamDeleted !== null ? "deleted" : null,
       ].filter(Boolean);
       assert.equal(
         kinds.length,
         1,
-        `a sharded item must be exactly one of a record, a loss, a recovery or a move; ` +
+        `a sharded item must be exactly one of a record, a loss, a recovery, a move or a delete; ` +
           `got ${kinds.length}`,
       );
     }));

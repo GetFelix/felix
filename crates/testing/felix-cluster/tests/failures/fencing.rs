@@ -226,12 +226,15 @@ async fn a_resumed_leader_acking_on_enqueue_does_not_acknowledge_writes_the_clus
         .publish_via(&deposed, STREAM, b"before".to_vec())
         .await
         .expect("publish before the pause");
-    // A `Leader` ack does not wait for the followers. Wait here, so a promoted
-    // replica holds the record and the replay below has something to find.
-    cluster
-        .wait_for_replication(STREAM, Duration::from_secs(10))
+    // A `Leader` ack does not wait for the followers, so wait until the control
+    // plane has heard that one holds the record. Paused before that, the
+    // leader's last report can name no follower at its tail, and placement
+    // rightly refuses to promote any of them.
+    let holder = cluster
+        .wait_for_replication(STREAM, Duration::from_secs(30))
         .await
-        .expect("the record reaches a follower");
+        .expect("the control plane never heard of a follower holding the record");
+    assert_eq!(holder, deposed, "the shard moved before the pause");
 
     cluster.pause_node(&deposed).expect("pause the leader");
     let promoted = failover_from(&cluster, &deposed)

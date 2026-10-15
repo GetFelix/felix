@@ -4,17 +4,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::args::{parse_ack, parse_positions, parse_start, resolve, u64_of};
+use crate::args::{parse_ack, parse_positions, parse_start, seeds, u64_of};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
 use crate::sharded_subscription::ShardedSubscriptionHandle;
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
-use crate::types::GroupRecord;
+use crate::types::{GroupDelivery, GroupRecord};
 
 /// A connected Felix client.
 #[napi]
@@ -41,8 +41,10 @@ impl Client {
     /// Connect to a cluster.
     ///
     /// `addrs` is one `"host:port"` or several; any reachable one is enough
-    /// and the client discovers the rest. `serverName` is the name the
-    /// broker's certificate is expected to carry.
+    /// and the client discovers the rest. A name is resolved again whenever
+    /// no broker the client knows answers, so prefer one to an IP.
+    /// `serverName` is the name the broker's certificate is expected to
+    /// carry.
     ///
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `caFile` to
     /// trust a specific CA (what a self-signed development broker needs); omit
@@ -64,7 +66,7 @@ impl Client {
             Either::A(one) => vec![one],
             Either::B(many) => many,
         };
-        let seeds = resolve(addrs)?;
+        let seeds = seeds(addrs)?;
         if seeds.is_empty() {
             return Err(invalid("at least one broker address is required"));
         }
@@ -74,11 +76,31 @@ impl Client {
         config.auth_token = Some(token);
 
         let server_name = server_name.unwrap_or_else(|| "localhost".to_string());
-        let inner = ClusterClient::connect(&seeds, &server_name, config)
+        let inner =
+            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+                .await
+                .map_err(classify)?;
+        Ok(Client {
+            inner: std::sync::Mutex::new(Some(Arc::new(inner))),
+        })
+    }
+
+    /// A client that acts as another user over this client's connections.
+    ///
+    /// Every stream it opens authenticates with `tenantId` and `token`, and
+    /// the broker checks its requests against that token's grants alone. It
+    /// follows shards and failovers as this client does, reaching each broker
+    /// over this client's connection to it. The token is fixed: build a new
+    /// one when it expires. A refused token fails here.
+    #[napi]
+    pub async fn with_identity(&self, tenant_id: String, token: String) -> Result<Client> {
+        let identity = self
+            .cluster()?
+            .with_identity_token(tenant_id, token)
             .await
             .map_err(classify)?;
         Ok(Client {
-            inner: std::sync::Mutex::new(Some(Arc::new(inner))),
+            inner: std::sync::Mutex::new(Some(Arc::new(identity))),
         })
     }
 
@@ -237,8 +259,7 @@ impl Client {
         namespace: String,
         stream: String,
     ) -> Result<u32> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .stream_shards(&tenant_id, &namespace, &stream)
             .await
             .map_err(classify)
@@ -272,8 +293,7 @@ impl Client {
         // unit into the signature.
         let ttl_ms = ttl_seconds.map(|s| (s.max(0.0) * 1000.0) as u64);
         let value = Bytes::copy_from_slice(&value);
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .cache_put(&tenant_id, &namespace, &cache, &key, value, ttl_ms)
             .await
             .map_err(classify)
@@ -288,8 +308,8 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<Buffer>> {
-        let client = self.cluster()?.client().await;
-        let value = client
+        let value = self
+            .cluster()?
             .cache_get(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)?;
@@ -309,8 +329,8 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<Buffer>> {
-        let client = self.cluster()?.client().await;
-        let previous = client
+        let previous = self
+            .cluster()?
             .cache_delete(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)?;
@@ -373,8 +393,7 @@ impl Client {
         key: String,
         delta: i64,
     ) -> Result<i64> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .counter_add(&tenant_id, &namespace, &cache, &key, delta)
             .await
             .map_err(classify)
@@ -392,8 +411,7 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<i64>> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .counter_get(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)
@@ -479,17 +497,24 @@ impl Client {
         group: String,
         max_records: Option<u32>,
         wait_ms: Option<u32>,
+        consumer: Option<String>,
+        reclaim: Option<bool>,
     ) -> Result<Vec<GroupRecord>> {
         let max_records = max_records.unwrap_or(32);
         let wait_ms = wait_ms.unwrap_or(0);
+        let member = consumer.map(|consumer| felix_client::GroupMember {
+            consumer,
+            reclaim: reclaim.unwrap_or(false),
+        });
         let records = self
             .cluster()?
-            .group_poll_wait(
+            .group_poll_as(
                 &tenant_id,
                 &namespace,
                 &stream,
                 shard,
                 &group,
+                member.as_ref(),
                 max_records,
                 std::time::Duration::from_millis(u64::from(wait_ms)),
             )
@@ -501,6 +526,7 @@ impl Client {
                 offset: BigInt::from(r.offset),
                 payload: r.payload.to_vec().into(),
                 attempts: r.attempts,
+                skipped_before: BigInt::from(r.skipped_before),
             })
             .collect())
     }
@@ -524,6 +550,7 @@ impl Client {
     }
 
     /// Return a record for redelivery without waiting out its timeout.
+    /// Refused once its claim has lapsed or the record has gone out again.
     #[napi]
     pub async fn group_nack(
         &self,
@@ -532,11 +559,18 @@ impl Client {
         stream: String,
         shard: u32,
         group: String,
-        offset: BigInt,
+        record: GroupDelivery,
     ) -> Result<()> {
-        let offset = u64_of(offset)?;
+        let record = felix_wire::GroupRecord {
+            offset: u64_of(record.offset)?,
+            payload: Default::default(),
+            attempts: record.attempts,
+            skipped_before: 0,
+            publisher: None,
+            timestamp_micros: None,
+        };
         self.cluster()?
-            .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
+            .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
             .await
             .map_err(classify)
     }

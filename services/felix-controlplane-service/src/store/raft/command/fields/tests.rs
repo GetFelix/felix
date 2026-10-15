@@ -21,10 +21,10 @@ use crate::model::{
     ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, Stream, StreamChange, StreamChangeOp,
     StreamKey, StreamKind, StreamPatchRequest, StreamRouting, Tenant, TenantChange, TenantChangeOp,
 };
-use crate::store::TenantAuthSeed;
 use crate::store::export::{ExportedLog, ExportedState};
 use crate::store::raft::command::{HeartbeatSeen, METADATA_VERSION, MetaCommand, NodeIncarnation};
 use crate::store::raft::state_machine::{AppliedIds, Snapshot};
+use crate::store::{AuthChange, Revocation, TenantAuthSeed};
 
 fn s(value: &str) -> String {
     value.to_string()
@@ -193,6 +193,7 @@ fn report() -> ReplicaReport {
             generation: 1,
             since_millis: 1,
         }),
+        counter_offsets: any_map(1),
     }
 }
 
@@ -255,7 +256,13 @@ fn refresh_token() -> RefreshToken {
         narrowing: Some(Narrowing {
             requested: Some(vec![s("stream.read")]),
             resources: Some(vec![s("stream:t/n/s")]),
+            permissions: Some(vec![s("stream.publish:stream:t/n/s")]),
             audience: s("felix-broker"),
+            may_act: Some(s("p:g")),
+        }),
+        rotated: Some(crate::auth::refresh_token::Rotation {
+            at_secs: 1,
+            successor_id: s("n"),
         }),
     }
 }
@@ -323,6 +330,12 @@ fn exported() -> ExportedState {
         refresh_tokens: vec![refresh_token()],
         fleet_enabled: BTreeSet::from([s("f")]),
         replica_reports: vec![report()],
+        principal_revocations: vec![crate::auth::revocation::PrincipalRevocation {
+            seq: 1,
+            tenant_id: s("t"),
+            principal_id: s("p"),
+            revoked_at: 1,
+        }],
     }
 }
 
@@ -497,6 +510,53 @@ fn commands() -> Vec<MetaCommand> {
         },
         MetaCommand::RegisterNodeInFleet { node: node() },
         MetaCommand::FinalizeFleetFeature { feature: s("f") },
+        MetaCommand::CreateResources {
+            streams: vec![stream()],
+            caches: vec![cache()],
+        },
+        MetaCommand::RevokePrincipals {
+            tenant_id: s("t"),
+            principal_ids: vec![s("p")],
+            revoked_at: 1,
+        },
+        MetaCommand::ChangeAuthAndRevoke {
+            tenant_id: s("t"),
+            change: AuthChange::RemovePolicy(policy()),
+            revocation: Revocation {
+                principal_ids: vec![s("p")],
+                revoked_at: 1,
+            },
+        },
+        MetaCommand::ChangeAuthAndRevoke {
+            tenant_id: s("t"),
+            change: AuthChange::RemoveGrouping(grouping()),
+            revocation: Revocation {
+                principal_ids: vec![s("p")],
+                revoked_at: 1,
+            },
+        },
+        MetaCommand::ChangeAuthAndRevoke {
+            tenant_id: s("t"),
+            change: AuthChange::UpsertIssuer(issuer()),
+            revocation: Revocation {
+                principal_ids: vec![s("p")],
+                revoked_at: 1,
+            },
+        },
+        MetaCommand::ChangeAuthAndRevoke {
+            tenant_id: s("t"),
+            change: AuthChange::DeleteIssuer(s("i")),
+            revocation: Revocation {
+                principal_ids: vec![s("p")],
+                revoked_at: 1,
+            },
+        },
+        MetaCommand::RotateRefreshToken {
+            tenant_id: s("t"),
+            token_id: s("i"),
+            now_secs: 1,
+            next: refresh_token(),
+        },
     ]
 }
 
@@ -551,6 +611,10 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::CheckpointHeartbeats { .. } => "checkpoint_heartbeats",
         MetaCommand::RegisterNodeInFleet { .. } => "register_node_in_fleet",
         MetaCommand::FinalizeFleetFeature { .. } => "finalize_fleet_feature",
+        MetaCommand::CreateResources { .. } => "create_resources",
+        MetaCommand::RevokePrincipals { .. } => "revoke_principals",
+        MetaCommand::ChangeAuthAndRevoke { .. } => "change_auth_and_revoke",
+        MetaCommand::RotateRefreshToken { .. } => "rotate_refresh_token",
     }
 }
 
@@ -659,6 +723,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
 
     let mut token = refresh_token();
     token.narrowing = None;
+    token.rotated = None;
     assert_eq!(MetaCommand::InsertRefreshToken { token }.version(), 0);
 }
 

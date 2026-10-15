@@ -86,7 +86,7 @@ async fn a_keyed_publish_negotiates_the_binary_frame() {
     let client = felix_cluster::client::connect(
         cluster.nodes[0].client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");
@@ -171,7 +171,7 @@ async fn an_unacked_keyed_publish_reaches_its_shard() {
     let client = felix_cluster::client::connect(
         cluster.nodes[0].client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");

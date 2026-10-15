@@ -44,6 +44,13 @@ pub struct ClientConfig {
     pub publish_inflight_bytes: usize,
     /// How publishes are spread across the publish streams.
     pub publish_sharding: PublishSharding,
+    /// Most publish streams a [`crate::ClusterClient`] opens per broker for one
+    /// shard each, beside the pool. Each of its publishes goes on its shard's
+    /// own stream, so a shard stalled on the broker holds up only itself.
+    /// Shards past this share the pool. `0` puts every publish on the pool. A
+    /// plain [`crate::Client`] does not use these: it does not know a stream's
+    /// width, so it keeps each stream on one pooled writer.
+    pub publish_shard_streams: usize,
     /// The tenant every stream authenticates as. Required to connect.
     pub auth_tenant_id: Option<String>,
     /// A fixed token for every stream. Clients that run longer than the
@@ -88,6 +95,12 @@ pub struct ClientConfig {
     pub client_sub_queue_capacity: usize,
     /// What a subscription does when one of those queues is full.
     pub client_sub_queue_policy: ClientSubQueuePolicy,
+    /// How many published batches each subscription's queue on the broker
+    /// should hold, instead of the stream's default. The broker clamps it to
+    /// its configured maximum, and [`crate::Subscription::queue_capacity`]
+    /// reports what was granted. When it is full the stream's policy applies,
+    /// which by default drops. `None` leaves the stream's default.
+    pub broker_sub_queue_capacity: Option<u32>,
     /// Largest frame the client will read. A bigger one fails the stream
     /// rather than being allocated.
     pub max_frame_bytes: usize,
@@ -95,6 +108,22 @@ pub struct ClientConfig {
     /// latency measurement. Benchmarks only: it changes what subscribers
     /// receive. Has no effect without the `telemetry` feature.
     pub bench_embed_ts: bool,
+    /// Ask every broker to answer acknowledged publishes after the write,
+    /// with the offset, as `FELIX_ACK_ON_COMMIT=true` does broker-wide. Slower
+    /// per publish. A broker that predates it ignores it, and
+    /// [`crate::Client::supports_ack_on_commit`] says whether a broker
+    /// honours it.
+    pub ack_on_commit: bool,
+    /// Ask brokers to say who published each event: [`crate::Event::publisher`]
+    /// and the `publisher` of a consumer-group record. Off by default, since
+    /// it adds the principal to every event batch. A broker tells a client
+    /// that asked only what it recorded.
+    pub publishers: bool,
+    /// Ask brokers for each record's append time:
+    /// [`crate::Event::timestamp_micros`] and the `timestamp_micros` of a
+    /// consumer-group record. Off by default, since it adds eight bytes to
+    /// every event. [`crate::Client::offset_for_time`] works either way.
+    pub timestamps: bool,
 }
 
 impl ClientConfig {
@@ -114,6 +143,7 @@ impl ClientConfig {
             // other valid run occupied. The earlier run that appeared to favour
             // it never applied the override at all (#553).
             publish_sharding: PublishSharding::HashStream,
+            publish_shard_streams: DEFAULT_PUB_SHARD_STREAMS,
             auth_tenant_id: None,
             auth_token: None,
             token_provider: None,
@@ -130,7 +160,11 @@ impl ClientConfig {
             cache_send_window: DEFAULT_CACHE_SEND_WINDOW,
             event_router_max_pending: DEFAULT_EVENT_ROUTER_MAX_PENDING,
             client_sub_queue_capacity: DEFAULT_CLIENT_SUB_QUEUE_CAPACITY,
+            ack_on_commit: false,
+            publishers: false,
+            timestamps: false,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
+            broker_sub_queue_capacity: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,
         }
@@ -155,8 +189,8 @@ impl ClientConfig {
             None => None,
         };
         if let Some(contents) = contents {
-            let override_cfg: ClientConfigOverride =
-                serde_yaml_ng::from_str(&contents).context("parse client config yaml")?;
+            let override_cfg =
+                ClientConfigOverride::parse(&contents).context("parse client config yaml")?;
             override_cfg.apply(&mut config);
         }
         Ok(config)
@@ -180,6 +214,7 @@ impl ClientConfig {
             max_frame_bytes: self.max_frame_bytes,
             client_sub_queue_capacity: self.client_sub_queue_capacity,
             client_sub_queue_policy: self.client_sub_queue_policy,
+            broker_sub_queue_capacity: self.broker_sub_queue_capacity,
             bench_embed_ts: self.bench_embed_ts,
         }
     }
@@ -216,6 +251,7 @@ pub(crate) struct ClientRuntimeConfig {
     pub(crate) max_frame_bytes: usize,
     pub(crate) client_sub_queue_capacity: usize,
     pub(crate) client_sub_queue_policy: ClientSubQueuePolicy,
+    pub(crate) broker_sub_queue_capacity: Option<u32>,
     pub(crate) bench_embed_ts: bool,
 }
 

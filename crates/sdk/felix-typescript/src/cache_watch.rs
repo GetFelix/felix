@@ -6,7 +6,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
-use crate::types::{CacheChange, CacheWatchItem};
+use crate::types::{CacheChange, CacheWatchItem, or_null};
 
 /// A live cache watch. Close it when done.
 #[napi]
@@ -77,24 +77,24 @@ impl CacheWatchHandle {
         };
         Ok(item.map(|item| match item {
             felix_client::CacheWatchItem::Change(change) => CacheWatchItem {
-                change: Some(CacheChange {
+                change: Either::A(CacheChange {
                     key: change.key,
-                    value: change.value.map(|v| v.to_vec().into()),
+                    value: or_null(change.value.map(|v| v.to_vec().into())),
                     offset: BigInt::from(change.offset),
                     expires_at_millis: BigInt::from(change.expires_at_millis),
                 }),
-                lagged_resume_from: None,
-                shard_moved: None,
+                lagged_resume_from: Either::B(Null),
+                shard_moved: Either::B(Null),
             },
             felix_client::CacheWatchItem::Lagged { resume_from } => CacheWatchItem {
-                change: None,
-                lagged_resume_from: Some(BigInt::from(resume_from)),
-                shard_moved: None,
+                change: Either::B(Null),
+                lagged_resume_from: Either::A(BigInt::from(resume_from)),
+                shard_moved: Either::B(Null),
             },
             felix_client::CacheWatchItem::ShardMoved(moved) => CacheWatchItem {
-                change: None,
-                lagged_resume_from: None,
-                shard_moved: Some(moved.into()),
+                change: Either::B(Null),
+                lagged_resume_from: Either::B(Null),
+                shard_moved: Either::A(moved.into()),
             },
         }))
     }

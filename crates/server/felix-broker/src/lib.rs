@@ -60,11 +60,13 @@ pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};
 
 // Streams.
-pub use broker::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription};
+pub use broker::{
+    Cursor, HistoryRange, JoinOffsets, ReadPage, ResumedSubscription, RingRecord, SubscriptionPage,
+};
 pub use felix_wire::StartPosition;
 pub use stream::{
-    DeliveryEnvelope, ReadBound, ReadBounds, SubQueuePolicy, Subscription, SubscriptionGuard,
-    SubscriptionReceiver,
+    DeliveryEnvelope, FrameShape, HeldBytes, ReadBound, ReadBounds, SubQueuePolicy,
+    SubscriberOwner, SubscriberStats, Subscription, SubscriptionGuard, SubscriptionReceiver,
 };
 
 // Atomic commits.
@@ -75,7 +77,9 @@ pub use commit::{CommitRecord, StateOp, client_record};
 pub use cache::{CacheChangeEvent, CacheWatchFilter, CacheWatchHub, CacheWatchSubscription};
 
 // Queues.
-pub use queue::{Claimed, ConsumerGroups, DeadLetters, GroupKey, GroupReader};
+pub use queue::{
+    Claimed, ConsumerGroups, DeadLetters, GroupConsumer, GroupKey, GroupReader, GroupSnapshot, Seek,
+};
 
 // Durability.
-pub use durable::{DurableStorage, StreamLog};
+pub use durable::{DurableStorage, StreamLog, append_time_now};

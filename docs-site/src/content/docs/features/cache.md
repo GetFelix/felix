@@ -61,7 +61,7 @@ Felix cache is optimized for microsecond-level latency:
 | get (miss) | - | 165 µs | 340 µs | 179k ops/sec |
 
 Methodology and current figures live in
-[Benchmarks](/felix/features/benchmarks/). Compared to a plain-TCP cache,
+[Benchmarks](/features/benchmarks/). Compared to a plain-TCP cache,
 Felix pays some latency for always-on TLS and QUIC framing; what it buys is
 multiplexing, per-stream flow control, and one system instead of two.
 
@@ -140,6 +140,15 @@ client.cache_put("acme", "prod", "profiles", "user-123", data3, ttl).await?;
 client.cache_put("other-tenant", "prod", "sessions", "user-123", data4, ttl).await?;
 ```
 
+Access follows the same scopes. A token can be granted a whole cache
+(`cache.read:cache:acme/prod/sessions`) or only some of its keys: one key
+(`cache:acme/prod/sessions/user-123`) or every key with a prefix
+(`cache:acme/prod/sessions/room1/*`). So many rooms or users can share one
+cache, each credential limited to its own keys. A prefix is a plain string
+prefix, so end it with a separator when ids share leading characters. A
+prefix watch needs a prefix grant covering the whole watched prefix. See
+[Security](/features/security/#rbac-model-casbin).
+
 ### 4. Request Pipelining
 
 Send multiple cache requests without waiting for responses:
@@ -184,7 +193,7 @@ Without pooling (single stream):
 With pooling, requests spread across streams with independent flow control,
 so concurrency scales until the transport or broker saturates. It is not a fixed
 multiplier. Measure your own workload's shape; the concurrency sweep in
-[Benchmarks](/felix/features/benchmarks/) is the reference point.
+[Benchmarks](/features/benchmarks/) is the reference point.
 
 ### 6. Consistency Levels
 
@@ -208,7 +217,7 @@ assert_eq!(
 ```
 
 A cache declares `Leader` (the default) or `Quorum` when it is created, as a
-stream does ([Control plane API](/felix/api/control-plane-api/)). The level
+stream does ([Control plane API](/api/control-plane-api/)). The level
 covers puts, deletes and counter adds.
 
 - **`Leader`**: the owner applies the change and answers. Replicas catch up
@@ -231,8 +240,8 @@ which makes the read linearizable without clocks. `FELIX_QUORUM_READS=lease`
 keeps a broker's reads on the lease. Writes use the lease in every mode.
 Watches on a replicated `Quorum` cache stop needing it once `lease_free_reads`
 is finalized: a watch sees only committed changes, and ends when its broker
-learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/felix/deployment/upgrades/) has the finalize runbook, and
-[Delivery Semantics](/felix/architecture/semantics/#consistency-model) the full
+learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/deployment/upgrades/) has the finalize runbook, and
+[Delivery Semantics](/architecture/semantics/#consistency-model) the full
 contract.
 
 ### 7. Keyed Watch
@@ -273,7 +282,7 @@ while let Some(item) = watch.recv().await {
 A prefix watch works the same way. `CacheWatchFilter::Prefix("user:".into())`
 sees every key under `user:`, and an empty prefix is every key in the shard.
 
-![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied (puts with their values, a delete as a tombstone), while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/felix/diagrams/cache-watch.svg)
+![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied (puts with their values, a delete as a tombstone), while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/diagrams/cache-watch.svg)
 
 **Resume by offset.** Pass `Some(offset)` to resume at the first change not yet
 seen; the broker replays `[offset, tail)` from the cache's log before live
@@ -338,15 +347,20 @@ everything above: a retained watch that later falls behind still lags loudly, an
 whose newest write races past the join arrives as the first live change
 instead of in the state, folding to the same result.
 
-TTL expiry delivers no event, since expiry is lazy and appends nothing to the
-log. Every put carries its `expires_at_millis`, so a watcher that mirrors the
-cache can expire entries itself.
+TTL expiry is delivered as a delete. Reads treat an entry as absent the moment
+its TTL passes, and the shard's leader writes a delete for it in its expiry
+pass, which every watch of that key receives. The pass runs once a second and
+writes at most 1024 deletes per shard, so under a mass expiry the deletes lag.
+An expiry is permanent once written: a leader whose clock jumps forward deletes
+entries early, for good. A watcher that mirrors the
+cache needs no timers of its own. Every put still carries its
+`expires_at_millis`.
 
 The features are negotiated (`FEATURE_CACHE_WATCH`, with retained delivery as
 its own `FEATURE_CACHE_WATCH_RETAINED` bit) and advertised only by brokers
 whose cache is log-backed: an in-memory cache has no offsets to anchor resume,
 duplicate detection, or the lag signal to. See the
-[wire protocol](/felix/architecture/wire-protocol/) for the message shapes.
+[wire protocol](/architecture/wire-protocol/) for the message shapes.
 
 ### 8. Counters
 
@@ -383,7 +397,61 @@ increments are not exactly-once. An application that cannot tolerate a
 double-count keeps its own idempotency key.
 :::
 
-### 9. Choosing a feature
+### 9. Conditional writes
+
+`cache_put_if` stores a value only if the key is absent or still at the version
+you read, and `cache_delete_if` removes it only at that version. The check and
+the write are one step on the key's owner, so two clients racing for the same
+key cannot both win.
+
+```rust
+use felix_client::CacheCondition;
+
+// Take a lease if nobody holds it.
+let taken = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me.clone(), Some(30_000),
+        CacheCondition::Absent)
+    .await?;
+if !taken.applied {
+    return Ok(()); // someone else holds it; taken.version is theirs
+}
+let mut version = taken.version.expect("an applied put has a version");
+
+// Renew it only if it is still ours.
+let renewed = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me.clone(), Some(30_000),
+        CacheCondition::Version(version))
+    .await?;
+if renewed.applied {
+    version = renewed.version.expect("an applied put has a version");
+}
+
+// Release it only if nobody took it over.
+client.cache_delete_if("acme", "prod", "leases", "endpoint-7", version).await?;
+```
+
+For a read-modify-write, `cache_get_versioned` returns the value with its
+version; write the new value with `CacheCondition::Version` and read again if
+it was refused.
+
+A refusal is an answer, not an error: `applied` is false and `version` is the
+key's current version (`None` when it has none). An expired entry counts as
+absent. A key's version is the log offset of the put that wrote it. It only
+grows and is never reused, and it survives compaction and restarts. The
+in-memory cache has no log, so its versions come from a counter that starts
+each run at the wall-clock time in microseconds; a version read before a
+restart is refused after it rather than matching a new value. That holds
+unless the clock steps back across the restart, or the last run averaged more
+than one write per microsecond: with no data directory there is nowhere to
+record where its counter stopped. The
+answer waits on the same durability and replication as a plain put. Negotiated
+as `FEATURE_CACHE_CONDITIONAL`; both cache backends support it.
+
+A conditional write is never resent by the client after a lost answer: if the
+first one applied, the retry would be refused by the version it wrote. Read
+the key to find out which happened.
+
+### 10. Choosing a feature
 
 Watches, retained delivery and counters all read the same log, so they can be
 combined. This table maps common applications to the feature that fits:
@@ -395,8 +463,9 @@ combined. This table maps common applications to the feature that fits:
 | A read-heavy dashboard over changing state | **Retained watch**, materialized locally | Current values first, then only the changes. No re-fetch loop, and a lag is reported instead of shown as stale data |
 | Rate limiting, quotas, usage metering | **Counter** per principal | Increment-and-read in one round trip against the shard's owner, durable across restart and failover, with no racy get-modify-put |
 | Live tallies (votes, likes, inventory deltas) | **Counter**, read by pollers or fronted by a put | Deltas fold server-side; publish the folded sum into a watched cache key when watchers need push instead of poll |
+| Leases, idempotency keys, config edits | **Conditional writes** | Put-if-absent claims a key once; put-if-version edits only what you read, so concurrent writers cannot overwrite each other |
 
-### 10. Eviction (in-memory only: best-effort)
+### 11. Eviction (in-memory only: best-effort)
 
 The in-memory backend evicts opportunistically under memory pressure. There is no
 guaranteed LRU or LFU, so don't rely on a specific eviction order. The
@@ -514,6 +583,47 @@ async fn cache_delete(
 - `Ok(Some(value))`: The key was there; this is what was removed
 - `Ok(None)`: The key was not there (this is not an error)
 - `Err(e)`: Operation failed, or the broker predates `FEATURE_CACHE_DELETE`
+
+### cache_put_if / cache_delete_if / cache_get_versioned
+
+Conditional writes; see [Conditional writes](#9-conditional-writes).
+
+**Signatures**:
+
+```rust
+async fn cache_put_if(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    value: Bytes,
+    ttl_ms: Option<u64>,
+    condition: CacheCondition,  // Absent or Version(u64)
+) -> Result<CacheConditionResult>
+
+async fn cache_delete_if(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    version: u64,
+) -> Result<CacheConditionResult>
+
+async fn cache_get_versioned(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+) -> Result<Option<VersionedValue>>  // value and version
+```
+
+**Returns**: `CacheConditionResult { applied, version }`. Applied, `version` is
+the one the put wrote; refused, it is the key's current version, or `None` when
+the key has none. `Err(e)` when the operation failed, or the broker predates
+`FEATURE_CACHE_CONDITIONAL`.
 
 ### watch_cache
 
@@ -726,39 +836,22 @@ let config = ClientConfig {
 ### Broker Configuration
 
 ```yaml
-# QUIC flow control (see the environment variable reference for the
-# FELIX_CACHE_* names and defaults)
-cache_conn_recv_window: 268435456    # 256 MiB per connection
-cache_stream_recv_window: 67108864   # 64 MiB per stream
-cache_send_window: 268435456         # Send window
+# QUIC flow control. One listener carries cache requests and publishes,
+# so its receive windows follow the publish budget (16 MiB by default).
+pub_conn_recv_window: 16777216       # per connection
+pub_stream_recv_window: 16777216     # per stream
+cache_send_window: 268435456         # send window
 ```
 
 ## Limitations and Planned Features
 
 ### Current limitations
 
-1. **No compare-and-swap**: the one atomic update is a counter's `counter_add`
-2. **No multi-key operations**: no transactions
-3. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
-4. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
+1. **No multi-key operations**: no transactions. A conditional write checks one key
+2. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
+3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
 
 ### Planned Features
-
-**Atomic operations**:
-
-```rust
-// Compare-and-swap
-client.cache_cas(
-    "locks",
-    "resource-a",
-    expected_value,
-    new_value
-).await?;
-```
-
-Compare-and-swap is not built. Atomic increment is [counters](#8-counters),
-a fold over the log rather than an operation on a cache value, which is why it
-survives failover.
 
 **Multi-key operations**:
 

@@ -102,6 +102,18 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>>;
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>>;
 
+    /// Create every stream and cache in one write: all of them, or none.
+    ///
+    /// `NotFound` when an item's namespace does not exist, and `Conflict` when
+    /// one already exists or the batch names it twice. Either way nothing is
+    /// written.
+    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()>;
+    /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
+    /// part-way through an upgrade answers no.
+    async fn create_resources_ready(&self) -> bool {
+        true
+    }
+
     /// Register a node, or revive the record a restarting node already has.
     ///
     /// `node_id` identifies a broker across restarts, so registering an id that
@@ -335,6 +347,15 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
 
+    /// Keep what a broker's heartbeat said about the leaders it cannot reach,
+    /// replacing what it said before. Stamp it with
+    /// [`ControlPlaneStore::now_millis`], which placement judges it against.
+    /// Under Raft it is the leader's soft state, as heartbeats are, and a
+    /// leader that predates it drops it.
+    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
+    /// Every suspicion held, fresh or not; the reader judges freshness.
+    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
+
     /// Whether placement is paused: it starts no moves of its own, while
     /// moves in flight finish and an operator may still start one. Read by
     /// every instance's placement on every pass, so it lives in the store.
@@ -409,6 +430,16 @@ pub trait AuthStore: Send + Sync {
         &self,
         tenant_id: &str,
         grouping: GroupingRule,
+    ) -> StoreResult<()>;
+
+    /// Make `change` and record `revocation` with it, both or neither, so a
+    /// change that takes rights back never commits without ending the
+    /// sessions it reached. `NotFound` as for the plain change.
+    async fn change_auth(
+        &self,
+        tenant_id: &str,
+        change: AuthChange,
+        revocation: Option<Revocation>,
     ) -> StoreResult<()>;
 
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys>;
@@ -504,6 +535,25 @@ pub trait AuthStore: Send + Sync {
         now_secs: i64,
     ) -> StoreResult<RefreshTokenTake>;
 
+    /// A refresh token as stored, without spending it.
+    async fn peek_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+    ) -> StoreResult<Option<RefreshToken>>;
+
+    /// Spend `token_id` and store `next` in its place, both or neither, so a
+    /// failed write cannot leave the chain spent with nothing to replace it.
+    /// Answers as [`AuthStore::take_refresh_token`]; `next` is stored only on
+    /// `Taken`.
+    async fn rotate_refresh_token(
+        &self,
+        tenant_id: &str,
+        token_id: &str,
+        now_secs: i64,
+        next: RefreshToken,
+    ) -> StoreResult<RefreshTokenTake>;
+
     /// Revoke every token in one rotation chain, returning how many were live.
     ///
     /// The response to a replay. One of the two holders is an attacker and the
@@ -526,6 +576,69 @@ pub trait AuthStore: Send + Sync {
     /// stops the table growing without bound, and the record of a replay is
     /// worth keeping until it can no longer be presented.
     async fn purge_expired_refresh_tokens(&self, before_secs: i64) -> StoreResult<u64>;
+
+    /// Revoke every broker token these principals of `tenant_id` were issued
+    /// at or before `revoked_at` (seconds since the epoch). Brokers end the
+    /// sessions those tokens opened. A principal already revoked later keeps
+    /// the later time. `revoked_at` is the caller's, so every Raft member
+    /// records the same one.
+    async fn revoke_principals(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()>;
+
+    /// Revocations written at or after `since`, oldest first, at most the
+    /// store's change limit. Each principal appears once, at its latest
+    /// revocation, so a `since` of 0 is the whole set. A `since` past the end,
+    /// as from a store that was replaced, is answered from 0: applying a
+    /// revocation twice changes nothing.
+    async fn principal_revocations(
+        &self,
+        since: u64,
+    ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>>;
+
+    /// The latest revocation of `principal_id` in `tenant_id`, counting one
+    /// of the whole tenant.
+    async fn principal_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<Option<i64>>;
+
+    /// [`AuthStore::principal_revoked_at`] for each of `principal_ids`, in
+    /// order, read together.
+    async fn principals_revoked_at(
+        &self,
+        tenant_id: &str,
+        principal_ids: &[String],
+    ) -> StoreResult<Vec<Option<i64>>> {
+        let mut cutoffs = Vec::with_capacity(principal_ids.len());
+        for principal_id in principal_ids {
+            cutoffs.push(self.principal_revoked_at(tenant_id, principal_id).await?);
+        }
+        Ok(cutoffs)
+    }
+}
+
+/// A change to a tenant's auth rules that can take rights back; see
+/// [`AuthStore::change_auth`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthChange {
+    RemovePolicy(PolicyRule),
+    RemoveGrouping(GroupingRule),
+    UpsertIssuer(IdpIssuerConfig),
+    DeleteIssuer(String),
+}
+
+/// Principals whose broker tokens issued at or before `revoked_at` are
+/// revoked; see [`AuthStore::revoke_principals`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Revocation {
+    pub principal_ids: Vec<String>,
+    pub revoked_at: i64,
 }
 
 /// Everything [`AuthStore::bootstrap_tenant_auth`] writes besides the keys it
@@ -614,6 +727,21 @@ pub struct Snapshot<T> {
 pub struct ChangeSet<T> {
     pub items: Vec<T>,
     pub next_seq: u64,
+}
+
+impl<T> ChangeSet<T> {
+    /// A page of at most `limit` changes, read at the same instant as `head`,
+    /// the first seq the feed has not handed out.
+    ///
+    /// A full page can stop short of `head`, so its cursor is the seq after its
+    /// last change. Resuming at `head` would skip everything past the page.
+    pub(crate) fn page(items: Vec<T>, limit: usize, head: u64, seq: impl Fn(&T) -> u64) -> Self {
+        let next_seq = match items.last() {
+            Some(last) if items.len() >= limit => seq(last) + 1,
+            _ => head,
+        };
+        Self { items, next_seq }
+    }
 }
 
 #[derive(Debug, Error)]

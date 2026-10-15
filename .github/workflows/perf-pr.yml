@@ -60,7 +60,8 @@ env:
 
 jobs:
   perf-compare:
-    runs-on: ubuntu-latest
+    # Both sides run in this one job, so the runner never skews the comparison.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - name: Checkout PR head
@@ -120,8 +121,10 @@ jobs:
           cp "$GITHUB_WORKSPACE/scripts/perf/run_latency_matrix.py" scripts/perf/run_latency_matrix.py
           cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_latency.yml" scripts/perf/ci_subset_latency.yml
           cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_throughput.yml" scripts/perf/ci_subset_throughput.yml
+          cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_large_payload.yml" scripts/perf/ci_subset_large_payload.yml
           python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_latency.yml
           python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_throughput.yml
+          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_large_payload.yml
           cp data/raw/latency_demo_runs.jsonl /tmp/felix-perf-results/baseline.jsonl
 
       - name: Run candidate benchmarks
@@ -136,6 +139,9 @@ jobs:
           rm -rf data/raw/stdout
           python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_latency.yml
           python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_throughput.yml
+          # The subsets above send 1 KiB or less, which never reaches the
+          # subscriber byte bound. This one cell does.
+          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_large_payload.yml
           cp data/raw/latency_demo_runs.jsonl /tmp/felix-perf-results/candidate.jsonl
 
       - name: Compare baseline vs candidate

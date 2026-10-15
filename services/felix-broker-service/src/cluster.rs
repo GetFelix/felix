@@ -2,7 +2,8 @@
 //!
 //! [`membership`] registers this node and heartbeats; [`credential`] holds the
 //! token it presents and refreshes it before expiry. [`catalog_sync`] keeps the
-//! metadata catalog in step with the control plane, `node_catalog` turns node
+//! metadata catalog in step with the control plane, `revocation_sync` follows
+//! its principal revocations, `node_catalog` turns node
 //! ids into addresses, and `client_endpoints` is what this broker tells a
 //! client about where to connect. [`lease`] is the authority to serve at all:
 //! renewed by the same heartbeat, checked cheaply on admission and against the
@@ -14,6 +15,8 @@ pub(crate) mod client_endpoints;
 pub(crate) mod controlplane_client;
 pub(crate) mod controlplane_http;
 pub mod credential;
+pub(crate) mod feed_cursor;
 pub mod lease;
 pub mod membership;
 pub(crate) mod node_catalog;
+pub(crate) mod revocation_sync;

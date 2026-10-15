@@ -435,6 +435,7 @@ fn resolve_db_urls() -> Vec<String> {
     vec![
         "postgres://postgres:postgres@127.0.0.1:55432/postgres".to_string(),
         "postgres://postgres:postgres@host.docker.internal:55432/postgres".to_string(),
+        "postgres://postgres:postgres@host.containers.internal:55432/postgres".to_string(),
     ]
 }
 

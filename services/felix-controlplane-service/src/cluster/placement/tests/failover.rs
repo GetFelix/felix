@@ -476,3 +476,95 @@ fn a_replica_with_no_reported_position_loses_to_one_with_a_position() {
 
     assert_eq!(plan.to_place().next().expect("placed").1, "broker-c");
 }
+
+/// A cache of one shard and three replicas.
+fn cache_of(consistency: crate::model::ConsistencyLevel) -> Cache {
+    Cache {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+        display_name: "sessions".to_string(),
+        shards: 1,
+        replication_factor: 3,
+        consistency,
+    }
+}
+
+/// **A `Quorum` cache failover keeps the replica set, the dead leader in
+/// it**, as a `Quorum` stream's does: the new leader fences a majority of its
+/// set before it serves, and that majority has to meet every one the old
+/// leader acknowledged a put or a counter add on. A `Leader` cache is not
+/// fenced, and its followers are chosen afresh.
+#[test]
+fn a_quorum_cache_failover_keeps_the_dead_leader_in_the_replica_set() {
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut existing = assigned("sessions", "broker-a", &["broker-b", "broker-c"]);
+    existing.key.kind = ShardKind::Cache;
+    let caught_up = CaughtUpNodes(["broker-c".to_string()].into());
+
+    let quorum = cache_of(crate::model::ConsistencyLevel::Quorum);
+    let planned = plan(
+        &[],
+        &[quorum],
+        &nodes,
+        std::slice::from_ref(&existing),
+        &caught_up,
+    );
+    let (_, leader, replicas) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-c");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-b".to_string()]),
+        "the spare took the dead leader's place in the fence's set",
+    );
+
+    let planned = plan(
+        &[],
+        &[cache_of(crate::model::ConsistencyLevel::Leader)],
+        &nodes,
+        &[existing],
+        &caught_up,
+    );
+    let (_, leader, replicas) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-c");
+    assert!(
+        !replicas.contains(&"broker-a".to_string()),
+        "a Leader cache kept its dead leader: {replicas:?}"
+    );
+}
+
+/// A move's destination is never promoted on a `Quorum` cache: its broker
+/// opened the shard as the move's cut-over, without the fence.
+#[test]
+fn a_quorum_cache_failover_does_not_promote_a_move_destination() {
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut moving = assigned(
+        "sessions",
+        "broker-a",
+        &["broker-b", "broker-c", "broker-d"],
+    );
+    moving.key.kind = ShardKind::Cache;
+    moving.successor = Some("broker-d".to_string());
+    let quorum = cache_of(crate::model::ConsistencyLevel::Quorum);
+
+    let planned = plan(
+        &[],
+        &[quorum],
+        &nodes,
+        &[moving],
+        &CaughtUpNodes(["broker-d".to_string()].into()),
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "the move's destination was promoted",
+    );
+}

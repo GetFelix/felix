@@ -107,6 +107,16 @@ where
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// The handle for `key` if it is open now. Never opens one, and never
+    /// waits: a shard whose open is still under way reads as not open.
+    pub(crate) fn get_open(&self, key: &K) -> Option<V> {
+        let slot = Arc::clone(self.slots.lock().get(key)?);
+        match &*slot.try_lock()? {
+            Slot::Open(value) => Some(value.clone()),
+            Slot::Empty | Slot::Closing => None,
+        }
+    }
+
     /// Every open handle. Waits out opens in progress.
     pub(crate) fn open_values(&self) -> Vec<V> {
         self.open_entries()

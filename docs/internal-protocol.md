@@ -104,10 +104,32 @@ never have dialled the one that shipped to it.
 | `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
 | `1 << 2` | `GENERATION_LABELS` | reads `ReplicateLabelledRecords`, and answers `ReplicateLabelledFetch` |
 | `1 << 3` | `FORWARD_OFFSETS` | answers `ForwardPublishOk` with the offsets the batch landed at, and with the empty range `1..=0` for a stream with no log |
+| `1 << 4` | `CACHE_FENCE` | answers `Fence` and `ReplicateFetch` for a cache shard's counter log (`log` = `Counters`) as well as its cache log, refusing a counter fence older than the generation its cache log accepted, and reads cache and counter batches labelled with their generations |
+| `1 << 5` | `RECORD_TIMES` | reads `ReplicateTimedRecords` and stores each record's time as sent, and answers `ReplicateTimedFetch` |
+| `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
+| `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
+| `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
 
-`FELIX_INTERNAL_FENCE=false` turns the first two bits off: the broker refuses
-`Fence` and `ReplicateFetch` as unknown kinds, as an older build would. It
-still offers `GENERATION_LABELS` and `FORWARD_OFFSETS`, which are not the fence's.
+<!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
+
+`FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
+`GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
+as an older build would, and checks only the generation of what it is sent. It
+still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES` and `PING`,
+which are not the fence's.
+
+A promoted cache shard is fenced only when every replica offered `FENCE`,
+`TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
+fleet finalizes `fenced_caches` and it waits for a majority that answers
+instead. A leader sends cache and counter batches with their generation labels
+only to a follower that offered both `GENERATION_LABELS` and `CACHE_FENCE`.
+
+A promoted stream shard fences both group logs on every replica in one round,
+beside its records' fence. When a majority, itself included, took both, it
+takes the dead-letter log of the replica whose pair is furthest ahead and
+merges that replica's cursors into its own; otherwise it keeps its own.
+A leader sends group batches with their generation labels only to a follower
+that offered both `GENERATION_LABELS` and `GROUP_FENCE`.
 
 ### Versioning
 
@@ -137,7 +159,8 @@ requester. Every response echoes it.
 **Every request has exactly one terminal response.** `ForwardPublish` is answered
 by exactly one of `ForwardPublishOk`, `ForwardPublishError`, or `NotLeader`;
 `ForwardCacheOp` by exactly one of `ForwardCacheOk`, `ForwardCacheError`, or
-`NotLeader`. A requester that never receives one, because the connection
+`NotLeader`; `ConditionalForwardCacheOp` the same way, with
+`ConditionalForwardCacheOk` for its success. A requester that never receives one, because the connection
 dropped, treats the request as failed, so nothing is silently abandoned as
 pending.
 
@@ -318,6 +341,25 @@ because both land on the same state twice. A `Put` is not: re-sending one with a
 TTL restarts its clock. So a lost answer to a write is reported as
 indeterminate rather than retried, and the caller decides.
 
+A conditional put or delete, or a get that wants the value's version, travels
+as `ConditionalForwardCacheOp` (34): the `AuthorizedForwardCacheOp` body with
+a credential that may be empty (a zero length), then a condition byte:
+
+```text
+u8  condition   0 none (a versioned Get), 1 absent, 2 version
+u64 version     only after a 2
+```
+
+The owner checks the condition and writes in one step, and answers with
+`ConditionalForwardCacheOk` (35): the correlation id, a `u8` applied flag, a
+`u8` presence byte and `u64` version, then the `ForwardCacheOk` value. A
+separate kind, because an owner that predates it must refuse the request
+rather than read it as an unconditional `Put`. On that `UnsupportedKind` the
+forwarder refuses a conditional write, and sends a versioned `Get` again as a
+plain one, which answers without a version. A conditional write is not
+re-sent after an indeterminate answer either: one that applied would be
+refused by the version it wrote.
+
 ### Handshake
 
 ```mermaid
@@ -439,6 +481,18 @@ leader accepts a commit only once the fleet has finalized `atomic_commit`, and
 a peer that predates the byte refuses the batch rather than storing the
 commit as an ordinary event.
 
+A record's **publisher** travels in the marks section too. Bit `0x80` on a mark
+byte says the record's publisher follows the rest of its mark, as a `u8`
+length and that many bytes; the other bits are the mark as above. A batch with
+any publisher has the section even when no record is otherwise marked, so a
+plain batch carrying one goes as `ReplicateMarkedRecords`. The checksum covers
+the publishers with the marks, and a follower stores them as shipped, so a
+promoted replica reports what the leader did; a resend whose publisher differs
+from the stored one is a `LogConflict`. A leader writes publishers only once
+the fleet has finalized `publisher_principal`, and a peer that predates the
+bit refuses the batch (`UnknownInternalProducerMark`) rather than storing the
+records without them.
+
 **The commit offset** rides with the records too. Under `Quorum` the leader
 sends its quorum mark, one past the last record a majority holds and the
 control plane has been told about, as `ReplicateRecords.commit_offset`. A batch
@@ -463,6 +517,19 @@ follower labels the records it appended with exactly those, rather than with
 the sender's generation, which would make a record the sender inherited look
 newer than it is. See `docs/replication-design.md`, "Each record keeps the
 generation it was written at".
+
+**Each record's append time** rides with a labelled batch to a follower that
+offered `RECORD_TIMES`. Such a batch travels as `ReplicateTimedRecords` (kind
+36): the kind 32 body, then one `u64` per payload, the record's time on the
+leader in microseconds since the Unix epoch. The follower stores those times
+instead of reading its own clock, so a replica promoted later reports the
+times the leader's readers saw and `offset_for_time` answers the same. The
+times are not covered by the batch checksum and are not compared on a resend:
+a copy stored from a leader that sent none holds the follower's own times, and
+that is not divergence. A batch without generations carries no times. A
+follower that did not offer the capability is sent kind 32 and stamps the
+records itself, and so does a newer follower receiving kind 32 from an older
+leader.
 
 `LogConflict` does not converge by *retrying*, because the same batch meets the same
 bytes. It can be repaired, and the follower does it without an exchange: a
@@ -545,6 +612,16 @@ batch that would otherwise have been told where to resume all get
 shard's own log as well as theirs, so the fence covers them without a request
 each.
 
+A promoted cache leader then sends `Fence` again with `log` = `Counters`, at
+the same generation, to a replica that offered `CACHE_FENCE`, to learn where
+that replica's counter log ends. The replica takes it at the generation its
+cache log accepted or a newer one, and refuses an older one with `FencedEpoch`.
+A promoted stream leader sends `Fence` with `log` = `GroupDeadLetters` and
+with `log` = `GroupCursors` beside its stream fence, at the same generation, to
+a replica that offered `GROUP_FENCE`. The replica checks them against the
+generation its stream log accepted as well as their own, and answers a broker
+with no consumer groups as an empty log (`log_end` 0, `last_generation` 0).
+
 The answer, `FenceOk` (kind 30), says where the replica's copy stands: one past
 its last record, its commit offset, and the generation its last record was
 written at. See `docs/replication-design.md`, "Fencing a promotion", for what
@@ -556,7 +633,7 @@ the leader does with it.
 | is asked again at the generation it took | `FenceOk` again |
 | has accepted a newer generation, or its routing view has one | `FencedEpoch` |
 | is outside the replica set | `Unauthorized` |
-| names a log other than the shard's own | `Malformed` |
+| has no copy of the named log to keep the promise in | `Unauthorized` |
 | predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
 
 The fence comes with a promotion, usually before the replica's routing view
@@ -569,10 +646,16 @@ budget, and is answered with the records as a leader ships them
 (`ReplicateRecords`, or `ReplicateMarkedRecords` when any record carries a
 producer mark), at most 4 MiB and none past the replica's end. Only a leader
 at exactly the generation the replica last accepted is answered: an older one
-gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`.
+gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`. A fetch
+of a cursor log (`log` = `GroupCursors`) from below the log's first record is
+answered from that record: a promoted leader reads the whole log to merge the
+replica's groups into its own, and compaction may have trimmed its head.
 `ReplicateLabelledFetch` (kind 33) is the same body, sent to a replica that
 offered `GENERATION_LABELS` and answered with `ReplicateLabelledRecords`, so
-the tail the leader takes keeps its generations.
+the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind
+37), the same body again, goes to a replica that also offered `RECORD_TIMES`
+and is answered with `ReplicateTimedRecords`, so the tail keeps its times
+too.
 
 ```mermaid
 sequenceDiagram
@@ -592,6 +675,22 @@ sequenceDiagram
     A->>C: ReplicateRecords(shard, G, ...)
     C-->>A: ReplicateError(FencedEpoch)
 ```
+
+### Pinging a leader
+
+A follower asks each broker that leads a shard it follows whether it is there:
+`Ping` (kind 38), answered with `Pong` (kind 39). Both bodies are the
+correlation id alone. It goes on the connection's control lane, so it never
+waits behind a forwarded publish, and the answer comes from the broker's
+serving runtime rather than the transport task, so a broker whose runtime is
+stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
+did not is not watched at all, so a rolling upgrade never reads as a dead
+leader.
+
+A leader that has not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` is named
+in the follower's heartbeat, and the control plane promotes once a majority of
+the set names it. See `docs/replication-design.md`, "Failover on the
+followers' word".
 
 ## Errors
 
@@ -616,8 +715,9 @@ Typed, because they need different responses:
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
 `HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
-`ReplicateFetch` 31, `ReplicateLabelledRecords` 32 and
-`ReplicateLabelledFetch` 33. A peer
+`ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
+`ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36 and
+`ReplicateTimedFetch` 37. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

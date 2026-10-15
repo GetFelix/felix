@@ -70,7 +70,7 @@ async fn a_cluster_client_follows_a_group_redirect_to_the_leader() {
     let client = felix_cluster::client::connect_cluster(
         &[cluster.node(&other).expect("the non-owner").client_addr],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect a cluster client to the non-owner");
@@ -285,7 +285,7 @@ async fn a_dead_letter_survives_a_leader_failover() {
             break dead[0];
         };
         cluster
-            .group_nack_via(&owner, STREAM, 0, GROUP, record.offset)
+            .group_nack_via(&owner, STREAM, 0, GROUP, record)
             .await
             .expect("nack");
     };

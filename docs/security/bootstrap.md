@@ -106,3 +106,15 @@ tenant actually holds.
 
 Never log or echo the token; the control plane does not, and requests carrying
 it should not transit anything that logs headers.
+
+## Development tokens
+
+`FELIX_BOOTSTRAP_DEV_TOKENS=true` adds `POST /internal/bootstrap/tenants/{tenant}/dev-token`,
+which mints a token for any principal of an initialized tenant without an
+identity provider. It widens what the bootstrap token can do: without it, the
+token can only initialize a tenant that has not been initialized; with it, the
+holder can act as any principal of any tenant, within what RBAC grants that
+principal. That is why startup refuses it unless bootstrap is enabled on a
+loopback bind, and why the control plane warns at startup and logs every
+token it mints. It is for a developer's machine or a CI job, never a shared
+control plane.

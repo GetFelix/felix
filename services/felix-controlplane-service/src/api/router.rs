@@ -134,6 +134,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(api::caches::delete_cache),
         )
         .route(
+            "/v1/tenants/{tenant_id}/namespaces/{namespace}/resources",
+            axum::routing::post(api::resources::create_resources),
+        )
+        .route(
             "/v1/caches/snapshot",
             axum::routing::get(api::caches::cache_snapshot),
         )
@@ -221,6 +225,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(auth::exchange::exchange_token),
         )
         .route(
+            "/v1/tenants/{tenant_id}/token/delegate",
+            axum::routing::post(auth::delegate::delegate_token),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/token/refresh",
             axum::routing::post(auth::refresh::refresh_token_handler),
         )
@@ -253,6 +261,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(auth::admin::revoke_principal_refresh_tokens),
         )
         .route(
+            "/v1/principal-revocations/changes",
+            axum::routing::get(auth::revocation::principal_revocation_changes),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/signing-keys",
             axum::routing::get(auth::signing_keys::list_signing_keys)
                 .post(auth::signing_keys::stage_signing_key),
@@ -278,11 +290,26 @@ pub fn build_router(state: AppState) -> Router {
 
 /// The bootstrap listener's router: tenant auth initialization and nothing else.
 pub fn build_bootstrap_router(state: AppState) -> Router {
-    Router::new()
+    bootstrap_routes()
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// [`build_bootstrap_router`] that also mints development tokens. See
+/// [`api::bootstrap::dev_token`].
+pub fn build_bootstrap_router_with_dev_tokens(state: AppState) -> Router {
+    bootstrap_routes()
         .route(
-            "/internal/bootstrap/tenants/{tenant_id}/initialize",
-            axum::routing::post(api::bootstrap::initialize),
+            "/internal/bootstrap/tenants/{tenant_id}/dev-token",
+            axum::routing::post(api::bootstrap::dev_token),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+fn bootstrap_routes() -> Router<AppState> {
+    Router::new().route(
+        "/internal/bootstrap/tenants/{tenant_id}/initialize",
+        axum::routing::post(api::bootstrap::initialize),
+    )
 }

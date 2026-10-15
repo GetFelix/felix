@@ -13,6 +13,7 @@
 mod compaction;
 mod record;
 mod shard;
+mod snapshot;
 mod write;
 
 pub use record::CacheOp;
@@ -27,11 +28,14 @@ use tokio::sync::Mutex;
 
 use self::shard::{CacheShard, Index, ShardState, now_millis};
 use self::write::{FinishOnDrop, Observer, StagedWrite};
-use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
+use crate::cache::{
+    CacheChange, CacheCondition, CacheObserver, CacheSnapshotEntry, ConditionalWrite, StorageApi,
+    VersionedValue,
+};
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
-use crate::log::{AppendRecord, LogConfig, ShardKey};
+use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -45,6 +49,9 @@ pub struct LogCache {
     /// Told about every applied write, while the shard's write lock is held —
     /// which is what makes the order it sees the shard's order.
     observer: Observer,
+    /// Whether each cache's logs are held at the commit offset, keyed by
+    /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
+    holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
 }
 
 impl LogCache {
@@ -63,6 +70,7 @@ impl LogCache {
             shards: ShardSlots::new(),
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
+            holds: SyncMutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -89,6 +97,50 @@ impl LogCache {
         value: Bytes,
         ttl: Option<std::time::Duration>,
     ) -> Result<()> {
+        self.put_entry(tenant_id, namespace, cache, shard, key, value, ttl, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// The write behind [`StorageApi::put_if`]: [`LogCache::put_checked`],
+    /// with the condition checked where the offset is claimed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_if_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite> {
+        self.put_entry(
+            tenant_id,
+            namespace,
+            cache,
+            shard,
+            key,
+            value,
+            ttl,
+            Some(condition),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put_entry(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: Option<CacheCondition>,
+    ) -> Result<ConditionalWrite> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
         let expires_at_millis = ttl.map_or(0, |ttl| now_millis() + ttl.as_millis() as u64);
@@ -96,55 +148,103 @@ impl LogCache {
             key: key.to_string(),
             value: value.clone(),
             expires_at_millis,
+            version: None,
         };
 
-        let mut staged = {
-            let mut state = shard.state.lock().await;
-            shard.ensure_index(&mut state).await?;
-            let payload = op.encode();
-            let bytes = payload.len() as u64;
-            let pending = state
-                .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
-                .await?;
-            // Claimed the moment the offsets are consumed. The guard releases
-            // the range on every exit path — error, cancellation mid-await —
-            // so a failed commit cannot strand the writers queued behind it.
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
-            state.sequenced_through = Some(pending.last_offset() + 1);
-            FinishOnDrop::new(StagedWrite {
-                shard: Arc::clone(&shard),
-                log: state.log.clone(),
-                change: CacheChange {
-                    tenant_id: tenant_id.to_string(),
-                    namespace: namespace.to_string(),
-                    cache: cache.to_string(),
-                    shard: shard_index,
-                    key: key.to_string(),
-                    value: Some(value),
-                    offset: pending.first_offset(),
-                    expires_at_millis,
-                },
-                pending,
-                turn,
-                op,
-                bytes,
-                observer: Arc::clone(&self.observer),
-                _in_flight: shard.key_in_flight(key),
-            })
+        let observer = Arc::clone(&self.observer);
+        let change = CacheChange {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            cache: cache.to_string(),
+            shard: shard_index,
+            key: key.to_string(),
+            value: Some(value),
+            offset: 0,
+            expires_at_millis,
+        };
+        // Registered before the spawn, so a caller cancelled before the task
+        // first runs still holds off a settled read. A conditional put cannot
+        // do this: it waits out every in-flight write to its key itself.
+        let early = condition.is_none().then(|| shard.key_in_flight(key));
+        // Staged on a task of its own: once the append thread has the record
+        // it is written, and the guard built from it is what applies it and
+        // tells the watchers. A caller cancelled in between would leave the
+        // put in the log and nowhere else.
+        let staged = crate::task::run_to_end({
+            let shard = Arc::clone(&shard);
+            async move {
+                let mut state = match condition {
+                    Some(_) => shard.lock_settled(&change.key).await?,
+                    None => {
+                        let mut state = shard.state.lock().await;
+                        shard.ensure_index(&mut state).await?;
+                        state
+                    }
+                };
+                if let Some(condition) = condition {
+                    let current = live_version(&state, &change.key);
+                    let holds = match condition {
+                        CacheCondition::Absent => current.is_none(),
+                        CacheCondition::Version(version) => current == Some(version),
+                    };
+                    if !holds {
+                        return Ok(Err(current));
+                    }
+                }
+                let payload = op.encode();
+                let bytes = payload.len() as u64;
+                // Claimed by the log the moment the offsets are consumed, so a
+                // failed commit cannot strand the writers queued behind it.
+                let (pending, turn) = state
+                    .log
+                    .append_claimed(
+                        &[AppendRecord {
+                            payload,
+                            timestamp_micros: now_millis() * 1000,
+                            mark: Default::default(),
+                            publisher: None,
+                        }],
+                        &shard.sequencer,
+                    )
+                    .await?;
+                state.sequenced_through = Some(pending.last_offset() + 1);
+                let in_flight = early.unwrap_or_else(|| shard.key_in_flight(&change.key));
+                Ok(Ok(FinishOnDrop::new(StagedWrite {
+                    shard: Arc::clone(&shard),
+                    log: state.log.clone(),
+                    change: CacheChange {
+                        offset: pending.first_offset(),
+                        ..change
+                    },
+                    pending,
+                    turn,
+                    op,
+                    bytes,
+                    observer,
+                    _in_flight: in_flight,
+                })))
+            }
+        })
+        .await?;
+        let mut staged = match staged {
+            Ok(staged) => staged,
+            Err(current) => {
+                return Ok(ConditionalWrite {
+                    applied: false,
+                    version: current,
+                });
+            }
         };
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
+        let version = staged.offset();
         staged.apply(&mut state);
         shard.maybe_compact(&state.index);
-        Ok(())
+        Ok(ConditionalWrite {
+            applied: true,
+            version: Some(version),
+        })
     }
 
     /// The read behind [`StorageApi::get`].
@@ -170,6 +270,84 @@ impl LogCache {
         shard.read_value(&state, entry).await
     }
 
+    /// [`LogCache::get_checked`], once every write to `key` already staged
+    /// has applied.
+    ///
+    /// For a read-modify-write under a caller's own lock. A put whose caller
+    /// was cancelled still finishes on its own task, after that lock is gone,
+    /// so a plain read can miss it and the write that follows lands on top.
+    pub async fn get_settled_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<Bytes>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let state = shard.lock_settled(key).await?;
+        let Some(entry) = state.index.entries.get(key).copied() else {
+            return Ok(None);
+        };
+        if entry.is_expired(now_millis()) {
+            return Ok(None);
+        }
+        shard.read_value(&state, entry).await
+    }
+
+    /// The read behind [`StorageApi::get_versioned`].
+    pub async fn get_versioned_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        shard.ensure_index(&mut state).await?;
+        let Some(entry) = state.index.entries.get(key).copied() else {
+            return Ok(None);
+        };
+        if entry.is_expired(now_millis()) {
+            return Ok(None);
+        }
+        Ok(shard
+            .read_value(&state, entry)
+            .await?
+            .map(|value| VersionedValue {
+                value,
+                version: entry.version,
+            }))
+    }
+
+    /// The delete behind [`StorageApi::delete_if`].
+    pub async fn delete_if_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite> {
+        let deleted = self
+            .delete_entry(
+                tenant_id,
+                namespace,
+                cache,
+                shard,
+                key,
+                DeleteWhen::Version(version),
+            )
+            .await?;
+        Ok(ConditionalWrite {
+            applied: deleted.written,
+            version: deleted.current,
+        })
+    }
+
     /// The delete behind [`StorageApi::delete`].
     ///
     /// Same two-half shape as [`LogCache::put_checked`]. The previous value is
@@ -183,64 +361,188 @@ impl LogCache {
         shard: u32,
         key: &str,
     ) -> Result<Option<Bytes>> {
+        self.delete_entry(tenant_id, namespace, cache, shard, key, DeleteWhen::Always)
+            .await
+            .map(|deleted| deleted.previous)
+    }
+
+    /// Write a delete for each key in one shard whose TTL has passed, at most
+    /// `limit` of them, so a watch hears that it is gone and compaction can
+    /// drop it. Returns how many were written.
+    ///
+    /// For the shard's leader only, like any write. Each key is checked again
+    /// when its delete is staged, under the lock a put stages under, so a
+    /// put that refreshed it in between keeps its value. `keep_going` is asked
+    /// before each delete, and the pass stops the first time it says no.
+    pub async fn expire_due(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        limit: usize,
+        keep_going: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<usize> {
+        let now = now_millis();
+        let due: Vec<String> = {
+            let handle = self.shard(tenant_id, namespace, cache, shard)?;
+            let mut state = handle.state.lock().await;
+            handle.ensure_index(&mut state).await?;
+            state
+                .index
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.is_expired(now))
+                .map(|(key, _)| key.clone())
+                .take(limit)
+                .collect()
+        };
+        let mut written = 0;
+        for key in due {
+            if !keep_going() {
+                break;
+            }
+            let deleted = self
+                .delete_entry(
+                    tenant_id,
+                    namespace,
+                    cache,
+                    shard,
+                    &key,
+                    DeleteWhen::Expired(now),
+                )
+                .await?;
+            written += usize::from(deleted.written);
+        }
+        Ok(written)
+    }
+
+    /// Every shard this store has open, as tenant, namespace, cache, shard.
+    pub fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        self.shards
+            .open_entries()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Stage and apply a delete of `key`, or nothing when the key is absent
+    /// or `when` does not hold.
+    async fn delete_entry(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        when: DeleteWhen,
+    ) -> Result<Deleted> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
         let op = CacheOp::Delete {
             key: key.to_string(),
         };
 
-        let (previous, mut staged) = {
-            let mut state = shard.state.lock().await;
-            shard.ensure_index(&mut state).await?;
-            let Some(entry) = state.index.entries.get(key).copied() else {
-                return Ok(None);
-            };
-            let previous = if entry.is_expired(now_millis()) {
-                None
-            } else {
-                shard.read_value(&state, entry).await?
-            };
-            let payload = op.encode();
-            let bytes = payload.len() as u64;
-            let pending = state
-                .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
-                .await?;
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
-            state.sequenced_through = Some(pending.last_offset() + 1);
-            let staged = FinishOnDrop::new(StagedWrite {
-                shard: Arc::clone(&shard),
-                log: state.log.clone(),
-                change: CacheChange {
-                    tenant_id: tenant_id.to_string(),
-                    namespace: namespace.to_string(),
-                    cache: cache.to_string(),
-                    shard: shard_index,
-                    key: key.to_string(),
-                    value: None,
-                    offset: pending.first_offset(),
-                    expires_at_millis: 0,
-                },
-                pending,
-                turn,
-                op,
-                bytes,
-                observer: Arc::clone(&self.observer),
-                _in_flight: shard.key_in_flight(key),
-            });
-            (previous, staged)
+        let observer = Arc::clone(&self.observer);
+        let change = CacheChange {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            cache: cache.to_string(),
+            shard: shard_index,
+            key: key.to_string(),
+            value: None,
+            offset: 0,
+            expires_at_millis: 0,
+        };
+        // Registered before the spawn, as in `put_entry`.
+        let early = matches!(when, DeleteWhen::Always).then(|| shard.key_in_flight(key));
+        // On a task of its own, for the reason `put_checked` gives.
+        let staged = crate::task::run_to_end({
+            let shard = Arc::clone(&shard);
+            async move {
+                // An expiry is conditional too: a put staged but not yet
+                // applied may have refreshed the key, and a delete staged
+                // behind it would erase that.
+                let mut state = match when {
+                    DeleteWhen::Always => {
+                        let mut state = shard.state.lock().await;
+                        shard.ensure_index(&mut state).await?;
+                        state
+                    }
+                    DeleteWhen::Expired(_) | DeleteWhen::Version(_) => {
+                        shard.lock_settled(&change.key).await?
+                    }
+                };
+                let Some(entry) = state.index.entries.get(&change.key).copied() else {
+                    return Ok(Err(None));
+                };
+                let live = !entry.is_expired(now_millis());
+                let holds = match when {
+                    DeleteWhen::Always => true,
+                    DeleteWhen::Expired(now) => entry.is_expired(now),
+                    DeleteWhen::Version(version) => live && entry.version == version,
+                };
+                if !holds {
+                    return Ok(Err(live.then_some(entry.version)));
+                }
+                let previous = if live {
+                    shard.read_value(&state, entry).await?
+                } else {
+                    None
+                };
+                let payload = op.encode();
+                let bytes = payload.len() as u64;
+                let (pending, turn) = state
+                    .log
+                    .append_claimed(
+                        &[AppendRecord {
+                            payload,
+                            timestamp_micros: now_millis() * 1000,
+                            mark: Default::default(),
+                            publisher: None,
+                        }],
+                        &shard.sequencer,
+                    )
+                    .await?;
+                state.sequenced_through = Some(pending.last_offset() + 1);
+                let in_flight = early.unwrap_or_else(|| shard.key_in_flight(&change.key));
+                let staged = FinishOnDrop::new(StagedWrite {
+                    shard: Arc::clone(&shard),
+                    log: state.log.clone(),
+                    change: CacheChange {
+                        offset: pending.first_offset(),
+                        ..change
+                    },
+                    pending,
+                    turn,
+                    op,
+                    bytes,
+                    observer,
+                    _in_flight: in_flight,
+                });
+                Ok(Ok((previous, staged)))
+            }
+        })
+        .await?;
+        let (previous, mut staged) = match staged {
+            Ok(staged) => staged,
+            Err(current) => {
+                return Ok(Deleted {
+                    written: false,
+                    previous: None,
+                    current,
+                });
+            }
         };
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
         staged.apply(&mut state);
-        Ok(previous)
+        Ok(Deleted {
+            written: true,
+            previous,
+            current: None,
+        })
     }
 
     /// Every live key in one shard of one cache.
@@ -376,6 +678,29 @@ impl LogCache {
             .await
     }
 
+    /// Drop one shard's index and its snapshot, so the next touch replays
+    /// its whole log.
+    ///
+    /// For replication after it cut records from the log: the index can
+    /// point at offsets that are gone, or that now hold other records, and
+    /// catching up from the tail never notices. Only while nothing writes to
+    /// the shard, since the commit order restarts at the tail too.
+    pub async fn forget_index(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let shard = self.shard(tenant, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        state.index = Index::default();
+        state.sequenced_through = None;
+        state.index_epoch += 1;
+        crate::index_snapshot::remove(&shard.dir).map_err(StorageError::Io)?;
+        Ok(())
+    }
+
     /// Flush every open cache. Call once during graceful shutdown.
     ///
     /// Compaction passes stop at their next step first; one cut short leaves
@@ -397,6 +722,24 @@ impl LogCache {
         shard: u32,
     ) -> Result<Arc<CacheShard>> {
         self.shard_with_base(tenant, namespace, cache, shard, None)
+    }
+
+    /// The configuration a shard of `cache` opens with: this store's, with
+    /// the cache's retention hold.
+    fn config_for(&self, tenant: &str, namespace: &str, cache: &str) -> LogConfig {
+        let mut config = self.config.clone();
+        if config.retention_hold == RetentionHold::Lifted {
+            return config;
+        }
+        let scope = (tenant.to_string(), namespace.to_string(), cache.to_string());
+        if let Some(hold) = self.holds.lock().get(&scope) {
+            config.retention_hold = if *hold {
+                RetentionHold::Held
+            } else {
+                RetentionHold::Lifted
+            };
+        }
+        config
     }
 
     fn shard_with_base(
@@ -428,22 +771,24 @@ impl LogCache {
                 let dir = layout::shard_dir(&self.root, &key);
                 let label = layout::shard_label(&key);
                 crate::legacy_swap::recover_legacy_swap(&dir)?;
+                let config = self.config_for(tenant, namespace, cache);
                 let log = match base_offset {
-                    Some(base) => {
-                        DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
-                    }
-                    None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
+                    Some(base) => DiskLog::open_at(dir.clone(), label.clone(), config, base)?,
+                    None => DiskLog::open(dir.clone(), label.clone(), config)?,
                 };
                 Ok(Arc::new(CacheShard {
                     label,
+                    dir,
                     compactor: Arc::clone(&self.compactor),
                     compacting: Default::default(),
                     keys_in_flight: Default::default(),
+                    key_settled: Default::default(),
                     state: Mutex::new(ShardState {
                         log,
                         index: Index::default(),
                         sequenced_through: None,
                         closed: false,
+                        index_epoch: 0,
                     }),
                     // Aligned to the log's tail by the first `ensure_index`; until
                     // then nothing can reserve, because every writer passes through
@@ -484,6 +829,48 @@ impl StorageApi for LogCache {
             .await
     }
 
+    async fn put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite> {
+        self.put_if_checked(
+            tenant_id, namespace, cache, shard, key, value, ttl, condition,
+        )
+        .await
+    }
+
+    async fn delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite> {
+        self.delete_if_checked(tenant_id, namespace, cache, shard, key, version)
+            .await
+    }
+
+    async fn get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        self.get_versioned_checked(tenant_id, namespace, cache, shard, key)
+            .await
+    }
+
     async fn delete(
         &self,
         tenant_id: &str,
@@ -494,6 +881,10 @@ impl StorageApi for LogCache {
     ) -> Result<Option<Bytes>> {
         self.delete_checked(tenant_id, namespace, cache, shard, key)
             .await
+    }
+
+    fn has_log(&self) -> bool {
+        true
     }
 
     async fn shard_log(
@@ -545,6 +936,67 @@ impl StorageApi for LogCache {
         LogCache::close_shard(self, tenant_id, namespace, cache, shard).await
     }
 
+    async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        LogCache::forget_index(self, tenant_id, namespace, cache, shard).await
+    }
+
+    async fn set_retention_hold(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        hold: bool,
+    ) -> Result<()> {
+        if self.config.retention_hold == RetentionHold::Lifted {
+            return Ok(());
+        }
+        self.holds.lock().insert(
+            (
+                tenant_id.to_string(),
+                namespace.to_string(),
+                cache.to_string(),
+            ),
+            hold,
+        );
+        for ((tenant, ns, name, _), shard) in self.shards.open_entries() {
+            if tenant != tenant_id || ns != namespace || name != cache {
+                continue;
+            }
+            match shard
+                .current_log()
+                .await
+                .hold_retention_at_commit(hold)
+                .await
+            {
+                Err(StorageError::Closed(_)) => {}
+                other => other?,
+            }
+        }
+        Ok(())
+    }
+
+    fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        LogCache::open_shards(self)
+    }
+
+    async fn expire_due(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        limit: usize,
+        keep_going: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<usize> {
+        LogCache::expire_due(self, tenant_id, namespace, cache, shard, limit, keep_going).await
+    }
+
     fn set_change_observer(&self, observer: Arc<dyn CacheObserver>) -> bool {
         *self.observer.lock() = Some(observer);
         true
@@ -559,6 +1011,25 @@ impl StorageApi for LogCache {
     ) -> Result<Vec<CacheSnapshotEntry>> {
         self.live_entries_checked(tenant_id, namespace, cache, shard)
             .await
+    }
+
+    async fn applied_through(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<Option<u64>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        shard.ensure_index(&mut state).await?;
+        // Applied writes release their turns under this lock, so with writers
+        // in flight the sequencer is the frontier; idle, the tail is.
+        let applied = shard.sequencer.next_offset();
+        if state.sequenced_through == Some(applied) {
+            return state.log.tail_offset().await.map(Some);
+        }
+        Ok(Some(applied))
     }
 
     async fn len(&self) -> usize {
@@ -590,6 +1061,35 @@ impl StorageApi for LogCache {
 /// Tenant, namespace, cache, and shard. The shard is part of the identity
 /// because each one is a separate log in a separate directory.
 type CacheId = (String, String, String, u32);
+
+/// When [`LogCache::delete_entry`] writes its delete.
+#[derive(Clone, Copy)]
+enum DeleteWhen {
+    Always,
+    /// The entry had expired by this Unix millisecond.
+    Expired(u64),
+    /// The entry is live at this version.
+    Version(u64),
+}
+
+/// What [`LogCache::delete_entry`] did.
+struct Deleted {
+    written: bool,
+    /// The value the key held, if it was live.
+    previous: Option<Bytes>,
+    /// The live entry's version when nothing was written.
+    current: Option<u64>,
+}
+
+/// The version of `key`'s live entry, if it has one.
+fn live_version(state: &ShardState, key: &str) -> Option<u64> {
+    state
+        .index
+        .entries
+        .get(key)
+        .filter(|entry| !entry.is_expired(now_millis()))
+        .map(|entry| entry.version)
+}
 
 #[cfg(test)]
 mod tests;

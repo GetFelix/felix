@@ -1,10 +1,11 @@
 //! Commands that start a cluster in this process: `up`, `status` and `smoke`.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use felix_cluster::session;
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
 
 use crate::args::flag_usize;
 use crate::signals::stop_signal;
@@ -36,13 +37,37 @@ pub(crate) async fn up(args: &[String]) -> Result<()> {
     println!("  felix-cluster publish hello    # in a third");
     eprintln!("\nholding the cluster. press Ctrl-C to tear it down.");
 
-    stop_signal().await?;
+    hold(&cluster, &session, &path).await?;
     eprintln!("\ntearing down...");
     // Only if it still describes this cluster: a second cluster may have taken
     // the file over, and deleting that one leaves it running and unreachable.
     session.remove_if_ours(&path);
     cluster.shutdown().await;
     Ok(())
+}
+
+/// Wait for a stop signal, rewriting the session file with fresh tokens every
+/// renewal interval so `publish` and `subscribe` keep working past the first
+/// token's lifetime.
+async fn hold(cluster: &Cluster, session: &session::Session, path: &Path) -> Result<()> {
+    let every = cluster.credentials().renew_interval();
+    let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    let stop = stop_signal();
+    tokio::pin!(stop);
+    loop {
+        tokio::select! {
+            result = &mut stop => return result,
+            _ = renew.tick() => {
+                // Only while the file still describes this cluster; a second
+                // cluster may have taken it over.
+                let ours = session::Session::read(path)
+                    .is_ok_and(|current| current.control_plane == session.control_plane);
+                if ours && let Err(err) = cluster.session().write(path) {
+                    eprintln!("could not renew the session file: {err:#}");
+                }
+            }
+        }
+    }
 }
 
 pub(crate) async fn status(args: &[String]) -> Result<()> {
@@ -68,6 +93,8 @@ pub(crate) fn cluster_config(nodes: usize, inherit_output: bool) -> ClusterConfi
     ClusterConfig {
         nodes,
         streams: vec![StreamSpec::new(STREAM, 1)],
+        // Something for `felixctl cache` to try out.
+        caches: vec![CacheSpec::new("users", 1)],
         inherit_output: inherit_output && std::env::var("FELIX_CLUSTER_VERBOSE").is_ok(),
         ..Default::default()
     }

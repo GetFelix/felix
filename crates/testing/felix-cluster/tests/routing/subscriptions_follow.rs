@@ -53,7 +53,7 @@ async fn a_subscription_follows_its_shard_to_the_new_owner() {
         felix_cluster::client::connect_cluster(
             &[addr(&owner)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -73,7 +73,7 @@ async fn a_subscription_follows_its_shard_to_the_new_owner() {
     let writer = felix_cluster::client::connect_cluster(
         &[addr(&other)],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");

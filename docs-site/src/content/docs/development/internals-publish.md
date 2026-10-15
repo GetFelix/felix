@@ -5,7 +5,7 @@ title: "Internals: The Publish Path"
 This page traces a publish function by function, from `Publisher::publish()`
 to the message landing in every subscriber's queue. It is for contributors who
 change or debug this path. The API reference is the
-[Client SDK](/felix/clients/rust/).
+[Client SDK](/clients/rust/).
 
 Code references are `path/to/file.rs:function_name`. Use your editor's "go to
 definition" from there.
@@ -37,7 +37,25 @@ pub async fn publish(
 ) -> Result<()>
 ```
 
-1. **Worker selection.** `select_worker()` picks one of the pool's
+1. **Worker selection.** Every publisher works out the shard of each
+   publish: 0 without a key, the caller's shard for a `ClusterClient`, and for
+   a keyed publish through a plain `Client` the shard the key maps to, from
+   the stream's width asked of the broker (`publish/widths.rs`). Against a
+   broker with `FEATURE_PUBLISH_WIDTH` the width also comes back as a framed
+   `publish_width`, which the writer sends ahead of a keyed batch whenever it
+   differs from the last one that stream carried; the broker refuses a batch
+   whose declared width is not the stream's (`resolve_declared_shard` in
+   `handlers/publish/route.rs`), and the client asks the width again every
+   5 s (over one shared control stream, `rechecking_with`) and on a
+   `stale_width` refusal. A writer whose own `auth` did not negotiate the bit
+   (`PublishWorker::takes_width`) is never sent one. `route()`
+   then asks `ShardStreams` (`publish/shard_streams.rs`) for the shard's own
+   stream, opening it on the shard's first publish on the least-loaded
+   connection. A pipelining stream is answered in request order, so a shard
+   that shared a stream with others would hold back their answers while it
+   waited on a quorum, and one stream's shards on separate streams spread
+   over the client's connections and listeners. Past `publish_shard_streams`
+   (16) shards, `select_worker()` picks one of the pool's
    `PublishWorker`s, either round-robin or by hashing `(tenant_id, namespace,
    stream)` (`PublishSharding::HashStream`, the mode that keeps a stream's
    messages on one QUIC stream, preserving order). The hash result is cached
@@ -54,13 +72,13 @@ pub async fn publish(
    Otherwise the acked publish falls back to `publish_batch_json`. If
    you want JSON instead (debugging, a client that hasn't implemented the binary
    decoder), call `publish_json`/`publish_batch_json` explicitly. See
-   [Wire Protocol](/felix/architecture/wire-protocol/#binary-publish-batch-encoding).
+   [Wire Protocol](/architecture/wire-protocol/#binary-publish-batch-encoding).
 
    Both encodings converge on the same handler: the binary path decodes the frame
    and then calls `handle_publish_batch_message` with `AckEncoding::Binary`, so
    admission, authorization, overload shedding and commit-ack semantics are shared
-   and only the reply framing differs. The encoding is carried on the ack-waiter
-   message because a commit ack is emitted from a different task, long after the
+   and only the reply framing differs. The encoding travels with the publish job
+   because a commit ack is sent by the task that settles the job, long after the
    request frame is gone.
 
 3. **Admission.** Before the message is handed to the worker's channel, the
@@ -73,7 +91,7 @@ pub async fn publish(
    `OwnedSemaphorePermit` returned here is attached to the `PublishRequest`
    and travels with it. It is released only when the worker finishes processing,
    not when it's merely queued. See
-   [Internals: Backpressure](/felix/development/internals-concurrency/) for why that timing
+   [Internals: Backpressure](/development/internals-concurrency/) for why that timing
    matters.
 
 4. **Enqueue.** The encoded `PublishRequest` (carrying the permit) goes onto
@@ -138,7 +156,7 @@ do not mean more concurrent callers contending on shared stream state.
    ```
 
    Unacked publishes use `Drop` (or `Backpressure` if `pub_ingress_wait` is
-   set, see [Internals: Backpressure](/felix/development/internals-concurrency/)).
+   set, see [Internals: Backpressure](/development/internals-concurrency/)).
    An acked publish that finds no room is answered with a retryable
    `overloaded` (`detail.reason = "publish_queue_full"`, a short
    `retry_after_ms`, and nothing queued), and every refusal or shed is counted
@@ -160,7 +178,7 @@ do not mean more concurrent callers contending on shared stream state.
    tenant is refused while a quiet one still gets in. With `core_shards`
    enabled there is one such queue per shard, with its executors on that
    shard's core, and a stream's lane lives on the shard that owns it. See
-   [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/#core-sharding).
+   [Internals: Backpressure & Core Sharding](/development/internals-concurrency/#core-sharding).
 
 4. **What a job does on its lane** (`handlers/publish/worker.rs:LaneWork`).
    An executor holds a lane only for the part that has to be ordered, and
@@ -168,10 +186,47 @@ do not mean more concurrent callers contending on shared stream state.
 
    | Job | Ordered, on the lane | Handed to its own task |
    |---|---|---|
-   | Durable publish | fence check, `claim_publish` (offsets taken) | device flush, fanout, quorum wait, the answer |
+   | Durable publish | fence check, `claim_publish` (offsets taken) for it and the durable publishes queued behind it | device flush, fanout, quorum wait, the answers |
    | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
    | Idempotent publish | sequence check and append (offsets taken), off the executor | device flush, quorum wait, the answer |
    | Forward | the whole round trip, off the executor | nothing |
+
+   A durable publish does not go alone if more are queued on its lane. The
+   executor takes the plain durable publishes queued behind it, in order and
+   up to 64 of them or 1 MiB of payload, and claims them all with one
+   `claim_publish`. That is one write, one commit wait, one commit turn and
+   one fanout for the lot, which is most of what an unbatched durable publish
+   costs. Each publish still gets its own answer: its offset is the claim's
+   first plus the records ahead of it, and the answers go out in lane order
+   once the claim is durable. The tenant is charged for every publish it
+   took, and pays any excess in later turns. Taking stops at the first queued
+   job that cannot join (an idempotent or empty publish), so nothing
+   overtakes it. `felix_broker_publish_claim_jobs` reports the group sizes.
+
+   Failures follow what the members share. The fence and lease are checked
+   per publish: one the fence refuses is answered with the refusal and left
+   out, and the rest are written around it. Everything after that is shared:
+   a failed append, flush or quorum wait fails every publish in the claim,
+   because none of them can have succeeded without the others. Every member
+   gets the same error. A quorum timeout leaves the outcome unknown for each
+   of them, so none is told it is safe to send again. Exactly-once needs the
+   idempotent producer, whose publishes are never grouped. A publish whose
+   caller stopped waiting keeps its place, as it would alone.
+
+   > `queued_publishes_on_one_lane_are_claimed_as_one_append`: eight
+   > publishes queued on one lane, one of them three records long, are
+   > answered with offsets 0, 1, 2, 5, 6, ... and reach the subscriber as
+   > one delivery.
+
+   > `no_publish_in_a_claim_is_answered_before_an_earlier_one`: when the
+   > last publish of a claim is answered, every earlier one already is.
+
+   > `a_publish_the_fence_refuses_is_left_out_of_the_claim`: the refused
+   > publish gets `ShardUnavailable`, and the others are written at 0, 1, 2.
+
+   > `a_claim_whose_quorum_wait_times_out_leaves_every_member_unknown`: both
+   > members of a claim whose quorum wait timed out get `QuorumTimeout` with
+   > retry class `OutcomeUnknown`.
 
    A durable shard may have `pub_flush_concurrency` flushes outstanding.
    Past that, its next claim waits for one off the executor, holding only its
@@ -240,7 +295,10 @@ claim_publish                      │   complete_publish                       
    shares with other waiters. It then waits for its commit turn, so every
    earlier batch has been appended and fanned out first. On a `Quorum` stream
    a batch the committed mark has not passed is held back from readers and
-   released once a majority holds it.
+   released once a majority holds it. The release is woken when the mark
+   moves and also rechecks the bound every 250 ms while anything is held,
+   since a route or lease change can make the bound cover a batch without
+   the mark moving.
 
 3. **`append_batch_at`** appends to the in-memory replay ring under one lock
    per batch and trims it to `log_capacity`. On a durable stream the ring's
@@ -256,7 +314,7 @@ claim_publish                      │   complete_publish                       
    re-encode. The send is gated by `SubQueuePolicy` (`Block`, `DropNew`,
    `DropOld`, where `DropOld` behaves as `DropNew`). This is the first of two
    backpressure checkpoints on the subscribe side. See
-   [Internals: Backpressure](/felix/development/internals-concurrency/#the-full-backpressure-chain)
+   [Internals: Backpressure](/development/internals-concurrency/#the-full-backpressure-chain)
    for the second.
 
 The commit turn is held until fanout finishes, so delivery order matches log
@@ -287,7 +345,7 @@ Publishing one message to a stream with 3 active subscribers, unacked,
 6. Each subscriber's feeder task independently calls
    `envelope.shared_event_frame()`. The *first* one to call it pays the
    encode cost and caches the result in the envelope, and the other two get the
-   cached `Bytes` for free. See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/).
+   cached `Bytes` for free. See [Internals: Subscribe & Fanout](/development/internals-subscribe/).
 
 ## If you want to change...
 
@@ -303,6 +361,6 @@ Publishing one message to a stream with 3 active subscribers, unacked,
 | Add a new client publish worker sharding strategy | `PublishSharding` in `crates/sdk/felix-client/src/publish/routing.rs` |
 | Change broker publish scheduling (lanes, tenant fairness, queue bounds) | `PublishScheduler` in `handlers/publish/scheduler.rs`, `FairQueue` in `scheduler/fair_queue.rs`; what each job does on its lane in `handlers/publish/worker.rs` |
 
-Next: [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/) picks up where
+Next: [Internals: Subscribe & Fanout](/development/internals-subscribe/) picks up where
 this page leaves off: what happens to the `DeliveryEnvelope` after it lands
 in a subscriber's queue.

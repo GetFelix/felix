@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v5)
+# Felix Durable Segment Format (v6)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -48,6 +48,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
 
 ```text
 <root>/
+  node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
@@ -55,8 +56,11 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.index
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
+    ballot                                   ← the leader that generation was accepted from
     durable.mark                             ← how far the active segment was synced
     producers                                ← producer snapshot, when any producer wrote here
+    offload.manifest                         ← segments copied to the object store, once offload has run
+    keys.idx                                 ← a cache shard's key index, once compaction has run
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -95,7 +99,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, or `5` for one that holds a commit record; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, or `6` for one that holds a record with its publisher; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -113,13 +117,13 @@ segment, so damage here is never a torn write. It is always an error.
 
 | Offset | Size | Field | Notes |
 | --- | --- | --- | --- |
-| 0 | 4 | `payload_len` | low 29 bits: ≤ `MAX_PAYLOAD_BYTES` (64 MiB); top three bits: the record's kind, below |
+| 0 | 4 | `payload_len` | the body's length, ≤ `MAX_PAYLOAD_BYTES` (64 MiB); bits 28 to 31: the record's kind, bit 27: the body ends with a publisher. Both below |
 | 4 | 8 | `offset` | logical offset; ascends by exactly 1 within a segment |
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
-| 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the payload |
+| 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
 | 28 | 20 | `tag` | only when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32` |
-| 28 or 48 | n | `payload` | opaque bytes |
+| 28 or 48 | n | body | the payload, opaque bytes; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
 an idempotent producer.
@@ -213,6 +217,32 @@ same reason only a v4 one may hold a generation-start record, and a segment
 is written at v5 only to hold one. The record is written only once the fleet
 has finalized `atomic_commit`, so until then no log leaves v4.
 
+### Publishers
+
+**Bit 27** of `payload_len` says the record carries the principal that
+published it. It is not a kind: it combines with any of bits 28 to 31. The
+publisher sits at the end of the body, after the payload, followed by one byte
+giving its length:
+
+```text
+u8[n]  payload
+u8[m]  publisher        # m <= 255
+u8     m
+```
+
+`payload_len` counts all of it, so the step to the next record is still read
+from the header alone, and the checksum covers the publisher with the payload.
+A length byte that claims more than the body holds is `RecordPublisher`
+corruption: the checksum held, so the record was written that way. The payload
+digest a producer batch is checked against covers the payload only.
+
+Bodies are capped at 2^26 bytes, so the length never reaches bit 27. Only a
+v6 segment may hold such a record, for the reason only a v5 one may hold a
+commit: a v5 build reading bit 27 would see a length past the limit. A segment
+is written at v6 only to hold one, and the broker writes one only once it is
+enabled (the `publisher_principal` fleet feature in a cluster,
+`FELIX_RECORD_PUBLISHERS` on a single broker). Until then no log leaves v5.
+
 ## Index file
 
 Index files accelerate reads and are **never trusted**. Every entry is used only
@@ -249,6 +279,9 @@ Entries are emitted for the segment's first record and thereafter every
 `index_spacing_bytes` of segment data. They are strictly ascending by offset,
 which is what `seek_position`'s binary search relies on.
 
+Entries reach the file 256 at a time, and the rest when the segment is
+sealed, so after a crash the active segment's index can be short. Recovery
+scans the active segment in full and rewrites its index, so that costs nothing.
 A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
 
@@ -289,7 +322,8 @@ because only there can a record have been mid-write when the process died:
 - A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
-- Segment-header damage is never repairable.
+- Segment-header damage is never repairable, with one exception below: a
+  blank first segment.
 - **A zero-filled tail is always repairable**, whatever the failure kind and
   without `repair_checksum_tail`. After a power loss (not a process crash) the
   file size can reach disk while the data blocks it covers do not, and those
@@ -331,6 +365,15 @@ because only there can a record have been mid-write when the process died:
   it, but only when the segments either side of it still meet exactly. A
   segment that held records and lost its bytes leaves an offset gap, which
   stays fatal.
+- **A blank first segment.** When segment 0 is the log's only segment, it is
+  no longer than a header, its header is missing or all zeros, and the durable
+  mark vouches for nothing past the header, its creation failed (on a full
+  disk, say) before it could hold a record. Recovery deletes it and the log
+  starts again empty, or at its placed base. Creation syncs the header before
+  anything can append, and preallocation does not change the file size, so a
+  first segment longer than a header had a durable header. A zeroed header
+  there is damage to acknowledged records and stays fatal, even when every
+  byte after it is zero too.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose
@@ -364,6 +407,14 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
   C6 54 DE 27
   24 02 15 2C
   68 69
+
+encode_record(offset = 7, timestamp = 9, payload = "hi", publisher = "al"):
+  08 00 00 05
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  7B 1D 74 DE
+  51 5E 81 63
+  68 69  61 6C  02
 ```
 
 ## Version history
@@ -374,6 +425,8 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
 | 2 | Added `header_crc` to the record header (24 → 28 bytes), making a corrupted length field detectable without reading the payload. |
 | 3 | Producer marks: two flag bits in `payload_len` and an optional 20-byte tag. A v2 segment is read unchanged; an unmarked record is byte for byte a v2 record. |
 | 4 | Generation-start records: a third flag bit in `payload_len`. Written only to hold that record, once `generation_start` is finalized; v2 and v3 segments are read unchanged. |
+| 5 | Commit records: a fourth flag bit. Written only to hold one, once `atomic_commit` is finalized. |
+| 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -398,6 +451,7 @@ would misparse every field after the length.
 | Limit | Value | Why |
 | --- | --- | --- |
 | `MAX_PAYLOAD_BYTES` | 64 MiB | Bounds the allocation a corrupt length field can request |
+| `MAX_PUBLISHER_BYTES` | 255 | The publisher's length is one byte; it is a principal id, never a token |
 | Max records per segment | `u64` offsets, so effectively unbounded | Rollover is driven by size, not count |
 | Oversized records | A record larger than `segment_size_bytes` is written to an otherwise-empty segment of its own | Splitting a record across segments would break the "offsets are contiguous within a segment" invariant that recovery depends on |
 
@@ -440,13 +494,13 @@ for.
 
 A shard directory that has been replicated to, or led, holds a `replica` file:
 the highest leadership generation this broker accepted a leader of the shard
-at, and the commit offset it knows, one past the last record a majority
-acknowledged.
+at, the commit offset it knows, one past the last record a majority
+acknowledged, and whether retention is held at that offset.
 
 ```text
  0   4  magic        u32  "FLRS"
  4   2  version      u16
- 6   2  reserved     u16
+ 6   2  flags        u16  bit 0: retention held at the commit offset
  8   8  generation   u64  highest generation accepted
 16   8  commit       u64  one past the last record known committed
 24   4  crc          u32  crc32 over bytes 0..24
@@ -463,6 +517,13 @@ read back behind after a crash, it permits *more* truncation than it should:
 records committed since are unguarded until the leader's next batch carries the
 offset again.
 
+The flags were a reserved zero before the hold was recorded, and no build
+checked them, so a file without the flag reads as not held and an older build
+reads a file with it unchanged. The hold is written when replication turns it
+on or off (`DiskLog::hold_retention_at_commit`), or when the log opens under a
+`LogConfig::retention_hold` that differs from it, and restored at open, before
+retention starts; see `docs/durable-storage.md`, "Retention".
+
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
 it, and reading a damaged one as zero would accept any leader, so a file that
 is present and does not decode fails the open. Absent reads as zero: nothing
@@ -477,6 +538,71 @@ The one thing that lowers the commit offset is a restore to a backup point
 (`DiskLog::restore_to`), run offline against a copy: it writes the lowered
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
+
+## `ballot`: whom the generation was accepted from
+
+Beside `replica`, once a broker that keeps ballots has accepted a generation
+from a named leader: that generation and the leader's node id.
+
+```text
+ 0   4  magic        u32  "FLBL"
+ 4   2  version      u16
+ 6   2  leader_len   u16  at most 1024
+ 8   8  generation   u64  the generation the leader was accepted at
+16   n  leader       utf-8 node id, leader_len bytes
+16+n 4  crc          u32  crc32 over bytes 0..16+n
+```
+
+Written the same way as `replica`, and before it when a generation is raised,
+so the ballot is on disk before anything from that leader is stored or
+acknowledged. At the accepted generation only that leader is answered; see
+`docs/replication-design.md`, "Ballots". On open, a ballot at the generation
+in `replica` names its leader, one ahead of it is a raise that crashed between
+the two writes and its generation is taken, and one behind it, or none, names
+no leader. A file that is present and does not decode fails the open, as
+`replica` does. A separate file so that a build that predates ballots ignores
+it and still opens the shard.
+
+## `offload.manifest`: segments with a copy in the object store
+
+A stream shard whose broker runs with offload on (see `docs/durable-storage.md`,
+"Tiered storage: offload") holds an `offload.manifest`: one entry per sealed
+segment with a verified copy in the object store, ordered by base offset.
+
+```text
+ 0   4  magic        u32  "FLOF"
+ 4   2  version      u16
+ 6   2  reserved     u16
+ 8   4  count        u32  entries that follow
+12      entries, each:
+         0   8  segment id      u64
+         8   8  base offset     u64
+        16   8  last offset     u64  inclusive
+        24   8  size            u64  bytes in the object, the segment's valid bytes
+        32   8  oldest          u64  timestamp_micros of the first record
+        40   8  newest          u64  timestamp_micros of the last record
+        48   4  checksum        u32  crc32 over the object's bytes
+        52   2  key length      u16
+        54   n  key             UTF-8 object key
+ end-4   4  crc          u32  crc32 over every byte before it
+```
+
+A key is `<node id>/<shard directory name>/<base offset>-<segment id>.segment`,
+with both numbers zero-padded to 20 digits. The node id keeps replicas of one
+shard apart when brokers share an offload directory. Entries written by
+0.6.0-preview.3 have keys without it and are read as they are: an entry names
+its object by the full key, never by recomputing it.
+
+Entries never overlap. Gaps between them are allowed: a segment retention
+deleted while offload was off was never copied. Written through a temporary,
+an fsync, a rename and a directory sync, and always before the local segment it
+records is unlinked.
+
+**This file is authoritative.** Once a segment's local file is gone, the entry
+is the only record that its records still exist, so a manifest that is present
+and does not decode fails the open. Absent reads as empty. A truncation drops
+the entries holding offsets at or after the cut, and a reset drops them all,
+both before any segment is touched.
 
 ## `producers`: the producer snapshot
 
@@ -534,9 +660,67 @@ on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
 
+## `keys.idx`: a cache's key index
+
+A cache shard maps each key to the record that currently defines it. That index
+lives in memory and is otherwise rebuilt by replaying the whole log when the
+shard opens. At the end of each compaction pass, after the trim, it is written
+here, and an open loads it and replays only the records past it. Only cache
+shards have one.
+
+```text
+ 0   4  magic            u32  "FXIX"
+ 4   2  format           u16  1
+ 6   1  store            u8   0 for a cache (1 is reserved for collections)
+ 7   8  covered_through  u64  every record below this offset is reflected, none at or past it
+15   8  entry_count      u64
+23   8  log_bytes        u64  payload bytes of every record below covered_through, live or not
+31   4  last_checksum    u32  checksum of the record at covered_through - 1; 0 when nothing is covered
+35   …  entry_count × { key_len u32, key, offset u64, version u64,
+                        expires_at_millis u64, bytes u32 }
+     4  crc              u32  CRC-32C over everything before it
+```
+
+Each `key` is a composite key, and entries are sorted by it, compared as bytes:
+
+```text
+kind u8 | key_len u32 | key | slot u8 | field
+```
+
+Kind 0 is a cache value, which has no slot or field. Kinds 1, 2 and 3 are
+reserved for hashes, sets and lists, where slot 0 is the key's metadata and
+slot 1 a field. The 28 bytes after the key are the in-memory entry: where the
+record is, the version a conditional write compares against, the absolute
+expiry (0 for none), and the record's payload length. `log_bytes` carries
+compaction's garbage ratio across the restart.
+
+It is derived, so an open checks it against the log before using it, and a
+snapshot that fails any check is logged and ignored, and the whole log is
+replayed:
+
+- the length and the checksum match, and every key is a cache key;
+- `covered_through` lies between the log's oldest offset and its tail. Below
+  the oldest offset, a later pass trimmed records the snapshot never saw; past
+  the tail, records it did see are gone;
+- every entry points at an offset from the log's oldest up to
+  `covered_through`;
+- the record at `covered_through - 1` has `last_checksum`. Offsets alone cannot
+  tell this log from one replication cut back and refilled to the same length.
+
+A truncation removes it, durably, with the producer snapshot, and so does
+dropping the cache's index after replication cut its log. It is written to
+`keys.idx.tmp`, flushed, renamed over `keys.idx`, and the directory flushed;
+the log is flushed first, so the records it covers are on the device before it
+is. A temporary left by a crash is never read and is overwritten by the next
+pass. Unlike the producer snapshot it is flushed: losing it costs a replay of
+the whole log, which is what it exists to avoid.
+
+It shortens an open, not memory: the index is still held whole in memory.
+
+
 ## `durable.mark`: how far the log was synced
 
-A 32-byte file, rewritten in place after every flush:
+A 32-byte file, rewritten in place whenever a flush, roll or seal moves it forward:
 
 ```text
  0   4  magic         u32  "FLSM"
@@ -552,9 +736,50 @@ Recovery reads it before repairing anything. For segment `id`: equal to the
 mark's segment, damage at or past `synced_bytes` is a torn tail; newer than
 it, anything after the header is; older, the strict rules apply (a sealed
 segment was synced whole). The mark is written only after the sync it
-describes returns, so it never runs ahead of the device. It is not itself
-fsynced per flush (that would double the flush cost), so after a power loss it
-can lag by the filesystem's writeback delay; it is synced at open (with its
-directory entry, so a fresh shard's first segment has a mark), at clean
-shutdown and close, and after a truncation or reset. A missing or corrupt mark
-reads as absent.
+describes returns, so it never runs ahead of the device. It only moves
+forward: a write that would put it behind the last one, such as a background
+roll's seal finishing after a flush that already covered the new segment, is
+dropped. Otherwise an idle shard, which never flushes again, would keep a mark
+pointing at the new segment's header. Only a truncation or reset moves it
+back, and a seal that started before one leaves the mark where the rewind put
+it. It is not itself fsynced per flush (that would double the flush cost), so
+after a power loss it can lag by the filesystem's writeback delay; it is
+synced at open (with its directory entry, so a fresh shard's first segment has
+a mark), at clean shutdown and close, and after a truncation or reset. A
+missing or corrupt mark reads as absent.
+
+## Consumer-group cursor values
+
+A consumer group's cursor is a cache-log entry on its own root: the key is
+the group's name, the value one of two layouts, told apart by length. This
+is the value inside a record, not the segment format, so `FORMAT_VERSION`
+does not cover it; the first byte versions the newer layout.
+
+```text
+Legacy, 8 bytes:
+ 0   8  offset        u64 BE  where the group resumes
+
+Dependent, 33 bytes:
+ 0   1  version       u8      2
+ 1   8  offset        u64 BE  where the group resumes
+ 9   8  dlq_end       u64 BE  the shard's dead-letter log end at the commit
+17   8  dlq_gen       u64 BE  the generation that wrote the entry just below
+                              dlq_end (from the dead-letter log's `epochs`),
+                              0 when dlq_end is 0
+25   8  origin        u64 BE  the last position the group was put at needing
+                              no dead letter
+```
+
+A cursor stands while the shard's dead-letter log reaches `dlq_end` and the
+generation at that end is still `dlq_gen`; `dlq_end` 0 needs nothing. A
+legacy value carries no dependency and is read as needing nothing, with its
+offset as its origin: it was written by a build that made no such promise,
+so there is nothing to check it against. Any other length, or a 33-byte
+value whose first byte is not 2, is refused rather than read as an offset.
+
+A build before the dependent layout refuses a 33-byte value, so a cluster
+writes it only once the fleet finalizes `group_cursor_dependencies`; a lone
+broker writes it from the start. Until then cursors are legacy values, and
+a crash that keeps a cursor's tail and loses the dead letter it passed a
+record on is not caught. See `docs/replication-design.md` ("Group state at
+promotion").

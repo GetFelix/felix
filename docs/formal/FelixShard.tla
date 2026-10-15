@@ -138,15 +138,17 @@
 (* a spare joins with nobody leaving, and `Seat` makes it a member. A set  *)
 (* that starts with spares outside it is such a short set.                 *)
 (*                                                                         *)
-(* Under `AckByFollowers` a planned move and a cancel name a leader without *)
-(* the fence, as the broker opens them: the cut-over waits for the drained *)
-(* leader's whole log, and a cancel hands the shard back to the leader that *)
-(* had it. A failover that names the move's destination is opened the same *)
-(* way, because its broker cannot tell it from the cut-over it expected.   *)
-(* With `PromoteDestination` placement may name it, and TLC finds the      *)
+(* Without `FenceEveryChange` a planned move and a cancel name a leader    *)
+(* without the fence: the cut-over waits for the drained leader's whole    *)
+(* log, and a cancel hands the shard back to the leader that had it. A     *)
+(* failover that names the move's destination is opened the same way,      *)
+(* because its broker cannot tell it from the cut-over it expected. With   *)
+(* `PromoteDestination` placement may name it, and TLC finds the           *)
 (* destination opening without a record the old leader acknowledged after *)
 (* its last report (AckedHeldByLeader). Without it a `Quorum` failover     *)
-(* ends the move instead.                                                  *)
+(* ends the move instead. With `FenceEveryChange` each of these fences and *)
+(* catches up before it serves, as a promotion does, which is what the     *)
+(* broker does once every replica offers the fence.                        *)
 (*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
@@ -163,6 +165,46 @@
 (* lacks a record the first leader acknowledged (AckedSurvive).            *)
 (* `ReportFloor` names a follower only once it holds everything the leader *)
 (* inherited, which is a bound on what any earlier leader acknowledged.    *)
+(*                                                                         *)
+(* `Counters` makes the shard a cache shard: `log` is the cache log, and a *)
+(* second log, `clog`, holds the counter updates. It ships, is counted and *)
+(* acknowledged like the cache log, under one promise per replica: the     *)
+(* fence a replica took on the cache log refuses an older leader on both.  *)
+(* A promoted leader also fences the counter log on a majority and takes   *)
+(* the counter log furthest ahead. `CounterCatchUp = FALSE` skips taking   *)
+(* it, and TLC finds a counter update acknowledged by the old leader and   *)
+(* missing from the new one (CountersHeldByLeader).                        *)
+(*                                                                         *)
+(* `Elections` lets a replica stand for leader with no control-plane step: *)
+(* `Elect` takes the generation after the one it promised, persists its    *)
+(* own promise, and fences the set it last knew, up to `Elections`         *)
+(* generations past the control plane's. Two replicas can then pick the    *)
+(* same generation, which the control plane never does. With `Ballots` a   *)
+(* promise names the leader it was made to, and a replica answers a fence  *)
+(* or a batch at a generation it already promised only from that leader   *)
+(* (`DiskLog::accept_generation`). Without it, as replicas answered before *)
+(* ballots, TLC finds two leaders opening at one generation               *)
+(* (OneLeaderPerGeneration). A candidate fences the set it last knew,      *)
+(* which for a follower is the set it started in; nothing yet checks that  *)
+(* set against a newer one, and with replacements TLC finds a candidate    *)
+(* opening on the old set without a record the new one acknowledged.      *)
+(*                                                                         *)
+(* Elections also break the cut-over and the hand-back. The control plane  *)
+(* names them at a generation it picked without knowing of an election,    *)
+(* and opened without the fence the leader it names is a second leader at  *)
+(* a generation a candidate already opened (OneLeaderPerGeneration,        *)
+(* FelixShardElectHandoffUnfenced.cfg). `FenceEveryChange` fences them,    *)
+(* and the ballot refuses the second leader (FelixShardElectHandoff.cfg).  *)
+(*                                                                         *)
+(* `Suspicions` lets placement promote without waiting for the lease to    *)
+(* lapse, as it does once a majority of the set says it cannot reach the   *)
+(* leader, at generations up to `Suspicions`. A detector can be wrong, so  *)
+(* the model promotes on any read, the old leader alive and renewing. With *)
+(* follower acks and the fence that loses nothing                          *)
+(* (FelixShardSuspicion.cfg). With the lease and the report instead, TLC   *)
+(* finds the old leader still serving on its lease beside the new one      *)
+(* (AtMostOneServing, FelixShardSuspicionLease.cfg), which is why          *)
+(* placement acts on it only once the fleet acknowledges by its followers. *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -206,7 +248,13 @@ CONSTANTS
     ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
     ReportFloor,    \* whether the report never names a follower short of the leader's inherited log
     Grow,           \* whether placement may add a spare to the set with nobody leaving
-    PromoteDestination \* whether a failover may name a move's destination leader
+    PromoteDestination, \* whether a failover may name a move's destination leader
+    Counters,       \* whether the shard is a cache shard with a counter log beside its log
+    CounterCatchUp, \* whether the fence takes the counter log furthest ahead too
+    Ballots,        \* whether a promise names its leader, and refuses another at its generation
+    Elections,      \* how many generations past the control plane's a replica may elect itself to
+    FenceEveryChange, \* whether a cut-over, a hand-back and a promoted destination fence too
+    Suspicions      \* up to which generation placement may promote on the followers' word, lapsed or not
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -232,7 +280,18 @@ ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* No lease anywhere on a `Quorum` write's path: not at admission (see
 \* Serving), not at the commit, not at the acknowledgement.
 ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
+\* Cache shards are checked with follower acks and failover alone, the only
+\* way the broker acknowledges a cache write without the lease.
+ASSUME Counters \in BOOLEAN /\ CounterCatchUp \in BOOLEAN
+ASSUME Counters => /\ AckByFollowers /\ ~LabelOnReceipt /\ ~Resends
+                   /\ ~Handoff /\ ~Cancel /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
 ASSUME Eps < L /\ Margin >= 0
+\* Self-election is checked on the fenced, follower-acked path alone. A
+\* staged copy is left out to keep the state space small.
+ASSUME Ballots \in BOOLEAN /\ Elections \in Nat
+ASSUME Elections > 0 => /\ AckByFollowers /\ FenceOnPromote /\ ~Counters /\ ~StageMove
+ASSUME FenceEveryChange \in BOOLEAN /\ (FenceEveryChange => FenceOnPromote)
+ASSUME Suspicions \in Nat
 
 VARIABLES
     now,        \* real time
@@ -270,23 +329,53 @@ VARIABLES
     mine,       \* the replica set each broker was given when it was named leader
     joining,    \* a spare being copied in beside a leaving follower: {} or {j}
     leaving,    \* the follower it replaces: {} or {o}
-    joinedAt    \* how much of the leader's log a majority of the set held when it joined
+    joinedAt,   \* how much of the leader's log a majority of the set held when it joined
+    clog,       \* each broker's counter log, under `Counters`
+    chwm,       \* each broker's counter mark, as leader
+    cconfirmed, \* per leader, how far each follower answered that it holds the counter log
+    canswered,  \* who has answered each broker's counter fence
+    cacked,     \* counter updates acknowledged to a client
+    ballot,     \* under `Ballots`, whom each broker's promise was made to: {} or {leader}
+    opened      \* history, under `Elections` or `Suspicions`: each <<generation, broker>> that opened for writes
+
+\* The counter log's state, which only a cache shard's actions change.
+counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
-           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt >>
+           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
+           counterVars, ballot, opened >>
 
 \* Placement's state, which only the control plane's decisions change.
 handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine,
                   joining, leaving, joinedAt >>
 
 \* The promotion fence's state.
-fenceVars == << promised, fencing, answered, confirmed >>
+fenceVars == << promised, fencing, answered, confirmed, ballot, opened >>
 
 \* Whether brokers keep and check `promised`: the fence needs it, and so do
 \* follower acks.
 Promises == AckByFollowers \/ FenceOnPromote
+
+\* Whether `f` may promise `b` generation `g`. At the generation it already
+\* promised, only to the same leader with `Ballots`, and to anyone without.
+\* `{}` is a promise made before ballots, adopted by the first leader to ask.
+MayPromise(f, b, g) ==
+    \/ promised[f] < g
+    \/ promised[f] = g /\ (Ballots => ballot[f] \subseteq {b})
+
+\* `f` promises `b` generation `g`. The ballot is kept only under `Ballots`,
+\* so a configuration without it has no more states than before.
+Promise(f, b, g) ==
+    /\ promised' = [promised EXCEPT ![f] = g]
+    /\ ballot' = IF Ballots THEN [ballot EXCEPT ![f] = {b}] ELSE ballot
+
+\* `b` opens for writes at `g`. Recorded only where a second leader at one
+\* generation is in question, for the same reason: under `Elections`, and
+\* under `Suspicions`, where placement replaces a leader that is still open.
+TracksOpens == Elections > 0 \/ Suspicions > 0
+Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
@@ -356,11 +445,27 @@ OwnGen(b, k) == StartRecord => log[b][k].g = bgen[b]
 LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
 
 \* A move's destination: staged and copying, or named successor by the fence.
-\* The broker opens it without the promotion fence whichever write names it
-\* leader (`begin_open` in services/felix-broker-service/src/shards/lifecycle.rs
-\* skips a shard it expects as `incoming`), because a cut-over only names it
-\* once it holds the drained leader's whole log.
+\* Without `FenceEveryChange` it opens without the fence whichever write
+\* names it leader, because a cut-over only names it once it holds the
+\* drained leader's whole log.
 Incoming(f) == f \in staged \/ (draining /\ successor = f)
+
+\* Whether `f`, named leader by a promotion, opens without the fence.
+\* `begin_open` in services/felix-broker-service/src/shards/lifecycle.rs
+\* fences every leadership it takes.
+PromotedUnfenced(f) == ~FenceOnPromote \/ (Incoming(f) /\ ~FenceEveryChange)
+
+\* The counter log's start record, written beside the cache log's.
+COpened(b, g) == IF StartRecord THEN Append(clog[b], Start(g)) ELSE clog[b]
+
+CLastGen(b) == IF Len(clog[b]) = 0 THEN 0 ELSE clog[b][Len(clog[b])].lg
+
+CounterInit ==
+    /\ clog = [b \in Brokers |-> <<>>]
+    /\ chwm = [b \in Brokers |-> 0]
+    /\ cconfirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
+    /\ canswered = [b \in Brokers |-> {}]
+    /\ cacked = {}
 
 -----------------------------------------------------------------------------
 
@@ -392,7 +497,9 @@ Init ==
     /\ cpView = [p \in Planners |-> {}]
     /\ staged \in IF StageMove THEN {{f} : f \in Brokers \ {leader}} ELSE {{}}
     /\ heard = [b \in Brokers |-> NoReport]
-    /\ promised = [b \in Brokers |-> IF b = leader THEN 1 ELSE 0]
+    \* Under `Elections` the first leader starts as an elected one would, with
+    \* its set's promise, so no candidate can take its generation from under it.
+    /\ promised = [b \in Brokers |-> IF b = leader \/ (Elections > 0 /\ b \notin Spares) THEN 1 ELSE 0]
     /\ fencing = [b \in Brokers |-> FALSE]
     /\ answered = [b \in Brokers |-> {}]
     /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
@@ -401,6 +508,9 @@ Init ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
+    /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
+    /\ opened = IF TracksOpens THEN {<<1, leader>>} ELSE {}
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -412,11 +522,12 @@ Init ==
 Tick ==
     /\ now < MaxTime
     /\ now' = now + 1
-    /\ clock' \in { c \in [Brokers -> 0..(MaxTime + Drift)] :
+    \* Drawn from the drift window, not from 0..MaxTime + Drift: the same
+    \* clocks, without enumerating every function up to MaxTime on each tick,
+    \* which the long walks (FelixShardWalk*.cfg) could not afford.
+    /\ clock' \in { c \in [Brokers -> (IF now + 1 > Drift THEN now + 1 - Drift ELSE 0)..(now + 1 + Drift)] :
                      \A b \in Brokers : /\ c[b] >= clock[b]
-                                        /\ c[b] <= clock[b] + 2
-                                        /\ c[b] >= now + 1 - Drift
-                                        /\ c[b] <= now + 1 + Drift }
+                                        /\ c[b] <= clock[b] + 2 }
     /\ UNCHANGED << gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
@@ -469,7 +580,7 @@ StepDown(b) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged, promised, answered,
-                    confirmed, out, mine, joining, leaving, joinedAt >>
+                    confirmed, out, mine, joining, leaving, joinedAt, ballot, opened >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -574,7 +685,8 @@ Confirm(b, f, k) ==
                  THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
 
 \* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
-\* leader older than the generation it persisted, and persists the leader's:
+\* leader older than the generation it persisted, and with `Ballots` another
+\* leader at that generation, and persists the leader's:
 \* `accept_sender` in crates/server/felix-replication/src/replica.rs. A leader still fencing
 \* does not ship: it may yet take a tail from a follower it would truncate.
 \*
@@ -589,8 +701,8 @@ Ship(b, f) ==
     /\ bgen[f] = 0
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
-    /\ Promises => promised[f] <= bgen[b]
-    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = bgen[b]] ELSE promised
+    /\ Promises => MayPromise(f, b, bgen[b])
+    /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
@@ -609,7 +721,7 @@ Ship(b, f) ==
                   /\ UNCHANGED << log, confirmed >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered >>
+    /\ UNCHANGED << handoffVars, fencing, answered, opened >>
 
 \* Under `Quorum`, a record is acknowledged once a majority including the
 \* leader holds it, and the leader's mark moves up to it.
@@ -690,6 +802,10 @@ AckQuorum(b) ==
 LearnHwm(b, f) ==
     /\ bgen[b] > 0 /\ f /= b
     /\ hwm[f] < hwm[b]
+    \* A leader that took a shorter log from a fence answer can hold less than
+    \* its old mark, which NoTruncationBelowHwm flags; a twin that checks only
+    \* its own invariant walks on from there.
+    /\ Len(log[b]) >= hwm[b]
     /\ Len(log[f]) >= hwm[b]
     /\ SubSeq(log[f], 1, hwm[b]) = SubSeq(log[b], 1, hwm[b])
     /\ hwm' = [hwm EXCEPT ![f] = hwm[b]]
@@ -713,7 +829,7 @@ LearnHwm(b, f) ==
 \* A write that holds the fence from admission is counted from there.
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
@@ -836,7 +952,10 @@ Cas(v) == CasWrites => v.ver = ver
 \* write per shard per pass. Every write bumps the store's generation.
 Promote(v, f, views) ==
     /\ f /= v.leader
-    /\ v.lapsed
+    \* Under `Suspicions` the followers' word is enough, and a detector can
+    \* be wrong, so any read will do: the leader may be alive, serving and
+    \* heartbeating. Bounded by generation, or promotions never end.
+    /\ v.lapsed \/ v.gen <= Suspicions
     /\ f \notin out
     \* With it off, a `Quorum` failover never names the destination: it ends
     \* the move instead (`promote` in services/felix-controlplane-service/src/
@@ -874,17 +993,25 @@ Promote(v, f, views) ==
     /\ leaving' = {}
     /\ joinedAt' = 0
     \* The new leader persists its generation itself first; with
-    \* `FenceOnPromote` it then fences the others before it serves.
-    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
-    /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote /\ ~Incoming(f)]
+    \* `FenceOnPromote` it then fences the others before it serves. Under
+    \* `Elections` it may already have promised that generation, or a later
+    \* one, to a candidate, and then it does not take it.
+    /\ Elections > 0 => MayPromise(f, f, gen + 1)
+    /\ IF Promises THEN Promise(f, f, gen + 1) ELSE UNCHANGED << promised, ballot >>
+    /\ IF PromotedUnfenced(f) THEN Opens(f, gen + 1) ELSE UNCHANGED opened
+    /\ fencing' = [fencing EXCEPT ![f] = ~PromotedUnfenced(f)]
     /\ answered' = [answered EXCEPT ![f] = {}]
     \* Cursors belong to a generation: the new leader starts with none.
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     \* A fenced leader may still take another log; it writes its start record
     \* when it opens.
-    /\ log' = IF FenceOnPromote /\ ~Incoming(f) THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ log' = IF PromotedUnfenced(f) THEN [log EXCEPT ![f] = Opened(f, gen + 1)] ELSE log
+    \* The counter log likewise; a cache shard is never a move's destination.
+    /\ clog' = IF Counters /\ ~FenceOnPromote THEN [clog EXCEPT ![f] = COpened(f, gen + 1)] ELSE clog
+    /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    /\ canswered' = [canswered EXCEPT ![f] = {}]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, successor, moves >>
+                    staleCommit, successor, moves, chwm, cacked >>
 
 -----------------------------------------------------------------------------
 (* The promotion fence, under `FenceOnPromote`. The promoted leader asks    *)
@@ -907,16 +1034,22 @@ Ahead(f, b) ==
 \* crates/server/felix-replication/src/replica.rs: the generation is fsynced
 \* before the answer, which carries the log's end, its commit offset and its
 \* last record's generation, the two halves of `Ahead`.
+\*
+\* The code also answers a fence at the generation it already promised, as
+\* a leader confirming it still leads. With the control plane naming every
+\* leader that is only ever the same leader asking again, so the model
+\* leaves it out. Under `Elections` it can be a second candidate at that
+\* generation, which only `Ballots` refuses.
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ f \in Members(b)
-    /\ promised[f] < bgen[b]
-    /\ promised' = [promised EXCEPT ![f] = bgen[b]]
+    /\ IF Elections > 0 THEN MayPromise(f, b, bgen[b]) ELSE promised[f] < bgen[b]
+    /\ Promise(f, b, bgen[b])
     /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
     /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    fencing, confirmed >>
+                    fencing, confirmed, opened >>
     /\ UNCHANGED handoffVars
 
 \* `open_promoted` in crates/server/felix-replication/src/driver.rs, on the
@@ -925,12 +1058,118 @@ AnswerFence(b, f) ==
 OpenForWrites(b) ==
     /\ fencing[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
+    /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ Opens(b, bgen[b])
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
+    /\ clog' = IF Counters THEN [clog EXCEPT ![b] = COpened(b, bgen[b])] ELSE clog
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    promised, answered, confirmed >>
+                    promised, answered, confirmed, ballot >>
+    /\ UNCHANGED << handoffVars, chwm, cconfirmed, canswered, cacked >>
+
+\* Under `Elections`, a replica stands with no control-plane step, at the
+\* generation after the one it promised: it persists its own promise, then
+\* fences the set it last knew, and opens as a promoted leader does. A
+\* candidate still fencing may stand again higher. Any replica may stand at
+\* any time, as a failure detector that is sometimes wrong would let it.
+Elect(f) ==
+    /\ Elections > 0
+    /\ f \notin halted
+    /\ bgen[f] = 0 \/ fencing[f]
+    /\ promised[f] < gen + Elections
+    /\ bgen' = [bgen EXCEPT ![f] = promised[f] + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![f] = clock[f] + L]
+    /\ queued' = [queued EXCEPT ![f] = 0]
+    /\ pending' = [pending EXCEPT ![f] = 0]
+    /\ Promise(f, f, promised[f] + 1)
+    /\ fencing' = [fencing EXCEPT ![f] = TRUE]
+    /\ answered' = [answered EXCEPT ![f] = {}]
+    /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
+                    log, hwm, halted, acked, writes, staleCommit, opened >>
     /\ UNCHANGED handoffVars
+
+-----------------------------------------------------------------------------
+(* The counter log of a cache shard, under `Counters`. A counter update is   *)
+(* admitted and committed in one step: the gaps the cache log's write path  *)
+(* has are covered there. The promise is shared with the cache log, so a    *)
+(* follower that took a newer fence on either refuses the older leader on   *)
+(* both: `accept_sender` and `ReplicaHandler::fence` in replica.rs.         *)
+
+CommitCounter(b) ==
+    /\ Counters
+    /\ Serving(b)
+    /\ writes < MaxWrites
+    /\ writes' = writes + 1
+    /\ clog' = [clog EXCEPT ![b] = Append(@, Record(bgen[b], writes + 1))]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, chwm, cconfirmed, canswered, cacked >>
+
+\* As `Ship`, on the counter log. A follower drops a divergent suffix only
+\* for a newer generation than its last counter record's.
+ShipCounter(b, f) ==
+    /\ Counters
+    /\ bgen[b] > 0 /\ f /= b
+    /\ f \in Members(b)
+    /\ bgen[f] = 0
+    /\ bgen[b] >= CLastGen(f)
+    /\ ~fencing[b]
+    /\ MayPromise(f, b, bgen[b])
+    /\ Promise(f, b, bgen[b])
+    /\ LET i == Diverge(clog[b], clog[f]) IN
+       /\ i <= Len(clog[b])
+       /\ \/ /\ i > Len(clog[f])
+             /\ clog' = [clog EXCEPT ![f] = Append(@, clog[b][i])]
+             /\ cconfirmed' = [cconfirmed EXCEPT ![b][f] = i]
+          \/ /\ i <= Len(clog[f])
+             /\ bgen[b] > CLastGen(f)
+             /\ clog' = [clog EXCEPT ![f] = SubSeq(@, 1, i - 1)]
+             /\ cconfirmed' = [cconfirmed EXCEPT ![b][f] = i - 1]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, chwm, canswered, cacked >>
+
+\* As `HeldAtGen`, on the counter log: the counter mark counts only past a
+\* record of the leader's own generation (`quorum::counted_offset`).
+CHeldAtGen(b, i) ==
+    /\ StartRecord => clog[b][i].g = bgen[b]
+    /\ LeaderMajority(b, { m \in Brokers \ {b} : cconfirmed[b][m] >= i }
+                         \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
+
+AckCounters(b) ==
+    /\ Counters
+    /\ bgen[b] > 0
+    /\ \E i \in (chwm[b] + 1)..Len(clog[b]) :
+        /\ CHeldAtGen(b, i)
+        /\ cacked' = cacked \cup ({ clog[b][j].id : j \in 1..i } \ {StartId})
+        /\ chwm' = [chwm EXCEPT ![b] = i]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, clog, cconfirmed, canswered >>
+
+CAhead(f, b) ==
+    \/ CLastGen(f) > CLastGen(b)
+    \/ CLastGen(f) = CLastGen(b) /\ Len(clog[f]) > Len(clog[b])
+
+\* The counter log's fence, at the generation the cache log's fence asked
+\* for: a replica that already took it there answers again, one that took a
+\* newer one refuses. With `CounterCatchUp` the leader takes the counter log
+\* of an answer ahead of its own, as `fence_shard` does for every log the
+\* shard has (promotion.rs).
+AnswerCounterFence(b, f) ==
+    /\ Counters
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ f \in Members(b)
+    /\ f \notin canswered[b]
+    /\ MayPromise(f, b, bgen[b])
+    /\ Promise(f, b, bgen[b])
+    /\ canswered' = [canswered EXCEPT ![b] = @ \cup {f}]
+    /\ clog' = IF CounterCatchUp /\ CAhead(f, b) THEN [clog EXCEPT ![b] = clog[f]] ELSE clog
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, chwm, cconfirmed, cacked >>
 
 -----------------------------------------------------------------------------
 (* Planned handoff. The control plane fences the leader so the shard can    *)
@@ -996,12 +1235,23 @@ ObserveFence(b) ==
                     joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
-\* A leader named without the fence still persists its generation before its
-\* start record (`accept_generation` in `open`, lifecycle.rs), and its cursors
-\* start empty at the new generation.
+\* `f` takes the shard at a cut-over or a hand-back. It persists its
+\* generation first (`accept_generation` in `open`, lifecycle.rs), which under
+\* `Elections` it cannot do once it promised that generation to a candidate,
+\* and its cursors start empty at the new generation. Without
+\* `FenceEveryChange` it then opens with its start record; with it, it
+\* fences and catches up first, as a promoted leader does.
 Takes(f) ==
-    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
+    /\ Elections > 0 => MayPromise(f, f, gen + 1)
+    /\ IF Promises THEN Promise(f, f, gen + 1) ELSE UNCHANGED << promised, ballot >>
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    /\ IF FenceEveryChange
+       THEN /\ fencing' = [fencing EXCEPT ![f] = TRUE]
+            /\ answered' = [answered EXCEPT ![f] = {}]
+            /\ UNCHANGED << log, opened >>
+       ELSE /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
+            /\ Opens(f, gen + 1)
+            /\ UNCHANGED << fencing, answered >>
 
 CutOver(v, f, views) ==
     /\ v.draining /\ v.successor = f
@@ -1021,11 +1271,9 @@ CutOver(v, f, views) ==
     /\ draining' = FALSE
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ staged' = staged \ {f}
-    /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ Takes(f)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, out, mine, joining, leaving, joinedAt >>
-    /\ UNCHANGED << fencing, answered >>
 
 \* An operator cancels a fenced move (`cancel_move` in
 \* services/felix-controlplane-service/src/cluster/placement/operator.rs): the
@@ -1050,12 +1298,10 @@ Retake(v, f, views) ==
     /\ report' = NoReport
     /\ draining' = FALSE
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
-    /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ Takes(f)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, queued, pending,
                     acked, writes, staleCommit, successor, moves, staged, out, mine,
                     joining, leaving, joinedAt >>
-    /\ UNCHANGED << fencing, answered >>
 
 -----------------------------------------------------------------------------
 (* Replacing a follower (`reseat` and `replacement_step` in                 *)
@@ -1071,7 +1317,7 @@ OldSetLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     MajorityOf({ m \in mine[b] \ halted : HoldsPrefix(m, b, k) } \cup {b},
                                mine[b]) }
-    IN CHOOSE k \in held : \A j \in held : j <= k
+    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* The leader, still serving, moves to the next generation with `set`.
 Regenerate(v, views, set) ==
@@ -1082,7 +1328,8 @@ Regenerate(v, views, set) ==
     /\ cpView' = views
     /\ gen' = gen + 1
     /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
-    /\ promised' = [promised EXCEPT ![leader] = gen + 1]
+    /\ Promise(leader, leader, gen + 1)
+    /\ Opens(leader, gen + 1)
     /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
     /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
     /\ report' = NoReport
@@ -1113,6 +1360,8 @@ Reseat(v, o, views) ==
 \* generation.
 GrowSet(v, d, views) ==
     /\ Grow
+    \* Short of the factor, which is odd: a full set does not grow.
+    /\ Cardinality(ReplicaSet) % 2 = 0
     /\ moves < MaxMoves
     /\ joining = {}
     /\ d \in out
@@ -1139,34 +1388,52 @@ Seat(v, j, views) ==
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
-    \/ Promote(v, f, views) \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
-    \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
+    \/ Promote(v, f, views)
+    \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+          \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
+       /\ UNCHANGED counterVars
 
 -----------------------------------------------------------------------------
 
 \* Only a report's delivery changes what a broker has heard.
-Step ==
-    \/ Tick
-    \/ \E b \in Brokers :
-        \/ SendHeartbeat(b)
-        \/ AcceptHeartbeat(b)
-        \/ LoseHeartbeat(b)
-        \/ StepDown(b)
-        \/ Admit(b)
-        \/ Resend(b)
-        \/ Claim(b)
-        \/ Commit(b)
-        \/ AckQuorum(b)
-        \/ Report(b)
-        \/ ObserveFence(b)
-        \/ OpenForWrites(b)
-        \/ Decide(Now, b, cpView)
-        \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-        \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
-    \/ LoseReport
-    \/ \E p \in Planners : Snapshot(p)
+\* The counter log changes only in the actions that name it.
+quietVars == << counterVars, heard >>
 
-Next == (Step /\ UNCHANGED heard) \/ DeliverReport
+\* Every action is its own disjunct, with what it leaves alone conjoined
+\* inside it. TLC splits a next-state relation only at disjunctions and
+\* constant `\E`, and its simulation mode picks an action before a successor:
+\* folded into one action, a walk would pick among successor states, and
+\* Tick's clock choices would crowd out everything else.
+Next ==
+    \/ Tick /\ UNCHANGED quietVars
+    \/ \E b \in Brokers :
+        \/ SendHeartbeat(b) /\ UNCHANGED quietVars
+        \/ AcceptHeartbeat(b) /\ UNCHANGED quietVars
+        \/ LoseHeartbeat(b) /\ UNCHANGED quietVars
+        \/ StepDown(b) /\ UNCHANGED quietVars
+        \/ Admit(b) /\ UNCHANGED quietVars
+        \/ Resend(b) /\ UNCHANGED quietVars
+        \/ Claim(b) /\ UNCHANGED quietVars
+        \/ Commit(b) /\ UNCHANGED quietVars
+        \/ AckQuorum(b) /\ UNCHANGED quietVars
+        \/ Report(b) /\ UNCHANGED quietVars
+        \/ ObserveFence(b) /\ UNCHANGED quietVars
+        \/ Elect(b) /\ UNCHANGED quietVars
+        \/ \E f \in Brokers :
+            \/ Ship(b, f) /\ UNCHANGED quietVars
+            \/ LearnHwm(b, f) /\ UNCHANGED quietVars
+            \/ AnswerFence(b, f) /\ UNCHANGED quietVars
+            \/ ShipCounter(b, f) /\ UNCHANGED heard
+            \/ AnswerCounterFence(b, f) /\ UNCHANGED heard
+        \/ OpenForWrites(b) /\ UNCHANGED heard
+        \/ Decide(Now, b, cpView) /\ UNCHANGED heard
+        \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
+           /\ UNCHANGED heard
+        \/ CommitCounter(b) /\ UNCHANGED heard
+        \/ AckCounters(b) /\ UNCHANGED heard
+    \/ LoseReport /\ UNCHANGED quietVars
+    \/ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
+    \/ DeliverReport /\ UNCHANGED counterVars
 
 Spec == Init /\ [][Next]_vars
 
@@ -1185,11 +1452,16 @@ AckedSurvive ==
             \/ \E i \in 1..Len(log[b]) : log[b][i].id = id
             \/ AckOnAdmit /\ id \in {queued[b], pending[b]}
 
-\* The leader at the current generation holds every acknowledged record once
+\* The newest generation anyone holds: the control plane's, or one a replica
+\* elected itself to. Only `Elect` takes a broker past the control plane's.
+Newest == LET gs == {gen} \cup { bgen[m] : m \in Brokers }
+          IN CHOOSE g \in gs : \A h \in gs : h <= g
+
+\* The leader at the newest generation holds every acknowledged record once
 \* it may serve. Unlike AckedSurvive this says nothing about the lease, so it
 \* holds or fails whatever a deposed leader's clock tells it.
 AckedHeldByLeader ==
-    \A b \in Brokers : (bgen[b] = gen /\ ~fencing[b]) =>
+    \A b \in Brokers : (bgen[b] = Newest /\ ~fencing[b]) =>
         \A id \in acked : \E i \in 1..Len(log[b]) : log[b][i].id = id
 
 \* Under `Quorum`, a report from a leader still serving names a follower that
@@ -1213,6 +1485,11 @@ AckedAgree ==
         /\ log[a][i].id \in acked
         /\ log[c][i].id \in acked
         => log[a][i].id = log[c][i].id
+
+\* Under `Elections` or `Suspicions`, no two brokers open for writes at one
+\* generation.
+OneLeaderPerGeneration ==
+    \A x, y \in opened : x[1] = y[1] => x[2] = y[2]
 
 \* No log holds one write twice: a re-send of a write the shard already has
 \* is answered, not appended. Start records are no one's write.
@@ -1251,6 +1528,17 @@ StagedCopyNeverDelaysAck ==
             \A i \in (hwm[b] + 1)..Len(log[b]) :
                 AckReadyOver(b, i, ReplicaSet) => AckReadyOver(b, i, QuorumSet)
 
+\* Under `Counters`, the leader at the current generation holds every
+\* acknowledged counter update once it may serve, as AckedHeldByLeader.
+CountersHeldByLeader ==
+    \A b \in Brokers : (bgen[b] = gen /\ ~fencing[b]) =>
+        \A id \in cacked : \E i \in 1..Len(clog[b]) : clog[b][i].id = id
+
+\* Every acknowledged counter update is on a majority of the replicas.
+CountersOnMajority ==
+    \A id \in cacked :
+        MajorityOf({ b \in Brokers : \E i \in 1..Len(clog[b]) : clog[b][i].id = id }, Brokers)
+
 TypeOK ==
     /\ now \in 0..MaxTime
     /\ gen \in Nat
@@ -1272,5 +1560,11 @@ TypeOK ==
     /\ mine \in [Brokers -> SUBSET Brokers]
     /\ joining \subseteq Brokers /\ leaving \subseteq Brokers
     /\ joinedAt \in Nat
+    /\ chwm \in [Brokers -> Nat]
+    /\ cconfirmed \in [Brokers -> [Brokers -> Nat]]
+    /\ canswered \in [Brokers -> SUBSET Brokers]
+    /\ cacked \subseteq 1..MaxWrites
+    /\ ballot \in [Brokers -> SUBSET Brokers]
+    /\ \A o \in opened : o[1] \in Nat /\ o[2] \in Brokers
 
 =============================================================================

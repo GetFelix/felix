@@ -66,10 +66,11 @@ at that offset.
 - **In the log:** one record per put and per delete, each carrying the key.
 - **In memory:** an index of key to the offset of its latest record, plus the
   bytes each record occupies, so compaction knows when it is worth running.
-- **Rebuilt from the log:** the whole index. It is never read from disk, and it
-  catches up to the log's tail whenever it is behind, which is what lets a
-  follower be promoted and serve records that arrived by replication rather
-  than through a put.
+- **Rebuilt from the log:** the whole index. Compaction leaves a snapshot of
+  it on disk, which an open uses only after checking it against the log, to
+  replay just the records past it. It catches up to the log's tail whenever
+  it is behind, which is what lets a follower be promoted and serve records
+  that arrived by replication rather than through a put.
 
 Compaction copies the live set forward and drops superseded and expired
 records. It **appends the live set at the tail** rather than renumbering from
@@ -171,7 +172,9 @@ Three decisions, recorded here because #350 asked for them explicitly:
 The sum survives what the cursors survive, proven the same way: restart
 (rebuilt fold), compaction (checkpoint), and leader failover. The counter
 log rides its cache shard's replica set the way group state rides a stream
-shard's, shipped by the same driver pass and gating nothing.
+shard's, shipped by the same driver pass. On a `Quorum` cache the counter
+log has its own quorum mark, and an add is acknowledged only once a majority
+holds it.
 
 > `crates/server/felix-storage/src/counter_log/tests.rs`, including
 > `compaction_moves_neither_the_sum_nor_the_offsets`,
@@ -188,11 +191,6 @@ here has to be read as covering them:
 - **Retention outranks a group.** A record trimmed before a group reached it is
   skipped, and the group moves past. A retention window shorter than a group is
   allowed to fall behind loses work.
-- **A counter update is acknowledged by its leader.** A cache chooses `Leader`
-  or `Quorum` for its puts and deletes, as a stream does for publishes, but the
-  counter log beside it feeds no quorum mark: on a `Quorum` cache a counter
-  update is still acknowledged once durable on the leader, so losing that
-  leader between the acknowledgement and the ship loses the update.
 
 What used to be listed here and no longer applies: **dead letters are now
 replicated.** The list of offsets a group gave up on is one log per stream

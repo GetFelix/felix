@@ -36,6 +36,34 @@ impl PeerCapabilities {
     ///
     /// [`ForwardPublishOk::offsets`]: super::ForwardPublishOk::offsets
     pub const FORWARD_OFFSETS: Self = Self(1 << 3);
+    /// Answers [`Fence`] and [`ReplicateFetch`] for a cache shard's counter
+    /// log ([`ReplicaLog::Counters`]), and reads cache and counter batches
+    /// labelled with their generations. A promoted cache shard is fenced only
+    /// when every replica offers it.
+    pub const CACHE_FENCE: Self = Self(1 << 4);
+    /// Reads batches that carry each record's append time on the leader
+    /// ([`ReplicateRecords::times`]) and stores that time, and answers a
+    /// timed [`ReplicateFetch`] with them. A follower without it stamps
+    /// replicated records with its own clock.
+    ///
+    /// [`ReplicateRecords::times`]: super::ReplicateRecords::times
+    pub const RECORD_TIMES: Self = Self(1 << 5);
+    /// Keeps a ballot with each accepted generation, naming the leader it was
+    /// accepted from by the node id that leader gave in its `Hello`, and
+    /// refuses a fence, a batch or a fetch from any other node at that
+    /// generation.
+    pub const BALLOTS: Self = Self(1 << 6);
+    /// Answers [`Ping`](super::Ping), so a follower can tell a leader that
+    /// is quiet from one it cannot reach.
+    pub const PING: Self = Self(1 << 7);
+    /// Answers [`Fence`] and [`ReplicateFetch`] for a stream shard's dead-letter
+    /// and group cursor logs ([`ReplicaLog::GroupDeadLetters`],
+    /// [`ReplicaLog::GroupCursors`]), as empty logs when it keeps no consumer
+    /// groups, and reads group batches labelled with their generations. A
+    /// promoted stream leader takes both from the replica whose pair is
+    /// furthest ahead once a majority has taken both fences.
+    pub const GROUP_FENCE: Self = Self(1 << 8);
+    // `1 << 9` is reserved for `ELECTION` (#1009).
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -61,9 +89,13 @@ impl PeerCapabilities {
 /// The replica persists the generation before it answers, so the promise
 /// survives a restart. `log` names the shard's own log, `Stream` or `Cache`;
 /// the cursor, dead-letter and counter logs belong to the shard and are
-/// fenced with it.
+/// fenced with it. A promoted leader also fences those logs, to learn where
+/// each replica's copy ends.
 ///
-/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`].
+/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`], for
+/// `Counters` only to one that advertised [`PeerCapabilities::CACHE_FENCE`],
+/// and for the group logs only to one that advertised
+/// [`PeerCapabilities::GROUP_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
     pub correlation_id: u64,
@@ -93,7 +125,9 @@ pub struct FenceOk {
 /// `max_bytes` of them, and none past the replica's end. Only a leader at the
 /// generation the replica last accepted is answered: a fenced replica's log
 /// is not for an older leader to read. Sent only to a peer that advertised
-/// [`PeerCapabilities::TAIL_FETCH`].
+/// [`PeerCapabilities::TAIL_FETCH`], for `Counters` only to one that
+/// advertised [`PeerCapabilities::CACHE_FENCE`], and for the group logs only
+/// to one that advertised [`PeerCapabilities::GROUP_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicateFetch {
     pub correlation_id: u64,
@@ -105,4 +139,21 @@ pub struct ReplicateFetch {
     /// `ReplicateLabelledFetch`, sent only to a peer that advertised
     /// [`PeerCapabilities::GENERATION_LABELS`].
     pub labelled: bool,
+    /// Answer with the records' append times as well. Only a labelled fetch
+    /// can ask: it travels as `ReplicateTimedFetch`, sent only to a peer that
+    /// advertised [`PeerCapabilities::RECORD_TIMES`].
+    pub timed: bool,
+}
+
+/// A follower checking that the leader of a shard it follows is reachable.
+/// Carries nothing else: the answer is the whole point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ping {
+    pub correlation_id: u64,
+}
+
+/// The answer to [`Ping`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pong {
+    pub correlation_id: u64,
 }

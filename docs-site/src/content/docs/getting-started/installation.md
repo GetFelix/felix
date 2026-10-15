@@ -9,6 +9,11 @@ images (see [Docker](#docker-alternative)). Everything else, including the
 demos, the local cluster tool and the clients, builds from source. That takes
 a Rust toolchain and a few minutes.
 
+To install only the command-line tool, use Homebrew
+(`brew install getfelix/tap/felixctl`), cargo or a release archive; see
+[felixctl](/getting-started/felixctl/#install). The rest of this page builds
+Felix from source.
+
 ## System Requirements
 
 - **Operating System:** Linux, macOS, or Windows (WSL2 recommended)
@@ -42,7 +47,7 @@ cargo 1.97.1 (or later)
 ## Clone the Repository
 
 ```bash
-git clone https://github.com/gabloe/felix.git
+git clone https://github.com/GetFelix/felix.git
 cd felix
 ```
 
@@ -104,8 +109,8 @@ cargo test --workspace
 ```
 
 The control plane's Postgres tests sit behind a feature and do not run in a
-plain `cargo test`. `task test` starts a Postgres in Docker, when Docker is
-available, and runs them too.
+plain `cargo test`. `task test` starts a Postgres container, when Docker or
+Podman is available, and runs them too. See [Docker or Podman](/getting-started/containers/).
 
 ### Run the Conformance Suite
 
@@ -155,7 +160,7 @@ holding the cluster. press Ctrl-C to tear it down.
 ```
 
 Every address is chosen free at startup, so nothing collides with what you are
-already running. The [Quickstart](/felix/getting-started/quickstart/) goes on to
+already running. The [Quickstart](/getting-started/quickstart/) goes on to
 publish and subscribe against it; running brokers yourself is covered there too.
 
 ### Run a Demo
@@ -181,7 +186,7 @@ cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 
 The cross-tenant isolation demo needs Postgres (`task pg:up`).
 
-See the [Demos Overview](/felix/demos/overview/) for details and expected output.
+See the [Demos Overview](/demos/overview/) for details and expected output.
 
 ## Optional Tools
 
@@ -276,31 +281,34 @@ Native Windows support is not currently tested.
 
 ## Docker (Alternative)
 
-Released images are on GHCR and pull without credentials:
+Released images are on GHCR and pull without credentials. The commands work
+with Podman as written once `docker` is replaced with `podman`, except where
+[Docker or Podman](/getting-started/containers/) says otherwise. Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
 
 ```bash
 docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
   -e FELIX_CONTROLPLANE_URL=http://<control-plane-host>:8443 \
   -e FELIX_NODE_TOKEN_FILE=/etc/felix/node.token \
   -v /path/to/node.token:/etc/felix/node.token:ro \
-  ghcr.io/gabloe/felix-broker:0.5.0
+  ghcr.io/getfelix/felix-broker:0.6.0-preview.7
 ```
 
 The broker binds up to four client ports from `5000`, depending on its cores
-(see [`FELIX_QUIC_LISTENERS`](/felix/reference/environment-variables/#felix_quic_listeners)),
+(see [`FELIX_QUIC_LISTENERS`](/reference/environment-variables/#felix_quic_listeners)),
 and tells clients to use all of them, so publish the whole range.
 
 A broker authenticates every client against its tenant's signing keys, which it
 fetches from the control plane, and it reads its streams from there with a
 node credential. Without `FELIX_CONTROLPLANE_URL` it logs `broker started` and
 exits on the next line. Without the credential it runs but serves no streams.
-[Docker Compose](/felix/deployment/docker-compose/) wires the pair together; for
+[Docker Compose](/deployment/docker-compose/) wires the pair together; for
 a local cluster with nothing to configure, `felix-cluster up` is quicker (see
-the [Quickstart](/felix/getting-started/quickstart/)).
+the [Quickstart](/getting-started/quickstart/)).
 
-Each release publishes the full version (`0.5.0`), the minor series (`0.5`) and
-`latest`. Use a version tag in anything you keep; `latest` moves. Images are
-signed by digest. See [Kubernetes](/felix/deployment/kubernetes/) for the
+Each release publishes the full version (`0.6.0-preview.7`). A release without a
+pre-release suffix also publishes the minor series (`0.6`) and `latest`. Use a
+full version tag in anything you keep; the other two move. Images are
+signed by digest. See [Kubernetes](/deployment/kubernetes/) for the
 `cosign verify` invocation.
 
 To build one instead, for a change you have not released:
@@ -313,6 +321,23 @@ docker build -t felix-broker -f docker/broker.Dockerfile .
 docker run -p 5000-5003:5000-5003/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
 ```
 
+### Nightly builds
+
+Every night that `main` has changed and its CI passed, the same images are
+published as `nightly` and `nightly-YYYYMMDD`:
+
+```bash
+docker pull ghcr.io/getfelix/felix-broker:nightly
+docker pull ghcr.io/getfelix/felix-controlplane:nightly
+docker pull ghcr.io/getfelix/felixctl:nightly
+```
+
+The binaries, Python wheels and Node addons are on the
+[`nightly` pre-release](https://github.com/GetFelix/felix/releases/tag/nightly),
+which is replaced each time. A nightly has passed CI and one publish and
+subscribe through its images, nothing more. Use it to try what is coming, not
+in production. Dated tags are kept for about two weeks.
+
 ### Control Plane Container
 
 The same, for the control plane:
@@ -320,13 +345,14 @@ The same, for the control plane:
 ```bash
 # Or build it: docker build -t felix-controlplane -f docker/controlplane.Dockerfile .
 
-# Without a Postgres URL it keeps its metadata in memory.
+# Without a Postgres URL it keeps its metadata in memory. Under Podman the
+# host is host.containers.internal.
 docker run -p 8443:8443 \
   -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.docker.internal:55432/postgres \
-  ghcr.io/gabloe/felix-controlplane:0.5.0
+  ghcr.io/getfelix/felix-controlplane:0.6.0-preview.7
 ```
 
-See [Docker Compose Guide](/felix/deployment/docker-compose/) for orchestrated deployments.
+See [Docker Compose Guide](/deployment/docker-compose/) for orchestrated deployments.
 
 ## Troubleshooting
 
@@ -359,6 +385,6 @@ cargo build --release -j 2
 
 ## Next Steps
 
-- [Quickstart Guide](/felix/getting-started/quickstart/) - Run your first Felix deployment
-- [Building & Testing](/felix/development/building/) - Development workflow
-- [Configuration](/felix/reference/configuration/) - Customize Felix behavior
+- [Quickstart Guide](/getting-started/quickstart/) - Run your first Felix deployment
+- [Building & Testing](/development/building/) - Development workflow
+- [Configuration](/reference/configuration/) - Customize Felix behavior

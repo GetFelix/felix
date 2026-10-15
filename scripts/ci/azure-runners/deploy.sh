@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-hosted GitHub Actions runners for gabloe/felix. See README.md.
+# Self-hosted GitHub Actions runners for GetFelix/felix. See README.md.
 #
 #   ./deploy.sh up          create the group, network and VMs, wait for cloud-init
 #   ./deploy.sh register    register (or re-register) every VM with the repo
@@ -16,7 +16,7 @@ LOCATION="${LOCATION:-eastus}"
 SIZE="${SIZE:-Standard_D8as_v5}"
 COUNT="${COUNT:-2}"
 FIRST="${FIRST:-1}"
-REPO="${REPO:-gabloe/felix}"
+REPO="${REPO:-GetFelix/felix}"
 LABELS="${LABELS:-felix-azure}"
 IMAGE="Canonical:ubuntu-24_04-lts:server:latest"
 KEY="${KEY:-$HOME/.ssh/felix-ci-runners}"

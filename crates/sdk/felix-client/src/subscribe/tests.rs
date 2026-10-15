@@ -2,5 +2,7 @@
 //! lifecycle against a stub broker, and decoding what arrives.
 
 mod decode;
+mod lag;
 mod lifecycle;
+mod queue_capacity;
 mod queue_policy;

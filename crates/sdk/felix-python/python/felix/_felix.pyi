@@ -99,6 +99,8 @@ class GroupRecord:
     offset: int
     payload: bytes
     attempts: int
+    skipped_before: int
+    """Offsets directly below this one settled without delivery; such a hole will not fill."""
 
 class CacheChange:
     key: str
@@ -150,7 +152,12 @@ class ShardMoved:
     addr: str | None
     generation: int
 
-ShardEvent = ShardRecord | ShardLost | ShardRecovered | ShardMoved
+class StreamDeleted:
+    """The stream was deleted; this shard's feed ended and is not re-established."""
+
+    shard: int
+
+ShardEvent = ShardRecord | ShardLost | ShardRecovered | ShardMoved | StreamDeleted
 
 class CacheWatchHandle:
     resume_offset: int
@@ -227,6 +234,7 @@ class Client:
         ca_file: str | None = None,
         offer_alpn: bool = False,
     ) -> None: ...
+    def with_identity(self, tenant_id: str, token: str) -> "Client": ...
     def publish(
         self,
         tenant_id: str,
@@ -284,12 +292,14 @@ class Client:
         *,
         max_records: int = 32,
         wait: float = 5.0,
+        consumer: str | None = None,
+        reclaim: bool = False,
     ) -> list[GroupRecord]: ...
     def group_ack(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
     def group_nack(
-        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, record: GroupRecord
     ) -> None: ...
     def group_dead_letters(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
@@ -359,6 +369,7 @@ class AsyncClient:
         ca_file: str | None = None,
         offer_alpn: bool = False,
     ) -> "AsyncClient": ...
+    async def with_identity(self, tenant_id: str, token: str) -> "AsyncClient": ...
     async def publish(
         self,
         tenant_id: str,
@@ -416,12 +427,14 @@ class AsyncClient:
         *,
         max_records: int = 32,
         wait: float = 5.0,
+        consumer: str | None = None,
+        reclaim: bool = False,
     ) -> list[GroupRecord]: ...
     async def group_ack(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
     async def group_nack(
-        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, record: GroupRecord
     ) -> None: ...
     async def group_dead_letters(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str

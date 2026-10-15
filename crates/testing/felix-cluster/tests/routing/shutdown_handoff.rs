@@ -62,7 +62,7 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
         felix_cluster::client::connect_cluster(
             &[addr(&cluster, &owner)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -80,12 +80,12 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     let writer = felix_cluster::client::connect_cluster(
         &[addr(&cluster, &other)],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");
     let acknowledged: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-    let refused = Arc::new(AtomicUsize::new(0));
+    let refused: Arc<Mutex<Vec<String>>> = Arc::default();
     let stop = Arc::new(AtomicBool::new(false));
     let publisher = {
         let (acknowledged, refused, stop) = (
@@ -110,8 +110,8 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
                     .await
                 {
                     Ok(_) => acknowledged.lock().await.push(payload),
-                    Err(_) => {
-                        refused.fetch_add(1, Ordering::Relaxed);
+                    Err(err) => {
+                        refused.lock().await.push(format!("{err:#}"));
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -156,14 +156,15 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     stop.store(true, Ordering::Relaxed);
     publisher.await.expect("publisher");
     let during = acknowledged.lock().await.clone();
-    let refused = refused.load(Ordering::Relaxed);
+    let refused = refused.lock().await.clone();
 
     assert!(
-        placed == 0 && moved > 0 && refused == 0,
+        placed == 0 && moved > 0 && refused.is_empty(),
         "the shard should be handed over, not failed over: {placed} placements, \
-         {moved} move steps, {refused} publishes refused (of {}); moved {moved_at:?} \
-         after SIGTERM, exited after {exited_after:?}",
-        during.len() + refused
+         {moved} move steps, {} publishes refused (of {}); moved {moved_at:?} \
+         after SIGTERM, exited after {exited_after:?}; refusals: {refused:?}",
+        refused.len(),
+        during.len() + refused.len()
     );
     assert!(status.success(), "the broker should exit cleanly: {status}");
     assert!(
@@ -295,7 +296,7 @@ async fn a_reader_follows_a_moved_shard_off_a_draining_entry_broker() {
         felix_cluster::client::connect_cluster(
             &[cluster.node(&owner).expect("node").client_addr],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -755,7 +756,7 @@ async fn a_handoff_that_times_out_loses_no_acknowledged_record() {
     }
 
     let writer =
-        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("writer");
     let publisher = Publisher::start(writer, &cluster, 64);
@@ -880,7 +881,7 @@ async fn a_lone_broker_that_stops_keeps_what_it_acknowledged() {
     let writer = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");

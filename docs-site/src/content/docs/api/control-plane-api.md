@@ -44,9 +44,59 @@ Content-Type: application/json
 ```
 
 `requested` and `resources` narrow the permissions RBAC grants and never widen
-them. If nothing is left, the exchange returns `403`. `audience` picks who the
+them, as a cross product of actions and resources. `permissions` narrows by
+`action:object` pairs instead, each on its own, so a token can subscribe to one
+stream and publish to another:
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+`permissions` must come with `"requested": []` and no non-empty `resources`,
+or the request is a `400`; a pair that does not parse is a `400` too. The empty
+`requested` makes an older control plane, which ignores `permissions`, refuse
+rather than mint full rights. With the Raft store a pair narrowing is a `409`
+until every member supports it. If nothing is left, the exchange returns `403`. `audience` picks who the
 token is for: `felix-broker` (the default) or `felix-controlplane` for this
 API. A token is accepted by one of the two, never both.
+
+`actor_token` (RFC 8693) is for a gateway that will delegate the token it is
+exchanging for: its own `felix-controlplane` token, holding
+`token.delegate:tenant:{tenant_id}`. The broker token then carries
+`may_act: {"sub": "<gateway principal>"}`, and so does every token refreshed
+from it, and only that gateway can pass it to `/token/delegate`.
+`actor_token_type` is optional and must be
+`urn:ietf:params:oauth:token-type:jwt`. An `actor_token` with
+`"audience": "felix-controlplane"` is a `400`. One that does not verify for the
+tenant (bad signature, expired, another tenant or audience), lacks
+`token.delegate`, was issued before a revocation of the gateway, or belongs to
+a gateway current RBAC no longer grants `token.delegate` is a `403` with code
+`actor_refused`. `/token/delegate` answers the same code when the caller's own
+token was issued before a revocation of it or RBAC no longer grants it
+`token.delegate`. Either way, mint a new gateway token and retry:
+
+```json
+{"code": "actor_refused", "message": "invalid actor token", "request_id": null}
+```
+
+That code means the gateway's own token was refused. A user who lacks
+permissions is still a `403` with code `forbidden`, so a gateway can tell the
+two apart by `code` without reading `message`. With the Raft store it is a `409` until every
+member supports it.
+
+A delegating gateway gets the broker token its own shared connections
+authenticate with by sending `{"requested": [], "permissions": []}`. For a
+principal that holds `token.delegate:tenant:{tenant_id}`, that mints a
+connection-only token: the gateway's `sub` and no permissions, so it opens a
+connection and can do nothing on it. Refreshing it checks `token.delegate`
+again. For anyone else, asking for nothing is still a `403` with code
+`forbidden`, as is a gateway's ordinary exchange that ends up empty.
 
 ### POST /v1/tenants/{tenant_id}/token/refresh
 
@@ -63,6 +113,49 @@ The answer has the same shape as the exchange's. A refresh token is single-use:
 each refresh returns its replacement. It lasts `FELIX_REFRESH_TOKEN_TTL_SECONDS`
 (30 days by default). The token keeps the audience its exchange chose, and
 naming a different `audience` is a `400`.
+
+### POST /v1/tenants/{tenant_id}/token/delegate
+
+An RFC 8693 token exchange for a gateway acting for its users: trade a user's
+broker token for one that names the caller as its actor, so a broker that binds
+tokens to client certificates accepts it on the gateway's certificate.
+
+```http
+POST /v1/tenants/{tenant_id}/token/delegate
+Authorization: Bearer <caller's felix-controlplane token>
+Content-Type: application/json
+
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "subject_token": "<user's felix-broker token>",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "permissions": ["stream.subscribe:stream:t1/app/alice-feed"]
+}
+```
+
+```json
+{
+  "access_token": "<jwt>",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+The caller needs `token.delegate:tenant:{tenant_id}`; `tenant.manage` does not
+imply it. The subject token must be a broker token of the same tenant that is
+not already delegated, and its `may_act` must name the caller: it has to come
+from an exchange (or a refresh of one) that sent the caller's token as
+`actor_token`. A subject token with no `may_act` is refused unless the control
+plane runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. The result has the subject token's `sub`, `act:
+{"sub": "<caller>"}`, its permissions or the subset `permissions` keeps (never
+wider), and expires no later than the subject token. `subject_token_type` and
+`permissions` are optional. No refresh token is issued.
+
+`400` for a wrong `grant_type` or `subject_token_type` or a malformed
+permission, `401` for a missing or invalid caller token, `403` when the caller
+lacks the permission, the subject token does not verify, is already delegated
+or was not minted for the caller, or nothing is left after narrowing.
 
 ### Configuring Allowed IdPs
 
@@ -125,12 +218,30 @@ RBAC endpoints are split by capability:
 - `DELETE /v1/tenants/{tenant_id}/rbac/groupings` -> requires `rbac.assignment.manage`
   (body: the grouping, as for `POST`; `404` if absent)
 
+Removing a policy or a grouping also revokes the broker tokens of everyone the
+rule reached, so their open streams end and they authenticate again under the
+rules as they are now. A rule that reached an IdP group revokes the whole
+tenant, and so does deleting an IdP issuer or narrowing or replacing what it
+trusts (an audience dropped, the subject or groups claim changed, or `jwks_url`
+or `discovery_url` changed; adding an audience revokes nobody). The change and
+its revocation are one write, so a failed request changed nothing and is safe
+to retry. `refresh-tokens/revoke` with `"principal_id": "*"` revokes a whole
+tenant by hand. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+
+- `GET /v1/principal-revocations/changes?since=<n>` -> requires
+  `node.view:cluster:*`. The feed brokers poll: `{"items": [{"seq",
+  "tenant_id", "principal_id", "revoked_at"}], "next_seq"}`, each principal
+  once at its latest revocation, `principal_id` `*` for a whole tenant.
+
 ### Admin API: Refresh-token revocation and signing keys
 
 Both require `tenant.manage` on `tenant:{tenant_id}`.
 
 - `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` with
-  `{"principal_id": "..."}` ends every refresh chain the principal holds.
+  `{"principal_id": "..."}` ends every refresh chain the principal holds and
+  revokes its broker tokens: brokers end the streams they opened within about
+  one sync interval. `409` when some control-plane member predates
+  revocations; the call is safe to repeat.
 - `GET /v1/tenants/{tenant_id}/signing-keys` lists the current key and the
   keys that only verify.
 - `POST /v1/tenants/{tenant_id}/signing-keys` stages a new key: published, not
@@ -151,6 +262,9 @@ Canonical object grammar for RBAC policy payloads:
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`, with
+  `cache.read` or `cache.write` only. The namespace and cache must be named,
+  and the key may end in one `*` and contain none elsewhere.
 - `cluster:*`, the cluster itself; see [Cluster membership](#cluster-membership)
 
 Rejected on write:
@@ -215,7 +329,7 @@ nothing and answers whether it would be accepted:
 Finalizing is one-way: after it, a broker that registers without the feature
 is refused with 409 naming it. `felix-controlplane admin features` and
 `admin features finalize <feature> [--dry-run]` drive the same routes. See
-[Upgrades and compatibility](/felix/deployment/upgrades/).
+[Upgrades and compatibility](/deployment/upgrades/).
 
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
 so a tenant admin cannot grant themselves cluster access. The tenant comes from
@@ -240,7 +354,7 @@ heartbeat is older than the expiry timeout plus the regrant margin.
 `DELETE /v1/nodes/{node_id}` removes a broker's record. It needs `node.manage`
 on `cluster:*`, and is refused (409) while the broker is `live` or `draining`
 or while any shard names it as leader or replica. See
-[Adding, draining and removing brokers](/felix/deployment/scaling/).
+[Adding, draining and removing brokers](/deployment/scaling/).
 
 The registration, heartbeat, drain, deregister and patch endpoints require
 `node.manage` over the node being changed. A broker's credential is scoped to
@@ -252,7 +366,7 @@ cover.
 ### Shard moves and placement
 
 What an operator uses to steer shard moves; the walk-through is
-[Moving shards by hand](/felix/deployment/moving-shards/), and
+[Moving shards by hand](/deployment/moving-shards/), and
 `felix-controlplane admin` is a command-line client of these endpoints. Reads
 take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 
@@ -287,7 +401,7 @@ shard may use reports a zone, the response also carries `zones_before` and
 `zones_after`: the zones the shard's live copies span now and are expected to
 span once the move cuts over, counting a broker without a zone as one of its
 own. A move that narrows the spread is started anyway and logged as a
-warning; see [Zones](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#zones).
+warning; see [Zones](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#zones).
 
 A start is refused where placement would not make the move: 404
 `unknown_shard` or `unknown_node`, or 409 `destination_not_live`,
@@ -301,8 +415,10 @@ move in progress it is 409 `not_moving`.
 `replace`, `restore`), start
 time, and from the leader's latest report `lag_records`, `caught_up` and
 `drained`. `GET /v1/placement/plan` lists each shard the next pass would act
-on with its `action` (`place`, a move step, `waiting` or `unplaceable`) and
-the assignment it would write or the reason it cannot.
+on with its `action` (`place`, a move step, `waiting`, `settling` or
+`unplaceable`) and the assignment it would write or the reason it cannot.
+`settling` is a new shard held back while a young cluster has fewer live
+brokers than its replication factor (`FELIX_PLACEMENT_SETTLE_MS`).
 
 ### Tenants, namespaces, streams and caches
 
@@ -317,6 +433,7 @@ tenant exists.
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}`, from a `t` token |
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}`, from a `t` token |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}`, from a `t` token |
+| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | `stream.manage` and `cache.manage` over every item in the batch, from a `t` token |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` |
 
 ```http
@@ -328,6 +445,12 @@ Content-Type: application/json
   "retention": { "max_age_seconds": null, "max_size_bytes": null },
   "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true }
 ```
+
+`retention` bounds a durable stream's logs on every broker that holds one:
+`max_size_bytes` per shard log, `max_age_seconds` by the newest record of each
+segment. A bound left `null` is the broker's own (`FELIX_DURABLE_RETENTION_BYTES`,
+`FELIX_DURABLE_RETENTION_SECONDS`), zero is refused, and a `PATCH` takes effect
+without restarting a broker.
 
 A stream may also name a `region`, such as `"region": "eu-west-1"`, and is
 then placed only on brokers in that region or in one the control plane's
@@ -360,6 +483,11 @@ Content-Type: application/json
   "replication_factor": 3, "consistency": "Quorum" }
 ```
 
+Creating a stream or cache that already exists with the same configuration
+answers `200` with the existing one, so a create is safe to retry. A different
+configuration under the same name is `409`. A stream's `routing` counts only
+when the request names it.
+
 A tenant admin's token already carries the manage actions: exchange expands
 `tenant.manage:tenant:t1` to `ns.manage:namespace:t1/*`,
 `stream.manage:stream:t1/*/*` and `cache.manage:cache:t1/*/*`. Listings return
@@ -384,9 +512,54 @@ credential (`FELIX_NODE_TOKEN`), the same one that reads the shard-assignment
 watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
 
+A create, update or delete of a tenant, namespace, stream or cache can answer
+`503`. Code `busy` means other writes to the same feed held it for more than
+5 s, for example a large tenant delete, and nothing was written, so retry it.
+Code
+`unavailable` is Raft: no quorum committed the write in time and it may still
+land, so a retried create can answer `409` and a retried delete `404`.
+`felixctl` retries only `busy`, a few times before failing.
+
+#### Creating several at once
+
+`POST /v1/tenants/{t}/namespaces/{ns}/resources` creates up to 256 streams and
+caches in one namespace, all of them or none. Each item has the body its own
+create endpoint takes.
+
+```http
+POST /v1/tenants/t1/namespaces/room-42/resources
+Content-Type: application/json
+
+{ "streams": [ { "stream": "chat", "kind": "Stream", "shards": 1,
+                 "retention": { "max_age_seconds": null, "max_size_bytes": null },
+                 "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true } ],
+  "caches":  [ { "cache": "cursors", "display_name": "Cursors" },
+               { "cache": "board", "display_name": "Board" } ] }
+```
+
+| Answer | When | Created |
+| --- | --- | --- |
+| `201` | at least one item was new | the new items |
+| `200` | every item already existed as asked | nothing |
+| `400` | empty, over 256 items, an invalid item, or a name given twice | nothing |
+| `403` | the token lacks the manage action over any one item | nothing |
+| `404` | the tenant or namespace does not exist | nothing |
+| `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
+| `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
+| `503` | `busy`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; safe to retry | nothing |
+| `503` | `unavailable`: on Raft, no quorum committed the write in time; it may still land | unknown |
+
+A success lists every item in request order with `"status": "created"` or
+`"unchanged"`, so a caller that failed part-way sends the same batch again.
+Permission is checked for every item before anything is read. The new items
+are written in one Postgres transaction, or one Raft log entry, so a concurrent
+create of the same name cannot leave part of a batch behind. See
+[Creating streams and caches together](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#creating-streams-and-caches-together)
+for the details.
+
 ### Internal Bootstrap API (Day-0)
 
-Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/felix/features/security/#bootstrap-mode-day-0)).
+Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/features/security/#bootstrap-mode-day-0)).
 
 ```http
 POST /internal/bootstrap/tenants/{tenant_id}/initialize
@@ -444,7 +617,7 @@ The endpoints not covered above:
 | `PATCH /v1/tenants/{t}/namespaces/{ns}/streams/{s}` | change `retention`, `consistency`, `delivery` or `durable`; every field is optional | `stream.manage` |
 | `PATCH /v1/tenants/{t}/namespaces/{ns}/caches/{c}` | change `display_name` | `cache.manage` |
 | `POST /v1/nodes` | register a broker; the answer carries the heartbeat interval, the expiry timeout and the enabled fleet features | `node.manage` over the node |
-| `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration, plus `"suspects"`, the leaders it cannot reach, when there are any | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor; 409 if any shard's report was refused | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
 | `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |
@@ -472,7 +645,7 @@ The control plane keeps its metadata in one of three backends, chosen with
   through the Raft leader, and a follower forwards the writes it receives. The
   group survives losing a minority of its members without losing an
   acknowledged write, and there is no external database. See
-  [Metadata Raft](/felix/architecture/metadata-raft/).
+  [Metadata Raft](/architecture/metadata-raft/).
 
 ```mermaid
 graph TB
@@ -519,10 +692,14 @@ Authorization: Bearer <FELIX_NODE_TOKEN>
   "next_seq": 43 }
 ```
 
-A broker loads each snapshot once, then asks for changes since the last `seq`
-it applied. It polls the tenant, namespace, stream and cache feeds every
-`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` (2 s by default), so a new stream can take
-that long to reach every broker. The shard-assignment feed is a long poll:
+A broker loads each snapshot once, then asks for changes from the snapshot's
+`next_seq`. The snapshot's items and `next_seq` are read at one point, so the
+two together describe every committed change exactly once. A page holds at
+most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by default); a full
+page's `next_seq` is the seq after its last change, and the broker keeps
+asking from `next_seq` until a page comes back empty. It polls the tenant,
+namespace, stream and cache feeds every `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
+(2 s by default), so a new stream can take that long to reach every broker. The shard-assignment feed is a long poll:
 `wait_ms` (at most 25000) holds the request open until a change lands, so a
 leadership change reaches brokers without waiting for the next poll.
 
@@ -550,4 +727,4 @@ the broker nodes so data-plane load can't starve consensus. On Postgres, run
 two or more instances and make the database itself highly available. The
 workload is metadata only and light. Disruption budgets, failover drills and
 the Postgres-to-Raft migration are in
-[Control-plane HA](/felix/deployment/control-plane-ha/).
+[Control-plane HA](/deployment/control-plane-ha/).

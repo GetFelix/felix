@@ -124,9 +124,127 @@ pub struct LogConfig {
     /// rather than by what is retained. The active segment of every open log
     /// is always open and does not count.
     pub max_open_sealed_segments: usize,
+    /// Copy sealed segments to an object store. `None` (the default) copies
+    /// nothing.
+    ///
+    /// Copies are made on the retention timer. With this set, retention
+    /// deletes a segment only once its copy is verified and recorded in the
+    /// shard's offload manifest, so a segment past the bounds is never lost
+    /// for want of a copy; it waits for one. Without a retention bound
+    /// nothing is deleted and the store holds a second copy. Reads below the
+    /// local head still report `Trimmed`. See `docs/durable-storage.md`.
+    ///
+    /// Compaction's trimming honours it too, but the broker sets it only for
+    /// stream logs.
+    pub offload: Option<OffloadTarget>,
+    /// Whether retention is held at the commit offset from the moment the log
+    /// opens, before retention first runs. The default keeps what the log's
+    /// replica state recorded. See `DiskLog::hold_retention_at_commit`.
+    pub retention_hold: RetentionHold,
+}
+
+/// What a log does at open with the retention hold its replica state recorded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RetentionHold {
+    /// Keep the recorded hold, as replication last set it.
+    #[default]
+    AsSaved,
+    /// Hold, for a log its broker knows is replicated under `Quorum`.
+    Held,
+    /// Lift it: for a broker that does not replicate, where nothing would
+    /// ever advance the commit offset, or a log not under `Quorum`.
+    Lifted,
+}
+
+/// Where offloaded segments go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OffloadTarget {
+    /// A directory, through `object_store`'s local filesystem backend. Each
+    /// object is fsynced, with its directories, before it is recorded.
+    LocalDir {
+        dir: std::path::PathBuf,
+        /// The writing node's id. Every key starts with it, so nodes sharing
+        /// one archive never write to each other's keys. Letters, digits,
+        /// `-`, `_` and `.`, not starting with `.`.
+        node: String,
+    },
+}
+
+impl OffloadTarget {
+    pub(crate) fn node(&self) -> &str {
+        match self {
+            Self::LocalDir { node, .. } => node,
+        }
+    }
+}
+
+/// Whether `node` can be the first part of an object key: one path segment,
+/// never `.` or `..`.
+fn is_valid_offload_node(node: &str) -> bool {
+    !node.is_empty()
+        && node.len() <= 255
+        && !node.starts_with('.')
+        && node
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// The bounds retention deletes a log's oldest segments by. Either, both or
+/// neither may be set; neither keeps everything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retention {
+    /// See [`LogConfig::retention_bytes`].
+    pub bytes: Option<u64>,
+    /// See [`LogConfig::retention_age`].
+    pub age: Option<Duration>,
+}
+
+impl Retention {
+    /// These bounds, with each one left unset taken from `fallback`.
+    pub fn or(self, fallback: Retention) -> Retention {
+        Retention {
+            bytes: self.bytes.or(fallback.bytes),
+            age: self.age.or(fallback.age),
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.bytes.is_some() || self.age.is_some()
+    }
 }
 
 impl LogConfig {
+    /// The retention bounds this configuration sets.
+    pub fn retention(&self) -> Retention {
+        Retention {
+            bytes: self.retention_bytes,
+            age: self.retention_age,
+        }
+    }
+
+    /// Whether `retention` can be enforced under this configuration.
+    pub(crate) fn check_retention(&self, retention: Retention) -> Result<()> {
+        // Zero is not "retain nothing" — the active segment is never deleted, so
+        // it would be a bound the log can never satisfy, re-evaluated forever.
+        if retention.bytes == Some(0) {
+            return Err(StorageError::InvalidConfig(
+                "retention_bytes must be greater than zero; omit it to disable retention",
+            ));
+        }
+        if retention.age == Some(Duration::ZERO) {
+            return Err(StorageError::InvalidConfig(
+                "retention_age must be greater than zero; omit it to disable retention",
+            ));
+        }
+        if (retention.is_set() || self.offload.is_some()) && self.retention_check_interval.is_zero()
+        {
+            return Err(StorageError::InvalidConfig(
+                "retention_check_interval must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject configurations that cannot produce a working log.
     ///
     /// Called once when a log is opened rather than on the append path, so a
@@ -150,23 +268,12 @@ impl LogConfig {
                 "max_records_per_read must be greater than zero",
             ));
         }
-        // Zero is not "retain nothing" — the active segment is never deleted, so
-        // it would be a bound the log can never satisfy, re-evaluated forever.
-        if self.retention_bytes == Some(0) {
-            return Err(StorageError::InvalidConfig(
-                "retention_bytes must be greater than zero; omit it to disable retention",
-            ));
-        }
-        if self.retention_age == Some(Duration::ZERO) {
-            return Err(StorageError::InvalidConfig(
-                "retention_age must be greater than zero; omit it to disable retention",
-            ));
-        }
-        if (self.retention_bytes.is_some() || self.retention_age.is_some())
-            && self.retention_check_interval.is_zero()
+        self.check_retention(self.retention())?;
+        if let Some(target) = &self.offload
+            && !is_valid_offload_node(target.node())
         {
             return Err(StorageError::InvalidConfig(
-                "retention_check_interval must be greater than zero",
+                "an offload node id must be letters, digits, '-', '_' and '.', not starting with '.'",
             ));
         }
         if self.max_open_sealed_segments == 0 {
@@ -198,9 +305,10 @@ impl LogConfig {
         }
     }
 
-    /// Bytes to reserve for a new segment: the whole segment when
-    /// preallocation is on, nothing when it is off.
-    pub(crate) fn preallocate_bytes(&self) -> u64 {
+    /// The most a segment reserves ahead of its writes: the whole segment
+    /// when preallocation is on, nothing when it is off. A segment starts with
+    /// a small part of it and grows into it (`crate::segment::reservation`).
+    pub(crate) fn reserve_limit_bytes(&self) -> u64 {
         if self.preallocate_segments {
             self.segment_size_bytes
         } else {
@@ -227,6 +335,8 @@ impl Default for LogConfig {
             retention_age: None,
             retention_check_interval: Duration::from_secs(60),
             max_open_sealed_segments: 256,
+            offload: None,
+            retention_hold: RetentionHold::AsSaved,
         }
     }
 }

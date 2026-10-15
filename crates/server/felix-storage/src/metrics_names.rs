@@ -7,8 +7,8 @@
 //! * *Is durability the bottleneck?* Compare `append_duration_seconds` against
 //!   `sync_duration_seconds`. If sync dominates, the fsync policy is the cost.
 //! * *Is group commit working?* `sync_batch_appends` is the fan-in per device
-//!   flush. A value near 1 under concurrent load means appends are serialising
-//!   on the device instead of sharing a flush.
+//!   flush, in records. A value near 1 under concurrent single-record load
+//!   means appends are serialising on the device instead of sharing a flush.
 //! * *Is the periodic policy honouring its window?* `unsynced_bytes` is the data
 //!   at risk right now; `sync_lag_seconds` is how long the oldest unsynced byte
 //!   has been waiting.
@@ -29,11 +29,16 @@ pub const APPEND_DURATION_SECONDS: &str = "felix_storage_append_duration_seconds
 pub const SYNC_TOTAL: &str = "felix_storage_sync_total";
 /// Time spent inside a single flush.
 pub const SYNC_DURATION_SECONDS: &str = "felix_storage_sync_duration_seconds";
-/// Appends served by one flush — the group-commit fan-in.
+/// Records made durable by one `OnCommit` flush: the group-commit fan-in. A
+/// batch of N records counts N, whether one client sent it or the broker
+/// merged N publishes into one append.
 pub const SYNC_BATCH_APPENDS: &str = "felix_storage_sync_batch_appends";
 /// Flushes that failed. Any non-zero value means acknowledged durability is in
 /// doubt.
 pub const SYNC_FAILURES_TOTAL: &str = "felix_storage_sync_failures_total";
+/// Writes and file creations refused because the device or quota was full.
+/// Nothing was written by any of them.
+pub const STORAGE_FULL_TOTAL: &str = "felix_storage_full_total";
 /// Bytes written but not yet flushed: the data a crash would lose right now.
 pub const UNSYNCED_BYTES: &str = "felix_storage_unsynced_bytes";
 
@@ -48,6 +53,9 @@ pub const SEGMENT_ROLL_TOTAL: &str = "felix_storage_segment_roll_total";
 pub const SEGMENT_ROLL_BACKGROUND_TOTAL: &str = "felix_storage_segment_roll_background_total";
 /// Background rollovers that failed and degraded the log.
 pub const SEGMENT_ROLL_FAILED_TOTAL: &str = "felix_storage_segment_roll_failed_total";
+/// Extensions of an active segment's block reservation that failed. Appends
+/// carry on and allocate as they write.
+pub const SEGMENT_RESERVE_FAILED_TOTAL: &str = "felix_storage_segment_reserve_failed_total";
 /// Prepared segments discarded because the tail moved on before the swap.
 pub const SEGMENT_ROLL_DISCARDED_TOTAL: &str = "felix_storage_segment_roll_discarded_total";
 /// Segments currently on disk for a shard.
@@ -66,6 +74,20 @@ pub const RETENTION_BASE_OFFSET: &str = "felix_storage_retention_base_offset";
 /// Retention passes that failed. Non-fatal — the next pass retries — but a
 /// persistently non-zero value means the log is growing unbounded.
 pub const RETENTION_FAILURES_TOTAL: &str = "felix_storage_retention_failures_total";
+
+/// Sealed segments copied to the object store, verified and recorded.
+pub const OFFLOAD_SEGMENTS_TOTAL: &str = "felix_storage_offload_segments_total";
+/// Bytes copied to the object store.
+pub const OFFLOAD_BYTES_TOTAL: &str = "felix_storage_offload_bytes_total";
+/// Segment offloads that failed. The segment stays local and the next pass
+/// retries it; retention cannot delete it until one succeeds.
+pub const OFFLOAD_FAILURES_TOTAL: &str = "felix_storage_offload_failures_total";
+/// Offloaded logs whose last pass failed, a missing or read-only archive
+/// included. Non-zero means local disk is growing past retention.
+pub const OFFLOAD_FAILING_LOGS: &str = "felix_storage_offload_failing_logs";
+/// Bytes retention would delete but keeps because they have no recorded
+/// copy yet. Grows for as long as offload keeps failing.
+pub const OFFLOAD_HELD_BYTES: &str = "felix_storage_offload_held_bytes";
 
 /// Records returned by range reads.
 pub const READ_RECORDS_TOTAL: &str = "felix_storage_read_records_total";

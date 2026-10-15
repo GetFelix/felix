@@ -138,6 +138,25 @@ pub enum Kind {
     ReplicateLabelledRecords = 32,
     /// `ReplicateFetch`, answered with `ReplicateLabelledRecords`.
     ReplicateLabelledFetch = 33,
+    /// `ForwardCacheOp` with a condition, answered with
+    /// `ConditionalForwardCacheOk`. A separate kind so an older owner refuses
+    /// it instead of making the write unconditionally.
+    ConditionalForwardCacheOp = 34,
+    /// `ForwardCacheOk` with whether the write was made and a version.
+    ConditionalForwardCacheOk = 35,
+    /// `ReplicateLabelledRecords` followed by each record's append time on
+    /// the sender. An older follower refuses it rather than stamping the
+    /// records with its own clock.
+    ReplicateTimedRecords = 36,
+    /// `ReplicateLabelledFetch`, answered with `ReplicateTimedRecords`.
+    ReplicateTimedFetch = 37,
+    /// A follower asks the broker leading one of its shards whether it is
+    /// there. Sent only to a peer that offered [`PeerCapabilities::PING`].
+    ///
+    /// [`PeerCapabilities::PING`]: super::PeerCapabilities::PING
+    Ping = 38,
+    /// The answer to `Ping`, given by the broker's serving runtime.
+    Pong = 39,
 }
 
 impl Kind {
@@ -178,6 +197,12 @@ impl Kind {
             31 => Ok(Kind::ReplicateFetch),
             32 => Ok(Kind::ReplicateLabelledRecords),
             33 => Ok(Kind::ReplicateLabelledFetch),
+            34 => Ok(Kind::ConditionalForwardCacheOp),
+            35 => Ok(Kind::ConditionalForwardCacheOk),
+            36 => Ok(Kind::ReplicateTimedRecords),
+            37 => Ok(Kind::ReplicateTimedFetch),
+            38 => Ok(Kind::Ping),
+            39 => Ok(Kind::Pong),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

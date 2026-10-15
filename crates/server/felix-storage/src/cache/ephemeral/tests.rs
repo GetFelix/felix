@@ -181,3 +181,132 @@ async fn put_overwrites_existing_value() {
     );
     assert_eq!(cache.len().await, 1);
 }
+
+#[tokio::test]
+async fn conditional_writes_compare_versions() {
+    use crate::cache::{CacheCondition, ConditionalWrite};
+    let cache = EphemeralCache::new();
+    let put_if = |value: &'static [u8], condition| {
+        cache.put_if(
+            "t1",
+            "ns",
+            "c",
+            0,
+            "k",
+            Bytes::from_static(value),
+            None,
+            condition,
+        )
+    };
+
+    let first = put_if(b"a", CacheCondition::Absent).await.unwrap();
+    assert!(first.applied);
+    let version = first.version.unwrap();
+    assert_eq!(
+        put_if(b"b", CacheCondition::Absent).await.unwrap(),
+        ConditionalWrite {
+            applied: false,
+            version: Some(version),
+        }
+    );
+    let found = cache
+        .get_versioned("t1", "ns", "c", 0, "k")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.version, version);
+
+    let swapped = put_if(b"c", CacheCondition::Version(version))
+        .await
+        .unwrap();
+    assert!(swapped.applied);
+    let stale = cache
+        .delete_if("t1", "ns", "c", 0, "k", version)
+        .await
+        .unwrap();
+    assert_eq!(stale.version, swapped.version);
+    assert!(
+        cache
+            .delete_if("t1", "ns", "c", 0, "k", swapped.version.unwrap())
+            .await
+            .unwrap()
+            .applied
+    );
+    assert!(put_if(b"d", CacheCondition::Absent).await.unwrap().applied);
+}
+
+#[tokio::test]
+async fn a_version_from_before_a_restart_names_nothing_after_it() {
+    use crate::cache::CacheCondition;
+    async fn put(
+        cache: &EphemeralCache,
+        value: &'static [u8],
+        condition: CacheCondition,
+    ) -> crate::cache::ConditionalWrite {
+        cache
+            .put_if(
+                "t1",
+                "ns",
+                "c",
+                0,
+                "k",
+                Bytes::from_static(value),
+                None,
+                condition,
+            )
+            .await
+            .unwrap()
+    }
+
+    let before = EphemeralCache::new();
+    let seen = put(&before, b"old", CacheCondition::Absent)
+        .await
+        .version
+        .unwrap();
+    drop(before);
+    // A real restart takes far longer than this; it only keeps the two
+    // stores from starting in the same microsecond.
+    sleep(Duration::from_millis(2)).await;
+
+    let after = EphemeralCache::new();
+    assert!(put(&after, b"new", CacheCondition::Absent).await.applied);
+    let stale = put(&after, b"clobber", CacheCondition::Version(seen)).await;
+    assert!(!stale.applied, "a pre-restart version matched {stale:?}");
+    assert_eq!(
+        after.get("t1", "ns", "c", 0, "k").await.unwrap(),
+        Some(Bytes::from_static(b"new"))
+    );
+}
+
+#[tokio::test]
+async fn an_expired_entry_is_absent_to_a_condition() {
+    use crate::cache::CacheCondition;
+    let cache = EphemeralCache::new();
+    cache
+        .put(
+            "t1",
+            "ns",
+            "c",
+            0,
+            "k",
+            Bytes::from_static(b"a"),
+            Some(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let taken = cache
+        .put_if(
+            "t1",
+            "ns",
+            "c",
+            0,
+            "k",
+            Bytes::from_static(b"b"),
+            None,
+            CacheCondition::Absent,
+        )
+        .await
+        .unwrap();
+    assert!(taken.applied);
+}

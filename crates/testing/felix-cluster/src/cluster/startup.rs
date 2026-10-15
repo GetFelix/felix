@@ -36,16 +36,12 @@ impl Cluster {
             .context("build harness HTTP client")?;
 
         let control_plane = ControlPlane::start(&config.tenant_id).await?;
-        let client_token = control_plane.client_token(&config.tenant_id)?;
-        let admin_token = control_plane.admin_token(&config.tenant_id)?;
-        let operator_token = control_plane.operator_token(&config.tenant_id)?;
-        let subscribe_only_token = control_plane.subscribe_only_token(&config.tenant_id)?;
-        let group_operator_token = control_plane.group_operator_token(&config.tenant_id)?;
+        let credentials = control_plane.credentials(&config.tenant_id);
 
         // Metadata first: a broker syncs streams at startup, and one that starts
         // before its streams exist has to wait for the next sync to become
         // useful. Creating them up front means readiness means what it says.
-        seed_metadata(&http, &control_plane, &config, &admin_token).await?;
+        seed_metadata(&http, &control_plane, &config, &credentials.admin_token()).await?;
 
         let root = tempfile::tempdir().context("create cluster data root")?;
         let binary = broker_binary()?;
@@ -60,6 +56,7 @@ impl Cluster {
                 spawn_broker(
                     &binary,
                     &control_plane,
+                    &credentials,
                     &config,
                     root.path(),
                     index,
@@ -74,11 +71,8 @@ impl Cluster {
             nodes,
             tenant_id: config.tenant_id.clone(),
             namespace: config.namespace.clone(),
-            client_token,
-            admin_token,
-            operator_token,
-            subscribe_only_token,
-            group_operator_token,
+            _node_token_renewal: credentials.spawn_node_token_renewal(),
+            credentials,
             http,
             binary: binary.clone(),
             config: config.clone(),
@@ -129,6 +123,8 @@ impl Cluster {
                     // with different ports.
                     if attempts < MAX_SPAWN_ATTEMPTS {
                         attempts += 1;
+                        let node_id = &self.nodes[index].node_id;
+                        tracing::warn!(%node_id, "broker exited during start-up; starting it again");
                         self.respawn(index)?;
                         continue;
                     }
@@ -161,9 +157,7 @@ impl Cluster {
     /// Keeps the node id and data directory: this is the same broker having
     /// another go, not a different one, and a durable log it already wrote must
     /// still be there.
-    fn respawn(&mut self, index: usize) -> Result<()> {
-        let node_id = self.nodes[index].node_id.clone();
-        tracing::warn!(%node_id, "broker exited during start-up; starting it again");
+    pub(super) fn respawn(&mut self, index: usize) -> Result<()> {
         let control_plane = self
             .control_plane
             .as_ref()
@@ -171,6 +165,7 @@ impl Cluster {
         let replacement = spawn_broker(
             &self.binary,
             control_plane,
+            &self.credentials,
             &self.config,
             self._root.path(),
             index,
@@ -413,19 +408,36 @@ async fn post(
     token: &str,
     body: serde_json::Value,
 ) -> Result<()> {
-    let response = http
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
-    let status = response.status();
+    // `busy` means the write gave up waiting for its feed and wrote nothing.
+    // `unavailable` (Raft) may have committed, so it is not retried.
+    let mut waits = RETRY_WAITS_MS.into_iter();
+    let (status, text) = loop {
+        let response = http
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let busy = status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v["code"] == "busy");
+        match waits.next() {
+            Some(wait) if busy => tokio::time::sleep(Duration::from_millis(wait)).await,
+            _ => break (status, text),
+        }
+    };
     // Idempotent by design: a harness restarted against a warm control plane
     // should not fail because the tenant already exists.
     if status.is_success() || status == reqwest::StatusCode::CONFLICT {
         return Ok(());
     }
-    let detail = response.text().await.unwrap_or_default();
-    bail!("POST {url}: {status}: {detail}")
+    bail!("POST {url}: {status}: {text}")
 }
+
+/// Waits before each retry of a `busy` answer.
+const RETRY_WAITS_MS: [u64; 3] = [250, 500, 1_000];
+
+#[cfg(test)]
+mod tests;

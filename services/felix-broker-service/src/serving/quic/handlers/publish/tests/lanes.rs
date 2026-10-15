@@ -64,10 +64,11 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
             credential: "token".to_string(),
         },
         payloads: vec![Bytes::from_static(b"forwarded")],
-        response: Some(forward_tx),
+        response: Some(forward_tx.into()),
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     };
     assert!(
         enqueue_tenant_publish(&ctx, "t2", forward, EnqueuePolicy::Wait, None)
@@ -86,10 +87,11 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
             fenced: None,
         },
         payloads: vec![Bytes::from_static(b"local")],
-        response: Some(local_tx),
+        response: Some(local_tx.into()),
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     };
     assert!(
         enqueue_tenant_publish(&ctx, "t1", local, EnqueuePolicy::Wait, None)

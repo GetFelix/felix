@@ -63,6 +63,7 @@ impl PeerRequester for ScriptedOwner {
     ) -> std::result::Result<InternalMessage, PeerError> {
         let generation = match &message {
             InternalMessage::ForwardPublish(publish) => publish.shard.generation,
+            InternalMessage::ForwardCacheOp(op) => op.shard.generation,
             other => panic!("forwarding sent a {:?}", other.kind()),
         };
         self.asked
@@ -480,4 +481,52 @@ async fn an_owner_that_predates_the_credentialed_kind_gets_the_legacy_one() {
         .await
         .expect_err("an owner that knows neither kind is refused, not looped on");
     assert_eq!(owner.attempts(), 2);
+}
+
+/// A conditional write sent to an owner that predates the conditional kind is
+/// refused, never resent as a plain put that would apply unconditionally. A
+/// versioned read falls back to a plain one, and answers without a version.
+#[tokio::test]
+async fn an_owner_that_predates_conditions_refuses_the_write_and_serves_the_read() {
+    use felix_wire::internal::{ForwardCacheOk, Kind};
+
+    let put_if = CacheRequest::PutIf {
+        value: Bytes::from_static(b"v"),
+        ttl_ms: 0,
+        condition: felix_storage::CacheCondition::Absent,
+    };
+    let owner = ScriptedOwner::new([Ok(refused(ErrorCode::UnsupportedKind))]);
+    let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &put_if)
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("conditional"), "{err}");
+    assert_eq!(owner.kinds(), vec![Kind::ConditionalForwardCacheOp]);
+
+    let owner = ScriptedOwner::new([
+        Ok(refused(ErrorCode::UnsupportedKind)),
+        Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id: 0,
+            value: Some(Bytes::from_static(b"v")),
+            outcome: None,
+        })),
+    ]);
+    let answer = forward_cache_request(
+        &owner,
+        &target(),
+        &key(),
+        "k",
+        "token",
+        &CacheRequest::GetVersioned,
+    )
+    .await
+    .expect("served as a plain read");
+    assert_eq!(answer.value.as_deref(), Some(&b"v"[..]));
+    assert_eq!(answer.outcome, None);
+    assert_eq!(
+        owner.kinds(),
+        vec![
+            Kind::ConditionalForwardCacheOp,
+            Kind::AuthorizedForwardCacheOp
+        ],
+    );
 }

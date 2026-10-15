@@ -10,7 +10,7 @@
 use super::moves::{
     AtGeneration, MovePolicy, Moves, spread_if_led_by, start, undo_replacement, undo_staged,
 };
-use super::plan::{assignment_for, plan_abandoning};
+use super::plan::{assignment_for, owner_of, plan_abandoning, replication_factors};
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable, zones};
 use crate::model::{
     Cache, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState,
@@ -226,7 +226,20 @@ pub fn start_move(
     {
         return Err(Refused::AtCapacity(destination.to_string()));
     }
-    let mut moves = Moves::counting(catalog.existing, catalog.policy.clone());
+    let factors = replication_factors(catalog.streams, catalog.caches);
+    let unpaced_max = catalog.policy.fence_max_lag_records;
+    let mut moves = Moves::counting(catalog.existing, catalog.policy.clone(), &|assignment| {
+        let replication_factor = factors
+            .get(&owner_of(&assignment.key))
+            .copied()
+            .unwrap_or(1);
+        super::restore::unpaced(
+            assignment,
+            replication_factor,
+            catalog.caught_up,
+            unpaced_max,
+        )
+    });
     moves
         .begin_requested(&existing.leader, destination)
         .map_err(Refused::Blocked)?;

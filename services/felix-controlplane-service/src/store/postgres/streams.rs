@@ -6,7 +6,10 @@ use super::codec::{
     DbStream, consistency_to_str, delivery_to_str, parse_routing, stream_from_db,
     stream_kind_to_str,
 };
-use super::{PostgresStore, is_unique_violation, page_fetch};
+use super::{
+    CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
+    is_unique_violation, page_fetch,
+};
 use crate::model::{
     Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest, StreamRouting,
 };
@@ -131,19 +134,22 @@ pub(super) async fn stream_routings(
 }
 
 pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> StoreResult<Stream> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
+    super::ensure_namespace(&mut tx, &stream.tenant_id, &stream.namespace).await?;
+    insert_stream(&mut tx, &stream).await?;
+    tx.commit().await?;
+    metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
+    store.refresh_counts().await?;
+    Ok(stream)
+}
 
-    let ns_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM namespaces WHERE tenant_id = $1 AND namespace = $2)",
-    )
-    .bind(&stream.tenant_id)
-    .bind(&stream.namespace)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !ns_exists {
-        return Err(StoreError::NotFound("namespace".into()));
-    }
-
+/// The row and its `Created` change, inside the caller's transaction, which
+/// must hold the feed lock (`begin_feed_write`).
+/// `Conflict` when the stream exists.
+pub(super) async fn insert_stream(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    stream: &Stream,
+) -> StoreResult<()> {
     let insert = sqlx::query(
         r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
@@ -161,11 +167,14 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
     .bind(stream.durable)
     .bind(stream.region.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await;
     if let Err(err) = insert {
         if is_unique_violation(&err) {
-            return Err(StoreError::Conflict("stream exists".into()));
+            return Err(StoreError::Conflict(format!(
+                "stream {} exists",
+                stream.stream
+            )));
         }
         return Err(StoreError::Unexpected(err.into()));
     }
@@ -177,15 +186,10 @@ pub(super) async fn create_stream(store: &PostgresStore, stream: Stream) -> Stor
     .bind(&stream.tenant_id)
     .bind(&stream.namespace)
     .bind(&stream.stream)
-    .bind(serde_json::to_value(&stream).ok())
-    .execute(&mut *tx)
-    .await
-    ?;
-
-    tx.commit().await?;
-    metrics::counter!("felix_stream_changes_total", "op" => "created").increment(1);
-    store.refresh_counts().await?;
-    Ok(stream)
+    .bind(serde_json::to_value(stream).ok())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn patch_stream(
@@ -193,7 +197,7 @@ pub(super) async fn patch_stream(
     key: &StreamKey,
     patch: StreamPatchRequest,
 ) -> StoreResult<Stream> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let current = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
@@ -260,7 +264,7 @@ pub(super) async fn patch_stream(
 }
 
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let removed = sqlx::query(
         r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
     )
@@ -292,20 +296,22 @@ pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> Sto
 }
 
 pub(super) async fn stream_snapshot(store: &PostgresStore) -> StoreResult<Snapshot<Stream>> {
+    // One REPEATABLE READ snapshot for the rows and `next_seq`, or a change
+    // committed between the two reads is counted but missing.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing FROM streams ORDER BY tenant_id, namespace, stream"#,
     )
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
     let items = rows
         .into_iter()
         .map(stream_from_db)
         .collect::<Result<Vec<_>, StoreError>>()?;
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM stream_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
+    let next_seq = feed_head(&mut tx, CatalogFeed::Streams).await?;
+    tx.commit().await?;
     Ok(Snapshot { items, next_seq })
 }
 
@@ -313,12 +319,16 @@ pub(super) async fn stream_changes(
     store: &PostgresStore,
     since: u64,
 ) -> StoreResult<ChangeSet<StreamChange>> {
+    // The page and `head` from one snapshot, so a short page means the feed
+    // really had nothing more.
+    let mut tx = store.pool.begin().await?;
+    begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, StreamChangeRow>(
         r#"SELECT seq, op, tenant_id, namespace, stream, payload FROM stream_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *tx)
     .await
     ?;
     let mut items = Vec::with_capacity(rows.len());
@@ -342,9 +352,12 @@ pub(super) async fn stream_changes(
             stream,
         });
     }
-    let next_seq =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(seq) + 1, 0) FROM stream_changes")
-            .fetch_one(&store.pool)
-            .await? as u64;
-    Ok(ChangeSet { items, next_seq })
+    let head = feed_head(&mut tx, CatalogFeed::Streams).await?;
+    tx.commit().await?;
+    Ok(ChangeSet::page(
+        items,
+        store.changes_limit(),
+        head,
+        |change| change.seq,
+    ))
 }

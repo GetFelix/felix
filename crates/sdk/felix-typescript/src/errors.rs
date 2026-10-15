@@ -148,7 +148,7 @@ pub(crate) fn kind_for_code(code: &str, retry: RetryClass) -> &'static str {
         return KIND_OUTCOME_UNKNOWN;
     }
     match code {
-        "unauthenticated" | "forbidden" => KIND_AUTH,
+        "unauthenticated" | "forbidden" | "revoked" => KIND_AUTH,
         "not_found" => KIND_NOT_FOUND,
         "shard_unavailable" | "not_leader" => KIND_SHARD_UNAVAILABLE,
         "overloaded" => KIND_OVERLOADED,

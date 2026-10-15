@@ -6,7 +6,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use super::checked_payload_count;
 use crate::client::flags::{
     FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_EVENT_BATCH_OFFSETS,
-    FLAG_EVENT_BATCH_SKIPPED,
+    FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED, FLAG_EVENT_BATCH_TIMESTAMPS,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -22,6 +22,13 @@ pub struct EventBatch {
     /// How many offsets immediately before `base_offset` hold no event, from
     /// `FLAG_EVENT_BATCH_SKIPPED`. Zero when the frame does not carry it.
     pub skipped_before: u64,
+    /// The principal that published every event in the batch, from
+    /// `FLAG_EVENT_BATCH_PUBLISHER`. `None` when the frame does not carry one.
+    pub publisher: Option<Bytes>,
+    /// When each payload's record was appended, in microseconds since the
+    /// Unix epoch, from `FLAG_EVENT_BATCH_TIMESTAMPS`. One per payload, or
+    /// `None` when the frame does not carry them.
+    pub timestamps: Option<Vec<u64>>,
 }
 
 /// Parsed representation of a shared event batch frame. It names no
@@ -33,6 +40,30 @@ pub struct SharedEventBatch {
     pub base_offset: Option<u64>,
     /// See [`EventBatch::skipped_before`].
     pub skipped_before: u64,
+    /// See [`EventBatch::publisher`].
+    pub publisher: Option<Bytes>,
+    /// See [`EventBatch::timestamps`].
+    pub timestamps: Option<Vec<u64>>,
+}
+
+/// What an event batch says about its events besides their payloads. Each
+/// field goes on the frame only when set, under its own flag, so a batch
+/// with none of them is the plain frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventBatchMeta<'a> {
+    /// Offset of the first payload (`FLAG_EVENT_BATCH_OFFSETS`).
+    pub base_offset: Option<u64>,
+    /// Offsets before `base_offset` that hold no event
+    /// (`FLAG_EVENT_BATCH_SKIPPED`). Written only when non-zero and with an
+    /// offset.
+    pub skipped_before: u64,
+    /// The principal that published every event in the batch
+    /// (`FLAG_EVENT_BATCH_PUBLISHER`), at most 255 bytes.
+    pub publisher: Option<&'a [u8]>,
+    /// Each payload's append time in microseconds
+    /// (`FLAG_EVENT_BATCH_TIMESTAMPS`). Must hold one per payload; any other
+    /// length fails the encode with [`Error::Incomplete`].
+    pub timestamps: Option<&'a [u64]>,
 }
 
 /// An event batch as segments, so a writer can send each payload's existing
@@ -82,7 +113,14 @@ pub fn encode_event_batch_bytes_with_offset(
     payloads: &[Bytes],
     base_offset: u64,
 ) -> Result<Bytes> {
-    encode_offset_batch(Some(subscription_id), payloads, base_offset, 0)
+    encode_event_batch_bytes_with_meta(
+        subscription_id,
+        payloads,
+        EventBatchMeta {
+            base_offset: Some(base_offset),
+            ..EventBatchMeta::default()
+        },
+    )
 }
 
 /// [`encode_event_batch_bytes_with_offset`], also saying how many offsets
@@ -96,7 +134,25 @@ pub fn encode_event_batch_bytes_with_skip(
     base_offset: u64,
     skipped_before: u64,
 ) -> Result<Bytes> {
-    encode_offset_batch(Some(subscription_id), payloads, base_offset, skipped_before)
+    encode_event_batch_bytes_with_meta(
+        subscription_id,
+        payloads,
+        EventBatchMeta {
+            base_offset: Some(base_offset),
+            skipped_before,
+            ..EventBatchMeta::default()
+        },
+    )
+}
+
+/// An event batch carrying whichever of [`EventBatchMeta`]'s fields are set.
+/// Only for a peer that negotiated the flag of each one that is.
+pub fn encode_event_batch_bytes_with_meta(
+    subscription_id: u64,
+    payloads: &[Bytes],
+    meta: EventBatchMeta<'_>,
+) -> Result<Bytes> {
+    encode_meta_batch(Some(subscription_id), payloads, meta)
 }
 
 /// [`encode_event_batch_bytes`] as segments; see [`EncodedEventBatchParts`].
@@ -175,7 +231,13 @@ pub fn encode_shared_event_batch_bytes_with_offset(
     payloads: &[Bytes],
     base_offset: u64,
 ) -> Result<Bytes> {
-    encode_offset_batch(None, payloads, base_offset, 0)
+    encode_shared_event_batch_bytes_with_meta(
+        payloads,
+        EventBatchMeta {
+            base_offset: Some(base_offset),
+            ..EventBatchMeta::default()
+        },
+    )
 }
 
 /// [`encode_shared_event_batch_bytes_with_offset`] with a skip count; see
@@ -185,30 +247,61 @@ pub fn encode_shared_event_batch_bytes_with_skip(
     base_offset: u64,
     skipped_before: u64,
 ) -> Result<Bytes> {
-    encode_offset_batch(None, payloads, base_offset, skipped_before)
+    encode_shared_event_batch_bytes_with_meta(
+        payloads,
+        EventBatchMeta {
+            base_offset: Some(base_offset),
+            skipped_before,
+            ..EventBatchMeta::default()
+        },
+    )
 }
 
-/// An event batch carrying offsets: per-subscriber when `subscription_id` is
-/// set, shared otherwise. The skip count is written only when it is non-zero.
-fn encode_offset_batch(
+/// [`encode_event_batch_bytes_with_meta`] for the shared frame.
+pub fn encode_shared_event_batch_bytes_with_meta(
+    payloads: &[Bytes],
+    meta: EventBatchMeta<'_>,
+) -> Result<Bytes> {
+    encode_meta_batch(None, payloads, meta)
+}
+
+/// An event batch: per-subscriber when `subscription_id` is set, shared
+/// otherwise. The optional fields follow the subscription id in a fixed
+/// order: offset, skip count, publisher. Timestamps go one before each
+/// payload's length.
+fn encode_meta_batch(
     subscription_id: Option<u64>,
     payloads: &[Bytes],
-    base_offset: u64,
-    skipped_before: u64,
+    meta: EventBatchMeta<'_>,
 ) -> Result<Bytes> {
     let (mut flags, mut payload_len) = match subscription_id {
-        Some(_) => (
-            FLAG_BINARY_EVENT_BATCH | FLAG_EVENT_BATCH_OFFSETS,
-            8usize + 8 + 4,
-        ),
-        None => (
-            FLAG_BINARY_EVENT_BATCH_SHARED | FLAG_EVENT_BATCH_OFFSETS,
-            8usize + 4,
-        ),
+        Some(_) => (FLAG_BINARY_EVENT_BATCH, 8usize + 4),
+        None => (FLAG_BINARY_EVENT_BATCH_SHARED, 4usize),
     };
+    let skipped_before = meta.base_offset.map_or(0, |_| meta.skipped_before);
+    if meta.base_offset.is_some() {
+        flags |= FLAG_EVENT_BATCH_OFFSETS;
+        payload_len += 8;
+    }
     if skipped_before > 0 {
         flags |= FLAG_EVENT_BATCH_SKIPPED;
         payload_len += 8;
+    }
+    if let Some(publisher) = meta.publisher {
+        if publisher.len() > MAX_PUBLISHER_BYTES {
+            return Err(Error::FrameTooLarge);
+        }
+        flags |= FLAG_EVENT_BATCH_PUBLISHER;
+        payload_len += 1 + publisher.len();
+    }
+    if let Some(timestamps) = meta.timestamps {
+        if timestamps.len() != payloads.len() {
+            return Err(Error::Incomplete);
+        }
+        flags |= FLAG_EVENT_BATCH_TIMESTAMPS;
+        payload_len = payload_len
+            .checked_add(8 * payloads.len())
+            .ok_or(Error::FrameTooLarge)?;
     }
     for payload in payloads {
         let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
@@ -225,12 +318,21 @@ fn encode_offset_batch(
     if let Some(subscription_id) = subscription_id {
         buf.extend_from_slice(&subscription_id.to_be_bytes());
     }
-    buf.extend_from_slice(&base_offset.to_be_bytes());
+    if let Some(base_offset) = meta.base_offset {
+        buf.extend_from_slice(&base_offset.to_be_bytes());
+    }
     if skipped_before > 0 {
         buf.extend_from_slice(&skipped_before.to_be_bytes());
     }
+    if let Some(publisher) = meta.publisher {
+        buf.extend_from_slice(&[publisher.len() as u8]);
+        buf.extend_from_slice(publisher);
+    }
     buf.extend_from_slice(&(payloads.len() as u32).to_be_bytes());
-    for payload in payloads {
+    for (index, payload) in payloads.iter().enumerate() {
+        if let Some(timestamps) = meta.timestamps {
+            buf.extend_from_slice(&timestamps[index].to_be_bytes());
+        }
         let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
         buf.extend_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(payload);
@@ -238,62 +340,47 @@ fn encode_offset_batch(
     Ok(buf.freeze())
 }
 
-/// Which optional fields an event batch's flags say it carries. A skip count
-/// means nothing without the offset it counts back from.
-fn offset_fields(flags: u16) -> Result<(bool, bool)> {
-    let has_offsets = flags & FLAG_EVENT_BATCH_OFFSETS != 0;
-    let has_skip = flags & FLAG_EVENT_BATCH_SKIPPED != 0;
-    if has_skip && !has_offsets {
+/// The longest publisher an event batch carries: its length is one byte.
+pub const MAX_PUBLISHER_BYTES: usize = u8::MAX as usize;
+
+/// Which optional fields an event batch's flags say it carries.
+struct MetaFields {
+    offsets: bool,
+    skip: bool,
+    publisher: bool,
+    timestamps: bool,
+}
+
+/// A skip count means nothing without the offset it counts back from.
+fn meta_fields(flags: u16) -> Result<MetaFields> {
+    let fields = MetaFields {
+        offsets: flags & FLAG_EVENT_BATCH_OFFSETS != 0,
+        skip: flags & FLAG_EVENT_BATCH_SKIPPED != 0,
+        publisher: flags & FLAG_EVENT_BATCH_PUBLISHER != 0,
+        timestamps: flags & FLAG_EVENT_BATCH_TIMESTAMPS != 0,
+    };
+    if fields.skip && !fields.offsets {
         return Err(Error::UnknownFlags(flags));
     }
-    Ok((has_offsets, has_skip))
+    Ok(fields)
 }
 
-/// Decode binary event batch frame into its structured form.
-pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
-    let mut buf = frame.payload.clone();
-    let (has_offsets, has_skip) = offset_fields(frame.header.flags)?;
-    let fixed = 12 + if has_offsets { 8 } else { 0 } + if has_skip { 8 } else { 0 };
-    if buf.remaining() < fixed {
+/// The payloads after a batch's count, each preceded by its timestamp when
+/// `timestamped`.
+fn take_payloads(buf: &mut Bytes, timestamped: bool) -> Result<(Vec<Bytes>, Option<Vec<u64>>)> {
+    if buf.remaining() < 4 {
         return Err(Error::Incomplete);
     }
-    let subscription_id = buf.get_u64();
-    let base_offset = has_offsets.then(|| buf.get_u64());
-    let skipped_before = if has_skip { buf.get_u64() } else { 0 };
     let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
     let mut payloads = Vec::with_capacity(count);
+    let mut timestamps = timestamped.then(|| Vec::with_capacity(count));
     for _ in 0..count {
-        if buf.remaining() < 4 {
-            return Err(Error::Incomplete);
+        if let Some(timestamps) = timestamps.as_mut() {
+            if buf.remaining() < 8 {
+                return Err(Error::Incomplete);
+            }
+            timestamps.push(buf.get_u64());
         }
-        let len = buf.get_u32() as usize;
-        if buf.remaining() < len {
-            return Err(Error::Incomplete);
-        }
-        let bytes = buf.copy_to_bytes(len);
-        payloads.push(bytes);
-    }
-    Ok(EventBatch {
-        subscription_id,
-        payloads,
-        base_offset,
-        skipped_before,
-    })
-}
-
-/// Decode a shared event batch frame.
-pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
-    let mut buf = frame.payload.clone();
-    let (has_offsets, has_skip) = offset_fields(frame.header.flags)?;
-    let fixed = 4 + if has_offsets { 8 } else { 0 } + if has_skip { 8 } else { 0 };
-    if buf.remaining() < fixed {
-        return Err(Error::Incomplete);
-    }
-    let base_offset = has_offsets.then(|| buf.get_u64());
-    let skipped_before = if has_skip { buf.get_u64() } else { 0 };
-    let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
-    let mut payloads = Vec::with_capacity(count);
-    for _ in 0..count {
         if buf.remaining() < 4 {
             return Err(Error::Incomplete);
         }
@@ -303,10 +390,65 @@ pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
         }
         payloads.push(buf.copy_to_bytes(len));
     }
+    Ok((payloads, timestamps))
+}
+
+/// Read the publisher a batch carries when `present`, after its fixed fields.
+fn take_publisher(buf: &mut Bytes, present: bool) -> Result<Option<Bytes>> {
+    if !present {
+        return Ok(None);
+    }
+    if !buf.has_remaining() {
+        return Err(Error::Incomplete);
+    }
+    let len = usize::from(buf.get_u8());
+    if buf.remaining() < len {
+        return Err(Error::Incomplete);
+    }
+    Ok(Some(buf.split_to(len)))
+}
+
+/// Decode binary event batch frame into its structured form.
+pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
+    let mut buf = frame.payload.clone();
+    let fields = meta_fields(frame.header.flags)?;
+    let fixed = 8 + if fields.offsets { 8 } else { 0 } + if fields.skip { 8 } else { 0 };
+    if buf.remaining() < fixed {
+        return Err(Error::Incomplete);
+    }
+    let subscription_id = buf.get_u64();
+    let base_offset = fields.offsets.then(|| buf.get_u64());
+    let skipped_before = if fields.skip { buf.get_u64() } else { 0 };
+    let publisher = take_publisher(&mut buf, fields.publisher)?;
+    let (payloads, timestamps) = take_payloads(&mut buf, fields.timestamps)?;
+    Ok(EventBatch {
+        subscription_id,
+        payloads,
+        base_offset,
+        skipped_before,
+        publisher,
+        timestamps,
+    })
+}
+
+/// Decode a shared event batch frame.
+pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
+    let mut buf = frame.payload.clone();
+    let fields = meta_fields(frame.header.flags)?;
+    let fixed = if fields.offsets { 8 } else { 0 } + if fields.skip { 8 } else { 0 };
+    if buf.remaining() < fixed {
+        return Err(Error::Incomplete);
+    }
+    let base_offset = fields.offsets.then(|| buf.get_u64());
+    let skipped_before = if fields.skip { buf.get_u64() } else { 0 };
+    let publisher = take_publisher(&mut buf, fields.publisher)?;
+    let (payloads, timestamps) = take_payloads(&mut buf, fields.timestamps)?;
     Ok(SharedEventBatch {
         payloads,
         base_offset,
         skipped_before,
+        publisher,
+        timestamps,
     })
 }
 

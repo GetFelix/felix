@@ -3,21 +3,9 @@ name: CI
 on:
   push:
     branches: ["main"]
-    # Docs alone skip CI, but the TLA+ specs live under docs/formal and must be
-    # model-checked when they change. The last matching pattern wins.
-    paths:
-      - "**"
-      - "!docs/**"
-      - "!**/*.md"
-      - "docs/formal/**"
+  # No path filter here: the changes job skips the work for docs alone, so the
+  # run still reports `CI ok`. The TLA+ specs under docs/formal count as code.
   pull_request:
-    # Docs alone skip CI, but the TLA+ specs live under docs/formal and must be
-    # model-checked when they change. The last matching pattern wins.
-    paths:
-      - "**"
-      - "!docs/**"
-      - "!**/*.md"
-      - "docs/formal/**"
   # Model-check chosen TLA+ configurations on a branch, including the ones too
   # big for the per-PR budget. Only the formal job runs.
   workflow_dispatch:
@@ -47,21 +35,41 @@ permissions:
 # hung test or a wedged broker would otherwise hold the runner for GitHub's
 # six-hour default before anyone hears about it.
 jobs:
+  # Whether the change touches code; docs alone skip the other jobs.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.code.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/actions
+      - id: code
+        uses: ./.github/actions/code-changed
+        with:
+          ignore: '^docs/|\.md$'
+          keep: '^docs/formal/'
+
   # The Dockerfiles, built on every change that could break them.
   #
   # The release workflow builds these too, but only on a tag — which would mean
   # discovering a broken Dockerfile at the moment of a release. amd64 only here:
-  # arm64 is emulated and slow, and what a PR needs to know is whether the file
-  # still describes a working build. The multi-arch build stays on the tag.
+  # what a PR needs to know is whether the file still describes a working build,
+  # and a second architecture would double the cost of finding out. The
+  # multi-arch build stays on the tag.
   images:
+    needs: changes
     name: Container images build
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Changing a comment in the broker should not rebuild two container images,
     # but changing anything either binary compiles from should.
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+      needs.changes.outputs.code == 'true' && (
+        github.event_name == 'push' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -77,12 +85,19 @@ jobs:
           - image: felix-controlplane
             dockerfile: docker/controlplane.Dockerfile
             env: "-e FELIX_CONTROLPLANE_STORAGE_BACKEND=memory"
+          - image: felixctl
+            dockerfile: docker/felixctl.Dockerfile
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+        with:
+          # BuildKit from our GHCR copy; see mirror-buildkit.yml.
+          driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
       - name: Build ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
@@ -94,6 +109,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ci-${{ matrix.image }}
 
       - name: It runs, serves /ready, and is not root
+        if: matrix.image != 'felixctl'
         run: |
           set -euo pipefail
           # A build that succeeds and an image that runs are different claims,
@@ -128,19 +144,33 @@ jobs:
           docker logs smoke
           docker rm -f smoke
 
+      - name: It runs, and is not root
+        if: matrix.image == 'felixctl'
+        run: |
+          set -euo pipefail
+          docker run --rm felixctl:ci --version
+          uid="$(docker run --rm --entrypoint id felixctl:ci -u)"
+          test "$uid" = "65532" || {
+            echo "::error::image runs as uid $uid, not 65532"
+            exit 1
+          }
+
   # Heavy, so pushes to main run it on the self-hosted Azure runners. Every PR
   # runs on GitHub-hosted: that keeps PRs out of the Azure queue, and fork code
   # never reaches a persistent machine. See docs-site development/building.md.
   test:
-    if: github.event_name != 'workflow_dispatch'
-    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
       FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
     services:
       postgres:
-        image: postgres:16-alpine
+        # The official image through Google's Docker Hub mirror. Docker Hub and AWS's
+        # mirror both throttle anonymous pulls from shared runner addresses.
+        image: mirror.gcr.io/library/postgres:16-alpine
         ports:
           - 55432:5432
         env:
@@ -195,7 +225,55 @@ jobs:
       - name: Test
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
-        run: task test
+          # Every cluster test copies its broker logs here at teardown; the
+          # steps below upload the failing tests' share.
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+        shell: bash
+        run: task test 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+
+      # Only the tests libtest reported as failed, matched by name to the
+      # folder the harness kept for each, plus the control-plane log of the
+      # binary they ran in. A cluster test that passed is not worth the upload.
+      - name: Collect failing cluster tests' logs
+        if: failure()
+        shell: bash
+        run: |
+          logs="$RUNNER_TEMP/cluster-logs"
+          keep="$RUNNER_TEMP/failed-cluster-logs"
+          mkdir -p "$keep"
+          [ -f "$RUNNER_TEMP/test-output.log" ] || exit 0
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/test-output.log" | awk '
+            /Running .*\(.*\)$/ { bin = $0; sub(/.*\//, "", bin); sub(/\)$/, "", bin) }
+            /^---- .* stdout ----$/ { print bin "\t" $2 }
+          ' | sort -u | while IFS=$'\t' read -r bin test; do
+            dir="${test//::/__}"
+            if [ -d "$logs/$dir" ]; then
+              mkdir -p "$keep/$bin"
+              cp -R "$logs/$dir" "$keep/$bin/"
+              if [ -f "$logs/controlplane-$bin.log" ]; then
+                cp "$logs/controlplane-$bin.log" "$keep/$bin/"
+              fi
+            fi
+          done
+          if [ -n "$(ls -A "$keep")" ]; then
+            tar -czf "$RUNNER_TEMP/failed-cluster-logs.tar.gz" -C "$keep" .
+          fi
+
+      - name: Upload failing cluster tests' logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-cluster-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failed-cluster-logs.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+          # Already gzipped.
+          compression-level: 0
+
+      # Failed 74 times in 640 under load, and never alone, before cache puts
+      # staged on a task of their own.
+      - name: Cancelled put under load
+        run: task test:stress
 
       - name: cargo-deny
         run: task deny
@@ -215,6 +293,9 @@ jobs:
       # docs-site/ and would never see it.
       - name: Documentation evidence
         run: task docs:evidence
+
+      - name: Changelog fragments
+        run: task changelog:check
 
       # Without a tag this only asserts the version fields agree with each
       # other. That is the half a pull request can be wrong about: a bump that
@@ -255,7 +336,8 @@ jobs:
   # what a pull request needs to know is that the chart still says what the
   # docs say it does.
   chart:
-    if: github.event_name != 'workflow_dispatch'
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     name: Helm chart
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -286,7 +368,8 @@ jobs:
   # anyway -- the binding wraps the Rust client, so a change anywhere under
   # `crates/sdk/felix-client` can break it just as surely.
   python:
-    if: github.event_name != 'workflow_dispatch'
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     name: Python client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -330,12 +413,21 @@ jobs:
       - name: Verify against the catalogue
         run: cargo run --locked -q -p felix-conformance -- verify python-conformance.json
 
+      # The C ABI the Go and C# SDKs will bind to, compiled with the system cc
+      # against the checked-in header, linked both ways, and run against its
+      # own fixture. Here because this job already builds the broker and the
+      # harness. Whether the header matches the source is the felix-capi
+      # `header` test, which `task test` runs.
+      - name: C ABI against the fixture
+        run: crates/sdk/felix-capi/tests/c/run.sh fixture
+
   # Same reasoning as the Python job above, and the same shape: the binding
   # wraps the Rust client, so a change anywhere under `crates/sdk/felix-client` can
   # break it. Unconditional for the same reason too -- a job behind a path
   # filter is a job that breaks silently.
   typescript:
-    if: github.event_name != 'workflow_dispatch'
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     name: Node client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -394,15 +486,19 @@ jobs:
   # whether it must pass or which invariant it must violate, so the trace
   # that shows a check is load-bearing stays a trace.
   formal:
-    name: TLA+ model (${{ matrix.shard }}/6)
-    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: TLA+ model (${{ matrix.shard }}/7)
+    # TLC runs a worker per core.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || '60') }}
-    # Six shards, filled by each configuration's measured time
-    # (scripts/check_tla.sh), keep every job near half an hour.
+    # Seven shards, filled by each configuration's measured time
+    # (scripts/check_tla.sh), keep every job near forty minutes, well under
+    # the hour.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -417,7 +513,10 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 scripts/check_spec_pairing.py --base "${{ github.event.pull_request.base.sha }}"
+        # HEAD is the PR merged into main; its first parent is the main it was
+        # merged onto. pull_request.base.sha can be older than that, which
+        # would count changes already on main as this PR's.
+        run: python3 scripts/check_spec_pairing.py --base HEAD^1
 
       - name: Java
         uses: actions/setup-java@v6
@@ -427,7 +526,7 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/6
+          TLA_SHARD: ${{ matrix.shard }}/7
           TLA_CONFIGS: ${{ inputs.tla_configs }}
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
@@ -443,7 +542,8 @@ jobs:
   # The deep runs are fuzz-nightly.yml's; what a pull request needs to know is that the committed seeds and everything a minute of
   # mutation reaches still decode or refuse cleanly.
   fuzz:
-    if: github.event_name != 'workflow_dispatch'
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     name: Fuzz the decoders
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -499,3 +599,18 @@ jobs:
             crates/server/felix-storage/fuzz/artifacts/
             crates/server/felix-kafka/fuzz/artifacts/
           if-no-files-found: ignore
+
+  # The required check: fails if any job failed or was cancelled, passes when
+  # they passed or were skipped.
+  ci-ok:
+    name: CI ok
+    if: always()
+    needs: [changes, images, test, chart, python, typescript, formal, fuzz]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

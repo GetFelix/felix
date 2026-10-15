@@ -94,6 +94,7 @@ async fn auth_answer(
             token: auth.token.clone(),
             client_flags,
             client_features,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -212,6 +213,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
             token: auth.token.clone(),
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(felix_wire::FEATURE_PUBLISH_PIPELINE),
+            client_features_hi: None,
         },
     )
     .await?;
@@ -281,7 +283,8 @@ async fn publish_batches_and_read(
     auth: &AuthFixture,
     count: usize,
 ) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>)> {
-    let client = Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?);
     let producer = client.idempotent_producer().await?;
     let records: Vec<Vec<u8>> = (0..count)
         .map(|i| format!("record-{i}").into_bytes())

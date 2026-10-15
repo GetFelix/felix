@@ -35,15 +35,34 @@ impl BrokerConfig {
                 self.pub_inflight_bytes,
             );
         }
-        if self.cache_stream_recv_window > self.cache_conn_recv_window {
+        if let Some(total) = self.pub_conn_total_inflight_bytes {
+            if total < self.pub_conn_inflight_bytes {
+                anyhow::bail!(
+                    "pub_conn_total_inflight_bytes ({total}) is below \
+                     pub_conn_inflight_bytes ({}): one identity on a connection \
+                     could never use its own budget",
+                    self.pub_conn_inflight_bytes,
+                );
+            }
+            if total > self.pub_inflight_bytes {
+                anyhow::bail!(
+                    "pub_conn_total_inflight_bytes ({total}) exceeds pub_inflight_bytes \
+                     ({}): the per-connection limit can never be the one that applies",
+                    self.pub_inflight_bytes,
+                );
+            }
+        }
+        if let Some(total) = self.max_subscriptions_per_conn_total
+            && total < self.max_subscriptions_per_conn
+        {
             anyhow::bail!(
-                "cache_stream_recv_window ({}) exceeds cache_conn_recv_window \
-                 ({}): a single stream can never reach its own window, because \
-                 the connection's runs out first",
-                self.cache_stream_recv_window,
-                self.cache_conn_recv_window,
+                "max_subscriptions_per_conn_total ({total}) is below \
+                 max_subscriptions_per_conn ({}): one identity on a connection \
+                 could never reach its own cap",
+                self.max_subscriptions_per_conn,
             );
         }
+        self.validate_pub_recv_windows()?;
         self.validate_io_runtime_covers_every_listener()?;
         self.validate_credential_can_outlive_itself()?;
         self.validate_peers_are_authenticated()?;
@@ -52,6 +71,39 @@ impl BrokerConfig {
             self.controlplane_ca.as_deref(),
             self.controlplane_url.as_deref(),
         )?;
+        Ok(())
+    }
+
+    /// Refuse client-listener receive windows that cannot hold one frame, or
+    /// a stream window the connection window could never let it reach.
+    ///
+    /// A window smaller than a frame does not deadlock, since the broker
+    /// returns credit as it reads, but every large frame then waits on several
+    /// round trips of window updates.
+    fn validate_pub_recv_windows(&self) -> Result<()> {
+        let (conn, stream) = self.pub_recv_windows();
+        let frame = self.max_frame_bytes as u64;
+        if conn < frame {
+            anyhow::bail!(
+                "pub_conn_recv_window ({conn}) is smaller than max_frame_bytes \
+                 ({frame}): one full-size frame would not fit in a connection's \
+                 receive window"
+            );
+        }
+        if stream < frame {
+            anyhow::bail!(
+                "pub_stream_recv_window ({stream}) is smaller than max_frame_bytes \
+                 ({frame}): one full-size frame would not fit in a stream's \
+                 receive window"
+            );
+        }
+        if stream > conn {
+            anyhow::bail!(
+                "pub_stream_recv_window ({stream}) exceeds pub_conn_recv_window \
+                 ({conn}): a single stream can never reach its own window, because \
+                 the connection's runs out first"
+            );
+        }
         Ok(())
     }
 
@@ -131,11 +183,11 @@ impl BrokerConfig {
     /// A token passed by value is not a seam anything can write, which is why
     /// the file is what counts rather than merely having a token.
     fn validate_credential_can_outlive_itself(&self) -> Result<()> {
-        let Some(membership) = self.membership.as_ref() else {
+        if self.membership.is_none() {
             // Not joining a cluster: no heartbeat, no lease, nothing to lose.
             return Ok(());
-        };
-        if membership.refresh_token_file.is_some() || membership.node_token_file.is_some() {
+        }
+        if self.node_refresh_token_file.is_some() || self.node_token_file.is_some() {
             return Ok(());
         }
         // Only a token that says when it expires. One this broker cannot read

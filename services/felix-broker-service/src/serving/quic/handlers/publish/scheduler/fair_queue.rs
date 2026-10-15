@@ -6,7 +6,9 @@
 //! - **A lane is served in order, one job at a time.** A popped job's lane is
 //!   busy until [`FairQueue::complete`] is called for it; the next job on that
 //!   lane is not handed out before then. This is what keeps one shard's claims
-//!   in arrival order while different shards run side by side.
+//!   in arrival order while different shards run side by side. Whoever holds
+//!   a busy lane may take more of its jobs from the front with
+//!   [`FairQueue::take_more`], which keeps that order too.
 //! - **Tenants take turns by cost.** Each tenant with ready work earns
 //!   `quantum` per round and spends a job's cost to run it, so a tenant sending
 //!   many or large batches gets the same share of turns-by-bytes as one sending
@@ -112,15 +114,15 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
             let cost = lane.jobs.front().expect("ready lanes have a job").1;
             if !tenant.in_turn {
                 tenant.in_turn = true;
-                tenant.deficit += self.quantum;
+                tenant.deficit += self.quantum as i64;
             }
-            if tenant.deficit < cost {
+            if tenant.deficit < cost as i64 {
                 // Not enough for this job yet: keep the credit, wait a turn.
                 tenant.in_turn = false;
                 self.active.rotate_left(1);
                 continue;
             }
-            tenant.deficit -= cost;
+            tenant.deficit -= cost as i64;
             tenant.queued -= 1;
             let lane_key = tenant.ready.pop_front().expect("checked above");
             if tenant.ready.is_empty() {
@@ -139,6 +141,52 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
             self.queued -= 1;
             return Some((lane_key, item));
         }
+    }
+
+    /// Take up to `max` more jobs from the front of `lane`, which must be busy,
+    /// for whoever is running it, while `take` accepts the next one. `take`
+    /// sees each job and its cost.
+    ///
+    /// The tenant pays for them as it would have popped one by one. That can
+    /// put its deficit below zero, and it then sits out turns until the debt
+    /// is paid. A tenant that goes idle has it forgiven, as it would credit.
+    pub(crate) fn take_more(
+        &mut self,
+        lane: &K,
+        max: usize,
+        mut take: impl FnMut(&T, usize) -> bool,
+    ) -> Vec<T> {
+        let mut taken = Vec::new();
+        let Some(entry) = self.lanes.get_mut(lane) else {
+            return taken;
+        };
+        debug_assert!(entry.busy, "only a running lane's holder takes more");
+        let mut cost = 0;
+        while taken.len() < max {
+            match entry.jobs.front() {
+                Some((item, item_cost)) if take(item, *item_cost) => {
+                    cost += *item_cost;
+                    let (item, _) = entry.jobs.pop_front().expect("checked above");
+                    taken.push(item);
+                }
+                _ => break,
+            }
+        }
+        if taken.is_empty() {
+            return taken;
+        }
+        self.queued -= taken.len();
+        let name = Arc::clone(&entry.tenant);
+        let tenant = self
+            .tenants
+            .get_mut(&name)
+            .expect("a tenant with queued jobs exists");
+        tenant.queued -= taken.len();
+        tenant.deficit -= cost as i64;
+        if tenant.queued == 0 && tenant.ready.is_empty() {
+            self.tenants.remove(&name);
+        }
+        taken
     }
 
     /// The job popped from `lane` has finished its ordered part; the lane's
@@ -182,7 +230,8 @@ struct Tenant<K> {
     ready: VecDeque<K>,
     /// Jobs it has queued, running lanes included.
     queued: usize,
-    deficit: usize,
+    /// Below zero after [`FairQueue::take_more`] took more than a turn's worth.
+    deficit: i64,
     /// It has had this turn's quantum.
     in_turn: bool,
 }

@@ -368,6 +368,11 @@ pub struct ReplicaReport {
     /// brokers that predate it, which is read as nothing halted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub halted: BTreeMap<String, HaltedCopy>,
+    /// How far each replica had got with a cache's counter log. Only read
+    /// as progress for a copy being restored. Absent from brokers that
+    /// predate it, and for streams.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub counter_offsets: BTreeMap<String, u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

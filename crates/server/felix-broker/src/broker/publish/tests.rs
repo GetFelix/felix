@@ -11,7 +11,10 @@ use crate::error::BrokerError;
 use crate::stream::SubQueuePolicy;
 use crate::{Broker, StreamMetadata};
 
+mod byte_bound;
+mod conditional;
 mod idempotent;
+mod publisher;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {

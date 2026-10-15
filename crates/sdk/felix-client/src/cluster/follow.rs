@@ -21,9 +21,9 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::{Attempt, ClusterClient, Next, next_step, wants_reconnect};
-use crate::SubscriptionLost;
 use crate::client::Client;
 use crate::subscribe::{Event, ShardMoved, Subscription};
+use crate::{SubscriptionLagged, SubscriptionLost};
 
 /// How long to keep trying the new owner when the policy sets no deadline.
 ///
@@ -41,6 +41,10 @@ const FOLLOW_DEADLINE: Duration = Duration::from_secs(30);
 /// nothing is skipped that the subscriber's own queue did not drop. An
 /// in-memory stream has no offsets to resume from, so it resumes at the tail,
 /// as a resubscribe would.
+///
+/// A subscription that fell behind and had records dropped
+/// ([`crate::SubscriptionLagged`]) resubscribes after its last event, which
+/// replays the dropped records from the log.
 ///
 /// A lost connection is followed the same way when there is an offset to
 /// resume from: the last one delivered plus one, or where the subscription
@@ -175,7 +179,14 @@ impl ClusterSubscription {
             }
             let next = match self.subscription.next_event().await {
                 Ok(next) => next,
-                Err(err) if err.chain().any(|cause| cause.is::<SubscriptionLost>()) => {
+                // Falling behind is followed like a loss, resuming after the
+                // last event rather than at `resume_from`: a frame dropped on
+                // the way out can sit below that.
+                Err(err)
+                    if err.chain().any(|cause| {
+                        cause.is::<SubscriptionLost>() || cause.is::<SubscriptionLagged>()
+                    }) =>
+                {
                     if self.resume_point().is_none() {
                         return Err(err);
                     }
@@ -202,6 +213,12 @@ impl ClusterSubscription {
                     .await
             }));
         }
+    }
+
+    /// Whether the subscription ended because its stream was deleted. Check
+    /// it once [`Self::next_event`] returns `None`.
+    pub fn stream_deleted(&self) -> bool {
+        self.subscription.stream_deleted()
     }
 
     /// How many times this subscription has resubscribed after losing its
@@ -279,8 +296,9 @@ impl ClusterClient {
         loop {
             // The entry broker may be the dead one, and after a failed attempt
             // it may have died too; `connect_any` moves on to one that answers.
-            if (attempt > 0 || Arc::ptr_eq(&self.client().await, lost_client))
-                && let Err(err) = self.reconnect().await
+            let current = self.client().await;
+            if (attempt > 0 || Arc::ptr_eq(&current, lost_client))
+                && let Err(err) = self.reconnect(&current).await
             {
                 tracing::debug!(error = %err, "no broker answered while resubscribing");
             }
@@ -345,7 +363,10 @@ impl ClusterClient {
         Fut: Future<Output = Result<T>>,
     {
         let deadline = Instant::now() + self.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
-        let mut hint: Option<SocketAddr> = moved.addr.as_deref().and_then(|a| a.parse().ok());
+        let mut hint: Option<SocketAddr> = match moved.addr.as_deref() {
+            Some(addr) => self.resolve(addr).await,
+            None => None,
+        };
         let mut hinted: Option<Arc<Client>> = None;
         let mut attempt = 0usize;
         loop {
@@ -361,7 +382,7 @@ impl ClusterClient {
                 },
                 (None, None) => (self.client().await, true),
             };
-            let error = match open(first).await {
+            let error = match open(Arc::clone(&first)).await {
                 Ok(opened) => return Ok(opened),
                 Err(err) => err,
             };
@@ -377,7 +398,7 @@ impl ClusterClient {
             // its way down, so asking it again only waits out the deadline.
             if via_entry
                 && wants_reconnect(&error)
-                && let Err(err) = self.reconnect().await
+                && let Err(err) = self.reconnect(&first).await
             {
                 tracing::debug!(error = %err, "no broker answered while following a moved shard");
             }

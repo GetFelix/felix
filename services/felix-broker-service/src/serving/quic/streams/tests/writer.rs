@@ -253,3 +253,80 @@ async fn writer_loop_records_timings_when_sampled() -> Result<()> {
     server_task.await.context("server task")??;
     Ok(())
 }
+
+/// A refusal is queued and then the stream is cancelled, as a handler that
+/// refuses a request does. The client must read the refusal before the
+/// finish, not only the finish.
+#[tokio::test]
+#[serial]
+async fn writer_sends_queued_answers_before_finishing_a_cancelled_stream() -> Result<()> {
+    test_hooks::reset();
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let max_frame_bytes = BrokerConfig::default().max_frame_bytes;
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        let (_send, mut recv) = connection.accept_bi().await?;
+        let mut frame_scratch = crate::serving::quic::FrameScratch::new();
+        let mut messages = Vec::new();
+        while let Some(message) = crate::serving::quic::read_message_limited(
+            &mut recv,
+            max_frame_bytes,
+            &mut frame_scratch,
+        )
+        .await?
+        {
+            messages.push(message);
+        }
+        Result::<Vec<Message>>::Ok(messages)
+    });
+
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        build_quinn_client_config(cert)?,
+        TransportConfig::default(),
+    )?;
+    let connection = client.connect(addr, "localhost").await?;
+    let (send, _recv) = connection.open_bi().await?;
+
+    let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
+    let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    out_ack_tx
+        .send(Outgoing::Message(Message::Error {
+            message: "forbidden".to_string(),
+            code: Some(felix_wire::ErrorCode::Forbidden),
+            retry: None,
+            detail: None,
+        }))
+        .await?;
+    cancel_tx.send(true)?;
+    let writer = tokio::spawn(run_writer_loop(
+        send,
+        out_ack_rx,
+        Default::default(),
+        Arc::new(AckOrder::new()),
+        std::time::Duration::from_secs(5),
+        Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+        ack_throttle_tx,
+        cancel_tx.clone(),
+        cancel_rx,
+    ));
+    writer.await.expect("writer");
+
+    let messages = timeout(Duration::from_secs(5), server_task)
+        .await
+        .context("server read")?
+        .context("server task")??;
+    assert!(
+        matches!(messages.as_slice(), [Message::Error { message, .. }] if message == "forbidden"),
+        "{messages:?}"
+    );
+    drop(out_ack_tx);
+    Ok(())
+}

@@ -48,10 +48,11 @@ fn local_job(
             fenced: None,
         },
         payloads: vec![payload],
-        response,
+        response: response.map(Into::into),
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn named_job(tenant: &str) -> PublishJob {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 

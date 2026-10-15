@@ -23,3 +23,9 @@ pub fn counter_record(bytes: &[u8]) {
 pub fn sidecar_state(bytes: &[u8]) {
     crate::disk_log::fuzzing::sidecars(bytes);
 }
+
+/// Plan the recovery of the shard in `dir`, then recover it: startup must
+/// reach the verdict the plan reached, and planning must have written nothing.
+pub fn recovery_plan_agrees(dir: &std::path::Path, repair_checksum_tail: bool) {
+    crate::disk_log::fuzzing::recovery_plan_agrees(dir, repair_checksum_tail);
+}

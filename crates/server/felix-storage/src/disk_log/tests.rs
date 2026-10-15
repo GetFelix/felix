@@ -4,17 +4,22 @@
 
 mod append_and_read;
 mod commit;
+mod conditional;
 mod durability;
 mod generation_start;
+mod offload;
 mod placed_at_a_base_offset;
 #[cfg(target_os = "linux")]
 mod power_loss;
 mod producers;
 mod provider;
+mod publisher;
 mod replica_state;
+mod reservation;
 mod restore;
 mod retention;
 mod rollover;
+mod stalled_write;
 mod truncation;
 
 use std::time::Duration;
@@ -30,6 +35,7 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 1_700_000_000,
         mark: Default::default(),
+        publisher: None,
     }
 }
 
@@ -62,4 +68,31 @@ async fn read_all(log: &DiskLog, start: Offset) -> Vec<String> {
     .into_iter()
     .map(|r| String::from_utf8(r.payload.to_vec()).expect("utf8"))
     .collect()
+}
+
+/// Start a roll and hold it at its seal. Returns the roll and the sender
+/// that lets the seal go.
+pub(super) async fn park_a_seal(
+    log: &DiskLog,
+) -> (
+    tokio::task::JoinHandle<Result<crate::log::Offset>>,
+    std::sync::mpsc::Sender<()>,
+) {
+    use std::sync::atomic::Ordering;
+
+    use crate::disk_log::append::RollState;
+
+    let (release, held) = std::sync::mpsc::channel();
+    *log.inner.hold_next_seal.lock() = Some(held);
+    let roller = log.clone();
+    let roll = tokio::spawn(async move { roller.roll_now().await });
+    for _ in 0..5_000 {
+        if log.inner.hold_next_seal.lock().is_none()
+            && log.inner.roll_state.load(Ordering::Acquire) == RollState::Sealing as u8
+        {
+            return (roll, release);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    panic!("the roll never reached its seal");
 }

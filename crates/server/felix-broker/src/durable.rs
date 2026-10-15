@@ -24,12 +24,12 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_storage::DiskLogProvider;
 use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence};
 use felix_storage::log::{
     AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadRange,
     RecordMark, ShardKey,
 };
+use felix_storage::{CommitSequencer, CommitTurn, DiskLogProvider};
 
 use crate::error::{BrokerError, Result};
 
@@ -42,7 +42,7 @@ pub struct DurableStorage {
 impl DurableStorage {
     /// Open (and recover) durable storage rooted at `root`.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
-        let provider = DiskLogProvider::new(root, config).map_err(storage_error)?;
+        let provider = DiskLogProvider::new(root, config).map_err(BrokerError::from)?;
         Ok(Self {
             provider: Arc::new(provider),
         })
@@ -55,6 +55,35 @@ impl DurableStorage {
 
     pub fn root(&self) -> &std::path::Path {
         self.provider.root()
+    }
+
+    /// Bound one stream's logs by `retention`, open and future, with the
+    /// broker-wide bounds for any it leaves unset.
+    pub fn set_stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        retention: felix_storage::log::Retention,
+    ) -> Result<()> {
+        self.provider
+            .set_stream_retention(tenant, namespace, stream, retention)
+            .map_err(BrokerError::from)
+    }
+
+    /// Hold one stream's logs at the commit offset, open and future, or
+    /// lift the hold. See `DiskLogProvider::set_stream_retention_hold`.
+    pub async fn set_stream_retention_hold(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        hold: bool,
+    ) -> Result<()> {
+        self.provider
+            .set_stream_retention_hold(tenant, namespace, stream, hold)
+            .await
+            .map_err(BrokerError::from)
     }
 
     pub fn config(&self) -> &LogConfig {
@@ -89,7 +118,7 @@ impl DurableStorage {
         let log = self
             .provider
             .open_shard_at(&key, base_offset)
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(StreamLog { log })
     }
 
@@ -106,8 +135,26 @@ impl DurableStorage {
             stream: stream.to_string(),
             shard,
         };
-        let log = self.provider.open_shard(&key).map_err(storage_error)?;
+        let log = self.provider.open_shard(&key).map_err(BrokerError::from)?;
         Ok(StreamLog { log })
+    }
+
+    /// One stream shard's log if this broker has it open, without opening it.
+    pub fn opened_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_shard(&key)?;
+        Some(StreamLog { log })
     }
 
     /// Close one stream shard's log, for a shard this broker no longer holds.
@@ -127,12 +174,15 @@ impl DurableStorage {
             stream: stream.to_string(),
             shard,
         };
-        self.provider.close_shard(&key).await.map_err(storage_error)
+        self.provider
+            .close_shard(&key)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Flush and stop every open log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        self.provider.shutdown().await.map_err(storage_error)
+        self.provider.shutdown().await.map_err(BrokerError::from)
     }
 }
 
@@ -153,62 +203,114 @@ impl StreamLog {
     }
 
     /// Write a publish batch and return its offsets *before* waiting for
-    /// durability.
+    /// durability, with its range claimed in `order`.
     ///
     /// The caller must pair this with [`StreamLog::commit`]. The split exists
     /// so the broker can claim the batch's place in the stream's commit order
     /// the instant its offsets are consumed: from that point the records are on
     /// disk holding those offsets, and every later publish queues behind them
-    /// whether this one goes on to succeed, fail, or be cancelled.
-    pub async fn begin_append(&self, payloads: &[Bytes]) -> Result<PendingAppend> {
-        self.begin_append_marked(payloads, &[]).await
+    /// whether this one goes on to succeed, fail, or be cancelled. The claim is
+    /// made where the offsets are assigned, so even a caller cancelled before
+    /// this returns releases its range.
+    ///
+    /// Every record is stamped `timestamp_micros`, which the caller takes from
+    /// [`append_time_now`] so it can report the stored time without reading
+    /// it back.
+    pub async fn begin_append(
+        &self,
+        payloads: &[Bytes],
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
+        self.begin_append_marked(payloads, &[], publishers, timestamp_micros, order)
+            .await
     }
 
     /// [`StreamLog::begin_append`] with a producer mark per record, or none
-    /// when `marks` is empty.
+    /// when `marks` is empty. `publishers` is likewise one per record, or
+    /// empty when none is recorded.
     pub async fn begin_append_marked(
         &self,
         payloads: &[Bytes],
         marks: &[RecordMark],
-    ) -> Result<PendingAppend> {
-        let records = records(payloads, marks)?;
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
+        let records = records(payloads, marks, publishers, timestamp_micros)?;
         self.log
-            .append_pending(&records)
+            .append_claimed(&records, order)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
+    }
+
+    /// [`Self::begin_append_marked`], only if the batch starts at exactly
+    /// `expected`. `Err` with the log's tail, and nothing written or claimed,
+    /// otherwise. The check is made where the offsets are assigned, so it is
+    /// atomic with the claim.
+    // One parameter per part of a record, as `begin_append_marked` has.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_append_if(
+        &self,
+        expected: Offset,
+        payloads: &[Bytes],
+        marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let records = records(payloads, marks, publishers, timestamp_micros)?;
+        self.log
+            .append_claimed_at(expected, &records, order)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
     /// `first_offset`. `None`, and nothing written, otherwise.
+    ///
+    /// `times` is each record's time, as the leader that appended it stored
+    /// it, or empty to stamp every record with this broker's clock.
     pub async fn begin_append_marked_at(
         &self,
         first_offset: Offset,
         payloads: &[Bytes],
         marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
+        times: &[u64],
     ) -> Result<Option<PendingAppend>> {
-        let records = records(payloads, marks)?;
+        let mut records = records(payloads, marks, publishers, append_time_now())?;
+        if times.len() == records.len() {
+            for (record, time) in records.iter_mut().zip(times) {
+                record.timestamp_micros = *time;
+            }
+        }
         self.log
             .append_pending_at(first_offset, &records)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Write the rest of a producer batch the log holds only the start of,
     /// without waiting for durability. `None`, and nothing written, when the
     /// batch is no longer the last thing in the log. See
-    /// `DiskLog::continue_pending`.
+    /// `DiskLog::continue_claimed`.
     pub async fn continue_batch(
         &self,
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
-    ) -> Result<Option<PendingAppend>> {
+        publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         let marks = vec![RecordMark::Continues; payloads.len()];
-        let records = records(payloads, &marks)?;
+        let records = records(payloads, &marks, publishers, timestamp_micros)?;
         self.log
-            .continue_pending(producer_id, sequence, &records)
+            .continue_claimed(producer_id, sequence, &records, order)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Where an idempotent producer's batch stands in this log.
@@ -225,13 +327,16 @@ impl StreamLog {
     /// Wait until every record below `offset` is as durable as a commit would
     /// have made it.
     pub async fn wait_durable(&self, offset: Offset) -> Result<()> {
-        self.log.wait_durable(offset).await.map_err(storage_error)
+        self.log
+            .wait_durable(offset)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Wait until a batch from [`StreamLog::begin_append`] satisfies the
     /// configured fsync policy.
     pub async fn commit(&self, pending: &PendingAppend) -> Result<()> {
-        self.log.commit(pending).await.map_err(storage_error)
+        self.log.commit(pending).await.map_err(BrokerError::from)
     }
 
     /// Persist a publish batch, returning the offsets it was assigned.
@@ -239,8 +344,8 @@ impl StreamLog {
     /// Returns only once the configured durability policy is satisfied: under
     /// `FsyncMode::OnCommit` the bytes are on the device before this resolves.
     pub async fn append(&self, payloads: &[Bytes]) -> Result<AppendResult> {
-        let records = records(payloads, &[])?;
-        self.log.append(&records).await.map_err(storage_error)
+        let records = records(payloads, &[], &[], append_time_now())?;
+        self.log.append(&records).await.map_err(BrokerError::from)
     }
 
     /// Replay persisted records from `start`, bounded by `max_bytes`.
@@ -274,6 +379,46 @@ impl StreamLog {
         }
     }
 
+    /// The first client record below `until` appended at or after
+    /// `at_micros`, as `(offset, append time)`. `None` when no record below
+    /// `until` is that recent; a time older than the log answers with its
+    /// oldest record.
+    ///
+    /// A binary search, so it relies on append times rising with the offset.
+    /// They are the leader's wall clock: after the clock steps back the answer
+    /// is near the first such record rather than exactly it.
+    pub async fn offset_for_time(
+        &self,
+        at_micros: u64,
+        until: Offset,
+    ) -> Result<Option<(Offset, u64)>> {
+        let (mut low, mut high) = (self.base_offset(), until);
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match self.record_time_at(mid, until).await? {
+                Some((_, time)) if time < at_micros => low = mid + 1,
+                _ => high = mid,
+            }
+        }
+        if low >= until {
+            return Ok(None);
+        }
+        self.record_time_at(low, until).await
+    }
+
+    /// The client record at or just after `offset` and below `until`. Past a
+    /// generation-start record the next one can sit at or above `until`, and
+    /// that is not an answer.
+    async fn record_time_at(&self, offset: Offset, until: Offset) -> Result<Option<(Offset, u64)>> {
+        // One byte asks for a single record; the log returns one whatever its
+        // size.
+        let records = self.read_from(offset, 1).await?;
+        Ok(records
+            .first()
+            .filter(|record| record.offset < until)
+            .map(|record| (record.offset, record.timestamp_micros)))
+    }
+
     /// [`Self::read_from`] with every record the log holds, generation-start
     /// records included. For replication, which ships and compares the log
     /// exactly as it is.
@@ -285,7 +430,7 @@ impl StreamLog {
                 felix_storage::StorageError::Trimmed { requested, oldest } => {
                     BrokerError::CursorTooOld { oldest, requested }
                 }
-                other => storage_error(other),
+                other => BrokerError::from(other),
             })
     }
 
@@ -319,14 +464,15 @@ impl StreamLog {
     pub async fn append_generation_start(&self, generation: u64) -> Result<Offset> {
         let record = AppendRecord {
             payload: Bytes::copy_from_slice(&generation.to_be_bytes()),
-            timestamp_micros: now_micros(),
+            timestamp_micros: append_time_now(),
             mark: RecordMark::GenerationStart,
+            publisher: None,
         };
         let appended = self
             .log
             .append(std::slice::from_ref(&record))
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(appended.first_offset)
     }
 
@@ -337,9 +483,28 @@ impl StreamLog {
         self.log.is_poisoned().then(|| self.durable_offset())
     }
 
+    /// How far below `tail` a reader may go and see only records that will
+    /// stay. Under `FsyncMode::OnCommit` a publish completes only once its
+    /// record is synced, so a record written but not synced is not one yet.
+    pub fn readable_end(&self, tail: Offset) -> Offset {
+        match self.log.config().fsync_mode {
+            FsyncMode::OnCommit => tail.min(self.durable_offset()),
+            FsyncMode::None | FsyncMode::Periodic { .. } => tail,
+        }
+    }
+
     /// Offset the next published record will take.
     pub async fn tail_offset(&self) -> Result<Offset> {
-        self.log.tail_offset().await.map_err(storage_error)
+        self.log.tail_offset().await.map_err(BrokerError::from)
+    }
+
+    /// [`StreamLog::tail_offset`], after every append already started has
+    /// landed, including one whose caller was cancelled.
+    pub async fn settled_tail_offset(&self) -> Result<Offset> {
+        self.log
+            .settled_tail_offset()
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Oldest offset still on disk.
@@ -353,7 +518,7 @@ impl StreamLog {
     /// follower discards an uncommitted suffix left by a leader that is gone.
     /// Bounded by the generation history — see `docs/replication-design.md`.
     pub async fn truncate(&self, offset: Offset) -> Result<()> {
-        self.log.truncate(offset).await.map_err(storage_error)
+        self.log.truncate(offset).await.map_err(BrokerError::from)
     }
 
     /// The tail as far as every record below it has been acknowledged, or
@@ -375,7 +540,7 @@ impl StreamLog {
     /// to put a copy back as it stood at a backup point. Offline only; see
     /// `DiskLog::restore_to`.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
-        self.log.restore_to(offset).await.map_err(storage_error)
+        self.log.restore_to(offset).await.map_err(BrokerError::from)
     }
 
     /// Discard this log and start again, empty, at `base_offset`.
@@ -383,14 +548,17 @@ impl StreamLog {
     /// For a follower rebuilding a diverged copy of a shard; see
     /// `DiskLog::reset_to`.
     pub async fn rebuild_at(&self, base_offset: Offset) -> Result<()> {
-        self.log.reset_to(base_offset).await.map_err(storage_error)
+        self.log
+            .reset_to(base_offset)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Note that `generation` begins at `start_offset`.
     pub fn record_generation(&self, generation: u64, start_offset: Offset) -> Result<bool> {
         self.log
             .record_generation(generation, start_offset)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Label the records from `from` on with the generations that wrote them.
@@ -402,7 +570,7 @@ impl StreamLog {
     ) -> Result<()> {
         self.log
             .label_generations(from, generations)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// The highest generation a leader of this shard was accepted at here.
@@ -410,16 +578,22 @@ impl StreamLog {
         self.log.accepted_generation()
     }
 
-    /// Accept a leader at `generation`; a raised one is on disk on return.
+    /// The leader that generation was accepted from, if one was named.
+    pub fn accepted_leader(&self) -> Option<std::sync::Arc<str>> {
+        self.log.accepted_leader()
+    }
+
+    /// Accept `leader` at `generation`; a raised one is on disk on return.
     /// See `DiskLog::accept_generation`.
     pub async fn accept_generation(
         &self,
         generation: u64,
+        leader: Option<&str>,
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
-            .accept_generation(generation)
+            .accept_generation(generation, leader)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// One past the last record known committed; truncation and rebuild
@@ -433,7 +607,17 @@ impl StreamLog {
         self.log
             .advance_commit_offset(offset)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
+    }
+
+    /// Keep retention and compaction below the commit offset, for a log
+    /// replicated under `Quorum`. Survives a restart. See
+    /// `DiskLog::hold_retention_at_commit`.
+    pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        self.log
+            .hold_retention_at_commit(hold)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Where each leadership generation began here, oldest first.
@@ -461,7 +645,7 @@ impl StreamLog {
             .enforce_retention_now()
             .await
             .map(|outcome| outcome.segments_deleted)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Exclusive bound on offsets that survive a crash right now.
@@ -482,19 +666,23 @@ impl StreamLog {
 
     /// Force a flush regardless of the configured policy.
     pub async fn sync(&self) -> Result<()> {
-        self.log.sync().await.map_err(storage_error)
+        self.log.sync().await.map_err(BrokerError::from)
     }
 }
 
 /// One timestamp for the batch: the records were published together, and
 /// reading the clock per record costs more than the precision is worth.
-fn records(payloads: &[Bytes], marks: &[RecordMark]) -> Result<Vec<AppendRecord>> {
+fn records(
+    payloads: &[Bytes],
+    marks: &[RecordMark],
+    publishers: &[Option<Bytes>],
+    timestamp_micros: u64,
+) -> Result<Vec<AppendRecord>> {
     if payloads.is_empty() {
         return Err(BrokerError::Storage(
             "cannot append an empty publish batch".to_string(),
         ));
     }
-    let timestamp_micros = now_micros();
     let marks = marks
         .iter()
         .copied()
@@ -502,19 +690,19 @@ fn records(payloads: &[Bytes], marks: &[RecordMark]) -> Result<Vec<AppendRecord>
     Ok(payloads
         .iter()
         .zip(marks)
-        .map(|(payload, mark)| AppendRecord {
+        .enumerate()
+        .map(|(index, (payload, mark))| AppendRecord {
             payload: payload.clone(),
             timestamp_micros,
             mark,
+            publisher: publishers.get(index).cloned().flatten(),
         })
         .collect())
 }
 
-fn storage_error(err: felix_storage::StorageError) -> BrokerError {
-    BrokerError::Storage(err.to_string())
-}
-
-fn now_micros() -> u64 {
+/// The time an append made now stores: microseconds since the Unix epoch on
+/// this broker's clock.
+pub fn append_time_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)

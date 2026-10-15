@@ -6,6 +6,7 @@ mod cache;
 mod codec;
 mod commit;
 mod idempotent;
+mod inspect;
 mod stream;
 mod topology;
 mod unsupported;

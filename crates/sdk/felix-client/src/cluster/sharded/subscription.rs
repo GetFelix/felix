@@ -113,6 +113,9 @@ pub enum ShardEvent {
     /// records that follow resume where the old owner left off; if the new
     /// owner cannot be reached, a [`ShardEvent::ShardLost`] comes next.
     ShardMoved { shard: u32, moved: ShardMoved },
+    /// The stream was deleted. This shard's feed has ended and is not
+    /// re-established; every other shard ends the same way.
+    StreamDeleted { shard: u32 },
 }
 
 impl std::fmt::Debug for ShardEvent {
@@ -139,6 +142,10 @@ impl std::fmt::Debug for ShardEvent {
                 .debug_struct("ShardMoved")
                 .field("shard", shard)
                 .field("moved", moved)
+                .finish(),
+            Self::StreamDeleted { shard } => f
+                .debug_struct("StreamDeleted")
+                .field("shard", shard)
                 .finish(),
         }
     }
@@ -273,6 +280,8 @@ async fn forward_shard(
     // Where the old owner said to resume, when following a move failed and the
     // reconnect loop below has to do it instead.
     let mut moved_resume_from: Option<u64> = None;
+    // Where to resume after the subscription fell behind.
+    let mut lag_resume_from: Option<u64> = None;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -323,11 +332,22 @@ async fn forward_shard(
                         }
                     }
                 }
+                // Reconnecting would only be refused for a stream that is gone.
+                None if feed.1.stream_deleted() => {
+                    let _ = tx.send(ShardEvent::StreamDeleted { shard }).await;
+                    return;
+                }
                 // A clean end of stream is still the loss of this shard's feed:
                 // the broker closed it, and the other shards are still going.
                 None => "the shard's event stream ended".to_string(),
             },
-            Err(err) => format!("{err:#}"),
+            Err(err) => {
+                if let Some(lagged) = err.downcast_ref::<crate::SubscriptionLagged>() {
+                    let started = feed.1.start_offset().or(feed.1.live_offset());
+                    lag_resume_from = Some(resume_after_lag(last_offset, started, lagged));
+                }
+                format!("{err:#}")
+            }
         };
 
         if stop.load(Ordering::Relaxed) {
@@ -353,13 +373,17 @@ async fn forward_shard(
             // owner said. `Latest` only with neither — there is no offset to
             // resume from, and replaying from the start would duplicate a
             // history the caller never asked for.
-            let at = Some(resume_position(last_offset, moved_resume_from));
+            let at = Some(match lag_resume_from {
+                Some(from) => StartPosition::Offset(from),
+                None => resume_position(last_offset, moved_resume_from),
+            });
             if let Ok(next) = cluster
                 .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
                 .await
             {
                 feed = next;
                 moved_resume_from = None;
+                lag_resume_from = None;
                 if tx.send(ShardEvent::ShardRecovered { shard }).await.is_err() {
                     return;
                 }
@@ -367,4 +391,23 @@ async fn forward_shard(
             }
         }
     }
+}
+
+/// Where a shard resumes after it fell behind: after the last event it
+/// delivered, or where it started if it delivered none.
+///
+/// Not the broker's `resume_from`: that is where its subscriber queue first
+/// dropped, and a frame dropped further along, in the connection writer's
+/// queue for this subscription, can sit below it. Resuming after the last
+/// event replays those too. `resume_from` is used only with nothing else to
+/// go on.
+fn resume_after_lag(
+    last_offset: Option<u64>,
+    started: Option<u64>,
+    lagged: &crate::SubscriptionLagged,
+) -> u64 {
+    last_offset
+        .map(|last| last.saturating_add(1))
+        .or(started)
+        .unwrap_or(lagged.resume_from)
 }

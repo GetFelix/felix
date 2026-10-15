@@ -26,6 +26,7 @@ use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use crate::cluster::feed_cursor::{BehindCursor, Verdict};
 use crate::shards::ShardKey;
 use crate::shards::watch::metrics as mm;
 
@@ -154,8 +155,10 @@ impl ShardOwnership {
 pub enum Resync {
     /// Changes before the first returned one were evicted from the window.
     GapInHistory,
-    /// The control plane's sequence is behind our checkpoint, so it restarted
-    /// onto a store that does not persist the sequence.
+    /// The control plane's sequence is behind our checkpoint: it restarted
+    /// onto a store that does not persist the sequence, or the answer came
+    /// from a lagging Raft member. The watch only resyncs once it has stayed
+    /// behind for `feed_cursor::RESET_AFTER`.
     SequenceReset,
 }
 
@@ -203,6 +206,11 @@ pub async fn run(
     let base_url = base_url.trim_end_matches('/').to_string();
     // `None` means "no valid checkpoint": take a snapshot before polling.
     let mut checkpoint: Option<u64> = None;
+    // The furthest this broker has applied. A snapshot older than that came
+    // from a lagging member and is not applied, until the feed has stayed
+    // behind long enough to be a reset (see `feed_cursor`).
+    let mut floor: u64 = 0;
+    let mut behind = BehindCursor::default();
     let mut failures: u32 = 0;
     // The first snapshot is taken at once: nothing is gained by starting a
     // broker's ownership view an interval late.
@@ -225,7 +233,7 @@ pub async fn run(
             _ = shutdown.cancelled() => return,
             result = async {
                 match checkpoint {
-                    None => snapshot(&client, &base_url, token, &ownership).await,
+                    None => snapshot(&client, &base_url, token, &ownership, floor).await,
                     Some(since) => poll(&client, &base_url, token, &ownership, since).await,
                 }
             } => result,
@@ -237,12 +245,35 @@ pub async fn run(
                 changed: moved,
             }) => {
                 failures = 0;
+                behind.judge(false, tokio::time::Instant::now());
                 checkpoint = Some(seq);
+                floor = floor.max(seq);
                 mm::record_checkpoint(seq);
                 if moved {
                     changed.notify_one();
                 }
                 next_delay(interval, moved, started.elapsed())
+            }
+            Ok(Progress::Behind) => {
+                failures = 0;
+                match behind.judge(true, tokio::time::Instant::now()) {
+                    Verdict::Stale => {
+                        tracing::debug!(
+                            floor,
+                            "shard assignments answered from behind what this broker applied; ignored",
+                        );
+                    }
+                    _ => {
+                        tracing::warn!(
+                            floor,
+                            "shard assignments stayed behind what this broker applied; taking it as a reset",
+                        );
+                        mm::record_resync(Resync::SequenceReset);
+                        checkpoint = None;
+                        floor = 0;
+                    }
+                }
+                interval
             }
             Ok(Progress::MustResync(reason)) => {
                 failures = 0;
@@ -288,6 +319,9 @@ enum Progress {
         changed: bool,
     },
     MustResync(Resync),
+    /// The answer is older than what this broker has applied: a lagging
+    /// control-plane member, or a reset. Nothing was applied.
+    Behind,
 }
 
 async fn snapshot(
@@ -295,6 +329,7 @@ async fn snapshot(
     base_url: &str,
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
+    floor: u64,
 ) -> Result<Progress> {
     let response: SnapshotResponse = get(
         client,
@@ -303,6 +338,9 @@ async fn snapshot(
     )
     .await
     .context("shard assignment snapshot")?;
+    if response.next_seq < floor {
+        return Ok(Progress::Behind);
+    }
 
     let count = response.items.len();
     ownership.write().await.reset(response.items);
@@ -337,8 +375,12 @@ async fn poll(
     .context("shard assignment changes")?;
 
     let first_seq = response.items.first().map(|change| change.seq);
-    if let Some(reason) = check_continuity(since, first_seq, response.next_seq) {
-        return Ok(Progress::MustResync(reason));
+    match check_continuity(since, first_seq, response.next_seq) {
+        // Behind the checkpoint: a lagging member as often as a reset, and
+        // only time tells them apart.
+        Some(Resync::SequenceReset) => return Ok(Progress::Behind),
+        Some(reason) => return Ok(Progress::MustResync(reason)),
+        None => {}
     }
 
     let mut changed = false;

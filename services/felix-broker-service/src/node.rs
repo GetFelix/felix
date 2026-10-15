@@ -20,6 +20,7 @@
 //! submodule. Their order is load-bearing, and the comments at each step say
 //! why.
 
+mod cache_expiry;
 mod cluster;
 mod handoff;
 mod listeners;
@@ -150,6 +151,9 @@ where
     // metric is a bare count: a label per shard is a label per stream per
     // tenant, and a halt is useless to act on without knowing which replica.
     let halted_replicas = Arc::new(replication::halted::HaltedReplicas::new());
+    // Each led shard's cursors and fence as replication last left them, for an
+    // operator's `shard_inspect`.
+    let shard_status = Arc::new(replication::status::ShardStatusBoard::new());
     // Empty until the first catalog refresh fills it, which is the honest
     // answer in the meantime: this broker has not yet been told where any
     // client may connect.
@@ -172,6 +176,28 @@ where
     );
 
     let (broker, durable_storage) = storage::open(&config)?;
+    // A record with its publisher is storage format v6, which an older build
+    // refuses to open, so a cluster waits for its fleet to finalize it and a
+    // lone broker for its operator to ask.
+    if config.membership.is_some() {
+        let fleet = Arc::clone(&fleet);
+        broker.record_publishers_when(move || {
+            fleet.supports(felix_common::fleet::PUBLISHER_PRINCIPAL)
+        });
+    } else if config.record_publishers {
+        broker.record_publishers_when(|| true);
+    }
+    // A cursor that carries its dependency is a value an older build refuses,
+    // so a cluster waits for its fleet. A lone broker writes them from the
+    // start: it has no older replica to read them.
+    if config.membership.is_some()
+        && let Some(groups) = broker.consumer_groups()
+    {
+        let fleet = Arc::clone(&fleet);
+        groups.record_dependencies_when(move || {
+            fleet.supports(felix_common::fleet::GROUP_CURSOR_DEPENDENCIES)
+        });
+    }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
     // has passed; see `replication::quorum::committed_bound`.
     if let Some(ingress) = &ingress_router {
@@ -231,14 +257,15 @@ where
     let client_tls = ClientTls::from_config(&config.client_tls)?;
     client_tls.spawn_reload(&accept_shutdown);
     let quic_servers = listeners::bind(&config, &client_tls)?;
-    let key_store =
+    let key_store = Arc::new(
         ControlPlaneKeyStore::new(controlplane_url, Arc::new(TenantKeyCache::default()))
             .with_tenant_catalog(TenantCatalog::new(
                 Arc::clone(&broker),
                 catalog_seeded.clone(),
-            ));
+            )),
+    );
     let auth = Arc::new(
-        BrokerAuth::with_key_store(Arc::new(key_store))
+        BrokerAuth::with_key_store(Arc::clone(&key_store))
             .with_subject_binding(config.client_tls.bind_subject),
     );
     // One set for every client listener, so the per-address cap and each
@@ -272,6 +299,7 @@ where
             peers: &peers,
             lease: &lease,
             quorum_marks: &quorum_marks,
+            shard_status: &shard_status,
             client_endpoints: &client_endpoints,
             limits: &limits,
         },
@@ -292,6 +320,12 @@ where
     // life of the process rather than the one token it was given.
     let credential = (!config.controlplane_token.is_empty())
         .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
+    tokio::spawn(cache_expiry::run(
+        Arc::clone(&broker),
+        ingress_router.clone(),
+        cache_expiry::INTERVAL,
+        sync_shutdown.clone(),
+    ));
     let (seeded_tx, seeded_rx) = tokio::sync::oneshot::channel();
     let controlplane_task = sync::spawn_catalog_sync(
         &config,
@@ -301,6 +335,7 @@ where
         gate_readiness_on_sync,
         seeded_tx,
         &catalog_seeded,
+        &key_store,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,
@@ -311,7 +346,15 @@ where
     );
 
     let membership_client = crate::cluster::controlplane_client::build()?;
-    let (membership, credential_refresh) = match membership::spawn(
+    let credential_refresh = membership::keep_credential_current(
+        &config,
+        &membership_client,
+        &credential,
+        &sync_shutdown,
+    );
+    // Filled by the shard tasks, carried by the heartbeat.
+    let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
+    let membership = membership::spawn(
         &config,
         &membership_client,
         gate_readiness_on_sync,
@@ -319,11 +362,9 @@ where
         &lease,
         &fleet,
         &credential,
+        &suspects,
         &sync_shutdown,
-    ) {
-        Some(joined) => (Some(joined.membership), joined.credential_refresh),
-        None => (None, None),
-    };
+    );
     // Its own token, so a stopping broker can stop taking forwarded writes
     // while it still ships to followers over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();
@@ -348,7 +389,9 @@ where
         broker: &broker,
         quorum_marks: &quorum_marks,
         halted_replicas: &halted_replicas,
+        shard_status: &shard_status,
         fleet: &fleet,
+        suspects: &suspects,
         sync_shutdown: &sync_shutdown,
     });
 

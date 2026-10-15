@@ -52,11 +52,68 @@ pub async fn ship_once_with<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
 ) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once`], shipping nothing at or past `end`. `UpToDate` once the
+/// follower has everything below it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ship_once_until<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    end: u64,
+) -> Progress {
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        None,
+        Some(end),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ship_batch<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    end: Option<u64>,
+) -> Progress {
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
             .is_some_and(|backoff| tokio::time::Instant::now() < backoff.retry_at);
-        if !halt.rebuildable() || backing_off || !rebuilds.try_begin() {
+        if !halt.rebuildable()
+            || backing_off
+            || base_above_commit(log, shard, commit_offset)
+            || !rebuilds.try_begin()
+        {
             return Progress::Halted(halt);
         }
         match request_rebuild(requester, log, shard, log_kind, cursor).await {
@@ -93,7 +150,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     }
 
-    let records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
+    let mut records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
         Ok(records) => records,
         // The follower is asking for records this leader has already trimmed.
         // Shipping cannot bridge that: the records are not here to send, and
@@ -117,6 +174,10 @@ pub async fn ship_once_with<R: PeerRequester>(
                 oldest,
                 "the follower is below this leader's oldest record; offering a bootstrap",
             );
+            if base_above_commit(log, shard, commit_offset) {
+                cursor.stalled = true;
+                return Progress::Retry;
+            }
             return offer_bootstrap(requester, shard, log_kind, cursor, oldest).await;
         }
         Err(err) => {
@@ -133,6 +194,13 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     };
 
+    if let Some(end) = end {
+        // Not level with the tail, so a rebuild under way is not finished.
+        if records.first().is_some_and(|record| record.offset >= end) {
+            return Progress::UpToDate;
+        }
+        records.retain(|record| record.offset < end);
+    }
     if records.is_empty() {
         if cursor.rebuilding {
             cursor.rebuilding = false;
@@ -144,6 +212,12 @@ pub async fn ship_once_with<R: PeerRequester>(
                 "the rebuilt follower has reached this leader's tail",
             );
             metrics::record_rebuild(metrics::OUTCOME_REBUILD_COMPLETED);
+        }
+        // Nothing below offset zero to hold, so a follower of an empty log is
+        // level without being asked. Left stalled, its position is never
+        // reported and placement cannot seat it as a new copy.
+        if cursor.next_offset == 0 {
+            cursor.stalled = false;
         }
         return Progress::UpToDate;
     }
@@ -159,29 +233,42 @@ pub async fn ship_once_with<R: PeerRequester>(
     } else {
         Vec::new()
     };
+    let publishers = felix_broker::replication::publishers_to_wire(&records);
+    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // Without them the follower stamps the records with its own clock, and a
+    // failover shifts every inherited record's time by the replication delay.
+    let times = offered
+        .is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES))
+        .then(|| {
+            records
+                .iter()
+                .map(|record| record.timestamp_micros)
+                .collect()
+        });
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
-    let batch = ReplicateRecords {
+    let mut batch = ReplicateRecords {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,
         shard: shard.clone(),
         first_offset,
-        checksum: batch_checksum(&payloads, &marks),
+        checksum: batch_checksum(&payloads, &marks, &publishers),
         payloads,
         marks,
         // A follower that refused the committed kind is sent what it reads.
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
         // Without them the follower labels the records with this leader's
-        // generation, including any this leader inherited. Only a stream
-        // log's labels are compared by a fence, so the other logs go without.
+        // generation, including any this leader inherited. A fence compares
+        // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
-            && log_kind == felix_broker::LogKind::Stream
-            && requester
-                .recorded_capabilities(&cursor.node_id)
-                .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS)))
+            && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
+        publishers,
+        // Sent only on a labelled batch; see `ReplicateRecords::times`.
+        times,
     };
+    carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.
@@ -207,6 +294,7 @@ pub async fn ship_once_with<R: PeerRequester>(
             request.kind(),
             felix_wire::internal::Kind::ReplicateCommittedRecords
                 | felix_wire::internal::Kind::ReplicateLabelledRecords
+                | felix_wire::internal::Kind::ReplicateTimedRecords
         )
     {
         // A follower from before commit offsets. Nothing was stored; it gets
@@ -323,12 +411,40 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
     }
 }
 
+/// Whether this leader's base lies above everything known committed on a
+/// `Quorum` shard (`commit_offset` is `Some`).
+///
+/// A follower bootstrapped or rebuilt there would answer as holding every
+/// offset below its tail, and the mark would move over records between the
+/// commit offset and the base that no replica has. Retention is held at the
+/// commit offset, so this should not happen; if it does, the follower waits
+/// rather than a publish being acknowledged for records that are gone.
+fn base_above_commit(log: &StreamLog, shard: &ShardRef, commit_offset: Option<u64>) -> bool {
+    let Some(mark) = commit_offset else {
+        return false;
+    };
+    let committed = mark.max(log.commit_offset());
+    let base = log.base_offset();
+    if base <= committed {
+        return false;
+    }
+    tracing::error!(
+        stream = %shard.stream,
+        shard = shard.shard,
+        base,
+        committed,
+        "not moving a follower to this leader's base: records below it were never committed",
+    );
+    true
+}
+
 /// The same batch as its log's own kind, for a follower that refused the
 /// committed one.
 fn without_commit(request: InternalMessage) -> InternalMessage {
     let strip = |mut batch: ReplicateRecords| {
         batch.commit_offset = None;
         batch.generations = None;
+        batch.times = None;
         batch
     };
     match request {
@@ -352,6 +468,39 @@ fn without_commit(request: InternalMessage) -> InternalMessage {
     }
 }
 
+/// Give a batch whose marks its own kind cannot carry the committed layout,
+/// which can. Only a stream has a marked kind, and a cache shard's logs hold
+/// generation-start records; a commit offset of zero moves no follower's.
+pub(crate) fn carry_marks(
+    batch: &mut ReplicateRecords,
+    log_kind: felix_broker::LogKind,
+    legacy_frames: bool,
+) {
+    if log_kind != felix_broker::LogKind::Stream
+        && !legacy_frames
+        && !batch.marks.is_empty()
+        && batch.commit_offset.is_none()
+        && batch.generations.is_none()
+    {
+        batch.commit_offset = Some(0);
+    }
+}
+
+/// What a follower must have offered for `log_kind`'s batches to carry their
+/// generations: the labels, and the fence that compares them.
+fn labels_needed(log_kind: felix_broker::LogKind) -> PeerCapabilities {
+    let fence = match log_kind {
+        felix_broker::LogKind::Stream => PeerCapabilities::NONE,
+        felix_broker::LogKind::Cache | felix_broker::LogKind::Counters => {
+            PeerCapabilities::CACHE_FENCE
+        }
+        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
+            PeerCapabilities::GROUP_FENCE
+        }
+    };
+    PeerCapabilities::GENERATION_LABELS.union(fence)
+}
+
 pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {
     match log_kind {
         felix_broker::LogKind::Stream => ReplicaLog::Stream,
@@ -369,3 +518,6 @@ pub(super) fn unreachable_outcome(err: &PeerError) -> &'static str {
         _ => metrics::OUTCOME_UNREACHABLE,
     }
 }
+
+#[cfg(test)]
+mod tests;

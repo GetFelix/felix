@@ -23,13 +23,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use felix_authz::{
-    Action, CacheScope, Namespace, StreamName, TenantId, cache_resource, stream_resource,
+    Action, CacheKeys, CacheScope, Namespace, PermissionMatcher, StreamName, TenantId,
+    cache_resource, stream_resource,
 };
 use felix_broker::Broker;
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
-    CacheOpKind, ErrorCode, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, InternalMessage, NotLeader,
+    CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
+    ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk,
+    InternalMessage, NotLeader,
 };
 
 use crate::serving::auth::BrokerAuth;
@@ -106,18 +108,24 @@ impl ForwardingHandler {
             &Namespace::new(&key.namespace),
             &StreamName::new(&key.stream),
         );
-        if let Err(detail) = self
+        // The publisher recorded here is the one this broker verified, not
+        // anything the forwarding broker says.
+        let publisher = match self
             .authorize(
                 &publish.credential,
                 &key.tenant_id,
                 Action::StreamPublish,
                 &resource,
+                |matcher| matcher.allows(Action::StreamPublish, &resource),
             )
             .await
         {
-            metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
-            return error(correlation_id, ErrorCode::Unauthorized, detail);
-        }
+            Ok(publisher) => publisher,
+            Err(detail) => {
+                metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
+                return error(correlation_id, ErrorCode::Unauthorized, detail);
+            }
+        };
 
         let handle = match self
             .broker
@@ -142,7 +150,7 @@ impl ForwardingHandler {
         };
         let published = self
             .broker
-            .publish_batch_with_outcome(&handle, &publish.payloads)
+            .publish_batch_with_outcome(&handle, &publish.payloads, publisher.as_ref())
             .await;
         drop(fenced);
         match published {
@@ -206,14 +214,36 @@ impl ForwardingHandler {
             CacheOpKind::Get | CacheOpKind::CounterGet => Action::CacheRead,
             CacheOpKind::Put | CacheOpKind::Delete | CacheOpKind::CounterAdd => Action::CacheWrite,
         };
-        let resource = cache_resource(
-            &TenantId::new(&key.tenant_id),
-            &Namespace::new(&key.namespace),
-            &CacheScope::new(&key.stream),
+        // Re-checked with the key, so an origin that checked only the cache
+        // cannot widen a key grant here.
+        let (tenant, namespace, cache) = (
+            TenantId::new(&key.tenant_id),
+            Namespace::new(&key.namespace),
+            CacheScope::new(&key.stream),
+        );
+        let resource = format!(
+            "{} key {:?}",
+            cache_resource(&tenant, &namespace, &cache),
+            op.key
         );
         if let Err(detail) = self
-            .authorize(&op.credential, &key.tenant_id, action, &resource)
+            .authorize(
+                &op.credential,
+                &key.tenant_id,
+                action,
+                &resource,
+                |matcher| {
+                    matcher.allows_cache_keys(
+                        action,
+                        &tenant,
+                        &namespace,
+                        &cache,
+                        CacheKeys::Key(&op.key),
+                    )
+                },
+            )
             .await
+            .map(drop)
         {
             metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
             return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -266,8 +296,8 @@ impl ForwardingHandler {
         } else {
             None
         };
-        let value = match op.op {
-            CacheOpKind::Put => {
+        let answered = match (op.op, op.condition) {
+            (CacheOpKind::Put, None) => {
                 let ttl = (op.ttl_ms > 0).then(|| std::time::Duration::from_millis(op.ttl_ms));
                 cache
                     .put(
@@ -280,39 +310,102 @@ impl ForwardingHandler {
                         ttl,
                     )
                     .await
-                    .map(|()| None)
+                    .map(|()| (None, None))
             }
-            CacheOpKind::Get => {
+            (CacheOpKind::Get, None) => cache
+                .get(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|value| (value, None)),
+            (CacheOpKind::Delete, None) => cache
+                .delete(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|value| (value, None)),
+            (
+                CacheOpKind::Put,
+                Some(
+                    condition @ (ForwardCacheCondition::Absent | ForwardCacheCondition::Version(_)),
+                ),
+            ) => {
+                let ttl = (op.ttl_ms > 0).then(|| std::time::Duration::from_millis(op.ttl_ms));
+                let condition = match condition {
+                    ForwardCacheCondition::Version(version) => {
+                        felix_storage::CacheCondition::Version(version)
+                    }
+                    _ => felix_storage::CacheCondition::Absent,
+                };
                 cache
-                    .get(
+                    .put_if(
                         &key.tenant_id,
                         &key.namespace,
                         &key.stream,
                         key.shard,
                         &op.key,
+                        op.value,
+                        ttl,
+                        condition,
                     )
                     .await
+                    .map(|written| (None, Some(outcome(written))))
             }
-            CacheOpKind::Delete => {
-                cache
-                    .delete(
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        &op.key,
+            (CacheOpKind::Delete, Some(ForwardCacheCondition::Version(version))) => cache
+                .delete_if(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                    version,
+                )
+                .await
+                .map(|written| (None, Some(outcome(written)))),
+            (CacheOpKind::Get, Some(ForwardCacheCondition::Unconditional)) => cache
+                .get_versioned(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|found| {
+                    let version = found.as_ref().map(|found| found.version);
+                    (
+                        found.map(|found| found.value),
+                        Some(ForwardCacheOutcome {
+                            applied: true,
+                            version,
+                        }),
                     )
-                    .await
-            }
-            CacheOpKind::CounterAdd | CacheOpKind::CounterGet => {
+                }),
+            (CacheOpKind::CounterAdd | CacheOpKind::CounterGet, None) => {
                 return self.apply_counter_op(op, &key).await;
+            }
+            (kind, Some(condition)) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                return InternalMessage::ForwardCacheError(ForwardCacheError {
+                    correlation_id,
+                    code: ErrorCode::Malformed,
+                    detail: format!("{kind:?} cannot carry {condition:?}"),
+                });
             }
         };
         drop(fenced);
         // Refused by the store: never answered as a success, or the quorum
         // wait would pass on the old tail and ack a put no read can see.
-        let value = match value {
-            Ok(value) => value,
+        let (value, outcome) = match answered {
+            Ok(answered) => answered,
             Err(err) => {
                 metrics::record_served(metrics::OUTCOME_ERROR);
                 return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -361,10 +454,13 @@ impl ForwardingHandler {
         InternalMessage::ForwardCacheOk(ForwardCacheOk {
             correlation_id,
             value,
+            outcome,
         })
     }
 
-    /// Whether the client behind a forward may perform `action` on `resource`.
+    /// Whether the client behind a forward may perform `action` on `resource`,
+    /// by `allowed` over its verified grants. `action` and `resource` only
+    /// name the request in a refusal.
     ///
     /// The forwarder already asked this; the answer is not trusted because the
     /// owner cannot tell an honest forwarder from anything else that can reach
@@ -376,7 +472,8 @@ impl ForwardingHandler {
         tenant_id: &str,
         action: Action,
         resource: &str,
-    ) -> Result<(), String> {
+        allowed: impl FnOnce(&PermissionMatcher) -> bool,
+    ) -> Result<Option<bytes::Bytes>, String> {
         if credential.is_empty() {
             return Err(
                 "forwarded with no credential: the forwarding broker predates credentialed \
@@ -389,12 +486,12 @@ impl ForwardingHandler {
             .authenticate(tenant_id, credential)
             .await
             .map_err(|err| format!("the publisher's credential was refused: {err}"))?;
-        if ctx.tenant_id != tenant_id || !ctx.matcher.allows(action, resource) {
+        if ctx.tenant_id != tenant_id || !allowed(&ctx.matcher) {
             return Err(format!(
                 "the publisher's credential does not allow {action:?} on {resource}"
             ));
         }
-        Ok(())
+        Ok(ctx.publisher)
     }
 
     /// Every check a forwarded request must pass before it touches storage.
@@ -598,6 +695,7 @@ impl ForwardingHandler {
                 InternalMessage::ForwardCacheOk(ForwardCacheOk {
                     correlation_id,
                     value: sum.map(felix_storage::counter_log::encode_sum),
+                    outcome: None,
                 })
             }
             Err((code, detail)) => InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -653,6 +751,7 @@ impl PeerRequestHandler for ForwardingHandler {
 /// a refusal in different shapes: a requester matches on the message kind to
 /// decide what happened, so a cache operation refused with a publish's error
 /// type reads to it as a protocol violation rather than a refusal.
+#[allow(clippy::large_enum_variant)] // Returned once and consumed at once.
 enum Denial {
     /// Already complete. `NotLeader` is a routing answer and is the same
     /// message whichever path asked.
@@ -689,6 +788,13 @@ fn error(correlation_id: u64, code: ErrorCode, detail: String) -> InternalMessag
         code,
         detail,
     })
+}
+
+fn outcome(written: felix_storage::ConditionalWrite) -> ForwardCacheOutcome {
+    ForwardCacheOutcome {
+        applied: written.applied,
+        version: written.version,
+    }
 }
 
 #[cfg(test)]

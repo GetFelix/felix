@@ -143,6 +143,7 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
                                     subscription_id: sub_id,
                                     start_offset: None,
                                     live_offset: None,
+                                    queue_capacity: None,
                                 },
                             )
                             .await?;
@@ -181,6 +182,7 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
                                     key: "key".to_string(),
                                     value: Some(Bytes::from_static(b"value")),
                                     request_id,
+                                    version: None,
                                 },
                             )
                             .await?;

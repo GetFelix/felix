@@ -119,7 +119,9 @@ Bit field for optional features:
 | 10  | 0x0400 | A failed ack's code is followed by its `detail`: reason and suggested wait (modifier on bit 9) |
 | 11  | 0x0800 | Event batch also carries `skipped_before`: offsets just before it that hold no event (modifier on bit 5) |
 | 12  | 0x1000 | A successful ack ends with the offset of the batch's first record; offered by a client, it also adds `offset` to `publish_ok` (modifier on bit 4) |
-| 13-15| -     | Reserved (must be 0) |
+| 13  | 0x2000 | Event batch carries the principal that published its events (modifier on bits 1/2) |
+| 14  | 0x4000 | Each event in the batch is preceded by its record's append time (modifier on bits 1/2) |
+| 15  | -      | Reserved (must be 0) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
@@ -145,7 +147,7 @@ Each control message is a JSON object tagged by `type`, carried in a frame with
 left out, in which case it means what it meant before the field existed. This
 page covers the messages most clients need. The full set, including consumer
 groups, idempotent producers and shard queries, is in
-[`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
+[`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
 
 ### Client → Server Messages
 
@@ -214,7 +216,8 @@ Start a subscription to one shard of a stream.
   "stream": "string",
   "subscription_id": "number | absent",
   "start": "\"latest\" | \"earliest\" | {\"offset\": number} | absent",
-  "shard": "number | absent"
+  "shard": "number | absent",
+  "queue_capacity": "number | absent"
 }
 ```
 
@@ -226,6 +229,12 @@ Start a subscription to one shard of a stream.
   multi-shard stream needs one subscription per shard
 - `subscription_id`: an explicit id for the subscription. Absent, the broker
   assigns one
+- `queue_capacity`: how many published batches this subscriber's queue on the
+  broker holds, instead of the stream's default. The broker clamps it to
+  `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` and echoes the grant on
+  `subscribed`. Sent only to a broker advertising `FEATURE_SUBSCRIBE_QUEUE`.
+  The overflow policy is not the subscriber's to pick, since a `block` queue
+  would make the shard's publishers wait on one reader
 
 **Semantics**:
 - Broker answers `subscribed` with the subscription's id, or
@@ -473,6 +482,33 @@ The watch fell behind; the broker ends the stream after this.
 - Everything already queued was delivered first
 - Re-watching with `from_offset = resume_from` is gapless
 
+#### SubscriptionLagged
+
+The last frame on the event stream of a durable-stream subscription whose
+queue on the broker dropped records; the broker ends the stream after it.
+
+```json
+{
+  "type": "subscription_lagged",
+  "subscription_id": "number",
+  "resume_from": "number"
+}
+```
+
+**Semantics**:
+- Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and
+  negotiated event offsets. Any other client keeps the subscription and sees a
+  drop only as a jump in offsets on a later event
+- `resume_from` is the first offset the subscriber's queue dropped (or where a
+  resumed subscription's catch-up ended, if the drops before it were filled
+  from disk). Nothing at or above it was sent. A frame below it can still have
+  been dropped by the connection writer's queue for the subscription, which is
+  not reported, so a client resumes after the last event it received, and from
+  `resume_from` only when it received none
+- Sent once the events queued before the drop are written, without waiting for
+  another publish
+- Sent instead of `shard_moved` when both apply
+
 #### ShardMoved
 
 The last frame on the event stream of a subscription or cache watch whose shard
@@ -501,6 +537,24 @@ moved to another broker; the broker ends the stream after it.
   move completes
 - See [Shard moves](#shard-moves)
 
+#### StreamDeleted
+
+The last frame on the event stream of a subscription whose stream was deleted;
+the broker ends the stream after it.
+
+```json
+{ "type": "stream_deleted", "subscription_id": "number" }
+```
+
+**Semantics**:
+- Sent only to a client that offered `FEATURE_STREAM_DELETED` in its extended
+  feature word. Any other client sees the stream end after its last event, as
+  before
+- Everything already queued for the subscriber is delivered first
+- There is nowhere to resume. It is a separate message from `shard_moved` so a
+  client that follows moved shards does not go looking for a stream that no
+  longer exists
+
 #### CounterValue
 
 ```json
@@ -516,7 +570,8 @@ Success answers. Each names the request it answers where there is one.
 
 ```json
 { "type": "subscribed", "subscription_id": "number",
-  "start_offset": "number | absent", "live_offset": "number | absent" }
+  "start_offset": "number | absent", "live_offset": "number | absent",
+  "queue_capacity": "number | absent" }
 { "type": "publish_ok", "request_id": "number" }
 { "type": "cache_ok", "request_id": "number" }
 { "type": "ok" }
@@ -524,8 +579,13 @@ Success answers. Each names the request it answers where there is one.
 
 `subscribed` confirms a subscription, and its id matches the
 `event_stream_hello` on the event stream. `start_offset` and `live_offset` are
-sent only for a subscribe with a `start`, on a durable stream, to a client that
-negotiated event offsets. `publish_ok` answers an acked publish and `cache_ok` a
+sent on a durable stream to a client that negotiated event offsets, whose
+subscribe with no `start` is treated as `latest`. Like an explicit `latest`, it
+can then be refused on a `Quorum` shard that is still settling (`not_ready`) or
+refuses reads (`fenced`), both retryable. A `ClusterSubscription` that loses
+its connection resumes an idle plain subscription from that `start_offset`, so
+without a gap, and can fail with a `too_old` cursor if retention passed it in
+the meantime. `publish_ok` answers an acked publish and `cache_ok` a
 cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
 that offered no flags, and a cache write without a `request_id`.
 
@@ -550,11 +610,14 @@ client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
 `code` is one of `unauthenticated`, `forbidden`, `not_found`,
 `invalid_request`, `shard_unavailable`, `not_leader`, `quorum_timeout`,
 `leadership_lost`, `unacknowledged`, `overloaded`, `limit_exceeded`,
-`draining`, `internal`, `storage` or `stale_claim`. A client must accept a code
-it does not know. `retry` says what the client may do next: send again, wait
+`draining`, `internal`, `storage`, `stale_claim`, `revoked` or
+`stale_width`. A client must
+accept a code it does not know. An `error` can also be the last frame on a
+subscription's or cache watch's event stream, as when the credential it was
+opened with is revoked. `retry` says what the client may do next: send again, wait
 first, go to another broker, send again only if the request is idempotent, or
 give up. What each code means is in
-[Error codes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes).
+[Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
 
 ## Binary Publish Batch Encoding
 
@@ -784,9 +847,41 @@ advertised its bit.
 | `0x2000` | `FEATURE_UNSUPPORTED` | The broker answers an unknown request with `unsupported` and keeps the stream; the client can read that answer |
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with reason `sequence_reused` |
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | Acked publishes are pipelined under a `publish_window` (below) |
+| `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The `publish_window` is per stream rather than per connection (below) |
+| `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners`: which broker owns each shard of a stream or cache |
+| `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants its acked publishes answered after the write, with their offsets, on this connection only. Advertised by a broker that honours it |
+| `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer` (per principal, up to 128 bytes); with `reclaim`, a connection's first such poll reserves the claims that member holds from older connections and takes them back ahead of anything else |
+| `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, which ends a durable-stream subscription at its first queue drop |
+| `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`: create a group at a chosen position, move it, read where it stands, delete it |
+| `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`, answered with `cache_condition_result`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it |
+| `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time` with `offset_value`. Offered by a client that reads `timestamp_micros` on a group record; the field is sent only to a client that offered it |
+| `0x800_0000` | `FEATURE_GROUP_CLAIM_CONTROL` | The broker serves `group_extend` and `group_dead_letter`, and honours `delay_ms` and `attempts` on `group_nack` and `visibility_ms` on `group_poll`. A client checks it before sending either field, since an older broker ignores them |
+| `0x1000_0000` | `FEATURE_PUBLISH_CONDITIONAL` | The broker serves `publish_if` and honours `expected_offset` on `commit`, refusing a write whose expected offset is not the shard's next with `publish_refused` and `offset_mismatch`. A client checks it before sending `expected_offset`, since an older broker ignores it and would commit unconditionally |
+| `0x2000_0000` | `FEATURE_STREAM_READ` | The broker answers `stream_read` with `stream_records`: a bounded page of a durable stream shard, read without subscribing |
+| `0x4000_0000` | `FEATURE_SUBSCRIBE_QUEUE` | The broker honours `queue_capacity` on `subscribe` and echoes the granted capacity on `subscribed`. A client checks it before sending the field, since an older broker ignores it |
+
+`0x8000_0000` is `FEATURE_EXTENDED`, not a feature: it says a second feature
+word follows, as `client_features_hi` on `auth` or `server_features_hi` on
+`auth_ok`. A peer sends one only when it knows a feature in that word, and a
+broker sends one only to a client that set the bit, so a peer that knows none
+exchanges the frames it always did. It is a separate field rather than a wider
+number because an older broker decodes `client_features` as a `u32` and would
+fail the whole `auth` on anything larger. The first feature in the second word
+is `FEATURE_INSPECT` (`0x1`): the broker answers `shard_inspect`, its own view
+of one shard, and `subscriptions_list`, the subscriptions it serves with their
+queues and drops, for a token holding `node.view:cluster:*`. See
+[Diagnosing a cluster](/deployment/diagnosing/). The second is
+`FEATURE_STREAM_DELETED` (`0x2`), offered by a client that reads
+`stream_deleted`. The third is `FEATURE_PUBLISH_WIDTH` (`0x4`): the broker
+takes `publish_width`, the width a client routed a stream's keyed batches by,
+and refuses a keyed batch routed by a width the stream does not have with
+`stale_width`. That is what stops a client still holding the width of a
+stream deleted and created again from putting one shard on two writers.
 
 The full list, with what each depends on, is in
-[`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
+[`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
 
 ### Pipelined publishes
 
@@ -794,23 +889,27 @@ A client that offers `FEATURE_PUBLISH_PIPELINE` may be granted a window, sent
 as `publish_window` in `auth_ok`:
 
 ```json
-{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+{"type":"auth_ok","server_flags":2047,"server_features":196132,"publish_window":256}
 ```
 
 The grant covers every acked publish on the connection, JSON or binary,
 including `publish_idempotent`. The broker answers publishes in the order each
 stream carried them, holding an answer back until everything before it on that
-stream is answered. At most `publish_window` publishes may be unanswered across
-the connection. At that depth the broker stops reading the connection's
-publishes, so a client that sends more is slowed by QUIC flow control rather
-than refused. A client that did not offer the bit gets answers in completion
+stream is answered. At most `publish_window` publishes may be unanswered on each
+stream. At that depth the broker stops reading that stream's publishes, so a
+client that sends more is slowed by QUIC flow control rather than refused.
+Because every stream has its own window, a stream whose publishes are waiting
+on a stalled shard does not hold up the other streams on its connection. The
+broker advertises `FEATURE_STREAM_PUBLISH_WINDOW` to say the window is per
+stream; an older broker without that bit counts one window across the whole
+connection, and the client shares one between its streams there. A client that did not offer the bit gets answers in completion
 order, matched by `request_id`, and no window.
 
 The order matters to an idempotent producer with several batches in flight:
 when one fails, every batch behind it on the stream is answered after it, so the
 producer sees the failure before any answer that depends on it. The details are
 in
-[Pipelined publishes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#pipelined-publishes).
+[Pipelined publishes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#pipelined-publishes).
 
 ## Shared Binary EventBatch Encoding
 
@@ -856,6 +955,35 @@ repeated count times:
 
 Payload `i` is at `base_offset + i`. Every other batch omits `skipped_before`,
 and a frame with `0x0800` but not `0x0020` is rejected.
+
+With `0x2000` (`FLAG_EVENT_BATCH_PUBLISHER`), the principal that published the
+batch follows the offset fields, as a `u8` length and its bytes, before
+`count`. It does not need `0x0020`: an in-memory stream's batch has a
+publisher and no offset. The broker starts a new batch where the publisher
+changes, and sets the bit only on a batch that has one:
+
+```
+u64 base_offset       # 0x0020
+u64 skipped_before    # 0x0800
+u8  publisher_len     # 0x2000
+u8[publisher_len] publisher
+u32 count
+...
+```
+
+With `0x4000` (`FLAG_EVENT_BATCH_TIMESTAMPS`), each event is preceded by the
+time its record was appended, a `u64` of microseconds since the Unix epoch.
+Per event, because a batch replayed from history can span several publishes.
+The broker sets the bit only on a batch whose records have stored times, so an
+in-memory stream's batches never carry it:
+
+```
+u32 count
+u64 timestamp_micros  # 0x4000, before each event
+u32 payload_len
+u8[payload_len] payload
+...
+```
 
 **Why no subscription id in the frame**: the subscription is already bound to
 its uni-directional event stream by the `EventStreamHello` frame sent when
@@ -990,6 +1118,14 @@ repeats nor skips a record the subscriber would otherwise have received. On an
 in-memory stream it is absent, since the sequence means nothing on another
 broker, and the client resumes at the new owner's tail.
 
+The old owner ends its readers a moment before its own routes catch up with the
+move. A subscribe or cache watch that reaches it in that moment is answered
+`shard_unavailable` with reason `moving`, not accepted: nothing would end one
+registered after the others were ended, and it would wait on a shard no longer
+written there. The client retries and finds the new owner. A lease lapse or a
+deposal ends readers the same way, so the broker checks again once a new reader
+is registered and refuses it if either landed in between.
+
 ## Stream Types and Lifecycle
 
 Felix uses different QUIC stream patterns for different workload characteristics:
@@ -1099,6 +1235,9 @@ cargo run -p felix-conformance
 **What it tests**:
 - A subscription whose shard moves ends with `shard_moved` only when the client
   offered `FEATURE_SHARD_MOVED`, and byte for byte as before otherwise
+- A subscription whose stream is deleted ends with `stream_deleted` only when
+  the client offered `FEATURE_STREAM_DELETED`, and byte for byte as before
+  otherwise
 - Frame header encoding/decoding
 - Binary batch encoding/decoding
 - Error handling for malformed inputs
@@ -1155,11 +1294,12 @@ Planned protocol enhancements (not in v1):
 - **Compression**: Optional zstd or lz4 compression (negotiated via flags)
 - **Encryption metadata**: End-to-end encryption with key IDs in envelope
 - **Stream filtering**: Server-side filtering to reduce client bandwidth
-- **Replay by timestamp**: `Subscribe` takes an offset today, not a time
 - **Quotas**: per-namespace limits
 
 Since delivered, and no longer on this list: consumer acknowledgements for
-at-least-once delivery (consumer groups), historical replay from an offset,
+at-least-once delivery (consumer groups), historical replay from an offset or
+a time (`offset_for_time`, then subscribe at the answer), a bounded range read
+that stops at an end offset (`stream_read`),
 tenant isolation, a per-tenant publish rate limit, and server-side filtering for the cache, which is what a
 keyed watch is (`cache_watch` delivers one key or prefix, filtered at the
 broker's fanout boundary). Stream filtering above refers to streams, where it

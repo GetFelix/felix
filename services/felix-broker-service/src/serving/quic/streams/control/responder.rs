@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
@@ -18,7 +18,7 @@ pub(super) struct Responder<'a> {
     pub(super) out_ack_tx: &'a mpsc::Sender<Outgoing>,
     pub(super) out_ack_depth: &'a Arc<AtomicUsize>,
     pub(super) ack_throttle_tx: &'a watch::Sender<bool>,
-    pub(super) ack_timeout_state: &'a Arc<Mutex<AckTimeoutState>>,
+    pub(super) ack_timeout_state: &'a Arc<parking_lot::Mutex<AckTimeoutState>>,
     pub(super) cancel_tx: &'a watch::Sender<bool>,
 }
 
@@ -26,7 +26,7 @@ pub(super) async fn send_control_error(
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<AtomicUsize>,
     ack_throttle_tx: &watch::Sender<bool>,
-    ack_timeout_state: &Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &watch::Sender<bool>,
     error: ClientError,
 ) -> Result<()> {

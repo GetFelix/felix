@@ -445,6 +445,7 @@ async fn a_fenced_shard_retries_its_remainder_without_waiting_for_the_tick() {
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         // A tick long enough that reaching it would mean nothing retried.
@@ -496,6 +497,7 @@ async fn behind_driver(refusals: usize) -> (Arc<BehindFollower>, Replication, Te
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
         },
         None,
         // Reaching the tick would mean the wait did not ask for passes.
@@ -540,8 +542,8 @@ async fn the_catch_up_wait_does_not_end_while_every_follower_is_behind() {
 /// **A new `Quorum` cache leader names no follower missing the counter adds
 /// it inherited.** Its counter mark counts nothing at the new generation
 /// until a majority answers, and an earlier leader may have acknowledged any
-/// of those adds. A cache promotion is never fenced, so a follower promoted
-/// without them loses them from the sum.
+/// of those adds. Until the fleet fences caches, a follower promoted without
+/// them loses them from the sum.
 #[tokio::test]
 async fn a_new_cache_leader_names_no_follower_missing_inherited_counters() {
     use std::sync::atomic::Ordering::SeqCst;

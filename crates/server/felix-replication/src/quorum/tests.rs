@@ -371,6 +371,31 @@ fn follower_acks_need_both_fleet_features() {
     assert!(marks.acks_by_followers());
 }
 
+/// A cache acknowledges by its followers only once the fleet also finalized
+/// `fenced_caches`: before that an older broker may be promoted without
+/// fencing it.
+#[test]
+fn cache_follower_acks_need_fenced_caches_too() {
+    use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        FENCED_CACHES.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    fleet.observe([FENCED_CACHES.name()]);
+    assert!(!marks.caches_ack_by_followers(), "streams do not yet");
+    fleet.observe([GENERATION_START.name(), MAJORITY_ACK.name()]);
+    assert!(marks.caches_ack_by_followers());
+
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.observe([GENERATION_START.name(), MAJORITY_ACK.name()]);
+    let marks = QuorumMarks::with_fleet(fleet);
+    assert!(marks.acks_by_followers());
+    assert!(!marks.caches_ack_by_followers());
+}
+
 struct AlwaysConfirms;
 
 #[async_trait::async_trait]
@@ -470,4 +495,93 @@ fn readers_keep_the_mark_without_the_lease_where_followers_decide_it() {
         ReadBound::Refused,
         "the operator kept reads on the lease"
     );
+}
+
+/// A broker holding a `Quorum` cache with a log and counters, for the cache
+/// and counter waits.
+async fn quorum_cache_broker(dir: &std::path::Path) -> felix_broker::Broker {
+    let config = felix_storage::log::LogConfig {
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        ..felix_storage::log::LogConfig::default()
+    };
+    let broker = felix_broker::Broker::new(Box::new(
+        felix_storage::LogCache::open(dir.join("caches"), config.clone()).expect("cache"),
+    ))
+    .with_counters(Arc::new(
+        felix_storage::CounterStore::open(dir.join("counters"), config).expect("counters"),
+    ));
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            "t1",
+            "ns",
+            "sessions",
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+            },
+        )
+        .await
+        .expect("cache");
+    broker
+}
+
+/// **A cache put and a counter add are acknowledged without the lease once
+/// their mark was decided by the followers**, as a stream publish is; a mark
+/// the report decided still needs it.
+#[tokio::test]
+async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    broker
+        .cache()
+        .put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            "k",
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    let reported = QuorumMarks::new();
+    reported.publish(&cache, 3, 1);
+    reported.counters().publish(&cache, 3, 1);
+    let decided = QuorumMarks::new();
+    decided.publish_by_followers(&cache, 3, 1);
+    decided.counters().publish_by_followers(&cache, 3, 1);
+
+    for (marks, by_followers) in [(&reported, false), (&decided, true)] {
+        let write = await_cache_quorum(
+            &broker,
+            &cache,
+            Some(marks),
+            Some(&Unleased),
+            QUICK,
+            Access::Write,
+        )
+        .await;
+        let add = await_counter_quorum(
+            &broker,
+            &cache,
+            Some(marks),
+            Some(&Unleased),
+            QUICK,
+            Some(1),
+            "counter add",
+        )
+        .await;
+        assert_eq!(write.is_ok(), by_followers, "put: {write:?}");
+        assert_eq!(add.is_ok(), by_followers, "add: {add:?}");
+    }
 }

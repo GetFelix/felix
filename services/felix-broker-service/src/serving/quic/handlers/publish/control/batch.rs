@@ -9,26 +9,28 @@ use anyhow::Result;
 use bytes::Bytes;
 use felix_broker::{Broker, SequenceReuse};
 use felix_wire::Message;
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tracing::Instrument;
 
 use crate::observability::timings;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::errors::AckEnqueueError;
 use crate::serving::quic::handlers::publish::ack::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, EnqueuePolicy, Outgoing,
-    handle_ack_enqueue_result, send_outgoing_best_effort, send_outgoing_critical,
+    AckEncoding, AckTimeoutState, EnqueuePolicy, Outgoing, handle_ack_enqueue_result,
+    send_outgoing_best_effort, send_outgoing_critical,
 };
+use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
-    PublishRoute, internal_ack, local_shard_key, needs_quorum, publish_target, resolve_route,
-    resolve_shard,
+    DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
+    publish_target, resolve_declared_shard, resolve_route,
 };
 use crate::serving::quic::handlers::publish::{
-    PublishContext, PublishJob, StreamHandleCache, record_json_publish,
+    CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
+    record_json_publish,
 };
 use crate::serving::quic::telemetry::{
-    count_publish, count_publish_accepted, t_counter, t_histogram, t_now_if,
+    count_publish, count_publish_accepted, t_histogram, t_now_if,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -39,6 +41,8 @@ pub(crate) async fn handle_publish_batch_message(
     peer_flags: u16,
     broker: &Broker,
     publish_ctx: &PublishContext,
+    // The client's last `publish_width` on this stream, if it sent one.
+    declared: Option<&DeclaredWidth>,
     stream_cache: &mut StreamHandleCache,
     stream_cache_key: &mut String,
     throttled: bool,
@@ -47,10 +51,9 @@ pub(crate) async fn handle_publish_batch_message(
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<AtomicUsize>,
     ack_throttle_tx: &watch::Sender<bool>,
-    ack_timeout_state: &Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &watch::Sender<bool>,
-    ack_waiters: &Arc<Semaphore>,
-    ack_waiter_tx: &mpsc::Sender<AckWaiterMessage>,
+    commit_acks: &CommitAcks,
     tenant_id: String,
     namespace: String,
     stream: String,
@@ -59,8 +62,9 @@ pub(crate) async fn handle_publish_batch_message(
     request_id: Option<u64>,
     ack: Option<felix_wire::AckMode>,
     sample: bool,
-    // The publisher's token, carried on a forward for the owner to verify.
-    credential: String,
+    // The publisher's token, carried on a forward for the owner to verify,
+    // and the principal recorded on what is written here.
+    publishing_as: impl Into<PublishAs>,
     // `(producer_id, sequence, reuse)` for a `publish_idempotent`; the batch is
     // then appended once however many times it arrives, acknowledged only once
     // committed, and never forwarded. `reuse` is [`sequence_reuse`] for the
@@ -68,6 +72,10 @@ pub(crate) async fn handle_publish_batch_message(
     producer: Option<(u64, u64, SequenceReuse)>,
 ) -> Result<()> {
     record_json_publish("publish_batch");
+    let PublishAs {
+        credential,
+        publisher,
+    } = publishing_as.into();
     #[cfg(feature = "telemetry")]
     {
         let counters = crate::serving::quic::telemetry::frame_counters();
@@ -167,18 +175,30 @@ pub(crate) async fn handle_publish_batch_message(
         // Resolved once and then carried: the route and the batch must name the
         // same shard, or the owner appends to a different log than the one this
         // broker dispatched on.
-        let shard = resolve_shard(publish_ctx, &tenant_id, &namespace, &stream, key.as_deref());
-        let route = resolve_route(
-            broker,
-            publish_ctx.authority(),
-            stream_cache,
-            stream_cache_key,
+        let (shard, route) = match resolve_declared_shard(
+            publish_ctx,
+            declared,
             &tenant_id,
             &namespace,
             &stream,
-            shard,
-        )
-        .await;
+            key.as_deref(),
+        ) {
+            Ok(shard) => (
+                shard,
+                resolve_route(
+                    broker,
+                    publish_ctx.authority(),
+                    stream_cache,
+                    stream_cache_key,
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                )
+                .await,
+            ),
+            Err(refusal) => (UNKEYED_SHARD, PublishRoute::Refused(refusal)),
+        };
         let target = match producer {
             None => publish_target(
                 route,
@@ -324,9 +344,18 @@ pub(crate) async fn handle_publish_batch_message(
             || quorum
             || idempotent
             || (ack_mode != felix_wire::AckMode::None && publish_ctx.must_wait_for_write());
-        let (response_tx, response_rx) = if ack_mode != felix_wire::AckMode::None && commit_ack {
-            let (response_tx, response_rx) = oneshot::channel();
-            (Some(response_tx), Some(response_rx))
+        // Made before the enqueue: an in-memory publish can settle before the
+        // enqueue returns, and is answered from there.
+        let (response, mut pending) = if ack_mode != felix_wire::AckMode::None && commit_ack {
+            let (reply, pending) = commit_acks.expect(AckRequest {
+                request_id: request_id.expect("request id checked"),
+                encoding,
+                payload_bytes: payload_bytes.iter().sum::<usize>() as u64,
+                forwarded_to,
+                start: crate::serving::quic::telemetry::t_instant_now(),
+                single: false,
+            });
+            (Some(PublishReply::Ack(reply)), Some(pending))
         } else {
             (None, None)
         };
@@ -337,10 +366,11 @@ pub(crate) async fn handle_publish_batch_message(
             PublishJob {
                 target,
                 payloads,
-                response: response_tx,
+                response,
                 acked_on_enqueue: ack_mode != felix_wire::AckMode::None && !commit_ack,
                 admission_permit: None,
                 fenced: None,
+                publisher: publisher.clone(),
             },
             if ack_mode == felix_wire::AckMode::None {
                 publish_ctx.overflow_policy()
@@ -365,7 +395,9 @@ pub(crate) async fn handle_publish_batch_message(
             }
             Ok(false) => {
                 count_publish("dropped");
-                if ack_mode != felix_wire::AckMode::None {
+                if ack_mode != felix_wire::AckMode::None
+                    && pending.take().is_none_or(PendingAck::refuse)
+                {
                     let request_id = request_id.expect("request id checked");
                     handle_ack_enqueue_result(
                         send_outgoing_critical(
@@ -387,7 +419,9 @@ pub(crate) async fn handle_publish_batch_message(
             }
             Err(err) => {
                 count_publish("error");
-                if ack_mode != felix_wire::AckMode::None {
+                if ack_mode != felix_wire::AckMode::None
+                    && pending.take().is_none_or(PendingAck::refuse)
+                {
                     let request_id = request_id.expect("request id checked");
                     handle_ack_enqueue_result(
                         send_outgoing_critical(
@@ -443,70 +477,18 @@ pub(crate) async fn handle_publish_batch_message(
             return Ok(());
         }
         let request_id = request_id.expect("request id checked");
-        let response_rx = response_rx.expect("response rx available");
-        let payload_bytes_for_metrics = payload_bytes;
-        // Commit-ack mode:
-        // We bound the number of in-flight commit acks. If exhausted, we fail fast.
-        // Correctness note: failing after enqueue means the publish may still commit;
-        // the client will see an error/overload even though the publish succeeded.
-        // If that is unacceptable, we must enforce admission *before* enqueue.
-        let permit = match Arc::clone(ack_waiters).try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                let _ = send_outgoing_best_effort(
-                    out_ack_tx,
-                    out_ack_depth,
-                    "felix_broker_out_ack_depth",
-                    ack_throttle_tx,
-                    encoding.error(request_id, overloaded_after_enqueue()),
-                )
-                .await;
-                t_counter!("felix_broker_ack_waiters_exhausted_total").increment(1);
-                return Ok(());
-            }
-        };
-        let msg = AckWaiterMessage::PublishBatch {
-            forwarded_to,
-            request_id,
-            encoding,
-            payload_bytes: payload_bytes_for_metrics,
-            response_rx,
-            permit,
-        };
-        match ack_waiter_tx.try_send(msg) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                drop(match msg {
-                    AckWaiterMessage::Publish { permit, .. }
-                    | AckWaiterMessage::PublishBatch { permit, .. } => permit,
-                });
-                t_counter!("felix_broker_ack_waiter_queue_full_total").increment(1);
-                let _ = send_outgoing_best_effort(
-                    out_ack_tx,
-                    out_ack_depth,
-                    "felix_broker_out_ack_depth",
-                    ack_throttle_tx,
-                    encoding.error(request_id, overloaded_after_enqueue()),
-                )
-                .await;
-                return Ok(());
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(msg)) => {
-                drop(match msg {
-                    AckWaiterMessage::Publish { permit, .. }
-                    | AckWaiterMessage::PublishBatch { permit, .. } => permit,
-                });
-                t_counter!("felix_broker_ack_waiter_queue_full_total").increment(1);
-                let _ = send_outgoing_best_effort(
-                    out_ack_tx,
-                    out_ack_depth,
-                    "felix_broker_out_ack_depth",
-                    ack_throttle_tx,
-                    encoding.error(request_id, overloaded_after_enqueue()),
-                )
-                .await;
-                return Ok(());
-            }
+        // Commit-ack mode. Failing here, after the enqueue, means the publish
+        // may still commit while the client hears it was refused; enforcing
+        // the bound before the enqueue would avoid that.
+        if pending.take().expect("commit ack expected").arm() == Armed::Exhausted {
+            let _ = send_outgoing_best_effort(
+                out_ack_tx,
+                out_ack_depth,
+                "felix_broker_out_ack_depth",
+                ack_throttle_tx,
+                encoding.error(request_id, overloaded_after_enqueue()),
+            )
+            .await;
         }
         Ok(())
     }

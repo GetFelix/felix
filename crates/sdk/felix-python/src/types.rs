@@ -58,6 +58,25 @@ pub struct GroupRecord {
     /// than first, because claiming a first attempt for an unknown one would
     /// skip exactly the retry handling that was wanted.
     pub attempts: u32,
+    /// How many offsets directly below this one were settled without being
+    /// delivered (generation starts, records retention removed), so a hole
+    /// with this count will not fill. `0` from a broker that predates it.
+    pub skipped_before: u64,
+}
+
+impl GroupRecord {
+    /// The delivery this record names, for a call that settles it. The
+    /// payload stays behind: only the offset and attempt count are sent.
+    pub(crate) fn delivery(&self) -> felix_wire::GroupRecord {
+        felix_wire::GroupRecord {
+            offset: self.offset,
+            payload: bytes::Bytes::new(),
+            attempts: self.attempts,
+            skipped_before: self.skipped_before,
+            publisher: None,
+            timestamp_micros: None,
+        }
+    }
 }
 
 #[pymethods]
@@ -217,6 +236,20 @@ impl ShardMoved {
     }
 }
 
+/// The stream of a multi-shard subscription was deleted. That shard's feed
+/// has ended and is not re-established.
+#[pyclass(module = "felix", frozen, get_all)]
+pub struct StreamDeleted {
+    pub shard: u32,
+}
+
+#[pymethods]
+impl StreamDeleted {
+    fn __repr__(&self) -> String {
+        format!("StreamDeleted(shard={})", self.shard)
+    }
+}
+
 /// Which key or prefix a cache watch follows.
 ///
 /// A function pair rather than an enum class, because `felix.key("a")` reads
@@ -322,6 +355,7 @@ pub(crate) struct OwnedGroupRecord {
     pub offset: u64,
     pub payload: Vec<u8>,
     pub attempts: u32,
+    pub skipped_before: u64,
 }
 
 impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
@@ -330,6 +364,7 @@ impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
             offset: record.offset,
             payload: record.payload.to_vec(),
             attempts: record.attempts,
+            skipped_before: record.skipped_before,
         }
     }
 }
@@ -346,6 +381,7 @@ impl<'py> IntoPyObject<'py> for OwnedGroupRecord {
                 offset: self.offset,
                 payload: PyBytes::new(py, &self.payload).unbind(),
                 attempts: self.attempts,
+                skipped_before: self.skipped_before,
             },
         )
     }
@@ -439,6 +475,9 @@ pub(crate) enum OwnedShardEvent {
         shard: u32,
         moved: felix_client::ShardMoved,
     },
+    Deleted {
+        shard: u32,
+    },
 }
 
 /// The next sharded event this binding has a shape for. `ShardEvent` is
@@ -468,6 +507,7 @@ impl OwnedShardEvent {
             felix_client::ShardEvent::ShardLost { shard, error } => Self::Lost { shard, error },
             felix_client::ShardEvent::ShardRecovered { shard } => Self::Recovered { shard },
             felix_client::ShardEvent::ShardMoved { shard, moved } => Self::Moved { shard, moved },
+            felix_client::ShardEvent::StreamDeleted { shard } => Self::Deleted { shard },
             _ => return None,
         })
     }
@@ -524,6 +564,7 @@ impl<'py> IntoPyObject<'py> for OwnedShardEvent {
                 },
             )?
             .into_any()),
+            Self::Deleted { shard } => Ok(Bound::new(py, StreamDeleted { shard })?.into_any()),
         }
     }
 }

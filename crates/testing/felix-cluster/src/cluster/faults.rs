@@ -640,6 +640,7 @@ pub(super) struct Injected {
     disk_generation: u64,
     /// The file this process's clock follows for the control plane, once a
     /// test has skewed it.
+    #[cfg(any(debug_assertions, feature = "fault-injection"))]
     control_plane_clock: Option<PathBuf>,
 }
 

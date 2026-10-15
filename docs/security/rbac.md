@@ -27,6 +27,44 @@ Canonical actions:
 - `group.manage`
 - `node.view`: cluster-scoped only; see [Cluster scope](#cluster-scope)
 - `node.manage`: over `node:{node_id}` or `cluster:*`
+- `token.delegate`: over `tenant:{tenant_id}`, to exchange a user's broker
+  token for one naming the caller as its actor (`/token/delegate`); not
+  implied by `tenant.manage`, and never put in a broker token. See
+  [What `token.delegate` allows](#what-tokendelegate-allows)
+
+### What `token.delegate` allows
+
+Grant `token.delegate` only to gateways, and treat its holder as able to act
+as any user of the tenant whose broker token reaches it. The holder can turn
+such a token into one bound to its own certificate, and then present it over
+its own connections with all of the user's permissions until it expires. It
+cannot widen a token or make one up: the result is never wider or longer-lived
+than the token it came from.
+
+What limits it is which tokens it can delegate. By default only a broker token
+whose `may_act` names the caller qualifies, and a token gets `may_act` only
+when the exchange that minted it carried that same caller's own
+`felix-controlplane` token as `actor_token`. (An actor token that does not
+verify or lacks `token.delegate` makes the exchange a `403` with code
+`actor_refused`, apart from the `forbidden` a user without permissions gets.)
+Both endpoints check the gateway against current RBAC and its revocations, not
+only its token. Once a gateway loses `token.delegate` or is revoked, its
+unexpired `felix-controlplane` token can no longer bind or delegate user
+tokens. A user chain bound to it stops refreshing once current RBAC no longer
+grants it `token.delegate`.
+So a gateway can delegate the
+tokens minted for it, and not a token taken from a browser, a log or another
+gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for
+tokens with no `may_act`, which lets every holder of `token.delegate` delegate
+any such token of the tenant it gets hold of. See
+[Delegated tokens](../auth.md#delegated-tokens).
+
+It also lets the holder exchange for a connection-only broker token: its own
+`sub` and no permissions, which is what a gateway's shared connections
+authenticate with. That token opens a connection and can do nothing on it, so
+a gateway's principal needs `token.delegate` and no broker grant. Nobody else
+can get a token with no permissions. See
+[The gateway's own connections](../auth.md#the-gateways-own-connections).
 
 Consumer groups have two actions, granted over the stream's object
 (`stream:{tenant_id}/{namespace}/{stream}`) or one group's object
@@ -80,6 +118,60 @@ named on its own; grant it through the stream or `group:…/{stream}/*`.
 A stream, namespace or tenant scope contains the groups under it, so a
 delegated admin can grant groups inside what they administer.
 
+### Granting cache keys
+
+A cache grant can name some of a cache's keys instead of the whole cache, by
+adding the key as a fourth segment:
+
+- `cache:{tenant}/{namespace}/{cache}/{key}`: exactly that key.
+- `cache:{tenant}/{namespace}/{cache}/{prefix}*`: every key starting with
+  `prefix`.
+
+A prefix is a literal string prefix with no separator rule. `user:1*` covers
+`user:1`, `user:10` and `user:1/x`; to keep `user:10` out, grant `user:1/*` and
+key the data that way. Cache names cannot contain `/`, so everything after the
+third `/` is the key, and a key may itself contain `/` or `:`.
+
+The broker checks every cache request against its key
+(`PermissionMatcher::allows_cache_keys` in `felix-authz`). A request is allowed
+if a grant matches the whole cache, as before, or a key grant covers what it
+touches:
+
+| Request | Checked against |
+| --- | --- |
+| get, counter get | its key, with `cache.read` |
+| put, delete, conditional put/delete, counter add | its key, with `cache.write` |
+| watch on a key | that key, with `cache.read` |
+| watch on a prefix | the prefix, with `cache.read`: allowed only by a prefix grant that the watched prefix starts with |
+
+An exact-key grant never allows a prefix watch, even on the same string, since
+the watch reads every longer key too. A forwarded cache op is re-checked with
+its key at the owning broker.
+
+Rules the control plane enforces on writes:
+
+- The key part is a literal, optionally ending in one `*`. A `*` anywhere else
+  is refused, so a key name can never become a pattern. A key that itself
+  contains `*` can still be stored and read; it can only be granted through a
+  shorter prefix or the whole cache.
+- `cache:t1/ns/c/*` and an empty key are refused. That is the whole cache,
+  which is spelled `cache:t1/ns/c`.
+- The namespace and cache must be named. `cache:t1/ns/*/room1*` is refused for
+  the same reason as `stream:t1/*/orders`.
+- Only `cache.read` and `cache.write` take a key object.
+
+A whole-cache scope contains every key scope of that cache, and a prefix scope
+contains the keys and longer prefixes under it, so a delegated admin can grant
+keys inside what they administer, and token exchange narrows a whole-cache
+grant to a key or prefix hint (`resources: ["cache:t1/ns/rooms/room1/*"]`).
+
+Key grants do not narrow anything: unlike a group grant, a principal that also
+holds a whole-cache grant keeps it.
+
+Mixed versions fail closed. A broker from before key grants checks only
+`cache:{tenant}/{namespace}/{cache}`, which a key grant does not match, so it
+refuses the request; an older control plane refuses to parse the object.
+
 ## Object Grammar
 
 Valid canonical objects:
@@ -87,6 +179,8 @@ Valid canonical objects:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream}`
 - `cache:{tenant_id}/{namespace}/{cache}`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*` (see
+  [Granting cache keys](#granting-cache-keys))
 - `group:{tenant_id}/{namespace}/{stream}/{group}` (see
   [Granting one group](#granting-one-group))
 
@@ -184,6 +278,36 @@ Examples:
 - `rbac.policy.manage:stream:t1/payments/orders` cannot grant `stream:t1/payments/*`.
 - `rbac.policy.manage:tenant:t1` can manage tenant `t1` RBAC, but still cannot use `tenant:*`.
 
+## Taking rights back
+
+A token carries the permissions it was minted with, so removing a rule does not
+change tokens already issued. What removal does instead is revoke them. The
+control plane works out who the removed rule reached: for a policy, its subject
+and every subject assigned to it, directly or through other roles; for a role
+assignment, its user and everyone assigned to that user. It records a
+revocation for each of them, and brokers end every stream their existing
+broker tokens opened, with the `revoked` error code, within about one sync
+interval. Their next refresh mints a token under the rules as they are now, so
+someone who still holds some rights reconnects with exactly those.
+
+An IdP group (`group:<issuer>#<name>`) has members only the IdP knows. When a
+removed rule reached one, the revocation covers the whole tenant, and every
+broker session in it authenticates again. Granting through roles assigned to
+principals keeps a removal to the people it affects.
+
+Adding a rule revokes nothing. Its grants reach a principal with its next
+token. `POST /v1/tenants/{t}/refresh-tokens/revoke` cuts one principal off
+entirely. See [auth.md](../auth.md#revoking-a-principal) for the mechanism and
+its limits.
+
+Two of those limits matter when planning around revocation. A broker that
+cannot reach the control plane does not learn of a revocation until it can:
+new sessions with a revoked token are accepted until the token expires (one
+access TTL, 900 s by default) and streams already open run until the feed is
+back. Watch `felix_revocation_feed_last_success_seconds`. And the cutoff is
+compared with token issue times taken on possibly different control-plane
+members, so keep their clocks in sync.
+
 ## Notes
 
 - Strict grammar is enforced for RBAC evaluation and writes.
@@ -195,5 +319,13 @@ Examples:
   that itself starts with `group:` cannot stand in for the bare group of the
   same name. Migrating bare `group:<name>` groupings is covered in
   [auth.md](../auth.md#upgrading-to-scoped-groups-and-audiences).
+- A token exchange can narrow what these rules grant but never add to it.
+  Its `permissions` pairs use the same `action:object` grammar as a rule, and
+  each is cut down to the grants with exactly its action. See
+  [auth.md](../auth.md#narrowing-by-pairs).
 - Rules can be removed as well as added (`DELETE .../rbac/policies`,
   `DELETE .../rbac/groupings`), under the same scope rules as adding them.
+  A removal ends the broker sessions it reached; see
+  [Taking rights back](#taking-rights-back).
+- `felixctl rbac policy|grouping ls|add|rm` wraps these endpoints, and checks
+  a policy object against the grammar above before sending it.

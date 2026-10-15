@@ -45,6 +45,7 @@ async fn subscription_binary_batch_mismatched_id_errors() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -147,6 +148,7 @@ async fn subscription_decode_error_on_invalid_frame() -> Result<()> {
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -252,6 +254,7 @@ async fn subscription_legacy_event_paths_and_unexpected_message_error() -> Resul
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -391,6 +394,7 @@ async fn subscription_binary_batch_decode_error_on_invalid_payload() -> Result<(
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -498,6 +502,7 @@ async fn subscription_binary_batch_success_records_decode_timing() -> Result<()>
                                 subscription_id: sub_id,
                                 start_offset: None,
                                 live_offset: None,
+                                queue_capacity: None,
                             },
                         )
                         .await?;
@@ -572,7 +577,43 @@ async fn subscription_binary_batch_success_records_decode_timing() -> Result<()>
 #[tokio::test]
 #[serial_test::serial]
 async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
+    let subscription = ended_by(Message::ShardMoved {
+        subscription_id: 9,
+        resume_from: Some(8),
+        node_id: Some("node-b".to_string()),
+        addr: Some("127.0.0.1:5001".to_string()),
+        generation: 4,
+    })
+    .await?;
+    assert_eq!(
+        subscription.shard_moved(),
+        Some(&crate::ShardMoved {
+            resume_from: Some(8),
+            node_id: Some("node-b".to_string()),
+            addr: Some("127.0.0.1:5001".to_string()),
+            generation: 4,
+        })
+    );
+    assert!(!subscription.stream_deleted());
+    Ok(())
+}
+
+/// A `stream_deleted` frame ends the subscription after the events before it,
+/// with nowhere to resume.
+#[tokio::test]
+#[serial_test::serial]
+async fn subscription_ends_with_stream_deleted_after_its_events() -> Result<()> {
+    let subscription = ended_by(Message::StreamDeleted { subscription_id: 9 }).await?;
+    assert!(subscription.stream_deleted());
+    assert_eq!(subscription.shard_moved(), None);
+    Ok(())
+}
+
+/// A subscription whose broker sends one event at offset 7 and then `last`,
+/// read until it ends.
+async fn ended_by(last: Message) -> Result<crate::Subscription> {
     let _env_guard = set_client_env();
+    let ending = format!("{last:?}");
 
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
@@ -584,7 +625,10 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_task = tokio::spawn(async move {
-        async fn handle_connection(connection: felix_transport::QuicConnection) -> Result<()> {
+        async fn handle_connection(
+            connection: felix_transport::QuicConnection,
+            last: Message,
+        ) -> Result<()> {
             let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
             let Ok((mut send, mut recv)) = connection.accept_bi().await else {
                 return Ok(());
@@ -605,6 +649,7 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
                         subscription_id: sub_id,
                         start_offset: None,
                         live_offset: None,
+                        queue_capacity: None,
                     },
                 )
                 .await?;
@@ -622,17 +667,7 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
                     7,
                 )?;
                 uni.write_all(&encoded).await?;
-                write_message(
-                    &mut uni,
-                    Message::ShardMoved {
-                        subscription_id: sub_id,
-                        resume_from: Some(8),
-                        node_id: Some("node-b".to_string()),
-                        addr: Some("127.0.0.1:5001".to_string()),
-                        generation: 4,
-                    },
-                )
-                .await?;
+                write_message(&mut uni, last.clone()).await?;
                 let _ = uni.finish();
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 break;
@@ -645,7 +680,7 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
         while let Ok(Ok(connection)) =
             tokio::time::timeout_at(accept_deadline, server.accept()).await
         {
-            tasks.push(tokio::spawn(handle_connection(connection)));
+            tasks.push(tokio::spawn(handle_connection(connection, last.clone())));
         }
         let _ = shutdown_rx.await;
         drop(tasks);
@@ -666,20 +701,11 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
     assert_eq!(event.payload, Bytes::from_static(b"before-move"));
     assert_eq!(event.offset, Some(7));
     let end = timeout(Duration::from_secs(5), subscription.next_event()).await??;
-    assert!(end.is_none(), "the subscription ends after shard_moved");
-    assert_eq!(
-        subscription.shard_moved(),
-        Some(&crate::ShardMoved {
-            resume_from: Some(8),
-            node_id: Some("node-b".to_string()),
-            addr: Some("127.0.0.1:5001".to_string()),
-            generation: 4,
-        })
-    );
+    assert!(end.is_none(), "the subscription ends after {ending}");
 
     let _ = shutdown_tx.send(());
     server_task.abort();
-    Ok(())
+    Ok(subscription)
 }
 
 /// A batch that follows a generation start says how many offsets before it
@@ -720,6 +746,7 @@ async fn a_skip_count_reaches_the_first_event_of_its_batch() -> Result<()> {
                         subscription_id: sub_id,
                         start_offset: None,
                         live_offset: None,
+                        queue_capacity: None,
                     },
                 )
                 .await?;

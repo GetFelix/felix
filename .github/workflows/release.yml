@@ -19,9 +19,49 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: >-
+          Build everything -- binaries, archives, images, crate packages --
+          and publish nothing: no GitHub release, no image push, no registry
+          upload. The rehearsal before a real tag.
+        required: false
+        default: false
+        type: boolean
+      ref:
+        description: >-
+          Branch, tag or commit to build instead of `tag`, so a dry run can
+          rehearse a tag that does not exist yet. Dry runs only.
+        required: false
+        default: ""
+        type: string
+
+  # nightly.yml builds through this workflow rather than keeping a second
+  # copy of every build job. `nightly` (a YYYYMMDD date) means: publish no
+  # release and no registry package, and push images only under the nightly
+  # tags, and only when this is not also a dry run.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+      ref:
+        type: string
+        default: ""
+      nightly:
+        type: string
+        default: ""
 
 permissions:
   contents: write
+
+env:
+  # What every job checks out. `ref` only ever applies to a dry run or a
+  # nightly; the first job refuses it otherwise, so no release is published
+  # from an untagged commit.
+  SOURCE_REF: ${{ inputs.ref || inputs.tag || github.ref_name }}
 
 jobs:
   linux-x86_64:
@@ -30,13 +70,21 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
+      - name: A ref other than the tag is only for a dry run
+        if: ${{ inputs.ref != '' && !inputs.dry_run && !inputs.nightly }}
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          echo "::error::ref=${REF} without dry_run would publish ${RELEASE_TAG} from a commit that is not the tag."
+          exit 1
+
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -87,18 +135,33 @@ jobs:
       # checks all of them rather than only the workspace. Before anything is
       # published, because after that the tag is permanent.
       - name: The tag matches every version in the tree
+        if: ${{ !inputs.nightly }}
         run: python3 scripts/check_release_version.py "${RELEASE_TAG}"
+
+      # Fragments left behind mean the assembler was not run, so their entries
+      # are missing from the section extracted below.
+      - name: Changelog fragments are assembled
+        if: ${{ !inputs.nightly }}
+        run: |
+          left=$(find changelog.d -type f ! -name README.md ! -name '.*')
+          if [ -n "$left" ]; then
+            echo "::error::changelog.d/ still has fragments; run scripts/changelog_assemble.py ${RELEASE_TAG#v} and commit the result before tagging"
+            echo "$left"
+            exit 1
+          fi
 
       # The changelog entry, not auto-generated notes. A release spanning months
       # generates a list that is mostly dependency bumps: accurate about commits,
       # poor about what changed. Fails closed if the entry is missing.
       - name: Extract release notes from CHANGELOG.md
+        if: ${{ !inputs.nightly }}
         run: |
           python3 scripts/changelog_section.py "${RELEASE_TAG}" > release-notes.md
           echo "--- release notes ---"
           cat release-notes.md
 
       - name: Publish GitHub prerelease
+        if: ${{ !inputs.dry_run && !inputs.nightly }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -108,6 +171,203 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
+
+  # --- felixctl ------------------------------------------------------------
+  #
+  # One binary per platform, then one job that packages them all. Packaging in
+  # one place means the completions and man pages are generated once, by the
+  # Linux x86_64 binary, rather than by a cross-compiled macOS binary that its
+  # runner cannot execute.
+  felixctl-binaries:
+    name: felixctl (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04, not latest, for the older glibc: a CLI gets copied onto
+          # older machines than a broker does.
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-latest, target: aarch64-apple-darwin }
+          # Cross-compiled from Apple Silicon; see python-wheels for why not
+          # macos-13.
+          - { runner: macos-latest, target: x86_64-apple-darwin }
+          - { runner: windows-latest, target: x86_64-pc-windows-msvc }
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: felixctl-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p felixctl --bin felixctl --target ${{ matrix.target }}
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: felixctl-bin-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/felixctl
+            target/${{ matrix.target }}/release/felixctl.exe
+          if-no-files-found: error
+
+  # Needs linux-x86_64 so the release already exists with its notes and
+  # prerelease flag; this only adds files to it.
+  felixctl-release-assets:
+    name: Package felixctl and attach it to the release
+    needs: [felixctl-binaries, linux-x86_64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      # One directory per artifact, because every binary has the same name.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: felixctl-bin-*
+          path: bin
+
+      - name: Generate completions and man pages
+        run: |
+          set -euo pipefail
+          # upload-artifact drops the executable bit.
+          chmod +x bin/felixctl-bin-*/felixctl
+          felixctl=bin/felixctl-bin-x86_64-unknown-linux-gnu/felixctl
+          mkdir -p extras/completions extras/man
+          "$felixctl" completions bash > extras/completions/felixctl.bash
+          "$felixctl" completions zsh > extras/completions/_felixctl
+          "$felixctl" completions fish > extras/completions/felixctl.fish
+          "$felixctl" completions powershell > extras/completions/_felixctl.ps1
+          "$felixctl" completions elvish > extras/completions/felixctl.elv
+          "$felixctl" man --out-dir extras/man
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for dir in bin/felixctl-bin-*/; do
+            target="$(basename "$dir")"
+            target="${target#felixctl-bin-}"
+            root="felixctl-${RELEASE_TAG}-${target}"
+            mkdir -p "stage/${root}"
+            cp "$dir"/felixctl* "stage/${root}/"
+            cp crates/tools/felixctl/README.md crates/tools/felixctl/LICENSE "stage/${root}/"
+            cp -r extras/completions extras/man "stage/${root}/"
+            case "$target" in
+              *windows*) archive="${root}.zip"
+                         ( cd stage && zip -qr "../dist/${archive}" "${root}" ) ;;
+              *)         archive="${root}.tar.gz"
+                         tar -C stage -czf "dist/${archive}" "${root}" ;;
+            esac
+            ( cd dist && sha256sum "${archive}" > "${archive}.sha256" )
+          done
+          ls -la dist
+
+      # Kept on the run as well, so a dry run has something to download.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: felixctl-${{ env.RELEASE_TAG }}-archives
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: ${{ !inputs.dry_run && !inputs.nightly }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: dist/*
+          append_body: false
+
+  # --- Homebrew ------------------------------------------------------------
+  #
+  # Writes Formula/felixctl.rb in <owner>/homebrew-tap from the archives' own
+  # .sha256 files, so `brew install getfelix/tap/felixctl` follows each
+  # release. A dry run generates the formula and pushes nothing; a nightly
+  # skips this, because the tap should only ever point at a tagged release.
+  # Pushing needs HOMEBREW_TAP_DEPLOY_KEY, an SSH deploy key with write access to the tap.
+  homebrew-tap:
+    name: ${{ inputs.dry_run && 'Homebrew formula (dry run, not pushed)' || 'Update the Homebrew tap' }}
+    needs: felixctl-release-assets
+    if: ${{ !inputs.nightly && (vars.PUBLISH_HOMEBREW == 'true' || inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TAP: ${{ github.repository_owner }}/homebrew-tap
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: felixctl-${{ env.RELEASE_TAG }}-archives
+          path: dist
+
+      - name: Generate the formula
+        run: |
+          set -euo pipefail
+          mkdir -p formula
+          python3 scripts/homebrew_formula.py "$RELEASE_TAG" dist "$GITHUB_REPOSITORY" > formula/felixctl.rb
+          cat formula/felixctl.rb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-formula-${{ env.RELEASE_TAG }}
+          path: formula/felixctl.rb
+          if-no-files-found: error
+
+      - name: Push to the tap
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set; cannot push to ${TAP}."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 "git@github.com:${TAP}.git" tap
+          mkdir -p tap/Formula
+          cp formula/felixctl.rb tap/Formula/felixctl.rb
+          cd tap
+          git add Formula/felixctl.rb
+          # A re-run of the same release finds nothing to commit.
+          if git diff --cached --quiet; then
+            echo "${TAP} already has felixctl ${RELEASE_TAG#v}"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "felixctl ${RELEASE_TAG#v}"
+          git push origin HEAD
 
   # ---------------------------------------------------------------------------
   # Python wheels
@@ -121,7 +381,8 @@ jobs:
   # --- Container images ----------------------------------------------------
   #
   # Built on every tag so a release is proof the Dockerfiles still work, and
-  # pushed when `vars.PUBLISH_IMAGES` says the registry should have them. That
+  # pushed when `vars.PUBLISH_IMAGES` says the registry should have them and
+  # this is not a dry run. That
   # switch is on: 0.4.1 published `felix-broker` and `felix-controlplane`, and
   # they pull without credentials. The gate stays so a fork building this
   # workflow does not push to a registry it did not mean to.
@@ -129,12 +390,123 @@ jobs:
   # Registry: GHCR under the repository owner. It needs no credential beyond
   # the workflow's own token, the namespace follows the repository rather than
   # being claimed separately, and it is what the docs already referenced.
+  #
+  # Each platform builds on a runner of its own architecture and is pushed by
+  # digest alone; `images-merge` then tags one manifest list over both and signs
+  # it. Compiling the arm64 half under QEMU instead took up to 92 minutes.
   images:
-    name: Container images
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    name: Container image ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 90
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REGISTRY: ghcr.io
+      PUSH: ${{ vars.PUBLISH_IMAGES == 'true' && !inputs.dry_run }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: felix-broker
+            dockerfile: docker/broker.Dockerfile
+          - name: felix-controlplane
+            dockerfile: docker/controlplane.Dockerfile
+          - name: felixctl
+            dockerfile: docker/felixctl.Dockerfile
+        platform:
+          - name: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - name: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # GHCR names must be lowercase and the owner is GetFelix.
+      - name: Registry owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: docker/setup-buildx-action@v4
+        with:
+          # BuildKit from our GHCR copy; see mirror-buildkit.yml.
+          driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same tag rules as the merge job, so the version label baked into each
+      # platform's image matches the tags the manifest list gets.
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }},enable=${{ !inputs.nightly }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ !inputs.nightly }}
+            type=raw,value=latest,enable=${{ !inputs.nightly && !contains(env.RELEASE_TAG, '-') }}
+            type=raw,value=nightly-${{ inputs.nightly }},enable=${{ inputs.nightly != '' }}
+            type=raw,value=nightly,enable=${{ inputs.nightly != '' }}
+
+      - name: Build${{ env.PUSH == 'true' && ' and push by digest' || ' (not pushed)' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          # Base images from the mirror, not Docker Hub (see the Dockerfile).
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.platform.name }}
+          # Untagged: a tag here would point at one platform until the merge
+          # job moved it, and a pull in that window gets the wrong image.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH == 'true' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Provenance and SBOM travel with the image rather than beside it, so
+          # a puller can ask what is in it without trusting a separate file.
+          # The merge job carries them into the manifest list.
+          provenance: mode=max
+          sbom: true
+          # Scoped by platform too, or the two runners evict each other's cache.
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+
+      - name: Record the digest
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        if: env.PUSH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # A dry run pushed nothing, so there are no digests to merge.
+  images-merge:
+    name: Container image ${{ matrix.image }} (manifest list)
+    needs: images
+    if: ${{ vars.PUBLISH_IMAGES == 'true' && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       REGISTRY: ghcr.io
     permissions:
       contents: read
@@ -146,83 +518,82 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: felix-broker
-            dockerfile: docker/broker.Dockerfile
-          - image: felix-controlplane
-            dockerfile: docker/controlplane.Dockerfile
+        image: [felix-broker, felix-controlplane, felixctl]
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ env.RELEASE_TAG }}
+      # GHCR names must be lowercase and the owner is GetFelix.
+      - name: Registry owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
-      # arm64 is emulated here. It is slow, and it is the difference between
-      # "runs on a developer's laptop" and "does not".
-      - uses: docker/setup-qemu-action@v4
+      - name: Download the platform digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
       - uses: docker/setup-buildx-action@v4
+        with:
+          # BuildKit from our GHCR copy; see mirror-buildkit.yml.
+          driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
 
       - name: Install cosign
-        if: vars.PUBLISH_IMAGES == 'true'
         uses: sigstore/cosign-installer@v3
 
       - name: Log in to GHCR
-        if: vars.PUBLISH_IMAGES == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tags and labels
+      - name: Tags
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
           # `latest` only on a tag with no pre-release suffix, so a v0.4.0-preview
           # never becomes what `docker pull` gives someone by default.
           tags: |
-            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
-            type=raw,value=latest,enable=${{ !contains(env.RELEASE_TAG, '-') }}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }},enable=${{ !inputs.nightly }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ !inputs.nightly }}
+            type=raw,value=latest,enable=${{ !inputs.nightly && !contains(env.RELEASE_TAG, '-') }}
+            type=raw,value=nightly-${{ inputs.nightly }},enable=${{ inputs.nightly != '' }}
+            type=raw,value=nightly,enable=${{ inputs.nightly != '' }}
 
-      - name: Build${{ vars.PUBLISH_IMAGES == 'true' && ' and push' || ' (not pushed)' }}
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: ${{ vars.PUBLISH_IMAGES == 'true' }}
-          # Loading a multi-arch result into the local daemon is not possible,
-          # so an unpushed build proves it compiles and nothing more. That is
-          # the point of running it anyway.
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Provenance and SBOM travel with the image rather than beside it, so
-          # a puller can ask what is in it without trusting a separate file.
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Create the manifest list
+        id: merge
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          count=$(ls | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected 2 platform digests for ${IMAGE}, found ${count}"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+          tag=$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Sign the image
-        if: vars.PUBLISH_IMAGES == 'true'
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         run: |
           # Signed by digest, never by tag: a tag can be moved to point at
           # something else, and a signature over a tag would follow it.
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: What was published
-        if: vars.PUBLISH_IMAGES == 'true'
         run: |
           echo "### Images" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "digest: ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: ${{ steps.merge.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   python-conformance:
@@ -231,13 +602,13 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -313,7 +684,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ env.SOURCE_REF }}
 
       - uses: actions/setup-python@v7
         with:
@@ -344,7 +715,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -376,7 +747,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -388,6 +759,7 @@ jobs:
         run: ls -la dist
 
       - name: Attach to the GitHub release
+        if: ${{ !inputs.dry_run && !inputs.nightly }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -405,13 +777,13 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -484,7 +856,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ env.SOURCE_REF }}
 
       # Pinned, like every other Rust job here. `@stable` installs the target
       # on *stable*, and then rust-toolchain.toml switches cargo to 1.97.1,
@@ -502,9 +874,37 @@ jobs:
       - name: Install the napi CLI
         run: npm install -g @napi-rs/cli@2
 
+      # A Linux addon links against the glibc it is built with, and the
+      # runners' is new enough that bookworm, RHEL 8 and Amazon Linux could
+      # not load it. zig links against glibc 2.28's symbols instead.
+      # napi's --zig runs `zig` itself, and the ziglang wheel does not put it
+      # on PATH.
+      - name: Install zig
+        if: contains(matrix.target, 'linux-gnu')
+        run: |
+          pip install cargo-zigbuild ziglang
+          python3 -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+
       - name: Build the addon
         working-directory: crates/sdk/felix-typescript
-        run: napi build --platform --release --target ${{ matrix.target }}
+        env:
+          ZIG: ${{ contains(matrix.target, 'linux-gnu') && '--zig --zig-abi-suffix 2.28' || '' }}
+          # Names the toolchain so rustup does not also install the rustfmt and
+          # clippy that rust-toolchain.toml lists, which a build does not need
+          # and which failed with "detected conflict: 'bin/cargo-fmt'".
+          RUSTUP_TOOLCHAIN: "1.97.1"
+        run: napi build --platform --release --target ${{ matrix.target }} $ZIG
+
+      - name: The addon needs no glibc newer than 2.28
+        if: contains(matrix.target, 'linux-gnu')
+        working-directory: crates/sdk/felix-typescript
+        run: |
+          newest=$(objdump -T *.node | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+          echo "newest glibc symbol: $newest"
+          if [ "$(printf '%s\n2.28\n' "$newest" | sort -V | tail -1)" != "2.28" ]; then
+            echo "the addon needs glibc $newest, newer than 2.28" >&2
+            exit 1
+          fi
 
       # The addon is named by platform (felix.darwin-arm64.node and so on), so
       # every leg's artifact can merge into one directory without colliding.
@@ -521,7 +921,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -533,6 +933,7 @@ jobs:
         run: ls -la addons
 
       - name: Attach to the GitHub release
+        if: ${{ !inputs.dry_run && !inputs.nightly }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -577,7 +978,7 @@ jobs:
   typescript-publish:
     name: Publish to npm
     needs: typescript-release-assets
-    if: vars.PUBLISH_NPM == 'true'
+    if: vars.PUBLISH_NPM == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm
@@ -590,7 +991,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ env.SOURCE_REF }}
 
       - uses: actions/setup-node@v7
         with:
@@ -648,6 +1049,14 @@ jobs:
           # bypass-2fa token is deprecated and removed in January 2027, so this
           # is the token path that still exists afterwards.
           if [ "$STAGE" = "true" ]; then publish=(stage publish); else publish=(publish); fi
+          # npm refuses a prerelease without --tag, so that `latest` stays on
+          # the last stable version. Tag it with its prerelease id instead
+          # (0.6.0-preview -> preview, 0.7.0-rc.1 -> rc).
+          version=$(node -p "require('./package.json').version")
+          if [[ "$version" == *-* ]]; then
+            pre=${version#*-}
+            publish+=(--tag "${pre%%.*}")
+          fi
           for dir in npm/*/; do
             echo "== ${dir}"
             ( cd "$dir" && npm "${publish[@]}" )
@@ -665,16 +1074,26 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          missing=0
-          for pkg in felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"); do
-            if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
-              echo "ok      ${pkg}@${version}"
-            else
-              echo "MISSING ${pkg}@${version}"
-              missing=1
-            fi
+          # The registry lags a publish by seconds to minutes, so a version
+          # missing on the first look is not yet a failed publish.
+          pending=(felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"))
+          for try in $(seq 1 20); do
+            still=()
+            for pkg in "${pending[@]}"; do
+              if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+                echo "ok      ${pkg}@${version} (try ${try})"
+              else
+                still+=("$pkg")
+              fi
+            done
+            pending=(${still[@]+"${still[@]}"})
+            [ "${#pending[@]}" -eq 0 ] && exit 0
+            [ "$try" -lt 20 ] && sleep 15
           done
-          exit "$missing"
+          for pkg in "${pending[@]}"; do
+            echo "MISSING ${pkg}@${version} after 20 tries"
+          done
+          exit 1
 
       - name: What a maintainer needs to promote
         if: ${{ inputs.npm_stage }}
@@ -695,7 +1114,7 @@ jobs:
     name: Publish to PyPI
     needs: python-release-assets
     # Off until Felix is meant to be publicly installable. See the note above.
-    if: vars.PUBLISH_PYPI == 'true'
+    if: vars.PUBLISH_PYPI == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: pypi
@@ -723,64 +1142,96 @@ jobs:
   # --- crates.io -----------------------------------------------------------
   #
   # The Rust client is what the Python and Node bindings wrap, so this is the
-  # publish the other two sit on top of: `pip install felix-client` and
-  # `npm install felix-client` ship a compiled `felix-client`, but anyone
-  # writing Rust needs it from the registry.
+  # publish the other two sit on top of. felixctl and felix-loadgen, which it
+  # links, go up after it.
   #
   # Order is not cosmetic. crates.io resolves a dependency against the registry
   # at publish time, so a crate cannot go up before the crates it depends on.
   # The list below is a topological sort of the workspace's internal edges and
-  # must stay one; `cargo publish` waits for the index between crates on its
-  # own, so the sequence is the whole mechanism.
+  # must stay one; `check_publish_metadata.py` reads it out of this file and
+  # checks that, and that it names every publishable crate.
   #
-  # Only the client and the two crates it depends on are published. Everything
-  # else is `publish = false`; `check_publish_metadata.py` keeps this list and
-  # those flags in agreement.
-  #
-  # To turn it on: set the repository variable PUBLISH_CRATES to "true" and add
-  # a CARGO_REGISTRY_TOKEN secret with publish rights. Check the names are
-  # available first — a crates.io name is permanent and unrelated to the PyPI
-  # or npm one.
+  # Credentials: a CARGO_REGISTRY_TOKEN secret if one is set, otherwise
+  # trusted publishing. Trusted publishing is the steady state -- no stored
+  # credential -- but crates.io only lets it be configured on a crate that
+  # exists, so a release that introduces a crate name needs a token once.
+  # The checklist is in docs-site's development/building page.
   crates-publish:
-    name: Publish to crates.io
-    needs: linux-x86_64
-    if: vars.PUBLISH_CRATES == 'true'
+    name: ${{ inputs.dry_run && 'Package crates (dry run, nothing published)' || 'Publish to crates.io' }}
+    needs: [linux-x86_64, python-conformance, typescript-conformance]
+    if: ${{ !inputs.nightly && (vars.PUBLISH_CRATES == 'true' || inputs.dry_run) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: crates-io
     permissions:
       contents: read
+      id-token: write
     env:
       CARGO_TERM_COLOR: always
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: "1.97.1"
 
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
       # A crates.io version is permanent, so the tag and the manifests agreeing
       # is checked before anything is uploaded rather than after.
       - name: The tag and the manifests must agree
         run: python3 scripts/check_release_version.py "${RELEASE_TAG}"
 
-      - name: Publish, in dependency order
+      # Every crate packaged and built from its .crate before the first one is
+      # uploaded. cargo resolves the set's internal dependencies against the
+      # packages it just made, so this works before any of them are on the
+      # registry, and a crate that cannot package fails the release while
+      # nothing is permanent yet.
+      - name: Package, in dependency order
+        run: |
+          set -euo pipefail
+          crates=()
+          for crate in felix-transport felix-wire felix-client felix-loadgen felixctl; do
+            crates+=("$crate")
+          done
+          echo "CRATES=${crates[*]}" >> "$GITHUB_ENV"
+          args=()
+          for crate in "${crates[@]}"; do args+=(-p "$crate"); done
+          cargo package --locked "${args[@]}"
+
+      # cargo package leaves extracted sources under target/package, and
+      # rust-cache's post step trips over their test fixture directories
+      # (ENOENT annotations). They are not worth caching anyway.
+      - name: Drop the packaged sources
+        if: always()
+        run: rm -rf target/package
+
+      - name: Trusted publishing
+        id: auth
+        if: ${{ !inputs.dry_run && env.HAS_TOKEN != 'true' }}
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
+          echo "credential: $([ "$HAS_TOKEN" = true ] && echo CARGO_REGISTRY_TOKEN || echo trusted publishing)"
 
           # Re-running a release must not fail on the crates that already
           # landed: a publish that dies halfway leaves the earlier tiers up,
           # and crates.io answers a repeat with an error rather than a no-op.
-          for crate in felix-transport felix-wire felix-client; do
+          for crate in $CRATES; do
             status=$(curl -sS -o /dev/null -w '%{http_code}' \
               -A "felix-release/${version}" \
               "https://crates.io/api/v1/crates/${crate}/${version}")
@@ -789,14 +1240,13 @@ jobs:
               continue
             fi
             # crates.io allows a short burst of *new* crate names and then one
-            # per ten minutes. Publishing a workspace for the first time runs
-            # straight into it -- 0.5.0 got five up and was refused on the
-            # sixth -- and it is not an error, it is a queue. Version publishes
-            # after that first release are not bounded this way, so this waits
+            # per ten minutes. It is a queue, not an error, so this waits
             # rather than failing a release nobody can retry cheaply.
+            published=false
             for attempt in 1 2 3 4 5; do
               echo "== publishing ${crate} ${version} (attempt ${attempt})"
               if cargo publish -p "$crate" --locked 2>&1 | tee /tmp/publish.log; then
+                published=true
                 break
               fi
               if ! grep -q "429 Too Many Requests" /tmp/publish.log; then
@@ -812,4 +1262,8 @@ jobs:
               echo "rate limited; waiting ${wait}s"
               sleep "$wait"
             done
+            if [ "$published" != true ]; then
+              echo "::error::${crate} ${version} was still rate limited after five attempts; rerun this job."
+              exit 1
+            fi
           done

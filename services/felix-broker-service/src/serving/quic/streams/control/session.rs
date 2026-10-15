@@ -10,6 +10,13 @@ use crate::serving::quic::handlers::publish::{
     Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
 
+/// Extended feature bits this broker serves, sent in `server_features_hi`.
+/// `stream_deleted` is sent only to a client that offered it, when a stream
+/// it reads is deleted.
+const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
+    | felix_wire::FEATURE_STREAM_DELETED
+    | felix_wire::FEATURE_PUBLISH_WIDTH;
+
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,
     session: &mut Session,
@@ -17,6 +24,7 @@ pub(super) async fn authenticate(
     token: String,
     client_flags: Option<u16>,
     client_features: Option<u32>,
+    client_features_hi: Option<u32>,
 ) -> Result<Step> {
     let Ctx {
         broker,
@@ -67,6 +75,14 @@ pub(super) async fn authenticate(
             // frame the client cannot parse, and an undecodable
             // frame costs the connection.
             session.peer_features = client_features.unwrap_or(0);
+            session.peer_features_hi =
+                felix_wire::peer_features_hi(session.peer_features, client_features_hi);
+            // Per connection, on top of the broker-wide setting.
+            session.commit_ack = config.ack_on_commit
+                || felix_wire::supports_feature(
+                    session.peer_features,
+                    felix_wire::FEATURE_ACK_ON_COMMIT,
+                );
             // A window only for a client that asked and can read the answer:
             // any other client keeps completion-order acks and its old frame.
             let publish_window = (client_flags.is_some()
@@ -74,16 +90,19 @@ pub(super) async fn authenticate(
                     session.peer_features,
                     felix_wire::FEATURE_PUBLISH_PIPELINE,
                 )
-                && publish_ctx.publish_window.is_some())
-            .then_some(config.publish_window);
-            if publish_window.is_some() {
+                && publish_ctx.publish_window > 0)
+                .then_some(publish_ctx.publish_window);
+            if let Some(window) = publish_window {
                 session.ack_order.enable();
+                session.publish_window = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
+                    window as usize,
+                )));
             }
             // Advertise our flag set only to a client that offered its
             // own. A client that sent no `client_flags` predates
             // negotiation and would not understand `AuthOk`, so it must
             // keep receiving the plain `Ok` it expects.
-            let response = match client_flags {
+            let mut response = match client_flags {
                 Some(_) => Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
                     // Only what this broker can actually answer.
@@ -97,6 +116,7 @@ pub(super) async fn authenticate(
                     // broker unable to offer a request it can serve.
                     server_features: Some(
                         felix_wire::FEATURE_CACHE_DELETE
+                            | felix_wire::FEATURE_ACK_ON_COMMIT
                             // Only when the cache store can observe
                             // its writes. A watch's contract is
                             // built on log offsets, so a broker
@@ -114,6 +134,10 @@ pub(super) async fn authenticate(
                                 None => 0,
                             }
                             | felix_wire::FEATURE_ATOMIC_COMMIT
+                            // A broker without durable storage has no
+                            // offsets to compare, so it refuses every
+                            // one; it still knows the request.
+                            | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | match publish_ctx.client_endpoints {
                                 Some(_) => {
                                     felix_wire::FEATURE_TOPOLOGY
@@ -130,7 +154,12 @@ pub(super) async fn authenticate(
                             | match broker.group_reader() {
                                 Some(_) => {
                                     felix_wire::FEATURE_CONSUMER_GROUP
+                                        | felix_wire::FEATURE_GROUP_CONSUMER
                                         | felix_wire::FEATURE_GROUP_DEAD_LETTERS
+                                        | felix_wire::FEATURE_GROUP_SKIPPED
+                                        | felix_wire::FEATURE_GROUP_PUBLISHER
+                                        | felix_wire::FEATURE_GROUP_ADMIN
+                                        | felix_wire::FEATURE_GROUP_CLAIM_CONTROL
                                 }
                                 None => 0,
                             }
@@ -148,11 +177,23 @@ pub(super) async fn authenticate(
                             // deployment rather than a guess.
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_CACHE_SHARDS
+                            | felix_wire::FEATURE_SUBSCRIBE_QUEUE
+                            // Likewise: a single node owns every shard.
+                            | felix_wire::FEATURE_SHARD_OWNERS
                             // Advertised unconditionally: the
                             // sequences live with the shard's
                             // leader, which every broker is for
                             // the shards it leads.
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
+                            // Both cache stores keep versions, so every
+                            // broker can answer a conditional write.
+                            | felix_wire::FEATURE_CACHE_CONDITIONAL
+                            // Every durable record stores its append time; an
+                            // in-memory stream is answered with an error.
+                            | felix_wire::FEATURE_RECORD_TIMESTAMPS
+                            // Likewise answered for a durable stream and
+                            // refused for an in-memory one.
+                            | felix_wire::FEATURE_STREAM_READ
                             // Codes are sent only to a client that offered
                             // the bit; advertising it tells that client an
                             // error without one is not a gap in this broker.
@@ -160,17 +201,24 @@ pub(super) async fn authenticate(
                             // Sent only to a client that offered it, when a
                             // shard it reads moves away.
                             | felix_wire::FEATURE_SHARD_MOVED
+                            // Likewise, when a subscriber's queue drops.
+                            | felix_wire::FEATURE_SUBSCRIPTION_LAGGED
                             // An unknown request is answered, not fatal, for a
                             // client that offered the bit.
                             | felix_wire::FEATURE_UNSUPPORTED
                             // A reused sequence is refused, not answered as a
                             // duplicate, for a client that offered the bit.
                             | felix_wire::FEATURE_SEQUENCE_REUSED
+                            // Each stream gets a window of its own.
                             | match publish_ctx.publish_window {
-                                Some(_) => felix_wire::FEATURE_PUBLISH_PIPELINE,
-                                None => 0,
+                                0 => 0,
+                                _ => {
+                                    felix_wire::FEATURE_PUBLISH_PIPELINE
+                                        | felix_wire::FEATURE_STREAM_PUBLISH_WINDOW
+                                }
                             },
                     ),
+                    server_features_hi: None,
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
                     // explicitly would change the bytes every
@@ -182,6 +230,19 @@ pub(super) async fn authenticate(
                 },
                 None => Message::Ok,
             };
+            // The extended word goes only to a client that said it reads one.
+            if let Message::AuthOk {
+                server_features: Some(features),
+                server_features_hi,
+                ..
+            } = &mut response
+            {
+                (*features, *server_features_hi) = felix_wire::answer_features(
+                    *features,
+                    SERVED_FEATURES_HI,
+                    session.peer_features,
+                );
+            }
             handle_ack_enqueue_result(
                 send_outgoing_critical(
                     out_ack_tx,
@@ -199,13 +260,18 @@ pub(super) async fn authenticate(
         }
         Err(err) => {
             tracing::warn!(error = %err, "auth failed");
+            let refusal = if err.is::<crate::serving::revocation::Revoked>() {
+                ClientError::revoked()
+            } else {
+                ClientError::unauthenticated("auth failed")
+            };
             send_control_error(
                 out_ack_tx,
                 out_ack_depth,
                 ack_throttle_tx,
                 ack_timeout_state,
                 cancel_tx,
-                ClientError::unauthenticated("auth failed"),
+                refusal,
             )
             .await?;
             return Ok(Step::Close(false));

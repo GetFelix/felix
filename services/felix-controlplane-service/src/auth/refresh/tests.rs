@@ -97,6 +97,13 @@ fn refresh_refusals_are_counted() {
             changes_limit: crate::config::DEFAULT_CHANGES_LIMIT,
             change_retention_max_rows: Some(crate::config::DEFAULT_CHANGE_RETENTION_MAX_ROWS),
         }));
+        store
+            .set_tenant_signing_keys(
+                "t1",
+                crate::auth::keys::generate_signing_keys().expect("keys"),
+            )
+            .await
+            .expect("keys");
         let state = crate::test_support::app_state_ready(store.clone());
         let refresh = |token: String| {
             let state = state.clone();

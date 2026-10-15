@@ -16,7 +16,7 @@ otherwise. Encryption at rest and audit logging are **not** built.
 :::note[Security Maturity]
 Felix is in early development and has not been through an external security
 review. This page states plainly which protections exist and which are
-planned; the [status table](/felix/getting-started/what-felix-is-for/) is
+planned; the [status table](/getting-started/what-felix-is-for/) is
 kept current per capability.
 :::
 
@@ -27,7 +27,7 @@ configuration:
 
 | Link | Default | With configuration |
 | --- | --- | --- |
-| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`: that certificate must be issued to the token's subject (a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN). `FELIX_TLS_REQUIRE_CERT=true` refuses to start without a certificate. `FELIX_TLS_REQUIRE_ALPN=true` refuses clients that do not negotiate the `felix/1` ALPN. |
+| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`: that certificate must be issued to the token's subject (a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN), or to its actor (`act`) on a token the control plane delegated. `FELIX_TLS_REQUIRE_CERT=true` refuses to start without a certificate. `FELIX_TLS_REQUIRE_ALPN=true` refuses clients that do not negotiate the `felix/1` ALPN. |
 | Client ↔ broker (Kafka listener) | TLS with the same certificate as QUIC (`FELIX_KAFKA_TLS=false` turns it off). | Same variables as QUIC, except `FELIX_TLS_REQUIRE_ALPN`. |
 | Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
 | Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. |
@@ -81,7 +81,7 @@ naming convention.
 
 A tenant's publish rate can be capped per broker, in bytes and in messages per
 second (`FELIX_TENANT_PUBLISH_*` in the
-[environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas)),
+[environment reference](/reference/environment-variables/#connection-limits-and-tenant-quotas)),
 and one source address can hold at most `FELIX_MAX_CONNECTIONS_PER_IP` client
 connections. Quotas on subscriptions, cache use and storage are not built, and
 publish quotas live in each broker's environment rather than the control
@@ -104,9 +104,12 @@ flowchart LR
     e3@{ animate: true }
 ```
 
-Felix never sees your IdP password, and the broker never calls the control plane
-on the request path: it verifies the signature against published JWKS and reads
-the permissions out of the token.
+Felix never sees your IdP password, and the broker does not ask the control
+plane about each request: it verifies the signature against the tenant's
+published JWKS, which it fetches for every tenant it knows when it starts and
+caches for an hour, and reads the permissions out of the token. A broker can
+therefore keep verifying tokens through a control-plane outage shorter than that
+hour.
 
 ### Bootstrap Mode (Day-0)
 
@@ -169,7 +172,29 @@ one winner and `409 already_initialized` for everyone else, and a failure
 part-way leaves the tenant retryable rather than half-initialized. The token
 itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
-[`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
+[`docs/security/bootstrap.md`](https://github.com/GetFelix/felix/blob/main/docs/security/bootstrap.md).
+
+#### Development tokens
+
+For a local stack or a CI job, `FELIX_BOOTSTRAP_DEV_TOKENS=true` makes the
+bootstrap listener mint a Felix token for any principal of an initialized
+tenant, with no identity provider:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
+  -H 'X-Felix-Bootstrap-Token: change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "principal": "p:dev" }'
+```
+
+The principal is named as RBAC policies and groupings name it, and the token
+carries what RBAC grants it, narrowed by `requested`, `resources`,
+`permissions` and `audience` exactly as on [token exchange](#token-exchange-oidc--felix). The
+answer is the exchange's, refresh token included. The control plane refuses to
+start with the switch on unless bootstrap is enabled on a loopback
+`FELIX_BOOTSTRAP_BIND_ADDR`, and logs a warning that it is on. Anyone holding
+the bootstrap token can then act as any principal, so never set it on a shared
+or production control plane.
 
 After bootstrap, admin actions require explicit Felix permissions:
 - IdP issuer admin: `tenant.manage:tenant:{tenant_id}`, plus
@@ -185,6 +210,7 @@ After bootstrap, admin actions require explicit Felix permissions:
 - Tenant catalog (create, list, delete): `tenant.manage:cluster:*`
 - Metadata feeds brokers seed from (`snapshot`, `changes`): `node.view:cluster:*`
 - Cluster membership reads: `node.view:cluster:*`
+- A broker's view of a shard or of its subscriptions (`shard_inspect`, `subscriptions_list`, `felixctl inspect`): `node.view:cluster:*`, presented to the broker. Only that exact grant counts; a wildcard such as `node.view:*` does not reach the cluster
 - Cluster membership writes: `node.manage:node:{node_id}` or `node.manage:cluster:*`
 
 The credential is checked before existence, so nothing about what exists can
@@ -197,6 +223,7 @@ Canonical RBAC object formats:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream_or_*}`
 - `cache:{tenant_id}/{namespace}/{cache_or_*}`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`: some keys of one cache
 - `group:{tenant_id}/{namespace}/{stream_or_*}/{group_or_*}`: one consumer group; a `*` only after other `*`s
 - `cluster:*`: the cluster itself, outside the tenant hierarchy
 - `node:{node_id}`: one broker, also outside it
@@ -207,6 +234,10 @@ Write-time protections:
 - policy/assignment writes are rejected if target scope is broader than caller scope
 
 This blocks privilege escalation when delegating namespace or stream admins.
+
+`felixctl rbac` lists, adds and removes policies and groupings over the same
+API, and checks an object against this grammar before sending it. See
+[felixctl](/getting-started/felixctl/#rbac).
 
 #### Cluster scope
 
@@ -255,12 +286,12 @@ principal to it, and exchange. The same route gives a broker its
 Felix supports any OIDC-compliant IdP that exposes a JWKS endpoint (via discovery or direct JWKS URL) and uses an allowed upstream OIDC signing algorithm.
 
 Supported upstream OIDC JWT signing algorithms:
-- `ES256` (default)
-- `RS256`, `RS384`, `RS512`
+- `ES256` and `RS256` (the default)
+- `RS384`, `RS512`
 - `PS256`, `PS384`, `PS512`
 
 Control plane configuration:
-- YAML: `oidc_allowed_algorithms: ["ES256"]`
+- YAML: `oidc_allowed_algorithms: ["ES256", "RS256"]`
 - Env: `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,...`
 
 Common providers that work out of the box include Microsoft Entra ID, Okta,
@@ -304,7 +335,32 @@ Response:
 ```
 
 The request body can only narrow the permissions RBAC grants. It cannot widen
-them.
+them. `requested` keeps the listed actions and `resources` the listed objects,
+as a cross product: every kept action on every kept resource.
+
+To give one token different actions on different resources, name
+`action:object` pairs in `permissions` and send `requested` as an empty list:
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+Each pair is narrowed on its own against the grants with exactly its action,
+so the token above can read `a` and write `b` and nothing else. A pair for an
+action the principal lacks, or for a resource outside its grants, adds
+nothing, and a pair broader than a grant keeps the grant as it is. Sending
+`permissions` without `"requested": []`, or with a non-empty `requested` or
+`resources`, is a `400`. The empty `requested` makes a control plane that
+predates `permissions` refuse the exchange instead of ignoring the pairs and
+minting full rights. A refresh keeps the pairs. With the Raft store, pairs are
+refused with `409` until every control-plane member runs a release that
+supports them.
 
 ### Felix Token Claims
 
@@ -333,6 +389,7 @@ Casbin is used with domains for tenant scoping. Policies and groupings are store
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `cache:{tenant_id}/{namespace}/{cache}/{key_prefix}*`
 - `group:{tenant_id}/{namespace}/{stream}/{group}` or `group:{tenant_id}/{namespace}/{stream}/*`
 
 **Actions**:
@@ -360,11 +417,24 @@ grant for an action on a stream is scoped to those groups there: its stream
 grants stop covering that stream's other groups for that action. Principals
 with no group grants keep the stream-wide behaviour.
 
+Cache access can be granted on some keys of a cache instead of all of it. A
+fourth segment names one key, `cache:t1/ns/rooms/room1/state`, or a prefix
+ending in `*`, `cache:t1/ns/rooms/room1/*`. The prefix is a plain string
+prefix: `user:1*` also covers `user:10`, so end a prefix with a separator when
+ids share leading characters. The broker checks gets, puts, deletes,
+conditional writes, counters and key watches against the key, and a prefix
+watch against its prefix, which only a prefix grant the watch starts with can
+allow. An exact-key grant never allows a prefix watch. A `*` anywhere but the
+end of the key, a bare `*`, or a wildcard namespace or cache in a key object
+is refused when the policy is written. A whole-cache grant still covers every
+key, and a broker that predates key grants refuses requests made with them.
+
 **Permission strings** embedded in Felix tokens:
 
 ```
 stream.publish:stream:t1/payments/orders
 cache.read:cache:t1/payments/session
+cache.write:cache:t1/payments/session/user:42/*
 ns.manage:namespace:t1/payments
 tenant.manage:tenant:t1
 ```
@@ -405,6 +475,97 @@ sequenceDiagram
     B-->>C: Allow or reject operation
 ```
 
+A token is bound to a QUIC stream, not a connection: each stream sends its own
+`Auth` and every request on it is checked against that token. So one client can
+carry several users. The Rust client's `Client::with_identity` opens streams
+under another user's token over the same connections, and the broker still
+checks each user's requests against that user's grants alone. Each user also
+gets their own share of the connection's limits: the subscription cap
+(`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`) and the publish byte budget
+(`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`) apply per tenant and token subject
+on a connection, under a ceiling for the whole connection
+(`FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`,
+`FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`, four users' worth by
+default). The users share that ceiling, so with the defaults four users at
+their limits leave a fifth nothing. With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`,
+a user's own token is refused on the gateway's certificate. The gateway exchanges it first at
+`POST /v1/tenants/{tenant_id}/token/delegate`, an RFC 8693 token exchange that
+needs `token.delegate:tenant:{tenant_id}` and returns the user's token, no
+wider and no longer-lived, with `act: {"sub": "<gateway principal>"}`. The
+broker binds that token to a certificate issued to its actor. Only a token
+minted for that gateway can be delegated: the gateway sends its own token as
+`actor_token` when it exchanges the user's sign-in, the user's token records
+it in `may_act`, and `/token/delegate` refuses a token whose `may_act` names
+another caller or nobody. An actor token that is refused makes the exchange a
+`403` with code `actor_refused`, which is how the gateway tells its own
+credential's problem from a user's missing permission (`forbidden`). A broker token stolen from a browser or another
+gateway therefore cannot be moved onto a gateway's certificate. Holding
+`token.delegate` still means acting as any user whose token was minted for
+you, so grant it to gateways only. The gateway's own connections need no
+broker grant: a holder of `token.delegate` can exchange for a connection-only
+broker token, with its own subject and no permissions, by asking for
+`"requested": [], "permissions": []`. See
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
+See [Acting for many users](/clients/rust/#acting-for-many-users).
+
+### Revocation
+
+Revoking a principal ends what its tokens already opened, on every broker.
+`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` revokes the principal
+named. Removing an RBAC policy or role assignment revokes everyone the rule
+reached through role assignments, or the whole tenant when it reached an IdP
+group, whose members the control plane cannot list.
+
+A revocation is a cutoff time. The control plane records it, and brokers read
+it from a feed they poll on the catalog sync interval
+(`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default). From then on, a
+broker token of that principal issued at or before the cutoff is refused, and
+everything such a token opened ends with the `revoked` error code: control
+streams, subscriptions, cache watches and Kafka connections. A delegated token
+is revoked with its actor too.
+
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant CP as Control Plane
+    participant B as Broker
+    participant C as Client
+
+    A->>CP: Revoke principal, or remove an RBAC rule
+    CP->>CP: Record cutoff for the principals it reached
+    B->>CP: Poll principal-revocations/changes
+    CP-->>B: tenant, principal, revoked_at
+    B-->>C: Error with code revoked on each open stream, then close
+    C->>CP: Refresh (refused if the principal was cut off)
+    C->>B: Auth with a token minted after the cutoff
+```
+
+A gateway that is revoked, or loses `token.delegate`, can no longer bind or
+delegate user tokens with a `felix-controlplane` token minted before that,
+even one that has not expired: `/token/exchange` (with `actor_token`) and
+`/token/delegate` check it against current RBAC and its revocations, and answer
+`actor_refused`. Users' refresh chains bound to the gateway end only when RBAC
+no longer grants it `token.delegate`, so an RBAC edit that merely reaches the
+gateway does not log its users out.
+
+Revocation fails open on a broker that cannot reach the feed. Until a poll
+succeeds again, a new session with a revoked token is accepted until the token
+expires (at most one access TTL, 900 s by default, after the revocation), and a
+stream already open keeps running. The broker logs a warning, and
+`time() - felix_revocation_feed_last_success_seconds` shows how long it has
+been; see
+[Observability](/features/observability/). The broker does not refuse new
+streams meanwhile, so a control-plane outage stays out of the data path.
+Cutoffs and token issue times come from the control-plane members' clocks.
+Cutoffs are read on the Raft leader, so the only window is clock skew between
+members: keep those clocks in sync.
+
+Revocation ends sessions rather than narrowing them in place. A client whose
+rights were only reduced gets a token minted under the current rules from its
+next refresh and opens its streams again. Tokens for the control plane's own
+API are not revoked; they expire with the access TTL. See
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
+
 ## Not built
 
 - **Encryption at rest.** Durable log segments are plaintext on disk. If the
@@ -424,5 +585,5 @@ sequenceDiagram
 ## Reporting a vulnerability
 
 Open a report through
-[GitHub Security Advisories](https://github.com/gabloe/felix/security/advisories)
+[GitHub Security Advisories](https://github.com/GetFelix/felix/security/advisories)
 rather than a public issue.

@@ -8,7 +8,7 @@ three are readings of the same replicated, append-only log, reached over one
 QUIC connection.
 
 This page is the short version of how it fits together. The
-[status table](/felix/getting-started/what-felix-is-for/) is the page to trust
+[status table](/getting-started/what-felix-is-for/) is the page to trust
 for what is and is not built.
 
 ## The core idea: one log, three readings
@@ -38,11 +38,11 @@ head-of-line blocking, and every connection is TLS 1.3. Queues are bounded and
 their overflow policy is explicit, so one slow path degrades locally instead of
 cascading. A stalled subscriber loses *its own* events (under the default
 `drop_new` policy) rather than stalling the publisher or other subscribers; the
-[slow-consumer demo](/felix/demos/slow-consumer-isolation/) runs both policies
+[slow-consumer demo](/demos/slow-consumer-isolation/) runs both policies
 side by side. Batching bounds, flow-control windows, pool sizes and fsync policy
 are all ordinary configuration.
 
-Measured numbers are kept on the [Benchmarks](/felix/features/benchmarks/) page
+Measured numbers are kept on the [Benchmarks](/features/benchmarks/) page
 so they only need updating in one place.
 
 ## The pieces
@@ -94,14 +94,14 @@ flowchart TB
 - **`felix-wire`** is the protocol: a fixed frame header, JSON control
   messages, binary frames on the data plane, and capability negotiation so
   old and new peers interoperate. Full details in
-  [Wire Protocol](/felix/architecture/wire-protocol/).
+  [Wire Protocol](/architecture/wire-protocol/).
 - **`felix-transport`** wraps QUIC: endpoints, streams, flow-control windows,
   and dedicated I/O runtimes so the transport driver is never starved by
   application tasks.
 - **`felix-broker`** is the data plane with no networking in it: the log,
   subscriber registry, fanout, cache index, consumer groups.
 - **`felix-storage`** writes the durable log to disk as append-only segments.
-  See [Durable Storage](/felix/architecture/durable-storage/).
+  See [Durable Storage](/architecture/durable-storage/).
 - **`felix-replication`** ships each shard's log from its leader to its
   followers and counts the majority a `Quorum` write waits for.
 - **`felix-client`** is the Rust SDK: publisher, subscription, and cache APIs
@@ -146,7 +146,7 @@ Today: TLS 1.3 on every connection, OIDC token exchange at the control plane,
 tenant-scoped tokens, RBAC enforced at the broker, and mutually authenticated
 broker-to-broker QUIC once `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA` are set.
 Not yet: end-to-end payload encryption, encryption at rest, audit logging.
-Details in [Security](/felix/features/security/).
+Details in [Security](/features/security/).
 
 ## Running it
 
@@ -156,7 +156,7 @@ needs a second one to replicate to.
 
 A cluster is brokers plus a control plane:
 
-![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/felix/diagrams/architecture.svg)
+![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/diagrams/architecture.svg)
 
 The control plane keeps its metadata in one of three backends:
 
@@ -169,13 +169,13 @@ The control plane keeps its metadata in one of three backends:
 Raft has shipped: the instances form a quorum and survive losing one without
 losing an acknowledged write. Postgres remains fully supported; the trade
 between the two, and the migration path, are in
-[Metadata Raft](/felix/architecture/metadata-raft/) and
-[Control-plane HA](/felix/deployment/control-plane-ha/).
+[Metadata Raft](/architecture/metadata-raft/) and
+[Control-plane HA](/deployment/control-plane-ha/).
 
 Felix runs anywhere a process runs. For orchestrators it ships the pieces
 they expect: readiness and liveness endpoints that answer different questions,
 and a bounded graceful drain on SIGTERM. See
-[Graceful shutdown](/felix/deployment/graceful-shutdown/).
+[Graceful shutdown](/deployment/graceful-shutdown/).
 
 ## Is Felix right for your workload?
 
@@ -184,7 +184,7 @@ work distribution with retries and dead letters, and services that currently
 run a broker *and* a cache *and* a queue and would rather run one system.
 Services that already talk Kafka can keep their producers and their
 partition-assigning consumers: Felix serves the Kafka protocol for those (see
-[Kafka compatibility](/felix/features/kafka/)).
+[Kafka compatibility](/features/kafka/)).
 
 A bad fit: petabyte-scale batch pipelines, complex stream processing
 (joins, windowing; use Flink or Kafka Streams), or anything that needs a
@@ -193,11 +193,11 @@ consumer groups, which Felix's Kafka listener does not offer. Felix is young
 and its ecosystem is small.
 
 The full version of this list, kept current per capability, is
-[What Felix Is For](/felix/getting-started/what-felix-is-for/).
+[What Felix Is For](/getting-started/what-felix-is-for/).
 
 ## Where to next
 
-- [Quickstart](/felix/getting-started/quickstart/): run a broker and the demos
-- [Installation](/felix/getting-started/installation/): build from source
-- [System design](/felix/architecture/system-design/): the architecture in depth
-- [Broker API](/felix/api/broker-api/): the wire-level API
+- [Quickstart](/getting-started/quickstart/): run a broker and the demos
+- [Installation](/getting-started/installation/): build from source
+- [System design](/architecture/system-design/): the architecture in depth
+- [Broker API](/api/broker-api/): the wire-level API

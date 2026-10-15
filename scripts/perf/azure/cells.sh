@@ -467,8 +467,9 @@ durable_trials() {
 # (4096) and BATCH (64) shape the records; IN_FLIGHT > 0 sends acked batches
 # with that many outstanding per publisher, 0 is fire-and-forget. --keys
 # spreads batches over routing keys; 0 would put every record on shard 0.
+# --shards lets the loadgen pick key names that cover every shard.
 ingest_flags() {
-  echo "--scenario ingest --stream $1 --payload-bytes ${PAYLOAD:-4096} --batch ${BATCH:-64} --concurrency $3 --duration-secs ${CELL_SECS:-90} --keys $2${IN_FLIGHT:+ --in-flight ${IN_FLIGHT}}"
+  echo "--scenario ingest --stream $1 --payload-bytes ${PAYLOAD:-4096} --batch ${BATCH:-64} --concurrency $3 --duration-secs ${CELL_SECS:-90} --keys $2${SHARDS:+ --shards ${SHARDS}}${IN_FLIGHT:+ --in-flight ${IN_FLIGHT}}"
 }
 
 # shape_pass <tag> <stream> <durable:0|1> <generators> <publishers-per-generator>:

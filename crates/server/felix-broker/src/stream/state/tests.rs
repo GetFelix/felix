@@ -14,6 +14,7 @@ fn stream() -> StreamState {
         1,
         16,
         SubQueuePolicy::DropNew,
+        Default::default(),
         None,
         crate::broker::ConsistencyLevel::Leader,
     )
@@ -133,7 +134,14 @@ fn the_fanout_snapshot_keeps_a_stable_order() {
 
 #[test]
 fn append_batch_keeps_monotonic_sequences_and_trims_once() {
-    let stream = StreamState::new(1, 8, SubQueuePolicy::DropNew, None, Default::default());
+    let stream = StreamState::new(
+        1,
+        8,
+        SubQueuePolicy::DropNew,
+        Default::default(),
+        None,
+        Default::default(),
+    );
     let first = vec![
         Bytes::from_static(b"a"),
         Bytes::from_static(b"b"),
@@ -173,7 +181,15 @@ async fn ending_subscribers_drains_then_closes_each_one() {
     let (_first, mut first_rx) = state.register_subscriber();
     let (_second, mut second_rx) = state.register_subscriber();
     let (snapshot, _) = state
-        .append_batch_at(&[Bytes::from_static(b"queued")], None, None, 16, None)
+        .append_batch_at(
+            &[Bytes::from_static(b"queued")],
+            None,
+            None,
+            16,
+            None,
+            None,
+            None,
+        )
         .expect("no turn to supersede");
     for entry in snapshot.iter() {
         let envelope = crate::stream::delivery::DeliveryEnvelope::with_base_offset(
@@ -185,6 +201,7 @@ async fn ending_subscribers_drains_then_closes_each_one() {
             .try_send(crate::stream::delivery::QueuedDelivery::new(
                 envelope,
                 std::sync::Arc::clone(&state.queued_items),
+                Default::default(),
             ))
             .expect("room in the queue");
     }
@@ -198,4 +215,51 @@ async fn ending_subscribers_drains_then_closes_each_one() {
     }
     assert_eq!(state.subscriber_count(), 0);
     assert!(registered_ids(&state).is_empty());
+}
+
+/// A deleted stream tells its subscribers so, and a subscriber that registers
+/// on the same state afterwards, having resolved it before the delete, ends
+/// at once with the same reason instead of waiting on a stream nobody writes.
+#[tokio::test]
+async fn a_deleted_stream_ends_late_subscribers_too() {
+    let state = stream();
+    let (_id, mut early) = state.register_subscriber();
+
+    assert_eq!(
+        state.end_subscribers(Some(crate::handoff::Ending::Deleted)),
+        1
+    );
+    assert!(early.recv().await.is_none());
+    assert!(early.deleted());
+    assert_eq!(early.moved(), None);
+
+    let (_id, mut late) = state.register_subscriber();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), late.recv())
+        .await
+        .expect("a late subscriber was kept");
+    assert!(ended.is_none());
+    assert!(late.deleted());
+    assert_eq!(state.subscriber_count(), 0);
+}
+
+/// A move is not sticky: a subscriber registering after it, when the shard
+/// comes back, is not told the old move.
+#[tokio::test]
+async fn a_move_does_not_end_later_subscribers() {
+    let state = stream();
+    let (_id, mut moved) = state.register_subscriber();
+    let to = crate::ShardHandoff {
+        node_id: Some("b".to_string()),
+        addr: None,
+        generation: 2,
+    };
+    state.end_subscribers(Some(crate::handoff::Ending::Moved(to.clone())));
+    assert!(moved.recv().await.is_none());
+    assert_eq!(moved.moved().map(|m| &m.to), Some(&to));
+    assert!(!moved.deleted());
+
+    let (_id, later) = state.register_subscriber();
+    assert_eq!(later.moved(), None);
+    assert!(!later.deleted());
+    assert_eq!(state.subscriber_count(), 1);
 }

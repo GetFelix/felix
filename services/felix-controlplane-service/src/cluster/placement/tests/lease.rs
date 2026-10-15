@@ -43,9 +43,14 @@ async fn a_pass_planned_before_an_operators_move_starts_nothing_beside_it() {
     let policy = MovePolicy::default();
     assert_eq!(policy.max_concurrent, 1);
 
-    let pass = super::super::reconciler::plan_pass(&store, &liveness, policy.clone())
-        .await
-        .expect("plan");
+    let pass = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        policy.clone(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
     let planned: Vec<ShardKey> = pass.plan().moves().map(|(key, _, _)| key.clone()).collect();
     assert_eq!(planned.len(), 1, "one move planned: {planned:?}");
     let other = (0..3)
@@ -89,9 +94,14 @@ async fn an_ex_holders_pass_is_fenced_after_a_takeover() {
         .await
         .expect("acquire")
         .expect("granted");
-    let pass = super::super::reconciler::plan_pass(&store, &liveness, MovePolicy::default())
-        .await
-        .expect("plan");
+    let pass = super::super::reconciler::plan_pass(
+        &store,
+        &liveness,
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
     assert_eq!(pass.plan().moves().count(), 1);
 
     tokio::time::sleep(Duration::from_millis(150)).await;

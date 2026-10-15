@@ -10,7 +10,7 @@ use super::responder::send_control_error;
 use super::{Ctx, Session, Step};
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
-    AckEncoding, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
+    AckEncoding, DeclaredWidth, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
     handle_publish_message, send_outgoing_critical, sequence_reuse,
 };
 
@@ -29,7 +29,6 @@ pub(super) async fn publish(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -37,9 +36,7 @@ pub(super) async fn publish(
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
-        ack_wait_timeout,
+        commit_acks,
         throttled,
         sample,
         ..
@@ -63,15 +60,13 @@ pub(super) async fn publish(
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         out_ack_tx,
         out_ack_depth,
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
-        ack_wait_timeout,
+        commit_acks,
         tenant_id,
         namespace,
         stream,
@@ -83,7 +78,7 @@ pub(super) async fn publish(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
     )
     .await?;
     Ok(Step::Next)
@@ -104,7 +99,6 @@ pub(super) async fn publish_batch(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -112,8 +106,7 @@ pub(super) async fn publish_batch(
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         throttled,
         sample,
         ..
@@ -135,18 +128,18 @@ pub(super) async fn publish_batch(
         session.peer_flags,
         broker,
         publish_ctx,
+        session.publish_width.as_ref(),
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         AckEncoding::Json,
         out_ack_tx,
         out_ack_depth,
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         tenant_id,
         namespace,
         stream,
@@ -158,7 +151,7 @@ pub(super) async fn publish_batch(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
         None,
     )
     .await?;
@@ -181,7 +174,6 @@ pub(super) async fn publish_idempotent(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -189,8 +181,7 @@ pub(super) async fn publish_idempotent(
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         throttled,
         sample,
         ..
@@ -212,18 +203,18 @@ pub(super) async fn publish_idempotent(
         session.peer_flags,
         broker,
         publish_ctx,
+        session.publish_width.as_ref(),
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         AckEncoding::Idempotent,
         out_ack_tx,
         out_ack_depth,
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         tenant_id,
         namespace,
         stream,
@@ -237,7 +228,7 @@ pub(super) async fn publish_idempotent(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
         Some((producer_id, sequence, sequence_reuse(session.peer_features))),
     )
     .await?;
@@ -290,5 +281,35 @@ pub(super) async fn producer_init(
         cancel_tx,
     )
     .await?;
+    Ok(Step::Next)
+}
+
+/// Hold the width the client routes a stream's keyed publishes by, for the
+/// publishes that follow on this stream. See `resolve_declared_shard`.
+pub(super) async fn publish_width(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    declared: DeclaredWidth,
+) -> Result<Step> {
+    let refusal = match session.auth_ctx.as_ref() {
+        None => Some(ClientError::unauthenticated("not authenticated")),
+        Some(ctx) if ctx.tenant_id != declared.tenant_id => {
+            Some(ClientError::forbidden("tenant mismatch"))
+        }
+        Some(_) => None,
+    };
+    if let Some(refusal) = refusal {
+        send_control_error(
+            cx.out_ack_tx,
+            cx.out_ack_depth,
+            cx.ack_throttle_tx,
+            cx.ack_timeout_state,
+            cx.cancel_tx,
+            refusal,
+        )
+        .await?;
+        return Ok(Step::Close(false));
+    }
+    session.publish_width = Some(declared);
     Ok(Step::Next)
 }

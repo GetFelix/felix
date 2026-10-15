@@ -1,10 +1,11 @@
 //! The Kafka listener against a real Kafka client: `kcat` (librdkafka 1.8).
 //!
-//! kcat runs from the `edenhill/kcat:1.7.1` image, so these tests need Docker.
-//! Without it each test says so and returns; CI has Docker. On Linux the
-//! container shares the host network; elsewhere (Docker Desktop) it reaches
-//! the host as `host.docker.internal`, which is also what the listener
-//! advertises in Metadata.
+//! kcat runs from the `edenhill/kcat:1.7.1` image, so these tests need Docker
+//! or Podman: `CONTAINER_ENGINE`, else whichever of the two answers. Without
+//! one each test says so and returns; CI has Docker. On Linux the container
+//! shares the host network; elsewhere (Docker Desktop, `podman machine`) it
+//! reaches the host as `host.docker.internal` or `host.containers.internal`,
+//! which is also what the listener advertises in Metadata.
 //!
 //! Run with `cargo test -p felix-broker-service --test kafka_kcat`.
 
@@ -35,7 +36,8 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-const KCAT_IMAGE: &str = "edenhill/kcat:1.7.1";
+// Fully qualified: Podman may refuse a short name it has to guess at.
+const KCAT_IMAGE: &str = "docker.io/edenhill/kcat:1.7.1";
 const TENANT: &str = "t1";
 const TOPIC: &str = "orders.created";
 const SHARDS: u32 = 3;
@@ -111,23 +113,48 @@ impl Felix {
     }
 }
 
-fn docker_host() -> &'static str {
+/// The same choice as `felix_cluster::container::engine`, which this crate
+/// cannot depend on.
+fn engine() -> &'static str {
+    static ENGINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ENGINE.get_or_init(|| {
+        if let Ok(chosen) = std::env::var("CONTAINER_ENGINE")
+            && !chosen.is_empty()
+        {
+            return chosen;
+        }
+        ["docker", "podman"]
+            .into_iter()
+            .find(|engine| {
+                std::process::Command::new(engine)
+                    .arg("version")
+                    .output()
+                    .is_ok_and(|out| out.status.success())
+            })
+            .unwrap_or("docker")
+            .to_string()
+    })
+}
+
+fn container_host() -> &'static str {
     if cfg!(target_os = "linux") {
         "127.0.0.1"
+    } else if engine().ends_with("podman") {
+        "host.containers.internal"
     } else {
         "host.docker.internal"
     }
 }
 
-/// Whether Docker can run the kcat image. Pulls it if missing.
+/// Whether the container engine can run the kcat image. Pulls it if missing.
 async fn kcat_available() -> bool {
-    let ok = Command::new("docker")
+    let ok = Command::new(engine())
         .args(["run", "--rm", KCAT_IMAGE, "-V"])
         .output()
         .await
         .is_ok_and(|out| out.status.success());
     if !ok {
-        eprintln!("skipping: docker cannot run {KCAT_IMAGE}");
+        eprintln!("skipping: {} cannot run {KCAT_IMAGE}", engine());
     }
     ok
 }
@@ -139,7 +166,7 @@ async fn kcat(args: &[&str], certs: Option<&Path>) -> Output {
 /// Run kcat with `input` on its stdin, then closed.
 async fn kcat_fed(args: &[&str], certs: Option<&Path>, input: &str) -> Output {
     use tokio::io::AsyncWriteExt;
-    let mut command = Command::new("docker");
+    let mut command = Command::new(engine());
     command.args(["run", "--rm", "-i"]);
     if cfg!(target_os = "linux") {
         command.args(["--network", "host"]);
@@ -154,7 +181,7 @@ async fn kcat_fed(args: &[&str], certs: Option<&Path>, input: &str) -> Output {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().expect("run docker");
+    let mut child = command.spawn().expect("run the container engine");
     let mut stdin = child.stdin.take().expect("stdin");
     stdin.write_all(input.as_bytes()).await.expect("write");
     drop(stdin);
@@ -162,7 +189,7 @@ async fn kcat_fed(args: &[&str], certs: Option<&Path>, input: &str) -> Output {
         .await
         // No arguments in the message: they carry the SASL password.
         .unwrap_or_else(|_| panic!("kcat did not finish within {KCAT_BOUND:?}"))
-        .expect("run docker")
+        .expect("run the container engine")
 }
 
 fn stdout(output: &Output) -> String {
@@ -241,7 +268,7 @@ async fn start() -> Felix {
         let (listener, advertise) = loop {
             attempt += 1;
             let port = free_port();
-            let advertise = format!("{}:{port}", docker_host());
+            let advertise = format!("{}:{port}", container_host());
             let config = KafkaListenerConfig {
                 listen: SocketAddr::from(([0, 0, 0, 0], port)),
                 advertise: advertise.clone(),

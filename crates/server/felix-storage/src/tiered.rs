@@ -1,5 +1,5 @@
 //! Moving sealed segments to cold storage and back. Only the interface exists;
-//! nothing implements it yet.
+//! nothing implements it yet. Copying segments out is `disk_log::offload`.
 
 use std::time::Duration;
 

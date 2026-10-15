@@ -47,4 +47,4 @@ Secret, then:
 {{- end }}
 
 The runbook, including the credential and rolling upgrades, is at
-https://gabloe.github.io/felix/deployment/kubernetes/
+https://docs.getfelix.dev/deployment/kubernetes/

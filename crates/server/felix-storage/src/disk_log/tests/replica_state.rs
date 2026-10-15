@@ -8,11 +8,11 @@ async fn an_accepted_generation_survives_a_restart() {
     {
         let log = open(&dir, FsyncMode::OnCommit);
         assert_eq!(
-            log.accept_generation(5).await.expect("accept"),
+            log.accept_generation(5, None).await.expect("accept"),
             GenerationCheck::Raised
         );
         assert_eq!(
-            log.accept_generation(5).await.expect("accept"),
+            log.accept_generation(5, None).await.expect("accept"),
             GenerationCheck::Current
         );
     }
@@ -20,8 +20,133 @@ async fn an_accepted_generation_survives_a_restart() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.accepted_generation(), 5);
     assert_eq!(
-        log.accept_generation(4).await.expect("accept"),
+        log.accept_generation(4, None).await.expect("accept"),
         GenerationCheck::Superseded { accepted: 5 }
+    );
+}
+
+#[tokio::test]
+async fn a_second_leader_at_an_accepted_generation_is_refused() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Raised
+    );
+    assert_eq!(
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Current
+    );
+    assert_eq!(
+        log.accept_generation(5, Some("broker-b"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Promised {
+            leader: "broker-a".to_string()
+        }
+    );
+    // A newer generation is a new ballot, whoever asks.
+    assert_eq!(
+        log.accept_generation(6, Some("broker-b"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Raised
+    );
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-b"));
+}
+
+#[tokio::test]
+async fn a_ballot_survives_a_crash_before_anything_is_acknowledged() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept");
+        // Dropped without a shutdown: whatever the caller would acknowledge
+        // next never happened, and the ballot must already be on disk.
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    assert_eq!(
+        log.accept_generation(5, Some("broker-b"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Promised {
+            leader: "broker-a".to_string()
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_ballot_written_before_a_crash_is_taken_at_open() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_generation(4, Some("broker-a"))
+            .await
+            .expect("accept");
+    }
+    // The raise to 5 wrote its ballot and crashed before `replica` caught up.
+    super::super::ballot::store(
+        dir.path(),
+        &super::super::ballot::Ballot {
+            generation: 5,
+            leader: "broker-b".to_string(),
+        },
+    )
+    .expect("store");
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(
+        log.accept_generation(5, Some("broker-c"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Promised {
+            leader: "broker-b".to_string()
+        }
+    );
+    assert_eq!(
+        log.accept_generation(4, Some("broker-a"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Superseded { accepted: 5 }
+    );
+}
+
+#[tokio::test]
+async fn a_generation_accepted_without_a_leader_takes_the_first_one_named() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        // As a build before ballots, or one with them turned off, accepts.
+        log.accept_generation(5, None).await.expect("accept");
+        assert_eq!(log.accepted_leader(), None);
+        assert_eq!(
+            log.accept_generation(5, Some("broker-a"))
+                .await
+                .expect("accept"),
+            GenerationCheck::Current
+        );
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(
+        log.accept_generation(5, Some("broker-b"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Promised {
+            leader: "broker-a".to_string()
+        }
+    );
+    // Without a leader named only the generation is checked.
+    assert_eq!(
+        log.accept_generation(5, None).await.expect("accept"),
+        GenerationCheck::Current
     );
 }
 

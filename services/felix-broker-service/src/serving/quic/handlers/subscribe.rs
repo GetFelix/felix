@@ -28,8 +28,6 @@
 
 mod config;
 mod conn_counts;
-#[cfg(test)]
-mod event_writer;
 mod feeder;
 mod lane;
 mod replay;
@@ -41,19 +39,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use bytes::Bytes;
 use felix_broker::Broker;
 use felix_wire::{Message, StartPosition};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
-use super::publish::{Outgoing, SubscriptionLimiter, send_outgoing_critical};
+use super::publish::{IdentityLimits, Outgoing, send_outgoing_critical};
 use crate::observability::tenants::TenantDelivery;
 use crate::serving::quic::SUBSCRIPTION_ID;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
-use feeder::run_lane_feeder;
+use feeder::{SubscriberRevocation, run_lane_feeder};
 use replay::{CountingSink, EventFormat, write_replay};
 
 /// Application code on an event stream reset because this broker stopped
@@ -85,12 +84,13 @@ pub(crate) async fn handle_subscribe_message(
     broker: Arc<Broker>,
     connection: felix_transport::QuicConnection,
     config: crate::config::BrokerConfig,
-    subscriptions: &Arc<SubscriptionLimiter>,
+    subscriptions: &Arc<IdentityLimits>,
     lane_manager: &Arc<WriterLaneManager>,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
-    ack_timeout_state: &Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     cancel_tx: &tokio::sync::watch::Sender<bool>,
     tenant_id: String,
     namespace: String,
@@ -98,9 +98,20 @@ pub(crate) async fn handle_subscribe_message(
     subscription_id: Option<u64>,
     start: Option<StartPosition>,
     shard: Option<u32>,
+    queue_capacity: Option<u32>,
     peer_flags: u16,
     peer_features: u32,
+    peer_features_hi: u32,
+    owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
+    let principal = owner.map(|auth| auth.subject.clone());
+    let revocation = match owner {
+        Some(auth) => Some(SubscriberRevocation {
+            revocable: auth.revocable.clone(),
+            last_frame: revoked_frame(peer_features)?,
+        }),
+        None => None,
+    };
     // Which shard of the stream this subscription reads.
     //
     // A subscription reads one shard. A stream's shards can have different
@@ -114,6 +125,12 @@ pub(crate) async fn handle_subscribe_message(
     // A skip count describes offsets, so it is sent only with them.
     let skip_enabled =
         offsets_enabled && felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_SKIPPED);
+    let publisher_enabled =
+        felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_PUBLISHER);
+    let timestamps_enabled =
+        felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS);
+    let queue_capacity = queue_capacity
+        .map(|requested| grant_queue_capacity(requested, config.subscriber_queue_capacity_max));
     // Subscribe is a control-plane request: acknowledgements/metadata stay on this bi stream.
     // Actual event delivery happens on a fresh uni stream (broker -> client).
     let span = tracing::trace_span!(
@@ -128,9 +145,10 @@ pub(crate) async fn handle_subscribe_message(
         let subscription_id = subscription_id
             .unwrap_or_else(|| SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
 
-        // Enforce the per-connection subscription cap before asking the broker core for a
-        // subscriber queue — no point allocating one just to reject it immediately after.
-        if !subscriptions.try_reserve(config.max_subscriptions_per_conn) {
+        // Enforce the identity's and the connection's subscription caps before asking the
+        // broker core for a subscriber queue — no point allocating one just to reject it
+        // immediately after.
+        if let Err(cap) = subscriptions.try_reserve() {
             t_counter!("felix_subscribe_requests_total", "result" => "error").increment(1);
             t_counter!("felix_broker_subscribe_conn_limit_rejected_total").increment(1);
             super::publish::handle_ack_enqueue_result(
@@ -139,10 +157,7 @@ pub(crate) async fn handle_subscribe_message(
                     out_ack_depth,
                     "felix_broker_out_ack_depth",
                     ack_throttle_tx,
-                    Outgoing::Message(
-                        ClientError::limit_exceeded("max subscriptions per connection exceeded")
-                            .into_message(),
-                    ),
+                    Outgoing::Message(ClientError::limit_exceeded(cap.message()).into_message()),
                 )
                 .await,
                 ack_timeout_state,
@@ -155,17 +170,26 @@ pub(crate) async fn handle_subscribe_message(
 
         // Ask broker core for a managed subscriber queue.
         //
-        // Without a start position this is the tail-only path every client used
-        // before resume existed, and it stays byte-for-byte what it was. With one,
-        // the broker registers the live subscription first and hands back the
-        // history needed to reach it -- see `Broker::subscribe_from`.
+        // With a start position the broker registers the live subscription
+        // first and hands back the history needed to reach it -- see
+        // `Broker::subscribe_from`. A plain subscribe from a client that reads
+        // offsets is `latest`, so it learns where live delivery began. Without
+        // offsets it is the tail-only path every client used before resume
+        // existed, byte for byte.
         // On failure, respond on the control stream (through the ack queue) and keep
         // the stream alive.
+        let start = start.or(offsets_enabled.then_some(StartPosition::Latest));
         let mut replay = None;
         let mut join = None;
         let mut subscription = match start {
             None => match broker
-                .subscribe(&tenant_id, &namespace, &stream, shard)
+                .subscribe_sized(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    queue_capacity.map(|granted| granted as usize),
+                )
                 .await
             {
                 Ok(subscription) => subscription,
@@ -183,7 +207,14 @@ pub(crate) async fn handle_subscribe_message(
                 }
             },
             Some(start) => match broker
-                .subscribe_from(&tenant_id, &namespace, &stream, shard, start)
+                .subscribe_from_sized(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    start,
+                    queue_capacity.map(|granted| granted as usize),
+                )
                 .await
             {
                 Ok(resumed) => {
@@ -205,6 +236,36 @@ pub(crate) async fn handle_subscribe_message(
                 }
             },
         };
+
+        subscription.set_owner(felix_broker::SubscriberOwner {
+            subscription_id,
+            connection_id: connection.info().id.0,
+            peer: connection.info().peer_addr.to_string(),
+            principal,
+        });
+
+        // Checked again now that it is registered: an ending that landed
+        // since the first check would otherwise have missed it.
+        let key = crate::shards::ShardKey {
+            tenant_id: tenant_id.clone(),
+            namespace: namespace.clone(),
+            stream: stream.clone(),
+            shard,
+            kind: crate::shards::ShardKind::Stream,
+        };
+        if let Some(refusal) = super::redirect::stopped_serving(ingress, &key) {
+            drop(subscription);
+            return subscribe_failed(
+                refusal,
+                subscriptions,
+                out_ack_tx,
+                out_ack_depth,
+                ack_throttle_tx,
+                ack_timeout_state,
+                cancel_tx,
+            )
+            .await;
+        }
 
         // Open a uni stream for event delivery. If this fails, respond with error on
         // control stream.
@@ -290,6 +351,9 @@ pub(crate) async fn handle_subscribe_message(
                     live_offset: join
                         .filter(|_| offsets_enabled)
                         .map(|join| join.live_offset),
+                    // Echoed only when asked for, so a subscribe without it
+                    // gets the frame it always did.
+                    queue_capacity,
                 }),
             )
             .await,
@@ -327,6 +391,8 @@ pub(crate) async fn handle_subscribe_message(
                 EventFormat {
                     offsets: offsets_enabled,
                     skips: skip_enabled,
+                    publisher: publisher_enabled,
+                    timestamps: timestamps_enabled,
                 },
             )
             .await
@@ -365,9 +431,15 @@ pub(crate) async fn handle_subscribe_message(
             single_event_mode: config.fanout_batch_size <= 1,
             offsets_enabled,
             skip_enabled,
+            publisher_enabled,
+            timestamps_enabled,
             shard_moved_enabled: felix_wire::supports_feature(
                 peer_features,
                 felix_wire::FEATURE_SHARD_MOVED,
+            ),
+            stream_deleted_enabled: felix_wire::supports_feature(
+                peer_features_hi,
+                felix_wire::FEATURE_STREAM_DELETED,
             ),
             flush_max_items: config.subscriber_flush_max_items.max(1),
             flush_max_delay: Duration::from_micros(config.subscriber_flush_max_delay_us.max(1)),
@@ -376,7 +448,13 @@ pub(crate) async fn handle_subscribe_message(
         let connection_id = connection.info().id.0;
         let manager = Arc::clone(lane_manager);
         let lane_idx = manager.select_lane(subscription_id, Some(connection_id));
-        let (event_rx, unsubscribe_guard) = subscription.into_parts();
+        let (mut event_rx, unsubscribe_guard) = subscription.into_parts();
+        // Without offsets the client could not resume from where the drop was.
+        if offsets_enabled
+            && felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SUBSCRIPTION_LAGGED)
+        {
+            event_rx.end_on_lag();
+        }
         if manager
             .enqueue(
                 lane_idx,
@@ -391,13 +469,12 @@ pub(crate) async fn handle_subscribe_message(
             .await
             .is_err()
         {
-            metrics::counter!("felix_subscriber_lane_dropped_total").increment(1);
             manager.unregister_subscriber(subscription_id, Some(connection_id));
             subscriptions.release();
             tracing::warn!(
                 lane = lane_idx,
                 subscription_id,
-                "subscriber lane queue full during register"
+                "subscriber lane closed during register"
             );
             t_counter!("felix_subscribe_requests_total", "result" => "error").increment(1);
             super::publish::handle_ack_enqueue_result(
@@ -407,7 +484,7 @@ pub(crate) async fn handle_subscribe_message(
                     "felix_broker_out_ack_depth",
                     ack_throttle_tx,
                     Outgoing::Message(
-                        ClientError::overloaded("subscriber lane queue full during register")
+                        ClientError::overloaded("subscriber lane closed during register")
                             .into_message(),
                     ),
                 )
@@ -431,6 +508,7 @@ pub(crate) async fn handle_subscribe_message(
                 writer_config,
                 feeder_subscriptions,
                 delivery,
+                revocation,
             )
             .await;
         };
@@ -469,11 +547,32 @@ pub(crate) async fn handle_subscribe_message(
     .await
 }
 
+/// The `error` a subscription ends with when its credential is revoked, code
+/// included only for a client that reads codes. A client that predates this
+/// reads it as an unexpected frame, which still ends the subscription with an
+/// error rather than as a clean close.
+fn revoked_frame(peer_features: u32) -> Result<Bytes> {
+    let message = ClientError::revoked().into_message();
+    let message = if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
+        message
+    } else {
+        message.without_error_code()
+    };
+    Ok(message.encode()?.encode())
+}
+
+/// The queue capacity a subscriber gets for `requested`: at least one, and
+/// no more than the configured maximum.
+pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
+    let max = u32::try_from(max).unwrap_or(u32::MAX).max(1);
+    requested.clamp(1, max)
+}
+
 /// Turn a broker error into the most specific protocol message available.
 ///
 /// A cursor rejection is machine-readable so the client can choose a remedy;
 /// everything else stays a generic `Error`.
-fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
+pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
     match err {
         felix_broker::BrokerError::CursorTooOld { oldest, requested } => {
             Message::SubscribeCursorError {
@@ -503,11 +602,11 @@ fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
 #[allow(clippy::too_many_arguments)]
 async fn subscribe_failed(
     message: Message,
-    subscriptions: &Arc<SubscriptionLimiter>,
+    subscriptions: &Arc<IdentityLimits>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
-    ack_timeout_state: &Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     cancel_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<bool> {
     subscriptions.release();

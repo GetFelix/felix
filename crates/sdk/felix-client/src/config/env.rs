@@ -12,6 +12,13 @@ impl ClientConfig {
         if let Some(value) = read_usize_env("FELIX_PUB_STREAMS_PER_CONN") {
             config.publish_streams_per_conn = value;
         }
+        // `0` is meaningful here: it turns shard streams off.
+        if let Some(value) = std::env::var("FELIX_PUB_SHARD_STREAMS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            config.publish_shard_streams = value;
+        }
         if let Some(value) = read_usize_env("FELIX_PUBLISH_CHUNK_BYTES") {
             config.publish_chunk_bytes = value;
         }

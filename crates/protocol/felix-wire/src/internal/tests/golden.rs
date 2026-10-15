@@ -97,3 +97,25 @@ fn replicate_records_matches_its_golden_vector() {
     .concat();
     assert_eq!(encoded.as_ref(), expected.as_slice());
 }
+
+#[test]
+fn ping_and_pong_match_their_golden_vectors() {
+    for (message, kind) in [
+        (InternalMessage::Ping(Ping { correlation_id: 9 }), 38u8),
+        (InternalMessage::Pong(Pong { correlation_id: 9 }), 39u8),
+    ] {
+        let expected: Vec<u8> = [
+            &[0x46, 0x4C, 0x58, 0x49][..],
+            &[0x00, 0x01][..],
+            &[0x00, kind][..],
+            // the correlation id is the whole body
+            &[0x00, 0x00, 0x00, 0x08][..],
+            &[0, 0, 0, 0, 0, 0, 0, 9][..],
+        ]
+        .concat();
+        assert_eq!(
+            message.encode().expect("encode").as_ref(),
+            expected.as_slice()
+        );
+    }
+}

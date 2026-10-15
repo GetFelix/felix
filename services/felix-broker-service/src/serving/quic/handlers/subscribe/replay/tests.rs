@@ -85,6 +85,15 @@ impl Recorder {
 
 /// A broker with a durable stream, so history can be paged from disk.
 async fn durable_broker() -> (Arc<Broker>, TempDir) {
+    durable_broker_with(|broker| broker).await
+}
+
+/// [`durable_broker`] with each subscriber's queue holding `capacity` batches.
+async fn durable_broker_holding(capacity: usize) -> (Arc<Broker>, TempDir) {
+    durable_broker_with(|broker| broker.with_topic_capacity(capacity).expect("capacity")).await
+}
+
+async fn durable_broker_with(configure: impl FnOnce(Broker) -> Broker) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = felix_broker::DurableStorage::open(
         dir.path(),
@@ -97,7 +106,7 @@ async fn durable_broker() -> (Arc<Broker>, TempDir) {
         },
     )
     .expect("storage");
-    let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
+    let broker = configure(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
         .register_namespace(TENANT, NAMESPACE)
@@ -143,6 +152,8 @@ async fn generation_start(broker: &Broker) -> u64 {
 const SKIPS: EventFormat = EventFormat {
     offsets: true,
     skips: true,
+    publisher: false,
+    timestamps: false,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -188,7 +199,15 @@ async fn replay_as(
         0,
         SUBSCRIPTION,
         history,
-        backlog,
+        backlog
+            .into_iter()
+            .map(|(offset, payload)| felix_broker::RingRecord {
+                offset,
+                payload,
+                publisher: None,
+                timestamp_micros: None,
+            })
+            .collect(),
         backlog_start,
         subscription,
         max_events,
@@ -397,7 +416,11 @@ async fn a_backlog_across_a_generation_start_reports_the_skip() {
         &mut sink,
         &broker,
         None,
-        resumed.backlog,
+        resumed
+            .backlog
+            .into_iter()
+            .map(|record| (record.offset, record.payload))
+            .collect(),
         resumed.backlog_start,
         &mut subscription,
         64,
@@ -437,6 +460,8 @@ async fn a_client_without_the_skip_bit_gets_offsets_only() {
         EventFormat {
             offsets: true,
             skips: false,
+            publisher: false,
+            timestamps: false,
         },
     )
     .await
@@ -728,10 +753,12 @@ mod batching {
     #[test]
     fn a_break_in_the_offsets_closes_the_batch() {
         let mut batch = ReplayBatch::new(64, 1024);
-        assert!(batch.push(0, payload("a"), 0).is_none());
-        assert!(batch.push(1, payload("b"), 0).is_none());
+        assert!(batch.push(0, payload("a"), 0, None, None).is_none());
+        assert!(batch.push(1, payload("b"), 0, None, None).is_none());
 
-        let closed = batch.push(9, payload("c"), 0).expect("the run broke");
+        let closed = batch
+            .push(9, payload("c"), 0, None, None)
+            .expect("the run broke");
 
         assert_eq!(closed.offsets(), vec![0, 1]);
         assert_eq!(batch.take().expect("the new run").offsets(), vec![9]);
@@ -740,10 +767,10 @@ mod batching {
     #[test]
     fn the_byte_limit_closes_a_batch() {
         let mut batch = ReplayBatch::new(64, 4);
-        assert!(batch.push(0, payload("aaa"), 0).is_none());
+        assert!(batch.push(0, payload("aaa"), 0, None, None).is_none());
 
         let closed = batch
-            .push(1, payload("bbb"), 0)
+            .push(1, payload("bbb"), 0, None, None)
             .expect("over the byte limit");
 
         assert_eq!(closed.payloads.len(), 1);
@@ -754,8 +781,26 @@ mod batching {
     #[test]
     fn a_record_larger_than_the_limit_is_still_delivered() {
         let mut batch = ReplayBatch::new(64, 1);
-        assert!(batch.push(0, payload("a much larger payload"), 0).is_none());
+        assert!(
+            batch
+                .push(0, payload("a much larger payload"), 0, None, None)
+                .is_none()
+        );
         assert_eq!(batch.take().expect("the record").payloads.len(), 1);
+    }
+
+    /// Records of different publishes share a frame, each with its own time,
+    /// but a frame has a time for every record or for none.
+    #[test]
+    fn each_record_keeps_its_time() {
+        let mut batch = ReplayBatch::new(64, 1024);
+        assert!(batch.push(0, payload("a"), 0, None, Some(10)).is_none());
+        assert!(batch.push(1, payload("b"), 0, None, Some(20)).is_none());
+        let closed = batch
+            .push(2, payload("c"), 0, None, None)
+            .expect("a record without a time");
+        assert_eq!(closed.timestamps, Some(vec![10, 20]));
+        assert_eq!(batch.take().expect("the new run").timestamps, None);
     }
 
     #[test]
@@ -763,4 +808,50 @@ mod batching {
         let mut batch = ReplayBatch::new(64, 1024);
         assert!(batch.take().is_none());
     }
+}
+
+/// **Drops the replay filled from disk do not end the subscription; a drop
+/// after it does, without a gap.** The live queue holds one batch and drops 3
+/// and 4 while history is written, but history covers them. Once caught up, 5
+/// is queued and 6 dropped. The queue keeps only its first and latest drop, and
+/// the first was covered, so it ends where the replay did, at 5: 5 comes again
+/// on the resubscribe and nothing is skipped.
+#[tokio::test]
+async fn a_lag_after_catch_up_ends_where_the_replay_did() {
+    let (broker, _dir) = durable_broker_holding(1).await;
+    publish(&broker, &["a", "b"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    // 2 is queued; 3 and 4 find the queue full.
+    publish(&broker, &["c", "d", "e"]).await;
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 5,
+        }),
+        Vec::new(),
+        5,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+    assert_eq!(sink.offsets(), vec![0, 1, 2, 3, 4]);
+
+    let (mut live, _guard) = subscription.into_parts();
+    live.end_on_lag();
+    assert_eq!(live.lagged(), None, "every drop so far was replayed");
+    // 5 is queued; 6 is dropped.
+    publish(&broker, &["f", "g"]).await;
+    let end = tokio::time::timeout(std::time::Duration::from_secs(2), live.recv())
+        .await
+        .expect("the drop ends the subscription");
+    assert!(end.is_none());
+    assert_eq!(live.lag_ended(), Some(5));
 }

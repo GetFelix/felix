@@ -679,7 +679,8 @@ async fn a_retained_watch_delivers_current_state_then_live_under_concurrent_writ
     });
 
     for _ in 0..JOINS {
-        let target = (progress.load(std::sync::atomic::Ordering::Acquire) + 3).min(WRITES);
+        let done = progress.load(std::sync::atomic::Ordering::Acquire);
+        let target = (done + 3).min(WRITES);
         let mut watch = client
             .watch_cache_retained(
                 "t1",
@@ -728,7 +729,9 @@ async fn a_retained_watch_delivers_current_state_then_live_under_concurrent_writ
             Some((_, value)) => Some(String::from_utf8(value.to_vec())?.parse::<u32>()?),
             None => None,
         };
-        if progress.load(std::sync::atomic::Ordering::Acquire) == WRITES && state_value.is_none() {
+        // Quiescent as of the join, not as of now: a write in flight when the
+        // watch joined is past the live edge and arrives live.
+        if done == WRITES && state_value.is_none() {
             panic!("a quiescent key is missing from the retained state");
         }
         if state_value.is_some_and(|value| value >= target) {

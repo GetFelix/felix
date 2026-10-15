@@ -29,6 +29,7 @@ crc = { workspace = true }
 crc32fast = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
+object_store = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

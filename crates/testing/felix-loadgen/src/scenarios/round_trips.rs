@@ -8,7 +8,7 @@ use felix_client::Client;
 
 use super::Common;
 use super::connect::client;
-use crate::stats::{Percentiles, Samples, fmt_us};
+use crate::stats::{Percentiles, Samples, fmt_us, report};
 
 /// Request/response scenarios share one engine: `concurrency` workers, each a
 /// sequential loop of round trips against its own routed path.
@@ -53,7 +53,8 @@ where
     let done = all.len() as u64;
     let throughput = (per_worker * common.concurrency.max(1)) as f64 / elapsed.as_secs_f64();
     let percentiles = all.percentiles();
-    println!(
+    report!(
+        common,
         "{label}: n = {done}, concurrency = {}, p50 = {}, p99 = {}, p999 = {}, max = {}, throughput = {throughput:.1} op/s",
         common.concurrency.max(1),
         fmt_us(percentiles.p50_us),

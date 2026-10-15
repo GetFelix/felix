@@ -52,8 +52,9 @@
 //! router, the shard fence and the node credential are what it reads through
 //! its traits.
 //!
-//! [`restore`] is the one offline job: cutting a stopped broker's logs back
-//! to a backup point.
+//! Two jobs run offline, instead of the broker: [`restore`] cuts a stopped
+//! broker's logs back to a backup point, and [`inspect`] reports, read-only,
+//! what is in a data directory and what startup would do with it.
 //!
 //! [`config`] parses the environment and decides where logs live, and
 //! [`observability`] serves metrics and health and holds the opt-in per-stage
@@ -69,6 +70,7 @@ pub mod cluster;
 pub mod shards;
 
 pub mod config;
+pub mod inspect;
 pub mod node;
 pub mod observability;
 pub mod restore;

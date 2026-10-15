@@ -128,6 +128,14 @@ shutdown are not. A harness that ran it as a process would need a fake IdP, or a
 way to issue a first credential without one. The latter is worth having on its
 own, and would let this become a fully out-of-process cluster.
 
+In process, it still gets its own runtime: two worker threads that nothing else
+schedules on. A broker keeps its leases only while heartbeats come back within
+a few hundred milliseconds (expiry is 1 s). A test's runtime is often
+single-threaded and also drives every client the test opens, so a control plane
+sharing it could answer late under load and lapse a lease the test never meant
+to touch. Shutting the control plane down stops that runtime and waits for its
+threads; dropping it instead stops the runtime without blocking.
+
 ## Waiting
 
 Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
@@ -187,6 +195,14 @@ The harness mints two credentials, and they are not interchangeable:
 A broker validates every action in a token it is given and rejects the whole
 token if one is not a client-facing action, so a single credential carrying
 `node.view` cannot publish at all.
+
+Every token lives one hour, and none is kept: `Cluster::client_token()`,
+`admin_token()` and the rest mint a fresh one on each call, from the
+`Credentials` the cluster holds. Each broker's node token sits in a file that
+the harness rewrites every half hour, and the broker picks up the new one
+through its `FELIX_NODE_TOKEN_FILE` watch. `up` rewrites the session file on the
+same schedule, so a token copied out of it is good for at least half an hour.
+A cluster held longer than an hour keeps working, teardown included.
 
 ## Faults
 
@@ -393,6 +409,7 @@ makes, whether the broker leads the log or follows it:
 write=enospc         # every segment write fails with ENOSPC; or eio
 write=eio_once       # the next segment write fails with EIO, later ones succeed
 write_generation=1   # a new value arms eio_once again
+write_delay_ms=200   # each segment write waits first, like a throttled write()
 ```
 
 A failed write lands the first half of its batch and then reports, as a disk
@@ -497,7 +514,7 @@ applied.
 ## Watching it
 
 A recording of the three-pane demo is on the docs site:
-[Demo: Cross-broker Publishing](https://gabloe.github.io/felix/demos/cross-broker-cluster/).
+[Demo: Cross-broker Publishing](https://docs.getfelix.dev/demos/cross-broker-cluster/).
 Embedded as video rather than an animated GIF, because the same 45 seconds of terminal
 output would be tens of megabytes as a GIF, and could not be paused on the line
 that matters.
@@ -549,6 +566,18 @@ difference between "lost a port" and "the control plane refused this identity".
 
 Broker output goes to `broker.log` in each node's data directory rather than
 being discarded, so that reason exists to be quoted.
+
+The data directory is a temporary one and goes with the cluster. Set
+`FELIX_TEST_CLUSTER_LOG_DIR` to keep the logs: at teardown each cluster copies
+its brokers' logs to `<dir>/<test>/cluster-<n>/<node>.log`, where `<test>` is
+the test's name with `::` written as `__`. The control plane runs inside the
+test process and has no log of its own, so the harness also installs a
+subscriber writing it to `<dir>/controlplane-<test binary>.log`. Every cluster
+is kept, not only failing ones, because a test that returns `Err` has dropped
+its cluster before anything decides it failed. CI sets the variable, keeps the
+test output, and uploads only the folders of the tests libtest reported as
+failed, with their binary's control-plane log, as the `failed-cluster-logs`
+artifact.
 
 ## Fault campaigns
 

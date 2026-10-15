@@ -52,6 +52,11 @@ impl ClientError {
         Self::new(ErrorCode::Unauthenticated, message)
     }
 
+    /// The stream's credential, or the one presented, was revoked.
+    pub(crate) fn revoked() -> Self {
+        Self::new(ErrorCode::Revoked, "credential revoked")
+    }
+
     pub(crate) fn forbidden(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Forbidden, message)
     }
@@ -241,7 +246,17 @@ impl ClientError {
             | E::SequenceExpired { .. }
             | E::SequenceReused { .. }
             | E::GroupOffsetNotHandedOut { .. }
-            | E::CommitNeedsDurableStream => Self::invalid(message),
+            | E::CommitNeedsDurableStream
+            | E::ExpectedOffsetNeedsDurableStream
+            | E::EmptyConditionalPublish => Self::invalid(message),
+            // Answered as `publish_refused` with the tail wherever the request
+            // can carry it; this is only for a caller that cannot.
+            E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),
+            // Retrying cannot bring the claim back; the record is owed to the
+            // group and reaches whoever polls next.
+            E::GroupClaimLapsed { .. } => {
+                Self::new(ErrorCode::StaleClaim, message).with_retry(RetryClass::Fatal)
+            }
             E::MalformedCommit(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
             // A broker configured without the storage the stream needs will
@@ -250,6 +265,8 @@ impl ClientError {
                 Self::internal(message).with_retry(RetryClass::Fatal)
             }
             E::Storage(_) => Self::new(ErrorCode::Storage, message),
+            // Nothing was written, so the request can go again once space is freed.
+            E::StorageFull(_) => Self::overloaded(message),
             // Written to a log that was then reset: it may or may not survive.
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // Nothing was read; the shard is served again here once a mark or

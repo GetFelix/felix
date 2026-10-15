@@ -405,6 +405,7 @@ async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -486,6 +487,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -578,8 +580,8 @@ async fn quic_publish_binary_batch_success() -> Result<()> {
 // Binary acked publish: the frame carries FLAG_BINARY_PUBLISH_ACKED with a
 // request_id prefix, and the broker answers with a binary ack frame rather than
 // a JSON PublishOk. Both ack modes and both ack-on-commit settings are covered,
-// because commit acks are emitted from a different task (the ack waiter) than
-// enqueue acks, and each has to pick the binary encoding independently.
+// because commit acks are emitted by the task that settles the publish, not the
+// control loop that sends enqueue acks, and each has to pick the binary encoding independently.
 #[tokio::test]
 #[serial]
 async fn quic_publish_binary_acked_success() -> Result<()> {
@@ -755,6 +757,7 @@ async fn quic_publish_unknown_flag_bit_is_rejected() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -850,6 +853,7 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -928,7 +932,8 @@ async fn idempotent_producer_does_not_reuse_a_sequence_in_doubt() -> Result<()> 
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer = client.idempotent_producer().await?;
 
     // As far as the producer can tell, the first batch failed...
@@ -1070,7 +1075,7 @@ async fn stored_orders(broker: &Broker) -> Result<Vec<Vec<u8>>> {
     Ok(resumed
         .backlog
         .into_iter()
-        .map(|(_, payload)| payload.to_vec())
+        .map(|record| record.payload.to_vec())
         .collect())
 }
 
@@ -1083,7 +1088,8 @@ async fn a_reused_sequence_is_refused_to_the_rust_client() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, auth, _config, server_task) = serve_durable_orders(dir.path()).await?;
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client =
+        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let send = |payload: &'static [u8]| {
@@ -1150,6 +1156,7 @@ async fn reuse_a_sequence_over_json(
         token: auth.token.clone(),
         client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
         client_features: Some(client_features),
+        client_features_hi: None,
     })
     .await?
     {
@@ -1251,3 +1258,6 @@ mod pipeline;
 
 #[path = "quic_publish/ack_offsets.rs"]
 mod ack_offsets;
+
+#[path = "quic_publish/shard_streams.rs"]
+mod shard_streams;

@@ -17,7 +17,7 @@ set -eu
 
 MODE="${1:?usage: provision-loadgen.sh provision|build ...}"
 shift
-REPO=https://github.com/gabloe/felix
+REPO=https://github.com/GetFelix/felix
 HOME_DIR=/home/felix
 CARGO="$HOME_DIR/.cargo/bin/cargo"
 RUSTUP="$HOME_DIR/.cargo/bin/rustup"

@@ -7,6 +7,7 @@
 //! it.
 
 use std::any::Any;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -162,6 +163,18 @@ pub enum Placement {
 pub struct Principal {
     tenant_id: String,
     access: Access,
+    revoked: Option<RevocationCheck>,
+}
+
+/// Says whether the credential a principal authenticated with has since been
+/// revoked.
+#[derive(Clone)]
+struct RevocationCheck(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl std::fmt::Debug for RevocationCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RevocationCheck")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +191,20 @@ impl Principal {
         Self {
             tenant_id: tenant_id.into(),
             access: Access::Token(matcher),
+            revoked: None,
         }
+    }
+
+    /// End the connection at its next request once `revoked` says the
+    /// credential behind this principal was revoked.
+    pub fn with_revocation(mut self, revoked: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        self.revoked = Some(RevocationCheck(Arc::new(revoked)));
+        self
+    }
+
+    /// Whether the credential this principal authenticated with was revoked.
+    pub fn is_revoked(&self) -> bool {
+        self.revoked.as_ref().is_some_and(|check| (check.0)())
     }
 
     /// A principal for an unauthenticated connection, allowed to read and
@@ -187,6 +213,7 @@ impl Principal {
         Self {
             tenant_id: tenant_id.into(),
             access: Access::Anonymous,
+            revoked: None,
         }
     }
 

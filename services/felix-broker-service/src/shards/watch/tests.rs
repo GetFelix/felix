@@ -253,3 +253,76 @@ fn an_assignment_carries_its_streams_routing() {
         felix_wire::routing::ShardRouting::JumpHash
     );
 }
+
+/// A changes page and then a snapshot from behind what the broker applied, as
+/// a lagging Raft member answers, roll nothing back. Resnapshotting at once
+/// would replace the broker's ownership with the member's older view.
+#[tokio::test]
+async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{Json, Router, routing::get};
+
+    let snapshots = Arc::new(AtomicUsize::new(0));
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get({
+                let snapshots = Arc::clone(&snapshots);
+                move || async move {
+                    // The first answer is current; every later one is a
+                    // member that has not applied the assignment yet.
+                    if snapshots.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Json(serde_json::json!({
+                            "items": [{
+                                "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                                "shard": 0, "leader": "b1", "generation": 2, "state": "active"
+                            }],
+                            "next_seq": 10
+                        }))
+                    } else {
+                        Json(serde_json::json!({ "items": [], "next_seq": 3 }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(|| async { Json(serde_json::json!({ "items": [], "next_seq": 4 })) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        reqwest::Client::new(),
+        format!("http://{addr}"),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        shutdown.clone(),
+    ));
+
+    // Many polls' worth: each one answers from behind the checkpoint.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
+
+    assert!(
+        snapshots.load(Ordering::SeqCst) >= 1,
+        "the watch never seeded"
+    );
+    assert_eq!(
+        ownership.read().await.get(&key(0)).map(|a| a.generation),
+        Some(2),
+        "an answer from behind the checkpoint replaced the broker's ownership",
+    );
+}

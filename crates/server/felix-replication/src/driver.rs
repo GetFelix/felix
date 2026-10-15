@@ -1,7 +1,8 @@
 //! The task that keeps every shard this broker leads shipping.
 //!
 //! One pass visits each shard this node leads that has followers, ships what it
-//! can to each, and reports the lag. Cursors live for as long as the assignment
+//! can to each, and reports the lag. A shard led with no followers is only
+//! reported. Cursors live for as long as the assignment
 //! does: a generation change discards them, because a cursor is a belief about
 //! a follower's position under a particular leadership, and a new generation
 //! invalidates the belief rather than the follower.
@@ -24,6 +25,7 @@ use super::promotion::{self, NoGate, Outcome, PromotionGate};
 use super::quorum::QuorumMarks;
 use super::reporter::Reporter;
 use super::reporter::ShardReport;
+use super::status::ShardStatusBoard;
 use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
 use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard, watch_key};
@@ -51,12 +53,29 @@ const DRAIN_RETRY: Duration = Duration::from_millis(10);
 pub struct Published {
     pub marks: Arc<QuorumMarks>,
     pub halted: Arc<HaltedReplicas>,
+    /// Each led shard's cursors and fence, for `shard_inspect`.
+    pub status: Arc<ShardStatusBoard>,
 }
 
 /// How soon a pass follows one that left a promoted shard unfenced. The shard
 /// serves nothing meanwhile; each attempt already waits on the replicas it
 /// cannot reach, so this only spaces out the ones that answer and refuse.
 const FENCE_RETRY: Duration = Duration::from_millis(200);
+
+/// The longest a promoted shard waits between fence attempts. Each attempt
+/// that leaves it closed doubles the wait from [`FENCE_RETRY`], so a failure
+/// that does not clear on its own is not retried five times a second forever;
+/// the cap is what a fence that comes good can add to a failover.
+const FENCE_RETRY_MAX: Duration = Duration::from_secs(2);
+
+/// The wait before the next fence attempt, after `failures` in a row at the
+/// same generation left the shard closed.
+fn fence_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    FENCE_RETRY
+        .saturating_mul(1u32 << doublings)
+        .min(FENCE_RETRY_MAX)
+}
 
 /// How soon a stopping broker asks for another pass when the last one left a
 /// shard's followers behind. Not at once: a follower that is unreachable would
@@ -166,9 +185,11 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             fence: &*fence,
             gate: &*gate,
             marks: &published.marks,
+            status: &published.status,
             reporter: reporter.as_ref(),
             rebuilds: &rebuilds,
             throttle: &move_throttle,
+            refresh: interval,
         });
         loop {
             // An append during the previous pass left a permit, so this
@@ -197,6 +218,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 Some(answered) = shards.exchanges.next(), if !shards.exchanges.is_empty() => {
                     Event::Answered(answered)
                 }
+                Some(reported) = shards.reports.next(), if !shards.reports.is_empty() => {
+                    Event::Reported(reported)
+                }
             };
             match event {
                 Event::Wake => {
@@ -209,6 +233,10 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 // Changes no pass's outcome, so there is nothing new to say.
                 Event::Answered(answered) => {
                     shards.apply(answered);
+                    continue;
+                }
+                Event::Reported(reported) => {
+                    shards.reported(reported);
                     continue;
                 }
             }
@@ -348,13 +376,13 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     let mut behind = false;
     let mut halted: Vec<HaltedReplica> = Vec::new();
     let mut live_shards = Vec::new();
-    let mut reports = Vec::new();
     let mut promoted = Vec::new();
 
     // Every shard this broker leads, each with the cursors it owns for the
     // duration. Taken out of the maps rather than borrowed from them, which is
     // what lets the shards run at the same time below.
     let mut work = Vec::new();
+    let mut unreplicated = Vec::new();
     for (key, route) in table.iter() {
         if route.leader.node_id != router.local_node_id() {
             continue;
@@ -376,19 +404,28 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
             counter_cursors,
         ) {
             work.push((key.clone(), route.clone(), entry, aux));
+        } else {
+            unreplicated.push((key.clone(), route.generation));
         }
     }
+    let alone: Vec<ShardKey> = unreplicated.iter().map(|(key, _)| key.clone()).collect();
+    release_unreplicated(broker, &alone).await;
+    let mut reports = Vec::new();
+    for (key, generation) in &unreplicated {
+        let report = alone_report(broker, key, *generation, 0).await;
+        if let Some(reporter) = reporter {
+            reporter.submit(report.clone());
+        }
+        reports.push(report);
+    }
 
-    // Once the followers decide acknowledgements, a shard never opens on the
-    // lease alone: the old leader no longer stops writing when its lease does.
-    let lease_fallback = !marks.acks_by_followers();
     let fencing = open_promoted(
         requester,
         broker,
         router.local_node_id(),
         gate,
         promoted,
-        lease_fallback,
+        marks,
     )
     .await;
 
@@ -473,8 +510,14 @@ async fn fence_one<R: PeerRequester>(
     local_node_id: &str,
     key: ShardKey,
     route: felix_router::Route,
-    lease_fallback: bool,
+    marks: &QuorumMarks,
 ) -> (ShardKey, u64, Outcome) {
+    // Once the followers decide acknowledgements, a shard never opens on the
+    // lease alone: the old leader no longer stops writing when its lease does.
+    let lease_fallback = !match key.kind {
+        felix_router::ShardKind::Stream => marks.acks_by_followers(),
+        felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
+    };
     let outcome = promotion::fence_shard(
         requester,
         broker,
@@ -495,15 +538,16 @@ async fn open_promoted<R: PeerRequester>(
     local_node_id: &str,
     gate: &dyn PromotionGate,
     promoted: Vec<(ShardKey, felix_router::Route)>,
-    lease_fallback: bool,
+    marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> =
-        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
-            fence_one(requester, broker, local_node_id, key, route, lease_fallback)
-        }))
-        .buffer_unordered(SHARD_CONCURRENCY)
-        .collect()
-        .await;
+    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+        promoted
+            .into_iter()
+            .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route, marks)),
+    )
+    .buffer_unordered(SHARD_CONCURRENCY)
+    .collect()
+    .await;
     let mut pending = false;
     for (key, generation, outcome) in outcomes {
         pending |= !open_fenced(gate, &key, generation, outcome).await;
@@ -542,7 +586,7 @@ async fn open_fenced(
             metrics::record_promotion_opened(metrics::PATH_LEASE);
             gate.open(&watch_key(key), generation).await
         }
-        Outcome::Pending(why) => {
+        Outcome::Pending { why, .. } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -553,6 +597,96 @@ async fn open_fenced(
             false
         }
     }
+}
+
+/// Lift the retention hold on led shards with no replica besides this one.
+///
+/// Such a shard is its own majority, so every record it holds is committed,
+/// but no pass runs for it to advance the commit offset. A hold left from when
+/// it had followers, which the log keeps across restarts, would stop its
+/// retention for good. Only logs already open are touched: opening one here
+/// would create a log for every such shard in the table.
+async fn release_unreplicated(broker: &Broker, keys: &[ShardKey]) {
+    if keys.is_empty() {
+        return;
+    }
+    let open_caches = open_caches(broker, keys);
+    for key in keys {
+        if let Some(log) = opened_log(broker, key, &open_caches).await
+            && let Err(err) = log.hold_retention_at_commit(false).await
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not write the retention hold through; it is lifted in memory",
+            );
+        }
+    }
+}
+
+type OpenCaches = HashSet<(String, String, String, u32)>;
+
+fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
+    if keys
+        .iter()
+        .any(|key| key.kind == felix_router::ShardKind::Cache)
+    {
+        broker.cache().open_shards().into_iter().collect()
+    } else {
+        HashSet::new()
+    }
+}
+
+/// `key`'s log, only if it is already open: opening it here would create a
+/// log for every led shard that was never written.
+async fn opened_log(
+    broker: &Broker,
+    key: &ShardKey,
+    open_caches: &OpenCaches,
+) -> Option<felix_broker::StreamLog> {
+    match key.kind {
+        felix_router::ShardKind::Stream => broker.durable_storage().and_then(|storage| {
+            storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        }),
+        felix_router::ShardKind::Cache => {
+            let id = (
+                key.tenant_id.clone(),
+                key.namespace.clone(),
+                key.stream.clone(),
+                key.shard,
+            );
+            if !open_caches.contains(&id) {
+                return None;
+            }
+            broker
+                .shard_log(
+                    felix_broker::LogKind::Cache,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                )
+                .await
+        }
+    }
+}
+
+/// The report for a shard led here with no other copy. It names nobody, but
+/// placement adds a copy only once the leader has reported at the shard's
+/// generation, so without it a shard placed with its leader alone never gets
+/// another (#1153). Callers skip a promoted shard still fencing, as they do
+/// for every other report. The tail is read from an open log only, and never
+/// goes below `floor`: the control plane refuses a report whose tail went
+/// back.
+async fn alone_report(broker: &Broker, key: &ShardKey, generation: u64, floor: u64) -> ShardReport {
+    let open_caches = open_caches(broker, std::slice::from_ref(key));
+    let tail = match opened_log(broker, key, &open_caches).await {
+        Some(log) => log.tail_offset().await.unwrap_or(0),
+        None => 0,
+    }
+    .max(floor);
+    crate::reporter::shard_report(key, generation, tail, tail, &[], false)
 }
 
 /// Take a shard's cursors out of the maps for a pass over `route`.
@@ -605,8 +739,9 @@ pub struct Pass {
     /// The metric cannot carry a shard without a label per tenant; this is what
     /// an operator reads instead.
     pub halted: Vec<HaltedReplica>,
-    /// A move's destination is still copying and was cut off at the end of
-    /// its slice. The next pass runs at once rather than on the next wake.
+    /// A follower still catching up, or a move's destination still copying,
+    /// was cut off at the end of its slice. The next pass runs at once rather
+    /// than on the next wake.
     pub copying: bool,
     /// A shard fenced here has not reported drained yet. The next pass runs
     /// after [`DRAIN_RETRY`] rather than on the next wake: the remainder of
@@ -618,7 +753,7 @@ pub struct Pass {
     /// log, not counting halted followers, which waiting does not bring back.
     pub behind: bool,
     /// A shard this broker was promoted to lead is still waiting for a
-    /// majority to take its fence. The next pass runs after [`FENCE_RETRY`].
+    /// majority to take its fence. The next pass runs after [`fence_backoff`].
     pub fencing: bool,
 }
 

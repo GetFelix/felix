@@ -237,6 +237,7 @@ impl Stream {
                 token: auth.token.clone(),
                 client_flags: Some(client_flags),
                 client_features: None,
+                client_features_hi: None,
             },
         )
         .await?;

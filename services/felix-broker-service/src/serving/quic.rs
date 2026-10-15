@@ -31,8 +31,8 @@
 //!
 //! - Ingress publish queue (`pub_queue_depth`): the publish scheduler; see `handlers::publish`.
 //! - Outbound ack/response queue (ACK_QUEUE_DEPTH): Outgoing messages drained by the single writer.
-//! - Ack waiter queue (ACK_WAITERS_MAX): only used when ack_on_commit is enabled; tracks acks that must
-//!   wait until broker commit completes.
+//! - Commit acks owed (ACK_WAITERS_MAX): publishes answered on commit, each answered by the task
+//!   that settles it; see `handlers::publish::commit_ack`.
 //!
 //! ## Ack modes & policies
 //!
@@ -44,7 +44,7 @@
 //!
 //! ## Potential issues / edge cases to be aware of
 //!
-//! - Task lifecycle: writer + ack-waiter tasks must be joined or aborted on stream close. If one task
+//! - Task lifecycle: writer + commit-ack deadline tasks must be joined or aborted on stream close. If one task
 //!   finishes and the other is dropped without abort/join, it can continue running detached.
 //!   (This is easy to accidentally introduce when using `tokio::select!` during shutdown.)
 //! - Overload + acked publishes: if we accept a request that expects an ack, but later drop/skip the
@@ -55,7 +55,7 @@
 //! - Queue depth gauges are best-effort; under races they can drift. We track drift counters and reset
 //!   local depths on teardown.
 //! - Ordering: acks may be out-of-order relative to requests because publish jobs complete out-of-order
-//!   (and ack waiters emit as they complete). This is allowed by protocol, but clients must treat
+//!   (and each is answered as it settles). This is allowed by protocol, but clients must treat
 //!   request_id as the correlator.
 //! - Cancellation: cancel signals are delivered via watch channels and are cooperative; code must check
 //!   them in all long waits to avoid hanging tasks.
@@ -98,11 +98,18 @@ pub(crate) static DECODE_ERROR_LOGS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "telemetry")]
 pub(crate) const DECODE_ERROR_LOG_LIMIT: usize = 20;
 
-/// The QUIC transport settings for client listeners: `base` with the cache
+/// The QUIC transport settings for client listeners: `base` with the
 /// flow-control windows from `config` applied.
-pub fn cache_transport_config(config: &BrokerConfig, mut base: TransportConfig) -> TransportConfig {
-    base.receive_window = config.cache_conn_recv_window;
-    base.stream_receive_window = config.cache_stream_recv_window;
+///
+/// One listener carries publishes, subscriptions and cache requests alike, so
+/// its receive windows are sized for what clients send most: publishes.
+pub fn client_transport_config(
+    config: &BrokerConfig,
+    mut base: TransportConfig,
+) -> TransportConfig {
+    let (conn, stream) = config.pub_recv_windows();
+    base.receive_window = conn;
+    base.stream_receive_window = stream;
     base.send_window = config.cache_send_window;
     base
 }

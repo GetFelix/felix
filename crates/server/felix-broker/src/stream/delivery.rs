@@ -13,6 +13,8 @@ use std::time::Instant;
 use bytes::Bytes;
 use parking_lot::Mutex;
 
+use super::budget::HeldBytes;
+
 /// One published batch, shared by every subscriber it is delivered to.
 #[derive(Debug, Clone)]
 pub struct DeliveryEnvelope {
@@ -20,28 +22,45 @@ pub struct DeliveryEnvelope {
 }
 
 impl DeliveryEnvelope {
+    #[cfg(test)]
     pub(crate) fn with_base_offset(payloads: &[Bytes], base_offset: Option<u64>) -> Self {
-        Self::with_offsets(payloads, base_offset, 0)
+        Self::published(payloads, base_offset, 0, None, None)
     }
 
-    /// A batch whose first record follows `skipped_before` offsets that hold
-    /// no event (see [`Self::skipped_before`]).
-    pub(crate) fn with_offsets(
+    /// A batch published by `publisher` and appended at `timestamp_micros`,
+    /// whose first record follows `skipped_before` offsets that hold no event
+    /// (see [`Self::skipped_before`]).
+    pub(crate) fn published(
         payloads: &[Bytes],
         base_offset: Option<u64>,
         skipped_before: u64,
+        publisher: Option<Bytes>,
+        timestamp_micros: Option<u64>,
     ) -> Self {
         Self {
             inner: Arc::new(DeliveryBatch {
+                payload_bytes: payloads.iter().map(Bytes::len).sum(),
                 payloads: Arc::from(payloads),
                 base_offset,
                 skipped_before,
+                publisher,
+                timestamp_micros,
                 enqueued_at: Instant::now(),
-                encoded_frame: Mutex::new(None),
-                encoded_frame_with_offsets: Mutex::new(None),
-                encoded_frame_with_skip: Mutex::new(None),
+                encoded: Default::default(),
             }),
         }
+    }
+
+    /// The same records from `index` on, keeping their offsets, publisher
+    /// and time.
+    pub(crate) fn skip_records(&self, index: usize) -> Self {
+        Self::published(
+            &self.inner.payloads[index..],
+            self.inner.base_offset.map(|base| base + index as u64),
+            0,
+            self.inner.publisher.clone(),
+            self.inner.timestamp_micros,
+        )
     }
 
     /// The batch's records, in publish order.
@@ -52,6 +71,12 @@ impl DeliveryEnvelope {
     /// How many records the batch holds.
     pub fn len(&self) -> usize {
         self.inner.payloads.len()
+    }
+
+    /// The records' payload bytes, summed. What a queued batch counts
+    /// against a subscriber's byte bound.
+    pub fn payload_bytes(&self) -> usize {
+        self.inner.payload_bytes
     }
 
     /// Whether the batch holds no records.
@@ -71,16 +96,23 @@ impl DeliveryEnvelope {
         self.inner.skipped_before
     }
 
+    /// The principal that published the batch, when one was recorded. A
+    /// batch is one publish, so one principal covers all of it.
+    pub fn publisher(&self) -> Option<&Bytes> {
+        self.inner.publisher.as_ref()
+    }
+
+    /// When the batch was appended, in microseconds since the Unix epoch.
+    /// One publish is stamped once, so one time covers all of it. `None` on
+    /// an in-memory stream, which stores no time.
+    pub fn timestamp_micros(&self) -> Option<u64> {
+        self.inner.timestamp_micros
+    }
+
     /// The batch encoded as one event frame, encoded on first use and shared
     /// with every subscriber after that.
     pub fn shared_event_frame(&self) -> felix_wire::Result<Bytes> {
-        let mut cached = self.inner.encoded_frame.lock();
-        if let Some(frame) = cached.as_ref() {
-            return Ok(frame.clone());
-        }
-        let frame = felix_wire::binary::encode_shared_event_batch_bytes(&self.inner.payloads)?;
-        *cached = Some(frame.clone());
-        Ok(frame)
+        self.shared_event_frame_as(FrameShape::default())
     }
 
     /// The shared frame carrying offsets, for subscribers that negotiated them.
@@ -90,41 +122,62 @@ impl DeliveryEnvelope {
     /// subscriber on one simply sees no offsets -- which is what the protocol
     /// says an ephemeral event carries.
     pub fn shared_event_frame_with_offsets(&self) -> felix_wire::Result<Bytes> {
-        let Some(base_offset) = self.inner.base_offset else {
-            return self.shared_event_frame();
-        };
-        let mut cached = self.inner.encoded_frame_with_offsets.lock();
-        if let Some(frame) = cached.as_ref() {
-            return Ok(frame.clone());
-        }
-        let frame = felix_wire::binary::encode_shared_event_batch_bytes_with_offset(
-            &self.inner.payloads,
-            base_offset,
-        )?;
-        *cached = Some(frame.clone());
-        Ok(frame)
+        self.shared_event_frame_as(FrameShape {
+            offsets: true,
+            ..FrameShape::default()
+        })
     }
 
     /// The shared frame for subscribers that negotiated offsets and skip
     /// counts. The offsets-only frame unless this batch follows a skip, so the
     /// extra encoding exists only for the rare batch that needs it.
     pub fn shared_event_frame_with_skip(&self) -> felix_wire::Result<Bytes> {
-        let (Some(base_offset), skipped) = (self.inner.base_offset, self.inner.skipped_before)
-        else {
-            return self.shared_event_frame();
+        self.shared_event_frame_as(FrameShape {
+            offsets: true,
+            skips: true,
+            ..FrameShape::default()
+        })
+    }
+
+    /// The shared frame in the shape a subscriber negotiated.
+    ///
+    /// A field the batch has nothing for is left off, so the frame is the
+    /// plainer one other subscribers share: an in-memory batch has no
+    /// offsets or times, most batches follow no skip, and a batch with no
+    /// recorded publisher carries none. Each distinct frame is encoded once.
+    pub fn shared_event_frame_as(&self, shape: FrameShape) -> felix_wire::Result<Bytes> {
+        let batch = &self.inner;
+        let base_offset = batch.base_offset.filter(|_| shape.offsets);
+        let skipped_before = match base_offset {
+            Some(_) if shape.skips => batch.skipped_before,
+            _ => 0,
         };
-        if skipped == 0 {
-            return self.shared_event_frame_with_offsets();
-        }
-        let mut cached = self.inner.encoded_frame_with_skip.lock();
+        let publisher = batch.publisher.as_deref().filter(|_| shape.publisher);
+        let timestamp = batch.timestamp_micros.filter(|_| shape.timestamps);
+        let slot = match (base_offset, skipped_before) {
+            (None, _) => 0,
+            (Some(_), 0) => 1,
+            (Some(_), _) => 2,
+        } + if publisher.is_some() { 3 } else { 0 }
+            + if timestamp.is_some() { 6 } else { 0 };
+        let mut cached = batch.encoded[slot].lock();
         if let Some(frame) = cached.as_ref() {
             return Ok(frame.clone());
         }
-        let frame = felix_wire::binary::encode_shared_event_batch_bytes_with_skip(
-            &self.inner.payloads,
-            base_offset,
-            skipped,
-        )?;
+        let frame = if slot == 0 {
+            felix_wire::binary::encode_shared_event_batch_bytes(&batch.payloads)?
+        } else {
+            let timestamps = timestamp.map(|time| vec![time; batch.payloads.len()]);
+            felix_wire::binary::encode_shared_event_batch_bytes_with_meta(
+                &batch.payloads,
+                felix_wire::binary::EventBatchMeta {
+                    base_offset,
+                    skipped_before,
+                    publisher,
+                    timestamps: timestamps.as_deref(),
+                },
+            )?
+        };
         *cached = Some(frame.clone());
         Ok(frame)
     }
@@ -135,9 +188,23 @@ impl DeliveryEnvelope {
     }
 }
 
+/// Which optional fields a subscriber negotiated on its event frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameShape {
+    /// `FLAG_EVENT_BATCH_OFFSETS`.
+    pub offsets: bool,
+    /// `FLAG_EVENT_BATCH_SKIPPED`; meaningful only with `offsets`.
+    pub skips: bool,
+    /// `FLAG_EVENT_BATCH_PUBLISHER`.
+    pub publisher: bool,
+    /// `FLAG_EVENT_BATCH_TIMESTAMPS`.
+    pub timestamps: bool,
+}
+
 #[derive(Debug)]
 struct DeliveryBatch {
     payloads: Arc<[Bytes]>,
+    payload_bytes: usize,
     /// Offset of `payloads[0]` for a durable stream; `None` for an in-memory
     /// one, which has no durable position to report.
     ///
@@ -149,17 +216,19 @@ struct DeliveryBatch {
     /// See [`DeliveryEnvelope::skipped_before`]. Like the offsets, a property
     /// of the stream, so it rides the shared encoding too.
     skipped_before: u64,
+    /// See [`DeliveryEnvelope::publisher`]. One per batch for the same reason
+    /// as the offsets.
+    publisher: Option<Bytes>,
+    /// See [`DeliveryEnvelope::timestamp_micros`].
+    timestamp_micros: Option<u64>,
     enqueued_at: Instant,
-    encoded_frame: Mutex<Option<Bytes>>,
-    /// The same batch encoded *with* offsets, for subscribers that negotiated
-    /// them. Cached separately rather than replacing the plain encoding,
-    /// because a stream can have subscribers of both kinds and each must get
-    /// the frame shape it agreed to. At most two encodings per batch, however
-    /// many subscribers there are.
-    encoded_frame_with_offsets: Mutex<Option<Bytes>>,
-    /// The offsets frame with the skip count, for subscribers that negotiated
-    /// it. Only ever filled when `skipped_before` is non-zero.
-    encoded_frame_with_skip: Mutex<Option<Bytes>>,
+    /// The batch's encodings, one per frame shape a subscriber of it
+    /// negotiated: plain, with offsets, with offsets and a skip, each of
+    /// those with the publisher, and all of them with times. Cached apart
+    /// because a stream can have subscribers of every kind and each must get
+    /// the frame it agreed to; at most twelve encodings per batch however
+    /// many subscribers there are, and only the shapes someone asked for.
+    encoded: [Mutex<Option<Bytes>>; 12],
 }
 
 #[derive(Debug)]
@@ -167,20 +236,37 @@ pub(crate) struct QueuedDelivery {
     envelope: Option<DeliveryEnvelope>,
     item_count: usize,
     queued_items: Arc<AtomicUsize>,
+    /// Given back to the subscriber's byte budgets when the batch leaves the
+    /// queue, unless the receiver takes them on with the batch.
+    bytes: HeldBytes,
 }
 
 impl QueuedDelivery {
-    pub(crate) fn new(envelope: DeliveryEnvelope, queued_items: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(
+        envelope: DeliveryEnvelope,
+        queued_items: Arc<AtomicUsize>,
+        bytes: HeldBytes,
+    ) -> Self {
         let item_count = envelope.len();
         Self {
             envelope: Some(envelope),
             item_count,
             queued_items,
+            bytes,
         }
     }
 
-    pub(crate) fn into_envelope(mut self) -> DeliveryEnvelope {
-        self.envelope.take().expect("queued delivery has envelope")
+    pub(crate) fn envelope(&self) -> &DeliveryEnvelope {
+        self.envelope
+            .as_ref()
+            .expect("queued delivery has envelope")
+    }
+
+    /// The batch and the bytes it still holds. Its queue entry is released
+    /// here either way.
+    pub(crate) fn into_parts(mut self) -> (DeliveryEnvelope, HeldBytes) {
+        let envelope = self.envelope.take().expect("queued delivery has envelope");
+        (envelope, std::mem::take(&mut self.bytes))
     }
 }
 
@@ -190,7 +276,8 @@ impl Drop for QueuedDelivery {
     }
 }
 
-/// What a publish does when a subscriber's queue is full.
+/// What a publish does when a subscriber's queue is full, by entry count or
+/// by bytes.
 ///
 /// `DropNew` is the default, so a slow subscriber costs itself records rather
 /// than slowing the publisher.
@@ -215,3 +302,6 @@ fn decrement_queue_depth(queued_items: &AtomicUsize, count: usize) {
         metrics::counter!("felix_sub_queue_dequeued_total").increment(count as u64);
     }
 }
+
+#[cfg(test)]
+mod tests;

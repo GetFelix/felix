@@ -28,6 +28,8 @@ utoipa = { workspace = true, optional = true }
 # Only needed by the `tls` module.
 rustls = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
+# Only needed by the `yaml` module.
+serde-saphyr = { workspace = true, optional = true, features = ["deserialize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `CLOCK_BOOTTIME`, which the lease clock reads.
@@ -39,7 +41,7 @@ rcgen = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 # For the deployment-docs YAML check in `tests/deployment_yaml.rs`.
-serde_yaml_ng = { workspace = true }
+serde-saphyr = { workspace = true, features = ["deserialize"] }
 
 [features]
 default = []
@@ -52,6 +54,8 @@ tls = ["dep:rustls", "dep:arc-swap", "dep:tokio", "dep:tracing"]
 # The test-only clock faults in `clock::fault`. Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []
+# The config-file YAML rules in `yaml`, for the service binaries.
+yaml = ["dep:serde-saphyr"]
 
 [package.metadata.docs.rs]
 # `lifecycle` is off by default so library consumers do not inherit tokio;

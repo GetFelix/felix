@@ -4,17 +4,19 @@
 use utoipa::OpenApi;
 
 use crate::api::{
-    caches, namespaces, nodes, regions, shard_assignments, shard_moves, streams, system, tenants,
+    caches, namespaces, nodes, regions, resources, shard_assignments, shard_moves, streams, system,
+    tenants,
     types::{
-        CacheChangesResponse, CacheCreateRequest, CacheListResponse, CacheSnapshotResponse,
-        ErrorResponse, FeatureFlags, FleetFeaturesResponse, FleetFinalizeResponse,
-        GroupingListResponse, GroupingListing, HaltedReplica, HealthStatus, ListRegionsResponse,
-        NamespaceChangesResponse, NamespaceCreateRequest, NamespaceListResponse,
-        NamespaceSnapshotResponse, NodeHeartbeatRequest, NodeHeartbeatResponse, NodeListResponse,
-        NodePlacement, NodeRegistrationRequest, NodeRegistrationResponse, NodeView,
-        PlacementPlanResponse, PlacementStatusResponse, PlannedShard, PolicyListResponse,
-        PolicyListing, Region, RoutedShardAssignment, RoutedShardAssignmentChange,
-        ShardAssignmentChangesResponse, ShardAssignmentListResponse,
+        BatchCache, BatchItemStatus, BatchStream, CacheChangesResponse, CacheCreateRequest,
+        CacheListResponse, CacheSnapshotResponse, ErrorResponse, FeatureFlags,
+        FleetFeaturesResponse, FleetFinalizeResponse, GroupingListResponse, GroupingListing,
+        HaltedReplica, HealthStatus, ListRegionsResponse, NamespaceChangesResponse,
+        NamespaceCreateRequest, NamespaceListResponse, NamespaceSnapshotResponse,
+        NodeHeartbeatRequest, NodeHeartbeatResponse, NodeListResponse, NodePlacement,
+        NodeRegistrationRequest, NodeRegistrationResponse, NodeView, PlacementPlanResponse,
+        PlacementStatusResponse, PlannedShard, PolicyListResponse, PolicyListing, Region,
+        ResourceBatchRequest, ResourceBatchResponse, RoutedShardAssignment,
+        RoutedShardAssignmentChange, ShardAssignmentChangesResponse, ShardAssignmentListResponse,
         ShardAssignmentSnapshotResponse, ShardMove, ShardMoveListResponse, ShardMoveRequest,
         ShardMoveResponse, ShardMoveStep, ShardReplication, ShardReplicationResponse,
         StreamChangesResponse, StreamCreateRequest, StreamListResponse, StreamSnapshotResponse,
@@ -26,6 +28,7 @@ use crate::auth::admin;
 use crate::auth::admin::{
     GroupingRequest, PolicyRequest, RevokeRefreshTokensRequest, RevokeRefreshTokensResponse,
 };
+use crate::auth::delegate::{self, TokenDelegateRequest, TokenDelegateResponse};
 use crate::auth::exchange::{self, TokenExchangeRequest, TokenExchangeResponse};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::jwks::{self, JwksResponse};
@@ -53,6 +56,7 @@ use crate::model::{
         regions::list_regions,
         regions::get_region,
         exchange::exchange_token,
+        delegate::delegate_token,
         jwks::tenant_jwks,
         admin::upsert_idp_issuer,
         admin::delete_idp_issuer,
@@ -63,6 +67,7 @@ use crate::model::{
         admin::remove_policy,
         admin::remove_grouping,
         admin::revoke_principal_refresh_tokens,
+        crate::auth::revocation::principal_revocation_changes,
         signing_keys::list_signing_keys,
         signing_keys::stage_signing_key,
         signing_keys::activate_signing_key,
@@ -91,6 +96,7 @@ use crate::model::{
         caches::get_cache,
         caches::patch_cache,
         caches::delete_cache,
+        resources::create_resources,
         nodes::reports::report_health,
         nodes::register_node,
         nodes::drain_node,
@@ -138,6 +144,11 @@ use crate::model::{
         Cache,
         CacheKey,
         CacheCreateRequest,
+        ResourceBatchRequest,
+        ResourceBatchResponse,
+        BatchStream,
+        BatchCache,
+        BatchItemStatus,
         CachePatchRequest,
         CacheListResponse,
         CacheSnapshotResponse,
@@ -200,11 +211,15 @@ use crate::model::{
         ShardReplicationResponse,
         TokenExchangeRequest,
         TokenExchangeResponse,
+        TokenDelegateRequest,
+        TokenDelegateResponse,
         IdpIssuerConfig,
         PolicyRequest,
         GroupingRequest,
         RevokeRefreshTokensRequest,
         RevokeRefreshTokensResponse,
+        crate::auth::revocation::PrincipalRevocation,
+        crate::auth::revocation::PrincipalRevocationChangesResponse,
         SigningKeysResponse,
         PolicyRule,
         GroupingRule,
@@ -222,6 +237,7 @@ use crate::model::{
         (name = "namespaces", description = "Namespace management"),
         (name = "streams", description = "Stream management"),
         (name = "caches", description = "Cache management"),
+        (name = "resources", description = "Streams and caches created together, all or none"),
         (name = "nodes", description = "Broker membership"),
         (name = "placement", description = "Shard moves and placement, for operators")
     )

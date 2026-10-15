@@ -7,8 +7,6 @@ use super::{SubStreamMode, SubscriberLaneShard};
 
 pub(super) const DEFAULT_EVENT_BATCH_MAX_DELAY_US: u64 = 250;
 pub(super) const DEFAULT_DISABLE_TIMINGS: bool = false;
-pub(super) const DEFAULT_CACHE_CONN_RECV_WINDOW: u64 = 256 * 1024 * 1024;
-pub(super) const DEFAULT_CACHE_STREAM_RECV_WINDOW: u64 = 64 * 1024 * 1024;
 pub(super) const DEFAULT_CACHE_SEND_WINDOW: u64 = 256 * 1024 * 1024;
 pub(super) const DEFAULT_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Room for an `Auth` carrying a token with a long permission list, and no
@@ -53,6 +51,10 @@ pub(super) const DEFAULT_GROUP_MAX_ATTEMPTS: u32 = 5;
 /// that a client notices a broker that has stopped answering.
 pub(super) const DEFAULT_GROUP_MAX_WAIT_MS: u64 = 30_000;
 
+/// Twelve hours. Room for a consumer retrying a slow downstream with long
+/// backoff, without a claim or a delayed nack outliving a working day.
+pub(super) const DEFAULT_GROUP_MAX_VISIBILITY_MS: u64 = 12 * 60 * 60 * 1000;
+
 /// Ten thousand. Ten full polls, so several consumers each holding a poll's
 /// worth never meet it; one that keeps polling without answering does.
 pub(super) const DEFAULT_GROUP_MAX_IN_FLIGHT: usize = 10_000;
@@ -82,7 +84,20 @@ pub(super) const DEFAULT_PUB_INFLIGHT_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_PUB_CONN_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const DEFAULT_PUBLISH_WINDOW: u32 = 256;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY: usize = 512;
+// The most a subscriber may ask for. Each queued envelope pins a published
+// batch in memory, so this bounds what one reader can hold.
+pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX: usize = 4096;
+// One entry can be a whole frame, so the count alone lets a slow reader pin
+// gigabytes of large records. The bound also covers the writer lanes, so it
+// has to fit a subscriber that is keeping up with large batches: 64 MiB
+// throttled 4 MiB batches at fanout 10.
+pub(super) const DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN: usize = 4096;
+// How many identities' worth of publish budget and subscriptions one
+// connection may hold in all, unless set. A plain client is one identity and
+// never reaches it; a client acting for many users can serve four at their
+// full share before they compete.
+pub(super) const IDENTITIES_PER_CONN: usize = 4;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
 pub(super) const DEFAULT_SUBSCRIBER_WRITER_LANES: usize = 4;
 pub(super) const DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH: usize = 64;

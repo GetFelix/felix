@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -32,8 +32,11 @@ impl Client {
     /// Connect to a cluster.
     ///
     /// `addrs` is one `"host:port"` or a list of them; any reachable one is
-    /// enough, and the client discovers the rest. `server_name` is the name
-    /// the broker's certificate is expected to carry.
+    /// enough, and the client discovers the rest. A name is resolved again
+    /// whenever no broker the client knows answers, so prefer one to an IP. A
+    /// name that does not resolve now raises `ValueError`.
+    /// `server_name` is the name the broker's certificate is expected to
+    /// carry.
     ///
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `ca_file`
     /// to trust a specific CA (what the demos and a self-signed development
@@ -74,12 +77,34 @@ impl Client {
 
         let server_name = server_name.to_string();
         let inner = block_on(py, async move {
-            ClusterClient::connect(&seeds, &server_name, config)
+            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
                 .await
                 .map_err(to_py_err)
         })?;
         Ok(Self {
             inner: Arc::new(inner),
+        })
+    }
+
+    /// A client that acts as another user over this client's connections.
+    ///
+    /// Every stream it opens authenticates with `tenant_id` and `token`, and
+    /// the broker checks its requests against that token's grants alone. It
+    /// follows shards and failovers as this client does, reaching each broker
+    /// over this client's connection to it, so a gateway serving many users
+    /// holds one connection per broker. The token is fixed: build a new one
+    /// when it expires. A refused token fails here.
+    fn with_identity(&self, py: Python<'_>, tenant_id: &str, token: &str) -> PyResult<Self> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        let identity = block_on(py, async move {
+            inner
+                .with_identity_token(tenant_id, token)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(Self {
+            inner: Arc::new(identity),
         })
     }
 
@@ -216,8 +241,7 @@ impl Client {
         // leaking the unit into the signature.
         let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
         block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .cache_put(&tenant_id, &namespace, &cache, &key, value, ttl_ms)
                 .await
                 .map_err(to_py_err)
@@ -241,8 +265,7 @@ impl Client {
             key.to_string(),
         );
         let value = block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .cache_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)
@@ -325,8 +348,7 @@ impl Client {
             key.to_string(),
         );
         let value = block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .cache_delete(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)
@@ -357,8 +379,7 @@ impl Client {
             key.to_string(),
         );
         block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_add(&tenant_id, &namespace, &cache, &key, delta)
                 .await
                 .map_err(to_py_err)
@@ -382,8 +403,7 @@ impl Client {
             key.to_string(),
         );
         block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)
@@ -403,7 +423,7 @@ impl Client {
     /// for this group right now. `wait=0` polls without blocking, which spins
     /// if you loop on it — prefer a few seconds so the broker holds the
     /// request open instead.
-    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0))]
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false))]
     fn group_poll(
         &self,
         py: Python<'_>,
@@ -414,18 +434,22 @@ impl Client {
         group: &str,
         max_records: u32,
         wait: f64,
+        consumer: Option<String>,
+        reclaim: bool,
     ) -> PyResult<Vec<Py<GroupRecord>>> {
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
         let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
+        let member = consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim });
         let records = block_on(py, async move {
             inner
-                .group_poll_wait(
+                .group_poll_as(
                     &tenant_id,
                     &namespace,
                     &stream,
                     shard,
                     &group,
+                    member.as_ref(),
                     max_records,
                     wait,
                 )
@@ -464,7 +488,8 @@ impl Client {
     }
 
     /// Hand one record back for immediate redelivery, rather than waiting out
-    /// the visibility timeout.
+    /// the visibility timeout. Refused once its claim has lapsed or the
+    /// record has gone out again.
     fn group_nack(
         &self,
         py: Python<'_>,
@@ -473,13 +498,14 @@ impl Client {
         stream: &str,
         shard: u32,
         group: &str,
-        offset: u64,
+        record: PyRef<'_, GroupRecord>,
     ) -> PyResult<()> {
+        let record = record.delivery();
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
         block_on(py, async move {
             inner
-                .group_nack(&tenant_id, &namespace, &stream, shard, &group, offset)
+                .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
                 .await
                 .map_err(to_py_err)
         })
@@ -629,8 +655,7 @@ impl Client {
             stream.to_string(),
         );
         block_on(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .stream_shards(&tenant_id, &namespace, &stream)
                 .await
                 .map_err(to_py_err)

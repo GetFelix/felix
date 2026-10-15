@@ -4,17 +4,24 @@ description: "Run the control plane and a broker under Docker Compose, with the 
 ---
 
 Running Felix under Docker Compose, for local development and testing.
+With Podman, run the same files with `podman compose`; see
+[Docker or Podman](/getting-started/containers/) for the provider it needs and the few places the two
+differ.
 
 The images are published to GHCR and are pullable without credentials:
 
 ```bash
-docker pull ghcr.io/gabloe/felix-broker:0.5.0
-docker pull ghcr.io/gabloe/felix-controlplane:0.5.0
+docker pull ghcr.io/getfelix/felix-broker:0.6.0-preview.7
+docker pull ghcr.io/getfelix/felix-controlplane:0.6.0-preview.7
 ```
 
-Each release publishes three tags: the full version (`0.5.0`), the minor
-series (`0.5`), and `latest` on releases without a pre-release suffix. Use a
-version tag in anything you deploy, because `latest` moves.
+Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
+
+Each release publishes the full version (`0.6.0-preview.7`). A release without a
+pre-release suffix also publishes its minor series (`0.6`) and `latest`. Use a
+full version tag in anything you deploy, because the other two move. A client
+negotiates its features with the broker it connects to, so a newer client
+against older images runs without whatever the images predate.
 
 To build them yourself instead, for a change you have not released or an
 architecture the release does not build:
@@ -27,10 +34,11 @@ docker build -f docker/controlplane.Dockerfile -t felix-controlplane:dev .
 Both build from the repository root. The binaries are workspace members, so
 cargo needs the whole workspace to resolve them. Each Dockerfile takes one
 build argument, `BIN`, naming the binary to build. Docker warns about any
-other `--build-arg` and ignores it.
+other `--build-arg` and ignores it. `podman build` needs `--format docker`, or
+it drops the images' `HEALTHCHECK`.
 
 :::note[Compose vs Kubernetes]
-Use Docker Compose for local development and testing. For production, see the [Kubernetes guide](/felix/deployment/kubernetes/).
+Use Docker Compose for local development and testing. For production, see the [Kubernetes guide](/deployment/kubernetes/).
 :::
 
 ## What a broker needs
@@ -65,7 +73,7 @@ A control plane over Postgres and one durable broker:
 ```yaml
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_USER: felix
       POSTGRES_PASSWORD: felix
@@ -77,7 +85,7 @@ services:
       retries: 5
 
   felix-controlplane:
-    image: ghcr.io/gabloe/felix-controlplane:0.5.0
+    image: ghcr.io/getfelix/felix-controlplane:0.6.0-preview.7
     environment:
       - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
       # Day 0 only: the bootstrap API is how the broker credential is made.
@@ -94,7 +102,7 @@ services:
         condition: service_healthy
 
   felix-broker:
-    image: ghcr.io/gabloe/felix-broker:0.5.0
+    image: ghcr.io/getfelix/felix-broker:0.6.0-preview.7
     environment:
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
@@ -161,22 +169,26 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 ```
 
 The token exchange needs an identity provider that the tenant trusts
-(`idp_issuers`). Felix has no built-in development login. Exchange with
+(`idp_issuers`). For a development stack with no identity provider, set
+`FELIX_BOOTSTRAP_DEV_TOKENS=true` and ask the bootstrap listener for a
+[development token](/features/security/#development-tokens) for
+`p:broker` with `"audience": "felix-controlplane"` instead. Otherwise exchange with
 `"audience": "felix-controlplane"` and write the Felix token to
 `./felix-node-token`. The
-[bootstrap flow](/felix/features/security/#bootstrap-mode-day-0) and
-[token exchange](/felix/features/security/#token-exchange-oidc--felix) cover
+[bootstrap flow](/features/security/#bootstrap-mode-day-0) and
+[token exchange](/features/security/#token-exchange-oidc--felix) cover
 the request bodies.
 
-The token expires like any Felix token. A broker without `FELIX_NODE_ID`, like
-this one, reads it once at startup, so a new token takes effect on the next
-restart. Brokers that join a cluster re-read `FELIX_NODE_TOKEN_FILE` every 30
-seconds and can also refresh their own token; see
-[Kubernetes](/felix/deployment/kubernetes/).
+The token expires like any Felix token, after 15 minutes for an exchanged one.
+Every broker, this one included, re-reads `FELIX_NODE_TOKEN_FILE` every 30
+seconds, so whatever mints the credential can rewrite the file. Or give the
+broker a refresh token at `FELIX_NODE_REFRESH_TOKEN_FILE` (a writable path) and
+it renews its own token before it expires; see
+[Kubernetes](/deployment/kubernetes/).
 
 To try Felix without any of this, `task cluster:up` starts a control plane and
 brokers on your machine and mints the credentials itself. See
-[Local development](/felix/deployment/local/).
+[Local development](/deployment/local/).
 
 ## Adding Prometheus
 
@@ -187,7 +199,7 @@ that mounts it:
 ```yaml
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: docker.io/prom/prometheus:latest
     ports:
       - "9090:9090"
     volumes:
@@ -203,7 +215,7 @@ volumes:
 The file also lists an `otel-collector:8889` target, which stays down unless
 you run a collector. The broker exports traces over OTLP when
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set; see
-[Observability](/felix/features/observability/).
+[Observability](/features/observability/).
 
 Some queries to start from, at `http://localhost:9090`:
 
@@ -219,7 +231,7 @@ rate(felix_publish_requests_total{result=~"error|not_owner|unroutable|dropped"}[
 
 `felix_publish_latency_ms` exists only in a broker built with
 `--features telemetry`. The release images are built without it.
-[Observability](/felix/features/observability/) lists the rest of the metrics.
+[Observability](/features/observability/) lists the rest of the metrics.
 
 ## Configuration
 
@@ -249,16 +261,16 @@ services:
       - FELIX_EVENT_BATCH_MAX_DELAY_US=250
       - FELIX_FANOUT_BATCH=64
 
-      # Cache flow control
-      - FELIX_CACHE_CONN_RECV_WINDOW=268435456
-      - FELIX_CACHE_STREAM_RECV_WINDOW=67108864
+      # Client listener flow control (defaults follow the publish budget)
+      - FELIX_BROKER_PUB_CONN_RECV_WINDOW=16777216
+      - FELIX_BROKER_PUB_STREAM_RECV_WINDOW=16777216
 
       - RUST_LOG=info
 ```
 
 The broker warns at startup about any `FELIX_*` variable it does not read, so a
 typo shows up in the logs. The
-[environment reference](/felix/reference/environment-variables/) lists them
+[environment reference](/reference/environment-variables/) lists them
 all.
 
 ### Config file
@@ -271,7 +283,7 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 event_batch_max_events: 64
 event_batch_max_delay_us: 250
-cache_conn_recv_window: 268435456
+pub_conn_recv_window: 16777216
 ```
 
 ```yaml
@@ -305,8 +317,8 @@ A broker that joins a cluster needs more than the single broker above:
 
 That is a lot to write by hand in Compose. For a local cluster, `task
 cluster:up` starts a control plane and three brokers wired this way (see
-[Local development](/felix/deployment/local/)). For a real one, the
-[Helm chart](/felix/deployment/kubernetes/) renders all of it.
+[Local development](/deployment/local/)). For a real one, the
+[Helm chart](/deployment/kubernetes/) renders all of it.
 
 ## Persistence
 
@@ -316,6 +328,8 @@ directory instead of a named volume, make it writable by uid 65532 first:
 
 ```bash
 sudo chown 65532:65532 /path/to/host/data
+# Rootless Podman maps container uids, so change it from inside its namespace:
+podman unshare chown 65532:65532 /path/to/host/data
 ```
 
 ```yaml
@@ -331,7 +345,7 @@ A tar of a running broker's volume is not a consistent backup: it is taken at
 a different moment from every other broker's, and it can hold records no
 majority acknowledged. Take a backup point and copy the leaders' shard
 directories against it instead; see
-[Backup and restore](/felix/deployment/backup-and-restore/). A tar of a
+[Backup and restore](/deployment/backup-and-restore/). A tar of a
 *stopped* single broker's volume is fine.
 
 ## Networking
@@ -351,7 +365,7 @@ services:
 ```
 
 :::caution[Host networking]
-Host networking doesn't work on Docker Desktop for Mac or Windows. Use bridge networking there, or run on Linux.
+Host networking doesn't work on Docker Desktop or `podman machine` on Mac or Windows. Use bridge networking there, or run on Linux.
 :::
 
 ## Resource limits
@@ -435,7 +449,7 @@ docker inspect "$(docker compose ps -q felix-broker)"
 
 ## Next steps
 
-- **Production deployment**: [Kubernetes Guide](/felix/deployment/kubernetes/)
-- **Performance tuning**: [Performance Guide](/felix/features/performance/)
-- **Full configuration reference**: [Configuration Reference](/felix/reference/configuration/)
-- **Monitoring setup**: [Observability Guide](/felix/features/observability/)
+- **Production deployment**: [Kubernetes Guide](/deployment/kubernetes/)
+- **Performance tuning**: [Performance Guide](/features/performance/)
+- **Full configuration reference**: [Configuration Reference](/reference/configuration/)
+- **Monitoring setup**: [Observability Guide](/features/observability/)

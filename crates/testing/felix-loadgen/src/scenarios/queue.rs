@@ -8,7 +8,7 @@ use felix_wire::AckMode;
 use super::connect::client;
 use super::framing::{payload, read_header};
 use super::{Common, is_retriable_transient};
-use crate::stats::{Samples, emit_json, fmt_us};
+use crate::stats::{Samples, fmt_us, report};
 
 /// Queue semantics: a consumer group draining a stream. Publish `warmup+total`
 /// records into `stream`, then poll them through one consumer group and ack —
@@ -16,7 +16,7 @@ use crate::stats::{Samples, emit_json, fmt_us};
 /// against poll time, one clock) and the drain throughput. Redeliveries
 /// (`attempts > 1`) are counted, not hidden. A cumulative ack of each batch's
 /// highest offset finishes it, which is how a real drain settles a run of work.
-pub(crate) async fn queue(common: &Common, stream: &str) -> Result<()> {
+pub(crate) async fn queue(common: &Common, stream: &str) -> Result<serde_json::Value> {
     let epoch = Instant::now();
     let group = "perf-cg";
     let shard = 0u32;
@@ -153,13 +153,14 @@ pub(crate) async fn queue(common: &Common, stream: &str) -> Result<()> {
         0.0
     };
     let p = samples.percentiles();
-    println!(
+    report!(
+        common,
         "queue drain: delivered = {delivered}/{expected}, redeliveries = {redeliveries}, p50 = {}, p99 = {}, p999 = {}, throughput = {throughput:.1} msg/s",
         fmt_us(p.p50_us),
         fmt_us(p.p99_us),
         fmt_us(p.p999_us),
     );
-    emit_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "scenario": "queue",
         "environment": common.environment,
         "stream": stream,
@@ -170,8 +171,7 @@ pub(crate) async fn queue(common: &Common, stream: &str) -> Result<()> {
         "redeliveries": redeliveries,
         "drain_throughput_msg_s": throughput,
         "delivery_latency_us": { "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us },
-    }));
-    Ok(())
+    }))
 }
 
 /// True when a group poll was refused because this broker does not lead the

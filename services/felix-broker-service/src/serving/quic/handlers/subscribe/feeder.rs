@@ -4,11 +4,11 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use bytes::Bytes;
-use felix_broker::{DeliveryEnvelope, SubscriptionReceiver};
+use felix_broker::{DeliveryEnvelope, HeldBytes, SubscriptionReceiver};
 
 use crate::observability::tenants::TenantDelivery;
 use crate::observability::timings;
-use crate::serving::quic::handlers::publish::SubscriptionLimiter;
+use crate::serving::quic::handlers::publish::IdentityLimits;
 use crate::serving::quic::handlers::subscribe::config::EventWriterConfig;
 use crate::serving::quic::handlers::subscribe::lane::{LaneCommand, WriterLaneManager};
 use crate::serving::quic::telemetry::{t_histogram, t_now_if, t_should_sample};
@@ -20,31 +20,46 @@ fn encode_batch(
     batch: &[Bytes],
     base_offset: Option<u64>,
     skipped_before: u64,
+    publisher: Option<&Bytes>,
+    timestamps: Option<&[u64]>,
 ) -> felix_wire::Result<Bytes> {
-    match (config.offsets_enabled, base_offset) {
-        (true, Some(base)) if config.skip_enabled => {
-            felix_wire::binary::encode_shared_event_batch_bytes_with_skip(
-                batch,
-                base,
-                skipped_before,
-            )
-        }
-        (true, Some(base)) => {
-            felix_wire::binary::encode_shared_event_batch_bytes_with_offset(batch, base)
-        }
-        _ => felix_wire::binary::encode_shared_event_batch_bytes(batch),
-    }
+    let base_offset = base_offset.filter(|_| config.offsets_enabled);
+    let meta = felix_wire::binary::EventBatchMeta {
+        base_offset,
+        skipped_before: if config.skip_enabled {
+            skipped_before
+        } else {
+            0
+        },
+        publisher: publisher
+            .filter(|_| config.publisher_enabled)
+            .map(Bytes::as_ref),
+        timestamps: timestamps.filter(|_| config.timestamps_enabled),
+    };
+    felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_lane_feeder(
     mut event_rx: SubscriptionReceiver,
     manager: Weak<WriterLaneManager>,
     lane_idx: usize,
     connection_id: Option<u64>,
     config: EventWriterConfig,
-    subscriptions: Arc<SubscriptionLimiter>,
+    subscriptions: Arc<IdentityLimits>,
     delivery: TenantDelivery,
+    revocation: Option<SubscriberRevocation>,
 ) {
+    let mut revoked_frame = None;
+    let mut revoked = {
+        let revocable = revocation.as_ref().map(|r| r.revocable.clone());
+        Box::pin(async move {
+            match revocable {
+                Some(revocable) => revocable.revoked().await,
+                None => std::future::pending().await,
+            }
+        })
+    };
     let max_events = config.max_events.max(1);
     let max_bytes = config.max_bytes.max(1);
     let _lane_flush_hints = (
@@ -52,14 +67,28 @@ pub(super) async fn run_lane_feeder(
         config.flush_max_delay,
         config.max_bytes_per_write,
     );
-    let mut pending: Option<DeliveryEnvelope> = None;
+    // Each batch keeps its bytes held against the subscriber's byte bounds
+    // until the frame carrying it is written, so a frame waiting in the lanes
+    // counts toward them like one waiting in the broker queue.
+    let mut pending: Option<(DeliveryEnvelope, HeldBytes)> = None;
+    let mut busy = false;
 
     loop {
-        let envelope = match pending.take() {
-            Some(envelope) => envelope,
-            None => match event_rx.recv().await {
-                Some(envelope) => envelope,
-                None => break,
+        let (envelope, mut held) = match pending.take() {
+            Some(next) => next,
+            None => tokio::select! {
+                next = event_rx.recv_held() => match next {
+                    Some(next) => next,
+                    None => break,
+                },
+                () = &mut revoked => {
+                    tracing::info!(
+                        subscriber_id = config.subscription_id,
+                        "ending a subscription: its credential was revoked"
+                    );
+                    revoked_frame = revocation.map(|r| r.last_frame);
+                    break;
+                }
             },
         };
         let first_enqueued_at = envelope.enqueued_at();
@@ -72,13 +101,7 @@ pub(super) async fn run_lane_feeder(
             let payload_bytes: usize = payloads.iter().map(Bytes::len).sum();
             if payloads.len() <= max_events && payload_bytes <= max_bytes {
                 let prefix_start = t_now_if(t_should_sample());
-                let frame = match if config.skip_enabled {
-                    envelope.shared_event_frame_with_skip()
-                } else if config.offsets_enabled {
-                    envelope.shared_event_frame_with_offsets()
-                } else {
-                    envelope.shared_event_frame()
-                } {
+                let frame = match envelope.shared_event_frame_as(config.shape()) {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(
@@ -101,12 +124,15 @@ pub(super) async fn run_lane_feeder(
                     frame,
                     payloads.len(),
                     first_enqueued_at,
+                    held,
                 )
                 .await;
                 delivery.record(payloads.len(), payload_bytes);
                 continue;
             }
 
+            // The last piece carries the bytes: it is written after the others.
+            let mut held = Some(held);
             let mut start = 0usize;
             while start < payloads.len() {
                 let mut end = start;
@@ -127,11 +153,16 @@ pub(super) async fn run_lane_feeder(
                 } else {
                     0
                 };
+                let times = envelope
+                    .timestamp_micros()
+                    .map(|time| vec![time; batch.len()]);
                 let encoded = encode_batch(
                     &config,
                     batch,
                     envelope.base_offset().map(|base| base + start as u64),
                     skipped,
+                    envelope.publisher(),
+                    times.as_deref(),
                 );
                 match encoded {
                     Ok(frame) => {
@@ -142,6 +173,11 @@ pub(super) async fn run_lane_feeder(
                             frame,
                             batch.len(),
                             first_enqueued_at,
+                            if end == payloads.len() {
+                                held.take().unwrap_or_default()
+                            } else {
+                                HeldBytes::default()
+                            },
                         )
                         .await;
                         delivery.record(batch.len(), bytes);
@@ -168,46 +204,80 @@ pub(super) async fn run_lane_feeder(
         // the run ends the batch exactly as a byte or count limit would.
         let batch_base = envelope.base_offset();
         let batch_skipped = envelope.skipped_before();
+        // One publisher describes the frame, so a different one ends it.
+        let batch_publisher = envelope.publisher().cloned();
+        // Each coalesced publish brings its own time.
+        let mut batch_times = envelope
+            .timestamp_micros()
+            .filter(|_| config.timestamps_enabled)
+            .map(|time| {
+                let mut times = Vec::with_capacity(max_events);
+                times.push(time);
+                times
+            });
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
-        // One deadline for the whole batch. A per-recv timeout would let a
+        // Wait for more only while the previous batch found events already
+        // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
+        // lone event would sit out `flush_delay` for a batch that never fills.
+        // One deadline for the whole batch: a per-recv timeout would let a
         // steady stream hold the first event until the count or byte cap.
-        let deadline = tokio::time::Instant::now() + config.flush_delay;
+        // A zero delay must not arm a timer at all: tokio rounds every deadline
+        // up to its next 1 ms tick, so even `now + 0` can wait most of a ms.
+        let deadline = (busy && !config.flush_delay.is_zero())
+            .then(|| tokio::time::Instant::now() + config.flush_delay);
+        let mut found_queued = false;
 
-        while batch.len() < max_events && batch_bytes < max_bytes {
-            let next = if config.single_event_mode {
-                None
-            } else {
-                match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                    Ok(Some(envelope)) => Some(envelope),
-                    Ok(None) | Err(_) => None,
+        while !config.single_event_mode && batch.len() < max_events && batch_bytes < max_bytes {
+            let next = match event_rx.try_recv_held() {
+                Ok(next) => {
+                    found_queued = true;
+                    Some(next)
                 }
+                Err(_) => match deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv_held())
+                        .await
+                        .ok()
+                        .flatten(),
+                    None => None,
+                },
             };
-            let Some(envelope) = next else {
+            let Some((envelope, next_held)) = next else {
                 break;
             };
-            if envelope.len() != 1 {
-                pending = Some(envelope);
-                break;
-            }
-            if config.offsets_enabled && envelope.base_offset() != expected_next {
+            let payload_len = envelope.payloads().first().map_or(0, Bytes::len);
+            let ends_batch = envelope.len() != 1
                 // Numbering this into the current frame would misreport it.
-                pending = Some(envelope);
+                || (config.offsets_enabled && envelope.base_offset() != expected_next)
+                || (config.publisher_enabled && envelope.publisher() != batch_publisher.as_ref())
+                // A frame carries a time for every event or for none.
+                || (batch_times.is_some() && envelope.timestamp_micros().is_none())
+                || batch_bytes.saturating_add(payload_len) > max_bytes;
+            if ends_batch {
+                pending = Some((envelope, next_held));
                 break;
             }
             let payload = envelope.payloads()[0].clone();
-            if batch_bytes.saturating_add(payload.len()) > max_bytes {
-                pending = Some(envelope);
-                break;
-            }
+            held.absorb(next_held);
             batch_bytes += payload.len();
             batch.push(payload);
+            if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
+                times.push(time);
+            }
             expected_next = expected_next.map(|next| next + 1);
         }
+        busy = found_queued;
 
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);
         let prefix_start = t_now_if(sample);
-        let encoded = encode_batch(&config, &batch, batch_base, batch_skipped);
+        let encoded = encode_batch(
+            &config,
+            &batch,
+            batch_base,
+            batch_skipped,
+            batch_publisher.as_ref(),
+            batch_times.as_deref(),
+        );
         let frame = match encoded {
             Ok(frame) => frame,
             Err(err) => {
@@ -232,6 +302,7 @@ pub(super) async fn run_lane_feeder(
             frame,
             batch.len(),
             first_enqueued_at,
+            held,
         )
         .await;
         delivery.record(batch.len(), batch_bytes);
@@ -242,8 +313,12 @@ pub(super) async fn run_lane_feeder(
         }
     }
     if let Some(manager) = manager.upgrade() {
-        let last = match event_rx.moved() {
-            Some(moved) if config.shard_moved_enabled => {
+        // A lag outranks a move: resuming where the move says would skip
+        // the records dropped before it.
+        let last = match (event_rx.lag_ended(), event_rx.moved()) {
+            _ if revoked_frame.is_some() => revoked_frame,
+            (Some(resume_from), _) => lagged_frame(config.subscription_id, resume_from),
+            (None, Some(moved)) if config.shard_moved_enabled => {
                 match shard_moved_frame(config.subscription_id, moved) {
                     Ok(frame) => Some(frame),
                     Err(err) => {
@@ -255,6 +330,9 @@ pub(super) async fn run_lane_feeder(
                         None
                     }
                 }
+            }
+            (None, None) if config.stream_deleted_enabled && event_rx.deleted() => {
+                stream_deleted_frame(config.subscription_id)
             }
             _ => None,
         };
@@ -286,6 +364,7 @@ pub(super) async fn enqueue_lane_frame(
     frame: Bytes,
     item_count: usize,
     first_enqueued_at: Instant,
+    held: HeldBytes,
 ) {
     let cmd = LaneCommand::Delivery {
         subscriber_id,
@@ -293,10 +372,18 @@ pub(super) async fn enqueue_lane_frame(
         item_count,
         first_enqueued_at,
         enqueue_at: Instant::now(),
+        held,
     };
-    if manager.enqueue(lane_idx, cmd).await.is_err() {
-        metrics::counter!("felix_subscriber_lane_dropped_total").increment(1);
-    }
+    // Fails only once the connection's lanes are gone, and its subscriptions
+    // with them.
+    let _ = manager.enqueue(lane_idx, cmd).await;
+}
+
+/// What ends a subscription when the credential it was opened with is
+/// revoked, and the frame that tells the subscriber so.
+pub(crate) struct SubscriberRevocation {
+    pub(crate) revocable: crate::serving::revocation::Revocable,
+    pub(crate) last_frame: Bytes,
 }
 
 /// The last frame of a subscription whose shard moved away.
@@ -312,4 +399,32 @@ pub(super) fn shard_moved_frame(
         generation: moved.to.generation,
     };
     Ok(message.encode()?.encode())
+}
+
+/// The last frame of a subscription whose stream was deleted.
+fn stream_deleted_frame(subscription_id: u64) -> Option<Bytes> {
+    let message = felix_wire::Message::StreamDeleted { subscription_id };
+    match message.encode() {
+        Ok(frame) => Some(frame.encode()),
+        Err(err) => {
+            tracing::warn!(error = %err, subscription_id, "encode stream_deleted failed");
+            None
+        }
+    }
+}
+
+/// The last frame of a subscription whose queue dropped records.
+fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
+    metrics::counter!("felix_subscription_lagged_total").increment(1);
+    let message = felix_wire::Message::SubscriptionLagged {
+        subscription_id,
+        resume_from,
+    };
+    match message.encode() {
+        Ok(frame) => Some(frame.encode()),
+        Err(err) => {
+            tracing::warn!(error = %err, subscription_id, "encode subscription_lagged failed");
+            None
+        }
+    }
 }

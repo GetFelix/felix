@@ -9,14 +9,22 @@
 //! answer furthest ahead by (last generation, length), if that is ahead of its
 //! own: whatever a majority held when it answered is in that log.
 //!
+//! A cache shard is fenced the same way, its cache log first and then its
+//! counter log, each taking the log furthest ahead among the answers.
+//!
+//! A stream shard's dead-letter and group cursor logs are fenced beside its
+//! records, both in one round, and taken together from the one replica
+//! whose pair is furthest ahead: a cursor is only good with the dead letters
+//! its leader had written before it. See [`fence_groups`].
+//!
 //! Only when every replica offered the capabilities. Otherwise the shard
 //! opens as it always has, on the lease, and a mixed fleet behaves exactly as
 //! before. See "Fencing a promotion" in `docs/replication-design.md`.
 
 use std::sync::Arc;
 
-use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
+use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog, ReplicateFetch,
@@ -31,8 +39,12 @@ use crate::replica::last_generation;
 /// How much one catch-up read asks a replica for.
 const FETCH_BYTES: u32 = 1024 * 1024;
 
-/// What a replica must have offered for the shard to be fenced.
+/// What a replica must have offered for a stream shard to be fenced.
 pub const REQUIRED: PeerCapabilities = PeerCapabilities::FENCE.union(PeerCapabilities::TAIL_FETCH);
+
+/// What a replica must have offered for a cache shard to be fenced: its
+/// counter log is fenced and read as well.
+pub const REQUIRED_FOR_CACHES: PeerCapabilities = REQUIRED.union(PeerCapabilities::CACHE_FENCE);
 
 /// Where a promoted shard waits before it serves, as the broker keeps it.
 #[async_trait::async_trait]
@@ -70,7 +82,21 @@ pub enum Outcome {
     Lease { lacking: String },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
-    Pending(String),
+    Pending {
+        why: String,
+        /// The replicas that took the fence in this attempt, on the log it
+        /// stopped at. What an operator reads to see who is missing.
+        took: Vec<String>,
+    },
+}
+
+impl Outcome {
+    fn pending(why: impl Into<String>, took: Vec<String>) -> Self {
+        Outcome::Pending {
+            why: why.into(),
+            took,
+        }
+    }
 }
 
 /// Fence `route`'s replicas for the shard this broker was just promoted to
@@ -78,11 +104,11 @@ pub enum Outcome {
 ///
 /// Does not open the shard; the caller does, on anything but `Pending`.
 ///
-/// Without `lease_fallback` a stream shard never opens on the lease: a
-/// replica whose capabilities are unknown or lacking is one that has not
-/// answered, and the shard waits for a majority that has. That is the rule
-/// once the followers decide acknowledgements, since an older leader then no
-/// longer stops writing when its lease lapses.
+/// Without `lease_fallback` the shard never opens on the lease: a replica
+/// whose capabilities are unknown or lacking is one that has not answered,
+/// and the shard waits for a majority that has. That is the rule once the
+/// followers decide acknowledgements, since an older leader then no longer
+/// stops writing when its lease lapses.
 pub async fn fence_shard<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -96,13 +122,13 @@ pub async fn fence_shard<R: PeerRequester>(
         .iter()
         .filter(|replica| replica.node_id != local_node_id)
         .collect();
-    // A cache shard's log opens lazily and is compacted underneath, so the
-    // catch-up is built for stream shards only.
-    if key.kind != ShardKind::Stream {
-        return Outcome::Lease {
-            lacking: "a cache shard".to_string(),
-        };
-    }
+    // The shard's own log first: its fence is what refuses the old leader on
+    // every log the shard has. A cache's counters are fenced after it, for
+    // where each replica's counter log ends.
+    let (required, logs): (_, &[LogKind]) = match key.kind {
+        ShardKind::Stream => (REQUIRED, &[LogKind::Stream]),
+        ShardKind::Cache => (REQUIRED_FOR_CACHES, &[LogKind::Cache, LogKind::Counters]),
+    };
 
     // Every replica, not just a majority. A fenced majority keeps an older
     // leader out whoever the rest are, but what the fence is for later --
@@ -115,25 +141,13 @@ pub async fn fence_shard<R: PeerRequester>(
                 .await
                 .ok(),
         };
-        if !offered.is_some_and(|offered| offered.contains(REQUIRED)) {
+        if !offered.is_some_and(|offered| offered.contains(required)) {
             return Outcome::Lease {
                 lacking: replica.node_id.clone(),
             };
         }
     }
 
-    let Some(log) = broker
-        .shard_log(
-            felix_broker::LogKind::Stream,
-            &key.tenant_id,
-            &key.namespace,
-            &key.stream,
-            key.shard,
-        )
-        .await
-    else {
-        return Outcome::Pending("this broker has no log for the shard".to_string());
-    };
     let shard = ShardRef {
         tenant_id: key.tenant_id.clone(),
         namespace: key.namespace.clone(),
@@ -141,20 +155,120 @@ pub async fn fence_shard<R: PeerRequester>(
         shard: key.shard,
         generation: route.generation,
     };
+    let own_logs = async {
+        let mut caught_up_from = None;
+        for &kind in logs {
+            let Some(log) = broker
+                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+            else {
+                // A log that should be here and could not be opened is not a
+                // shard with nothing to fence. Opening it anyway would serve
+                // unfenced where the lease no longer stops the old leader.
+                let lacking = match kind {
+                    LogKind::Stream => {
+                        return Err(Outcome::pending(
+                            "this broker has no log for the shard",
+                            Vec::new(),
+                        ));
+                    }
+                    // A cache kept in memory replicates nothing, so there is no
+                    // log to fence and none a pass could acknowledge on.
+                    LogKind::Cache if !broker.cache().has_log() => {
+                        return Err(Outcome::Lease {
+                            lacking: "a cache log on this broker".to_string(),
+                        });
+                    }
+                    LogKind::Cache => "this broker could not open the shard's cache log",
+                    // No counter store here, so no counters to take.
+                    LogKind::Counters if broker.counters().is_none() => continue,
+                    _ => "this broker could not open the shard's counter log",
+                };
+                if lease_fallback {
+                    return Err(Outcome::Lease {
+                        lacking: lacking.to_string(),
+                    });
+                }
+                return Err(Outcome::pending(lacking, Vec::new()));
+            };
+            let fenced = fence_log(
+                requester,
+                broker,
+                key,
+                &shard,
+                &replicas,
+                kind,
+                &log,
+                lease_fallback,
+            )
+            .await;
+            caught_up_from = caught_up_from.or(fenced?);
+        }
+        Ok(caught_up_from)
+    };
+    // The group logs' round goes out beside the records' rather than after
+    // it, so a promotion waits on one round of fences. Each group log keeps
+    // the promise on its own log, so it refuses the old leader there whichever
+    // fence lands first.
+    let (own, groups) = match key.kind {
+        ShardKind::Stream => {
+            futures::join!(
+                own_logs,
+                fence_groups(requester, broker, key, &shard, &replicas)
+            )
+        }
+        ShardKind::Cache => (own_logs.await, Ok(None)),
+    };
+    let caught_up_from = match own {
+        Ok(from) => from,
+        Err(outcome) => return outcome,
+    };
+    // Taken only once the records are: a shard that stays closed takes
+    // nothing.
+    let groups = match groups {
+        Ok(Some(round)) => take_groups(requester, broker, key, &shard, round).await,
+        Ok(None) => Ok(None),
+        Err(outcome) => Err(outcome),
+    };
+    match groups {
+        Ok(from) => Outcome::Fenced {
+            caught_up_from: caught_up_from.or(from),
+        },
+        Err(outcome) => outcome,
+    }
+}
 
+/// Fence one of the shard's logs on a majority, and take the log of the
+/// answer furthest ahead if it is ahead of this broker's. `Ok` names the
+/// replica it was taken from, if one was; `Err` is the outcome to stop at.
+#[allow(clippy::too_many_arguments)]
+async fn fence_log<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    key: &ShardKey,
+    shard: &ShardRef,
+    replicas: &[&felix_router::NodeRef],
+    kind: LogKind,
+    log: &felix_broker::StreamLog,
+    lease_fallback: bool,
+) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
     // A majority of the replicas and this broker, which counts itself.
     let voters = replicas.len() + 1;
     let needed = voters / 2 + 1;
     let mut answered: Vec<(String, std::net::SocketAddr, FenceOk)> = Vec::new();
+    let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
+        answered.iter().map(|(node, _, _)| node.clone()).collect()
+    };
     let mut asks = futures::stream::FuturesUnordered::new();
-    for replica in &replicas {
+    for replica in replicas {
         asks.push(ask_fence(
             requester,
             replica.node_id.clone(),
             replica.advertise_addr,
             shard.clone(),
+            crate::ship::replica_log(kind),
         ));
     }
     while answered.len() + 1 < needed {
@@ -165,24 +279,25 @@ pub async fn fence_shard<R: PeerRequester>(
             Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
-                return Outcome::Pending(format!(
-                    "{node_id} has accepted a newer generation: {}",
-                    err.detail
+                return Err(Outcome::pending(
+                    format!("{node_id} has accepted a newer generation: {}", err.detail),
+                    took(&answered),
                 ));
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
-                return Outcome::Lease { lacking: node_id };
+                return Err(Outcome::Lease { lacking: node_id });
             }
             Ok(InternalMessage::ForwardPublishError(err))
                 if lease_fallback && err.code == ErrorCode::UnsupportedKind =>
             {
-                return Outcome::Lease { lacking: node_id };
+                return Err(Outcome::Lease { lacking: node_id });
             }
             other => {
                 tracing::debug!(
                     node_id = %node_id,
                     stream = %key.stream,
                     shard = key.shard,
+                    log = ?kind,
                     answer = ?other.as_ref().map(InternalMessage::kind),
                     "a replica did not take the fence",
                 );
@@ -191,35 +306,309 @@ pub async fn fence_shard<R: PeerRequester>(
     }
     drop(asks);
     if answered.len() + 1 < needed {
-        return Outcome::Pending(format!(
-            "{} of {} replicas took the fence, {} needed with this broker",
-            answered.len(),
-            replicas.len(),
-            needed - 1
+        return Err(Outcome::pending(
+            format!(
+                "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
+                answered.len(),
+                replicas.len(),
+                needed - 1
+            ),
+            took(&answered),
         ));
     }
 
     // The tail that wins, by the order promotion by log order uses (`Ahead`).
-    let own_end = match log.tail_offset().await {
-        Ok(tail) => tail,
-        Err(err) => return Outcome::Pending(format!("could not read the shard's tail: {err}")),
-    };
+    let own_end = log.tail_offset().await.map_err(|err| {
+        Outcome::pending(
+            format!("could not read the shard's tail: {err}"),
+            took(&answered),
+        )
+    })?;
     let own = (last_generation(&log.generations(), own_end), own_end);
     let ahead = answered
         .iter()
         .filter(|(_, _, ok)| (ok.last_generation, ok.log_end) > own)
         .max_by_key(|(_, _, ok)| (ok.last_generation, ok.log_end));
     let Some((node_id, addr, best)) = ahead else {
-        return Outcome::Fenced {
-            caught_up_from: None,
-        };
+        return Ok(None);
     };
-    match catch_up(requester, broker, &log, key, &shard, node_id, *addr, best).await {
-        Ok(()) => Outcome::Fenced {
-            caught_up_from: Some(node_id.clone()),
-        },
-        Err(why) => Outcome::Pending(why),
+    let from = Source {
+        node_id,
+        addr: *addr,
+        target: best,
+    };
+    catch_up(requester, broker, log, kind, key, shard, from)
+        .await
+        .map_err(|why| Outcome::pending(why, took(&answered)))?;
+    Ok(Some(node_id.clone()))
+}
+
+/// A majority's answers to a stream shard's group-log fence, and this
+/// broker's own two logs.
+struct GroupRound {
+    dead_letters: felix_broker::StreamLog,
+    cursors: felix_broker::StreamLog,
+    /// Each replica that took both fences, with its dead-letter answer and
+    /// then its cursor answer.
+    answered: Vec<(String, std::net::SocketAddr, FenceOk, FenceOk)>,
+}
+
+/// Fence a stream shard's dead-letter and cursor logs on a majority, a
+/// replica counting only once it has taken both.
+///
+/// `Ok(None)` when there is nothing to take: no consumer groups here, or too
+/// few replicas took both fences, because they predate `GROUP_FENCE` or did
+/// not answer. This broker then serves the pair it holds. That pair is
+/// consistent, since a follower gets dead letters before the cursors that
+/// pass them, so serving it may redeliver but never skips a record; and the
+/// records' fence already refuses the old leader on both logs. So no group
+/// log can keep a shard closed, except a newer leader's answer.
+async fn fence_groups<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    key: &ShardKey,
+    shard: &ShardRef,
+    replicas: &[&felix_router::NodeRef],
+) -> Result<Option<GroupRound>, Outcome> {
+    if broker.group_reader().is_none() {
+        return Ok(None);
     }
+    let open =
+        |kind| broker.shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard);
+    let (Some(dead_letters), Some(cursors)) = (
+        open(LogKind::GroupDeadLetters).await,
+        open(LogKind::GroupCursors).await,
+    ) else {
+        return Err(Outcome::pending(
+            "this broker could not open the shard's group logs",
+            Vec::new(),
+        ));
+    };
+    let needed = crate::quorum::majority_of(replicas.len());
+    let mut asks = futures::stream::FuturesUnordered::new();
+    for replica in replicas {
+        let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
+        asks.push(async move {
+            let (dead_letters, cursors) = futures::join!(
+                ask_fence(
+                    requester,
+                    node_id.clone(),
+                    addr,
+                    shard.clone(),
+                    ReplicaLog::GroupDeadLetters,
+                ),
+                ask_fence(
+                    requester,
+                    node_id.clone(),
+                    addr,
+                    shard.clone(),
+                    ReplicaLog::GroupCursors,
+                ),
+            );
+            (node_id, addr, dead_letters.2, cursors.2)
+        });
+    }
+    let mut answered = Vec::new();
+    let took = |answered: &[(String, std::net::SocketAddr, FenceOk, FenceOk)]| {
+        answered.iter().map(|(node, ..)| node.clone()).collect()
+    };
+    while answered.len() + 1 < needed {
+        let Some((node_id, addr, dead, cursor)) = asks.next().await else {
+            break;
+        };
+        if let Some(detail) = newer_leader(&dead).or(newer_leader(&cursor)) {
+            return Err(Outcome::pending(
+                format!("{node_id} has accepted a newer generation: {detail}"),
+                took(&answered),
+            ));
+        }
+        match (dead, cursor) {
+            (Ok(InternalMessage::FenceOk(dead)), Ok(InternalMessage::FenceOk(cursor))) => {
+                answered.push((node_id, addr, dead, cursor));
+            }
+            (dead, cursor) => tracing::debug!(
+                node_id = %node_id,
+                stream = %key.stream,
+                shard = key.shard,
+                dead_letters = ?dead.as_ref().map(InternalMessage::kind),
+                cursors = ?cursor.as_ref().map(InternalMessage::kind),
+                "a replica did not take the group logs' fence",
+            ),
+        }
+    }
+    if answered.len() + 1 < needed {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            took = answered.len(),
+            needed = needed - 1,
+            "too few replicas took the group logs' fence; serving this broker's own",
+        );
+        return Ok(None);
+    }
+    Ok(Some(GroupRound {
+        dead_letters,
+        cursors,
+        answered,
+    }))
+}
+
+/// What a fence answer from a replica that took a newer leader says.
+fn newer_leader(answer: &Result<InternalMessage, PeerError>) -> Option<&str> {
+    match answer {
+        Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
+            Some(&err.detail)
+        }
+        _ => None,
+    }
+}
+
+/// Take the dead-letter log from the answer whose pair is furthest ahead, if
+/// it is ahead of this broker's, ranked by dead letters first since a lost
+/// dead letter is a skipped record and a lost cursor only a redelivery; and
+/// that replica's cursors, each group going to the further of its two
+/// positions.
+///
+/// The cursors need not match the dead-letter log beside them: each cursor
+/// record says which dead letters it needs, and the shard's cursors are
+/// checked against the dead-letter log it ends up with before it is served
+/// (`GroupReader`). So this broker's own further cursors are kept as long as
+/// they still stand, and taking the replica's appends rather than replaces,
+/// so no group is erased.
+async fn take_groups<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    key: &ShardKey,
+    shard: &ShardRef,
+    round: GroupRound,
+) -> Result<Option<String>, Outcome> {
+    let GroupRound {
+        dead_letters,
+        cursors,
+        answered,
+    } = round;
+    let took: Vec<String> = answered.iter().map(|(node, ..)| node.clone()).collect();
+    let pending = |why: String| Outcome::pending(why, took.clone());
+    let position = |log: &felix_broker::StreamLog| {
+        let log = log.clone();
+        async move {
+            let end = log
+                .tail_offset()
+                .await
+                .map_err(|err| format!("could not read the tail of a group log: {err}"))?;
+            Ok::<_, String>((last_generation(&log.generations(), end), end))
+        }
+    };
+    let own = (
+        position(&dead_letters).await.map_err(pending)?,
+        position(&cursors).await.map_err(pending)?,
+    );
+    let of = |ok: &FenceOk| (ok.last_generation, ok.log_end);
+    let best = answered
+        .iter()
+        .max_by_key(|(_, _, dead, cursor)| (of(dead), of(cursor)))
+        .filter(|(_, _, dead, cursor)| (of(dead), of(cursor)) > own);
+    let Some((node_id, addr, dead, cursor)) = best else {
+        return Ok(None);
+    };
+    let from = |target| Source {
+        node_id,
+        addr: *addr,
+        target,
+    };
+    if of(dead) > own.0 {
+        catch_up(
+            requester,
+            broker,
+            &dead_letters,
+            LogKind::GroupDeadLetters,
+            key,
+            shard,
+            from(dead),
+        )
+        .await
+        .map_err(pending)?;
+    }
+    if of(cursor) != own.1 {
+        let groups = broker
+            .consumer_groups()
+            .ok_or_else(|| pending("this broker keeps no consumer groups".to_string()))?;
+        let records = read_all(
+            requester,
+            node_id,
+            *addr,
+            shard,
+            LogKind::GroupCursors,
+            cursor.log_end,
+        )
+        .await
+        .map_err(pending)?;
+        groups
+            .adopt(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &records,
+            )
+            .await
+            .map_err(|err| pending(format!("could not take {node_id}'s cursors: {err}")))?;
+    }
+    if let Some(reader) = broker.group_reader() {
+        reader.invalidate(&key.tenant_id, &key.namespace, &key.stream, key.shard);
+    }
+    Ok(Some(node_id.clone()))
+}
+
+/// Every record of `node_id`'s `kind` log below `end`, from where its log
+/// begins.
+async fn read_all<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    end: u64,
+) -> Result<Vec<bytes::Bytes>, String> {
+    let mut records = Vec::new();
+    let mut next = 0;
+    while next < end {
+        let request = InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log: crate::ship::replica_log(kind),
+            from_offset: next,
+            max_bytes: FETCH_BYTES,
+            labelled: false,
+            timed: false,
+        });
+        let batch = match requester.request(node_id, addr, request).await {
+            Ok(
+                InternalMessage::ReplicateGroupRecords(batch)
+                | InternalMessage::ReplicateRecords(batch)
+                | InternalMessage::ReplicateMarkedRecords(batch),
+            ) => batch,
+            other => {
+                return Err(format!(
+                    "reading {node_id}'s {kind:?} log from {next} failed: {:?}",
+                    other.map(|answer| answer.kind())
+                ));
+            }
+        };
+        if batch.payloads.is_empty() {
+            break;
+        }
+        next = batch.first_offset + batch.payloads.len() as u64;
+        records.extend(batch.payloads);
+    }
+    Ok(records)
+}
+
+/// The replica whose log a promoted leader takes, and how far it reaches.
+struct Source<'a> {
+    node_id: &'a str,
+    addr: std::net::SocketAddr,
+    target: &'a FenceOk,
 }
 
 /// Drop this broker's records from `offset`, superseded by `from`'s log.
@@ -227,6 +616,7 @@ pub async fn fence_shard<R: PeerRequester>(
 async fn drop_superseded(
     broker: &Arc<Broker>,
     log: &felix_broker::StreamLog,
+    kind: LogKind,
     key: &ShardKey,
     offset: u64,
     from: &str,
@@ -235,7 +625,8 @@ async fn drop_superseded(
         .await
         .map_err(|err| format!("could not drop this broker's records from {offset}: {err}"))?;
     if let Err(err) = broker
-        .reset_replicated(
+        .reset_log(
+            kind,
             &key.tenant_id,
             &key.namespace,
             &key.stream,
@@ -244,13 +635,14 @@ async fn drop_superseded(
         )
         .await
     {
-        tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
-            "dropped superseded records but could not reset the stream's tail");
+        tracing::warn!(stream = %key.stream, shard = key.shard, log = ?kind, error = %err,
+            "dropped superseded records but could not reset what was read from them");
     }
     metrics::record_promotion_truncated();
     tracing::warn!(
         stream = %key.stream,
         shard = key.shard,
+        log = ?kind,
         offset,
         from,
         "dropped this broker's records a replica's newer log superseded",
@@ -263,6 +655,7 @@ async fn ask_fence<R: PeerRequester>(
     node_id: String,
     addr: std::net::SocketAddr,
     shard: ShardRef,
+    log: ReplicaLog,
 ) -> (
     String,
     std::net::SocketAddr,
@@ -271,31 +664,34 @@ async fn ask_fence<R: PeerRequester>(
     let request = InternalMessage::Fence(Fence {
         correlation_id: 0,
         shard,
-        log: ReplicaLog::Stream,
+        log,
     });
     let answer = requester.request(&node_id, addr, request).await;
     (node_id, addr, answer)
 }
 
-/// Take `from`'s log where it is ahead of this broker's: compare from where
-/// the two may disagree, drop this broker's own records past the first
-/// disagreement, and append the rest.
+/// Take `from`'s copy of the `kind` log where it is ahead of this broker's:
+/// compare from where the two may disagree, drop this broker's own records
+/// past the first disagreement, and append the rest.
 ///
 /// Compared from the later of the commit offset and where this broker's last
 /// generation began, as a follower compares a new leader's batches
 /// (`unverified_from` in `replica.rs`): below that the records are committed,
 /// or written by the generation both logs share.
-#[allow(clippy::too_many_arguments)]
 async fn catch_up<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     log: &felix_broker::StreamLog,
+    kind: LogKind,
     key: &ShardKey,
     shard: &ShardRef,
-    from: &str,
-    addr: std::net::SocketAddr,
-    target: &FenceOk,
+    from: Source<'_>,
 ) -> Result<(), String> {
+    let Source {
+        node_id: from,
+        addr,
+        target,
+    } = from;
     let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
     let last_start = log
         .generations()
@@ -303,31 +699,46 @@ async fn catch_up<R: PeerRequester>(
         .rev()
         .find(|epoch| epoch.start_offset < tail)
         .map_or(0, |epoch| epoch.start_offset);
-    let mut next = log.commit_offset().max(last_start).min(tail);
+    // Never past the replica's end: a log taken from a replica behind this
+    // one, as a pair's cursor log can be, loses what this broker held past it.
+    let mut next = log
+        .commit_offset()
+        .max(last_start)
+        .min(tail)
+        .min(target.log_end);
     let compared_from = next;
     // Taken with the generations that wrote them, so this broker's fence
     // answers and the followers it ships to do not see them as newer.
-    let labelled = requester
-        .recorded_capabilities(from)
-        .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    let offered = requester.recorded_capabilities(from);
+    let labelled =
+        offered.is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    // And with the times its leader stored, so this broker reports them once
+    // it serves.
+    let timed =
+        labelled && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES));
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
             correlation_id: 0,
             shard: shard.clone(),
-            log: ReplicaLog::Stream,
+            log: crate::ship::replica_log(kind),
             from_offset: next,
             max_bytes: FETCH_BYTES,
             labelled,
+            timed,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
                 InternalMessage::ReplicateRecords(batch)
-                | InternalMessage::ReplicateMarkedRecords(batch),
+                | InternalMessage::ReplicateMarkedRecords(batch)
+                | InternalMessage::ReplicateCacheRecords(batch)
+                | InternalMessage::ReplicateCounterRecords(batch)
+                | InternalMessage::ReplicateGroupRecords(batch)
+                | InternalMessage::ReplicateDeadLetterRecords(batch),
             ) => batch,
             other => {
                 return Err(format!(
-                    "reading {from}'s log from {next} failed: {:?}",
+                    "reading {from}'s {kind:?} log from {next} failed: {:?}",
                     other.map(|answer| answer.kind())
                 ));
             }
@@ -344,6 +755,8 @@ async fn catch_up<R: PeerRequester>(
             batch.checksum,
             &batch.payloads,
             &batch.marks,
+            &batch.publishers,
+            batch.times.as_deref().unwrap_or_default(),
         )
         .await
         .map_err(|err| err.to_string())?;
@@ -376,10 +789,10 @@ async fn catch_up<R: PeerRequester>(
             // replica's log superseded. The model replaces the whole log; here
             // only the part that differs goes.
             Err(Divergence::Conflict { offset, .. }) => {
-                drop_superseded(broker, log, key, offset, from).await?;
+                drop_superseded(broker, log, kind, key, offset, from).await?;
             }
             Err(Divergence::Gap { expected, .. }) => next = expected,
-            Err(other) => return Err(format!("reading {from}'s log: {other}")),
+            Err(other) => return Err(format!("reading {from}'s {kind:?} log: {other}")),
         }
     }
     // What this broker holds past the replica's end was written under an
@@ -387,7 +800,7 @@ async fn catch_up<R: PeerRequester>(
     // rest of what the model replaces.
     let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
     if tail > next {
-        drop_superseded(broker, log, key, next, from).await?;
+        drop_superseded(broker, log, kind, key, next, from).await?;
     }
     let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
     // A batch that only matched records this broker held past it was not
@@ -398,9 +811,13 @@ async fn catch_up<R: PeerRequester>(
         crate::replica::label_appended(log, compared_from, tail, shard.generation, Some(&taken))
             .map_err(|err| format!("could not label the records from {compared_from}: {err}"))?;
     }
-    if let Err(err) = broker
-        .adopt_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
-        .await
+    // A cache's index, a counter shard's sums and the group logs' entries
+    // catch up with the tail on their next read; a stream's commit order has
+    // to be told.
+    if kind == LogKind::Stream
+        && let Err(err) = broker
+            .adopt_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
+            .await
     {
         tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
             "took a replica's tail but could not advance the stream's own view of it");
@@ -408,6 +825,7 @@ async fn catch_up<R: PeerRequester>(
     tracing::info!(
         stream = %key.stream,
         shard = key.shard,
+        log = ?kind,
         from,
         tail,
         "took a replica's log that was ahead of this broker's before serving",

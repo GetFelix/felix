@@ -1,7 +1,16 @@
+mod cache_routing;
+mod cancelled_producer;
 mod connections;
 mod decisions;
 mod error_codes;
+mod identity;
+mod keyed_producer;
 mod offsets;
+mod reconnect;
+mod reresolve;
+mod sharded_deleted;
+mod sharded_lag;
+mod stale_width;
 mod stub_broker;
 
 use std::time::Duration;

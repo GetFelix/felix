@@ -8,13 +8,16 @@ use std::sync::Mutex;
 
 use bytes::Bytes;
 use felix_router::{NodeRef, RegionRouter, RoutingTable, ShardRouter};
-use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_wire::internal::{Kind, ReplicateRecords, batch_checksum};
 use tempfile::TempDir;
 
 use super::*;
 use crate::ReplicaHandler;
+
+mod cache;
+mod groups;
+mod times;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
@@ -33,12 +36,17 @@ fn node(node_id: &str, port: u16) -> NodeRef {
 }
 
 fn key() -> ShardKey {
+    key_of(ShardKind::Stream)
+}
+
+/// The stream shard, or the cache shard of the same name.
+fn key_of(kind: ShardKind) -> ShardKey {
     ShardKey {
         tenant_id: TENANT.to_string(),
         namespace: NAMESPACE.to_string(),
         stream: STREAM.to_string(),
         shard: 0,
-        kind: ShardKind::Stream,
+        kind,
     }
 }
 
@@ -54,19 +62,24 @@ fn nodes() -> HashMap<String, NodeRef> {
 
 /// The route the promoted leader sees.
 fn route() -> Route {
+    route_of(ShardKind::Stream)
+}
+
+fn route_of(kind: ShardKind) -> Route {
     let table = RoutingTable::build(
         [(
-            key(),
+            key_of(kind),
             LEADER.to_string(),
             vec!["broker-b".to_string(), "broker-c".to_string()],
             PROMOTED,
         )],
         &nodes(),
     );
-    table.get(&key()).expect("route").clone()
+    table.get(&key_of(kind)).expect("route").clone()
 }
 
-/// A router for `local`, still at the generation before the promotion.
+/// A router for `local`, still at the generation before the promotion, for
+/// both the stream shard and the cache shard.
 fn router_for(local: &str, generation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         local,
@@ -74,16 +87,18 @@ fn router_for(local: &str, generation: u64) -> Arc<ShardRouter> {
         RegionRouter::new("us-west-2".to_string()),
     ));
     let table = RoutingTable::build(
-        [(
-            key(),
-            "broker-old".to_string(),
-            vec![
-                LEADER.to_string(),
-                "broker-b".to_string(),
-                "broker-c".to_string(),
-            ],
-            generation,
-        )],
+        [ShardKind::Stream, ShardKind::Cache].map(|kind| {
+            (
+                key_of(kind),
+                "broker-old".to_string(),
+                vec![
+                    LEADER.to_string(),
+                    "broker-b".to_string(),
+                    "broker-c".to_string(),
+                ],
+                generation,
+            )
+        }),
         &nodes(),
     );
     router.publish(table, &nodes());
@@ -91,16 +106,22 @@ fn router_for(local: &str, generation: u64) -> Arc<ShardRouter> {
 }
 
 fn broker_on(dir: &std::path::Path) -> Arc<Broker> {
-    let storage = felix_broker::DurableStorage::open(
-        dir,
-        LogConfig {
-            fsync_mode: FsyncMode::None,
-            preallocate_segments: false,
-            ..LogConfig::default()
-        },
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let storage =
+        felix_broker::DurableStorage::open(dir.join("streams"), config.clone()).expect("storage");
+    Arc::new(
+        Broker::new(Box::new(
+            felix_storage::LogCache::open(dir.join("caches"), config.clone()).expect("cache"),
+        ))
+        .with_durable_storage(storage)
+        .with_counters(Arc::new(
+            felix_storage::CounterStore::open(dir.join("counters"), config).expect("counters"),
+        )),
     )
-    .expect("storage");
-    Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage))
 }
 
 fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecords {
@@ -109,6 +130,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     ReplicateRecords {
+        times: None,
         correlation_id: 1,
         shard: ShardRef {
             tenant_id: TENANT.to_string(),
@@ -118,11 +140,12 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             generation,
         },
         first_offset,
-        checksum: batch_checksum(&payloads, &[]),
+        checksum: batch_checksum(&payloads, &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     }
 }
 
@@ -132,6 +155,8 @@ struct Replica {
     handler: ReplicaHandler,
     capabilities: PeerCapabilities,
     reachable: bool,
+    /// Logs whose fence never reaches this replica.
+    unreachable_logs: Vec<ReplicaLog>,
     _dir: TempDir,
 }
 
@@ -144,6 +169,7 @@ impl Replica {
             broker,
             capabilities: REQUIRED,
             reachable: true,
+            unreachable_logs: Vec::new(),
             _dir: dir,
         }
     }
@@ -151,13 +177,29 @@ impl Replica {
     /// Store `values` at `first_offset` as a leader at `generation` shipped
     /// them. The router is republished at that generation first.
     async fn holds(&self, node_id: &str, generation: u64, first_offset: u64, values: &[&str]) {
+        self.holds_in(
+            felix_broker::LogKind::Stream,
+            node_id,
+            generation,
+            first_offset,
+            values,
+        )
+        .await;
+    }
+
+    /// [`Self::holds`], in one of the shard's logs.
+    async fn holds_in(
+        &self,
+        log: felix_broker::LogKind,
+        node_id: &str,
+        generation: u64,
+        first_offset: u64,
+        values: &[&str],
+    ) {
         let handler =
             ReplicaHandler::new(Arc::clone(&self.broker), router_for(node_id, generation));
         let answer = handler
-            .apply(
-                batch(generation, first_offset, values),
-                felix_broker::LogKind::Stream,
-            )
+            .apply(None, batch(generation, first_offset, values), log)
             .await;
         assert!(
             matches!(answer, InternalMessage::ReplicateOk(_)),
@@ -211,10 +253,25 @@ impl PeerRequester for Replicas {
         message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
         let replica = self.get(node_id);
-        if !replica.reachable {
+        let fenced_log = match &message {
+            InternalMessage::Fence(fence) => Some(fence.log),
+            _ => None,
+        };
+        if !replica.reachable
+            || fenced_log.is_some_and(|log| replica.unreachable_logs.contains(&log))
+        {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "unreachable".to_string(),
+            });
+        }
+        // As the pool refuses it, before anything is sent.
+        if let Some(needed) = crate::peer::pool::required_capability(&message)
+            && !replica.capabilities.contains(needed)
+        {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
             });
         }
         self.sent
@@ -222,8 +279,8 @@ impl PeerRequester for Replicas {
             .expect("lock")
             .push((node_id.to_string(), message.kind()));
         match message {
-            InternalMessage::Fence(fence) => Ok(replica.handler.fence(fence).await),
-            InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(fetch).await),
+            InternalMessage::Fence(fence) => Ok(replica.handler.fence(None, fence).await),
+            InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(None, fetch).await),
             other => panic!("the promoted leader sent {:?}", other.kind()),
         }
     }
@@ -237,11 +294,16 @@ impl PeerRequester for Replicas {
 async fn leader_holding(generation: u64, records: &[&str]) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = broker_on(dir.path());
+    holding(&broker, felix_broker::LogKind::Stream, generation, records).await;
+    (broker, dir)
+}
+
+/// Write `records` to `broker`'s `log` of the shard, as led at `generation`.
+async fn holding(broker: &Broker, log: felix_broker::LogKind, generation: u64, records: &[&str]) {
     let log = broker
-        .durable_storage()
-        .expect("storage")
-        .open_stream(TENANT, NAMESPACE, STREAM, 0)
-        .expect("open");
+        .shard_log(log, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
     log.record_generation(generation, 0).expect("generation");
     if !records.is_empty() {
         let payloads: Vec<Bytes> = records
@@ -250,12 +312,16 @@ async fn leader_holding(generation: u64, records: &[&str]) -> (Arc<Broker>, Temp
             .collect();
         log.append(&payloads).await.expect("append");
     }
-    (broker, dir)
 }
 
 async fn held(broker: &Broker) -> Vec<String> {
+    held_in(broker, felix_broker::LogKind::Stream).await
+}
+
+/// Every record `broker` holds in one of the shard's logs.
+async fn held_in(broker: &Broker, log: felix_broker::LogKind) -> Vec<String> {
     let log = broker
-        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .shard_log(log, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log");
     log.read_from(0, 1 << 20)
@@ -305,7 +371,7 @@ async fn a_promoted_leader_opens_once_a_majority_took_its_generation() {
         if accepted(&replicas.get(id).broker).await == PROMOTED {
             let answer =
                 ReplicaHandler::new(Arc::clone(&replicas.get(id).broker), router_for(id, 4))
-                    .apply(batch(4, 1, &["late"]), felix_broker::LogKind::Stream)
+                    .apply(None, batch(4, 1, &["late"]), felix_broker::LogKind::Stream)
                     .await;
             assert!(
                 matches!(&answer, InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch),
@@ -327,7 +393,12 @@ async fn without_a_majority_the_shard_stays_closed() {
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
-    assert!(matches!(outcome, Outcome::Pending(_)), "{outcome:?}");
+    let Outcome::Pending { took, why } = outcome else {
+        panic!("{outcome:?}");
+    };
+    // Who is missing is what an operator inspecting the shard reads.
+    assert!(took.is_empty(), "{took:?}");
+    assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
 }
 
 /// **Once the followers decide acknowledgements, no shard opens on the
@@ -526,7 +597,7 @@ impl PeerRequester for ShipTo<'_> {
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => Ok(self
                 .handler
-                .apply(batch, felix_broker::LogKind::Stream)
+                .apply(None, batch, felix_broker::LogKind::Stream)
                 .await),
             other => panic!("the leader sent {:?}", other.kind()),
         }

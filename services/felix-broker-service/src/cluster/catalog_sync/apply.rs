@@ -138,7 +138,7 @@ pub(super) async fn apply_stream_upsert(
         // stream permanently absent, and keep the broker reporting ready while
         // a durable stream silently does not exist. Fail the sync so the error
         // is visible and the cursor does not move past it.
-        Err(err @ BrokerError::Storage(_)) => {
+        Err(err @ (BrokerError::Storage(_) | BrokerError::StorageFull(_))) => {
             tracing::error!(
                 tenant_id = %tenant_id,
                 namespace = %namespace,

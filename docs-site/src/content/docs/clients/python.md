@@ -7,7 +7,7 @@ description: "Installing and using the Felix Python client: both surfaces, strea
 redirect-following, retry classification and offset bookkeeping live in
 `felix-client` and are shared, so Python gets the same failover behaviour as
 Rust. See
-[Choosing a Client](/felix/clients/overview/) for why that choice was made and
+[Choosing a Client](/clients/overview/) for why that choice was made and
 what the conformance suite does about it.
 
 ## Installing
@@ -75,6 +75,11 @@ and will use brokers it was never told about. Passing several only helps the
 *first* connection, for the case where the one you named is the one that is
 down.
 
+Give a name rather than an IP where you can. The client resolves a name again
+whenever no broker it knows answers, which is how it gets back in after a
+rollout has moved every broker at once. A name that does not resolve when
+you connect raises `ValueError`.
+
 TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `ca_file` for a self-signed
 development broker. There is no "skip verification" switch. It would silently
@@ -83,6 +88,24 @@ turn a secure deployment insecure, and a CA file covers development without it.
 `offer_alpn=True` makes the client offer the `felix/1` ALPN, which a broker
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
 because a broker older than ALPN support refuses a client that offers it.
+
+### Acting for many users
+
+A gateway serving many users can hold one client and give each user a client
+that shares its connections:
+
+```python
+alice = client.with_identity("t1", alice_token)
+alice.publish("t1", "app", "alice-feed", b"hello")
+```
+
+Every stream `alice` opens authenticates with her token, so the broker checks
+her requests against her grants, not the gateway's. She follows moved shards
+and failed brokers like any client, over the gateway's connection to each
+broker. The token is fixed, so build a new client when it expires.
+`AsyncClient.with_identity` is the same, awaited. The limits and the
+certificate-bound token rules are the Rust client's; see
+[Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Publishing
 
@@ -99,7 +122,9 @@ nothing and does not wait to find out.
 An acked `publish` returns the offset the record landed at, or `None` when the
 broker acknowledged it before writing it (a `Leader` stream without
 `ack_on_commit`), the stream has no log, or the broker is too old to say.
-`"none"` always returns `None`.
+`"none"` always returns `None`. Only the broker that owns the shard
+acknowledges before writing; a publish forwarded through another broker is
+answered after the write and has its offset, so one stream can return both.
 
 ### The routing key decides the shard
 
@@ -163,7 +188,14 @@ tail.
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the
-publisher, so a subscriber can silently miss records. On a durable stream every
+publisher. On a durable stream a reader that falls behind does not lose
+records: the broker or this client ends the subscription at the first drop,
+and the subscription resubscribes after the last record it delivered,
+catching up from the log. A shard reader of a sharded subscription reports the
+shard lost and recovered while it does.
+
+Against a broker that predates that, or on an in-memory stream, a subscriber
+can still silently miss records. On a durable stream every
 delivered event carries its log offset, and **a jump in them is a drop**. The
 exception is a new leader's generation-start record, which takes an offset; the
 next event reports it in `skipped_before`:
@@ -237,14 +269,14 @@ except felix.NotFoundError:
 | `ShardUnavailableError` | nobody can serve the shard right now, usually because it is moving (`shard_unavailable`), or another broker owns it (`not_leader`); nothing was written | yes |
 | `OverloadedError` | the broker is shedding load (`overloaded`); nothing was written | yes, after a pause |
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | only if idempotent |
-| `AuthError` | token rejected, or missing the permission (`unauthenticated`, `forbidden`) | no |
+| `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | no |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | see `retry` |
 | `CursorError` | the start offset is gone; retention discarded it | no; restart at `earliest` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
 
 Every exception carries three attributes from the broker:
 
-- `code`: the broker's [error code](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes),
+- `code`: the broker's [error code](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes),
   such as `"shard_unavailable"` or `"quorum_timeout"`.
 - `retry`: what you may do about it: `"retry"`, `"retry_after"`,
   `"redirect"`, `"outcome_unknown"` or `"fatal"`.
@@ -282,8 +314,12 @@ while True:
             client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
         except Retryable:
             # Back to the queue now, rather than after the visibility timeout.
-            client.group_nack("t1", "default", "orders", shard, "billing", record.offset)
+            client.group_nack("t1", "default", "orders", shard, "billing", record)
 ```
+
+A nack takes the record, not its offset, because it names that delivery: once
+the claim has lapsed and the record has gone out again, the nack is refused
+with `stale_claim` rather than taking it from the consumer now holding it.
 
 `record.attempts` counts deliveries **including this one**, so `1` is a first
 attempt and anything higher is a redelivery. It is how a consumer tells a retry
@@ -340,6 +376,12 @@ current = client.counter_get("t1", "default", "limits", "user:42:reqs")   # int 
 `counter_get` returns `None` for a counter that was never written, which is not
 the same as zero. A retry after a lost acknowledgement counts twice. Counters
 need a durable broker that advertises `FEATURE_COUNTERS`.
+
+Cache and counter calls go to the key's shard owner when the client knows it,
+like a publish. If the broker the client entered by goes away, the next call
+moves to another one: a read (a get) is asked again there, while a write that
+may have landed (a put, delete or add) returns its error with the client
+already moved, and is not sent twice. `stream_shards` moves the same way.
 
 `AsyncClient` has the same methods as coroutines.
 
@@ -464,7 +506,7 @@ commit's state is the stream shard's own, read with `state_get`), or a retry.
 State is rebuilt from the retained log, so keep an entity stream's retention
 long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Multi-shard streams
 
@@ -486,6 +528,9 @@ with client.subscribe_sharded("t1", "default", "orders") as stream:
         elif isinstance(item, felix.ShardMoved):
             # Followed to its new owner; its records carry on from there.
             log.info("shard %d moved to %s", item.shard, item.node_id)
+        elif isinstance(item, felix.StreamDeleted):
+            # The stream is gone; this shard is not reopened.
+            log.info("shard %d: stream deleted", item.shard)
 ```
 
 Resuming is a **map**, not a number, because offsets are per shard:
@@ -532,7 +577,7 @@ unclaimed.
 ## Conformance
 
 Python passes every required scenario in the
-[client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
+[client conformance catalogue](/clients/overview/#the-conformance-suite),
 and CI is gated on it. The suite runs against a real three-node cluster rather
 than a mock, because what it checks (reconnection, redirect-following, offset
 accounting) only exists in a cluster.

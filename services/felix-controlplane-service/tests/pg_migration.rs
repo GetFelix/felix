@@ -53,7 +53,10 @@ async fn postgres_store() -> Option<(
         Ok(url) if !url.trim().is_empty() => url,
         _ => {
             if !docker_available() {
-                eprintln!("skipping pg_migration: docker not available");
+                eprintln!(
+                    "skipping pg_migration: no FELIX_TEST_DATABASE_URL and no docker CLI \
+                     (testcontainers runs `docker`; with Podman, `task test` starts the database)"
+                );
                 return None;
             }
             // The client is leaked on purpose — it is a docker CLI wrapper

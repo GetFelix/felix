@@ -166,6 +166,11 @@ certificate to be issued to its token's subject (`sub`).
   or a DNS or IP name that `sub` matches the way a server name would.
 - Control-plane tokens carry a 64-hex principal id, longer than a DNS label
   may be, so issue those clients' certificates with the URI SAN.
+- A token minted by delegation (`/token/delegate`) names its actor in `act`,
+  and also binds a certificate issued to the actor, by the same rules. That is
+  how a gateway presents its users' tokens over its own connections
+  (`Client::with_identity`); each token is still checked against its own
+  grants.
 - Needs `FELIX_TLS_CLIENT_CA`. Set without it, startup fails.
 - Applies to the QUIC client listeners, and to the Kafka listener when it
   serves TLS: SASL/PLAIN checks the token against the certificate the client
@@ -277,7 +282,8 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 ### `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
 
 **Description**: Control plane polling interval in milliseconds. Paces the
-node-catalog refresh and the broker's background passes. Shard assignment
+node-catalog refresh, the broker's background passes, and the principal
+revocation feed, so a revoked principal's streams end within about this long. Shard assignment
 changes are long-polled and arrive as they are written, and each one also
 refreshes the node catalog. Against a control
 plane that does not support long-polling, this is also the assignment poll
@@ -316,6 +322,33 @@ export FELIX_ACK_ON_COMMIT="yes"
 **Trade-off**:
 - `false`: Fire-and-forget, lower latency
 - `true`: Explicit acks, higher latency guarantee
+
+A client can ask for the `true` behaviour on its own connections without
+changing it for everyone: `ClientConfig::ack_on_commit` in felix-client offers
+`FEATURE_ACK_ON_COMMIT`, and its acknowledged publishes are then answered after
+the write, with their offsets.
+
+### `FELIX_RECORD_PUBLISHERS`
+
+**Description**: On a broker outside a cluster, store the principal that
+published each record of a durable stream, so subscribers and consumer groups
+that ask can be told it. In a cluster this has no effect: finalizing the
+`publisher_principal` fleet feature turns it on instead.
+
+**Type**: Boolean
+
+**Default**: `false`
+
+**Accepted values**: `1`, `true`, `yes` = enabled
+
+**Example**:
+```bash
+export FELIX_RECORD_PUBLISHERS="true"
+```
+
+A record with its publisher is storage format v6, which an older broker
+refuses to open, so turning this on is a one-way step for the data directory.
+Each record grows by the principal's length plus one byte.
 
 ### `FELIX_MAX_FRAME_BYTES`
 
@@ -468,9 +501,14 @@ export FELIX_EVENT_BATCH_MAX_BYTES="1048576"  # 1 MiB
 
 ### `FELIX_EVENT_BATCH_MAX_DELAY_US`
 
-**Description**: Maximum delay before flushing batch (microseconds), counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load (microseconds). A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. Tokio timers have 1 ms resolution,
+so a non-zero delay below 1000 µs waits until the next millisecond tick; `0`
+never waits on a timer.
 
 **Type**: Unsigned integer
 
@@ -479,15 +517,15 @@ a value under 1000 can wait until the next tick.
 **Example**:
 ```bash
 export FELIX_EVENT_BATCH_MAX_DELAY_US="250"
-export FELIX_EVENT_BATCH_MAX_DELAY_US="50"    # Ultra-low latency
-export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Prioritize batching
-export FELIX_EVENT_BATCH_MAX_DELAY_US="5000"  # Maximum batching
+export FELIX_EVENT_BATCH_MAX_DELAY_US="0"     # Never wait; batch only what is queued
+export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Bigger batches under load
 ```
 
 **Tuning**:
-- Lower: Reduced latency, more frequent sends
-- Higher: Better batching, higher latency
-- Typical range: 50-1000 microseconds
+- It does not affect an idle or lightly loaded subscriber, which is sent each
+  event as it arrives
+- Lower: lower delivery latency under load, more frames
+- Higher: fewer, fuller frames under load, higher latency under load
 
 ### `FELIX_FANOUT_BATCH`
 
@@ -527,9 +565,45 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY="512"
 export FELIX_SUB_QUEUE_CAPACITY="512"
 ```
 
+### `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+
+**Description**: The largest broker-side queue capacity a subscriber may ask for with `queue_capacity` on subscribe. A larger request is granted this value, and `subscribed` reports what was granted. Bounds how much one reader can hold in broker memory.
+
+**Type**: Positive integer (count of published batches)
+
+**Default**: `4096`
+
+```bash
+export FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX="4096"
+```
+
+### `FELIX_SUB_QUEUE_MAX_BYTES`
+
+**Description**: Payload bytes one subscriber's broker-side queue may hold. A queued batch counts the sum of its records' payloads, and keeps counting until the frame carrying it is written to the subscriber's QUIC stream, so frames waiting in the writer lanes count too. When either this or the queue capacity is full, `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the bound still goes into an empty queue. `0` turns the byte bound off. Records dropped because of it count in `felix_sub_queue_byte_dropped_total{bound="subscriber"}` as well as the usual drop counters.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `268435456` (256 MiB)
+
+```bash
+export FELIX_SUB_QUEUE_MAX_BYTES="268435456"
+```
+
+### `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`
+
+**Description**: Payload bytes all subscriber queues on the broker may hold together. A ceiling on queued memory that gives up isolation: once slow subscribers fill it, other subscribers' batches meet `FELIX_SUB_QUEUE_POLICY` as well. Drops count in `felix_sub_queue_byte_dropped_total{bound="broker"}`. Without it, each subscriber can hold up to `FELIX_SUB_QUEUE_MAX_BYTES` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `FELIX_SUB_QUEUE_MAX_BYTES=0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
+
+**Type**: Non-negative integer (bytes)
+
+**Default**: `0` (no bound)
+
+```bash
+export FELIX_SUB_QUEUE_MAX_BYTES_TOTAL="1073741824"
+```
+
 ### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`
 
-**Description**: Max concurrent subscriptions a single QUIC connection may hold. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). This bounds how many subscriptions a connection can open in total, protecting broker memory from a connection that opens unbounded subscriptions.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. Independent of `FELIX_SUBSCRIBER_QUEUE_CAPACITY` (which bounds one subscription's buffer size). A plain client authenticates as one identity, so for it this is the connection's cap. A client acting for many users over one connection gets this many per user, so one user at the cap cannot take every slot. The users still share `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`: with the defaults, four users at their cap fill it and a fifth is refused.
 
 **Type**: Positive integer (count)
 
@@ -539,9 +613,21 @@ export FELIX_SUB_QUEUE_CAPACITY="512"
 export FELIX_MAX_SUBSCRIPTIONS_PER_CONN="4096"
 ```
 
+### `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL`
+
+**Description**: Max concurrent subscriptions and cache watches one QUIC connection may hold across all its identities, protecting broker memory from a connection that acts for many users.
+
+**Type**: Positive integer (count)
+
+**Default**: four times `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` (`16384`). Below `FELIX_MAX_SUBSCRIPTIONS_PER_CONN`, startup fails.
+
+```bash
+export FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL="16384"
+```
+
 ### `FELIX_SUB_QUEUE_POLICY`
 
-**Description**: Backpressure policy when broker subscriber queues are full.
+**Description**: Backpressure policy when a broker subscriber queue is full, by entry count (`FELIX_SUBSCRIBER_QUEUE_CAPACITY`) or by bytes (`FELIX_SUB_QUEUE_MAX_BYTES`, `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`).
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -584,7 +670,7 @@ export FELIX_SUB_EGRESS_LANES="4"
 
 ### `FELIX_SUB_LANE_QUEUE_DEPTH`
 
-**Description**: Queue depth per outbound writer lane.
+**Description**: Frames queued for one subscription in its connection's writer before `FELIX_SUB_QUEUE_MODE` applies. The writer lanes and the connection writer's command queue use the same bound and wait when full.
 
 **Type**: Positive integer (count)
 
@@ -598,7 +684,7 @@ export FELIX_SUB_QUEUE_BOUND="64"
 
 ### `FELIX_SUB_QUEUE_MODE`
 
-**Description**: Backpressure policy for the writer-lane command queue (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue). `drop_old` behaves as `drop_new`.
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -743,7 +829,7 @@ export FELIX_CACHE_STREAMS_PER_CONN="2"   # Less overhead
 
 ### `FELIX_CACHE_CONN_RECV_WINDOW`
 
-**Description**: Cache connection flow-control receive window (broker).
+**Description**: Receive window of the client's cache connections (client). The broker's client listeners use `FELIX_BROKER_PUB_CONN_RECV_WINDOW`.
 
 **Type**: Positive integer (bytes)
 
@@ -763,7 +849,7 @@ export FELIX_CACHE_CONN_RECV_WINDOW="134217728"    # 128 MiB
 
 ### `FELIX_CACHE_STREAM_RECV_WINDOW`
 
-**Description**: Cache stream flow-control receive window (broker).
+**Description**: Receive window of each stream on the client's cache connections (client). The broker's client listeners use `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`.
 
 **Type**: Positive integer (bytes)
 
@@ -893,7 +979,7 @@ export FELIX_CLIENT_SUB_QUEUE_CAPACITY="256"
 
 ### `FELIX_CLIENT_SUB_QUEUE_POLICY`
 
-**Description**: Client-side backpressure policy for subscription pipeline queues. Applies to live records only: history replayed from an earlier offset (below the subscription's `live_offset`) always waits for room and is never dropped.
+**Description**: Client-side backpressure policy for subscription pipeline queues. `drop_old` behaves as `drop_new`: the arriving event is dropped. Applies to live records only: history replayed from an earlier offset (below the subscription's `live_offset`) always waits for room and is never dropped.
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -931,6 +1017,25 @@ export FELIX_PUB_CONN_POOL="8"  # More publishers
 ```bash
 export FELIX_PUB_STREAMS_PER_CONN="2"
 export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
+```
+
+### `FELIX_PUB_SHARD_STREAMS`
+
+**Description**: Most publish streams a client opens per broker for one shard
+each, beside the pooled ones (client). Each publish goes on its shard's own
+stream, so a stalled shard holds up only itself and one stream's shards
+spread over the client's connections. Shards past the cap share the pool.
+`0` turns them off, which puts every publish to a stream on one pooled
+stream.
+
+**Type**: Non-negative integer (count)
+
+**Default**: `16`
+
+**Example**:
+```bash
+export FELIX_PUB_SHARD_STREAMS="16"
+export FELIX_PUB_SHARD_STREAMS="0"   # Every publish on the pool
 ```
 
 ### `FELIX_PUBLISH_CHUNK_BYTES`
@@ -1055,7 +1160,7 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 
 ### `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
 
-**Description**: Per-connection share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`. Bounds how much of the shared, process-wide publish byte budget a single connection can occupy at once, so one connection publishing large batches can't starve every other connection's admission into the shared budget.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. A plain client authenticates as one identity, so for it this is the connection's share of `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, and one connection publishing large batches can't starve every other connection's admission into the shared budget. A client acting for many users over one connection gets this much per user, so one user's unanswered publishes cannot take the whole connection. The users still share `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`: with the defaults, four users at this limit fill it and a fifth is refused or slowed.
 
 **Type**: Positive integer (bytes)
 
@@ -1065,9 +1170,45 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 export FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES="16777216"
 ```
 
+### `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES`
+
+**Description**: In-flight publish bytes one connection may hold across all its identities. Only a connection acting for several users can reach it.
+
+**Type**: Positive integer (bytes)
+
+**Default**: four times `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`, capped at `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES` (64 MiB with the defaults). Below `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` or above `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`, startup fails.
+
+```bash
+export FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES="67108864"
+```
+
+### `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
+
+**Description**: QUIC connection receive window of the broker's client listeners: how many bytes one client connection may have sent that the broker has not read yet. When ingress is full and `FELIX_PUB_INGRESS_WAIT` is on, the broker stops reading publishes, and this is how much more a client can park in the broker before QUIC flow control holds it back. A bigger window costs broker memory and delays backpressure. A smaller one can cap throughput on a path with a large bandwidth-delay product. Must be at least `FELIX_MAX_FRAME_BYTES` and at least `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`, or startup fails.
+
+**Type**: Positive integer (bytes)
+
+**Default**: `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` (16 MiB), or `FELIX_MAX_FRAME_BYTES` if that is larger
+
+```bash
+export FELIX_BROKER_PUB_CONN_RECV_WINDOW="16777216"
+```
+
+### `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`
+
+**Description**: QUIC per-stream receive window of the broker's client listeners. Must be at least `FELIX_MAX_FRAME_BYTES`, so one full-size frame fits, and no larger than `FELIX_BROKER_PUB_CONN_RECV_WINDOW`, or startup fails.
+
+**Type**: Positive integer (bytes)
+
+**Default**: the smaller of the connection window and `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` (16 MiB), never below `FELIX_MAX_FRAME_BYTES`
+
+```bash
+export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="16777216"
+```
+
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that connection's publishes while this many are outstanding. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
@@ -1134,7 +1275,7 @@ Every case is counted in `felix_tenant_publish_throttled_total{tenant,action}`.
 
 ## QUIC Transport Tuning
 
-Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). See [Benchmarks](/felix/features/benchmarks/) for measured impact.
+Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). See [Benchmarks](/features/benchmarks/) for measured impact.
 
 ### `FELIX_MTU_UPPER_BOUND`
 
@@ -1157,7 +1298,7 @@ export FELIX_MTU_UPPER_BOUND="16384"  # macOS, or any path with no GSO
 
 **Description**: Starting datagram size before path-MTU discovery completes. The RFC-safe default works everywhere. Raising it on known-good paths (jumbo-frame LAN) skips the discovery ramp. Connections to a loopback peer automatically start at the loopback MTU and guarantee it, which makes the path immune to spurious black-hole collapse (see `FELIX_MTU_BLACK_HOLE_COOLDOWN_MS`) and, because the guarantee also freezes the discovery bound, removes probe traffic entirely.
 
-The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/felix/features/performance-case-study/).
+The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/features/performance-case-study/).
 
 The loopback path also requires the socket's granted UDP buffers to reach ~1 MiB. That threshold is a proxy for "this host has been tuned", not a burst-headroom calculation. Hosts where Linux silently clamps `SO_RCVBUF` to a stock `net.core.rmem_max` (~208 KB) keep the RFC-safe default. Raise `rmem_max`/`wmem_max` to enable it. Setting `FELIX_INITIAL_MTU` explicitly disables the loopback special case and applies to every path.
 
@@ -1382,7 +1523,7 @@ export FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS="5000"   # Fast rollouts, short-lived req
 
 **Note**: Keep this below the platform's kill deadline (Kubernetes'
 `terminationGracePeriodSeconds`, default `30`) so the drain finishes and logs its
-outcome before SIGKILL. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+outcome before SIGKILL. See [Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ### `FELIX_SHUTDOWN_PREDRAIN_MS`
 
@@ -1440,7 +1581,7 @@ export FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS="0"       # Fail over instead, e.g. a s
 **Note**: Spent before `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`, and inside the platform's
 kill deadline, so `terminationGracePeriodSeconds` must cover both. Moves are paced by
 `FELIX_SHARD_MOVES_MAX_CONCURRENT` and `FELIX_SHARD_MOVES_MAX_PER_NODE` like any
-other. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/#handing-shards-off).
+other. See [Graceful Shutdown](/deployment/graceful-shutdown/#handing-shards-off).
 
 ### `FELIX_INTERNAL_MAX_INBOUND_CONNECTIONS`
 
@@ -1525,7 +1666,10 @@ no error to explain it:
 |---|---|
 | `event_batch_max_bytes` > `max_frame_bytes` | The broker would send subscribers frames larger than it will itself accept, and a client applying the same limit drops them |
 | `pub_conn_inflight_bytes` > `pub_inflight_bytes` | The per-connection limit could never be the one that applies, so one connection may take the whole broker-wide allowance |
-| `cache_stream_recv_window` > `cache_conn_recv_window` | A single stream can never reach its own window, because the connection's runs out first |
+| `pub_conn_total_inflight_bytes` < `pub_conn_inflight_bytes`, or > `pub_inflight_bytes` | One identity could never use its own budget, or the connection's ceiling could never apply |
+| `max_subscriptions_per_conn_total` < `max_subscriptions_per_conn` | One identity could never reach its own cap |
+| `pub_stream_recv_window` > `pub_conn_recv_window` | A single stream can never reach its own window, because the connection's runs out first |
+| `pub_conn_recv_window` or `pub_stream_recv_window` < `max_frame_bytes` | One full-size frame would not fit in a receive window |
 | `FELIX_INTERNAL_BIND` shares a port with `FELIX_QUIC_BIND` | The internal and client-facing listeners must be separate |
 
 Equal is allowed everywhere: these bound each other and do not have to differ.
@@ -1625,7 +1769,7 @@ broker is in-memory only, and any stream the control plane marks `durable: true`
 is **rejected at registration** rather than silently downgraded to a guarantee
 the broker cannot keep.
 
-See [Durable Storage](/felix/architecture/durable-storage/) for what each policy
+See [Durable Storage](/architecture/durable-storage/) for what each policy
 guarantees and what it costs.
 
 ### `FELIX_DURABLE_STORAGE_DIR`
@@ -1703,7 +1847,8 @@ fully scanned at startup) at the cost of more files and more rollovers.
 
 **Description**: Delete the oldest sealed segments once a stream's log exceeds
 this size. Unset means the log grows without bound, which is the default and the
-pre-retention behaviour.
+pre-retention behaviour. A stream whose control-plane `retention` sets
+`max_size_bytes` uses that instead.
 
 **Type**: Positive integer (bytes)
 
@@ -1719,11 +1864,16 @@ size and never below `FELIX_DURABLE_SEGMENT_BYTES` regardless of how small this
 is set. Records below the retained range report `CursorTooOld` to a resuming
 subscriber, naming the oldest offset still available.
 
+On a `Quorum` stream, retention never deletes records a majority has not yet
+acknowledged, so a stream whose followers are down can grow past this bound
+until they return.
+
 ### `FELIX_DURABLE_RETENTION_SECONDS`
 
 **Description**: Delete sealed segments whose newest record is older than this.
 Combines with `FELIX_DURABLE_RETENTION_BYTES`. Either bound alone is enough to
-trigger a deletion.
+trigger a deletion. A stream whose control-plane `retention` sets
+`max_age_seconds` uses that instead.
 
 **Type**: Positive integer (seconds)
 
@@ -1755,6 +1905,36 @@ export FELIX_DURABLE_RETENTION_INTERVAL_SECONDS="300"
 **Trade-off**: Retention is bulk file deletion and runs on its own timer so it
 never lands on a publish. A longer interval means disk usage overshoots the
 bound for longer between passes.
+
+### `FELIX_DURABLE_OFFLOAD_DIR`
+
+**Description**: Copy each stream log's sealed segments to this directory, and
+let retention delete a segment locally only once its copy has been read back,
+checked by size and CRC-32, and recorded in the shard's `offload.manifest`.
+Copies are made on the retention timer (`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`),
+which runs whenever this is set, with or without a retention bound. Unset means
+no offload, which is the default. Cache, counter and consumer group logs never
+offload.
+
+Objects go under `<node id>/<shard directory>/`, so several brokers can share
+one directory. The node id is `FELIX_NODE_ID` when set; otherwise the broker
+generates one and keeps it in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
+
+**Type**: Directory path
+
+**Default**: unset (no offload)
+
+**Example**:
+```bash
+export FELIX_DURABLE_OFFLOAD_DIR="/mnt/felix-cold"
+```
+
+**Note**: Nothing reads the copies yet. A read below the local head still
+reports `CursorTooOld`. The directory is written through the `object_store`
+crate's local filesystem backend; other backends are not wired up. The
+directory is opened by the first copy, not at startup, so a missing or
+read-only mount does not stop the broker; until it is fixed, retention keeps
+every segment without a copy and the local disk grows.
 
 ### `FELIX_DURABLE_INDEX_SPACING_BYTES`
 
@@ -1789,8 +1969,9 @@ export FELIX_DURABLE_MAX_RECORDS_PER_READ="5000"
 
 ### `FELIX_DURABLE_PREALLOCATE`
 
-**Description**: Reserve a segment's blocks when it is created, keeping block
-allocation off the append path.
+**Description**: Reserve a segment's blocks ahead of its writes, keeping block
+allocation off the append path. A new segment reserves 1 MiB and doubles the
+reservation as it fills, up to `FELIX_DURABLE_SEGMENT_BYTES`.
 
 **Type**: Boolean
 
@@ -1864,9 +2045,9 @@ caught, just when it is read rather than at boot.
 
 ## Next Steps
 
-- **Full configuration details**: [Configuration Reference](/felix/reference/configuration/)
-- **Troubleshooting**: [Troubleshooting Guide](/felix/reference/troubleshooting/)
-- **Performance tuning**: [Performance Guide](/felix/features/performance/)
+- **Full configuration details**: [Configuration Reference](/reference/configuration/)
+- **Troubleshooting**: [Troubleshooting Guide](/reference/troubleshooting/)
+- **Performance tuning**: [Performance Guide](/features/performance/)
 
 ## Reference: every remaining variable
 
@@ -1894,14 +2075,16 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS` | `5000` | Bounds waiting for a pooled connection before failing fast. |
 | `FELIX_CONTROLPLANE_CHANGES_LIMIT` | `1000` | Maximum changes returned by one changefeed page. |
 | `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the append-only change tables. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
-| `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. |
+| `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256,RS256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. Setting it replaces the default, so it can narrow it. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` | `false` | Allow plain-HTTP IdP discovery and JWKS URLs on any host. Without it only `https` is accepted, plus `http` on a loopback host. For development: a JWKS fetched over plain HTTP can be replaced in transit, and whoever replaces it can mint tokens for the tenant. Also implies `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` | `false` | Allow IdP discovery and JWKS URLs that are, or resolve to, private, link-local or unique-local addresses. Without it those are refused (loopback is always allowed), so an issuer config cannot make the control plane fetch from internal services or a cloud metadata endpoint. |
 | `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` | `false` | Also accept `aud: felix-broker` tokens on the control plane's API, which otherwise takes only `felix-controlplane` ones. For migrating callers. It lets a broker replay a client's token against the API. |
 | `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | `false` | Also link each IdP group under its bare name (`group:{name}`) as well as its issuer-scoped one (`group:{issuer}#{name}`), while groupings are migrated. It lets any IdP the tenant trusts claim any bare group name, so turn it off afterwards. |
+| `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS` | `false` | Let `/token/delegate` take a subject token with no `may_act` claim. Any holder of `token.delegate` can then delegate any such broker token of the tenant it gets hold of, a stolen one included, so turn it on only while gateways move to sending `actor_token` on exchange. A token whose `may_act` names another caller is refused either way. |
 | `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` | `900` | Lifetime of a Felix access token minted by the token exchange. The default is short to limit blast radius if a token leaks. Prefer refresh over raising it: a long-running process should refresh rather than hold one long-lived bearer token. |
+| `FELIX_REFRESH_REUSE_GRACE_SECONDS` | `30` | How long after a refresh token is spent a retry with it, with the right secret, still gets a working token while its replacement is unused, instead of revoking the chain. Covers a refresh whose answer was lost and two concurrent refreshes. Replay detection is blind for this long. `0` turns it off. |
 | `FELIX_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Lifetime of a refresh token (30 days). This is how a long-running process stays authenticated without standing IdP credentials. Refresh tokens are single-use and rotate on every refresh, so this bounds a stolen and never used token. One that is used produces a replay, which revokes its whole chain immediately. |
-| `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/felix/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
+| `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
 | `FELIX_RAFT_DATA_DIR` | unset | Where the Raft log, vote, and snapshots live. Must survive restarts: it is what makes a restart a rejoin rather than a fresh member. |
 | `FELIX_RAFT_PEERS` | unset | The initial group as `id=host:port,...` of every member's Raft peer listener (`FELIX_RAFT_BIND_ADDR`). Identical on every member. |
 | `FELIX_RAFT_BIND_ADDR` | unset | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
@@ -1928,6 +2111,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_BOOTSTRAP_TOKEN` | unset | Token the bootstrap endpoints require. |
 | `FELIX_BOOTSTRAP_TOKEN_PREVIOUS` | unset | The token being rotated out, still accepted alongside the current one so a rotation is a rolling deploy rather than an outage. Requires `FELIX_BOOTSTRAP_TOKEN`. |
 | `FELIX_BOOTSTRAP_BIND_ADDR` | `127.0.0.1:9095` | Restricts bootstrap to a separate listener. |
+| `FELIX_BOOTSTRAP_DEV_TOKENS` | `false` | Development only. The bootstrap listener also serves `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix token for any principal of an initialized tenant with no identity provider. Startup fails unless bootstrap is enabled on a loopback `FELIX_BOOTSTRAP_BIND_ADDR`. |
 | `FELIX_BOOTSTRAP_TLS_CERT` | unset | PEM certificate chain the bootstrap listener presents. All three TLS variables together, or startup fails. A partial set is a misconfiguration, not "TLS off". |
 | `FELIX_BOOTSTRAP_TLS_KEY` | unset | PEM private key for the bootstrap listener's certificate. |
 | `FELIX_BOOTSTRAP_TLS_CLIENT_CA` | unset | PEM CA bundle. Only clients presenting a certificate signed by it can complete the TLS handshake with the bootstrap listener. |
@@ -1938,9 +2122,9 @@ absent. They are listed in that script rather than here.
 | --- | --- | --- |
 | `FELIX_NODE_ID` | unset | This broker's identity in the cluster. Must be stable across restarts. |
 | `FELIX_NODE_ADVERTISE_ADDR` | unset | Address peers should reach this broker on. |
-| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | Address *clients* should reach it on, when it differs from the peer address. |
+| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | `host:port` *clients* should reach it on, when it differs from the peer address. A DNS name is fine: clients resolve it each time they connect, so it survives the broker moving to a new IP, and check the broker's certificate against the name. A value that is not `host:port` fails startup. |
 | `FELIX_NODE_ZONE` | unset | Failure domain this broker is in within its region, such as an availability zone or a rack, sent with its registration as the node's `zone`. Placement puts each shard's copies in different zones wherever a broker with room is in one the shard lacks, and moves and drains keep that spread. Unset (or blank) means no zone: the broker is treated as sharing a zone with no other. Takes effect when the broker next registers. |
-| `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/felix/features/kafka/). |
+| `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/features/kafka/). |
 | `FELIX_KAFKA_ADVERTISE_ADDR` | `FELIX_KAFKA_LISTEN` | `host:port` Kafka clients are told to connect to for this broker (in Metadata responses). A hostname is fine. Registered as the node's `kafka_addr`, and ignored while `FELIX_KAFKA_LISTEN` is unset. |
 | `FELIX_KAFKA_TLS` | `true` | Serve TLS on the Kafka listener with the broker's client certificate, so clients connect with `SASL_SSL`. `false` means `SASL_PLAINTEXT`: tokens cross the network in clear text. |
 | `FELIX_KAFKA_ANONYMOUS_TENANT` | unset | Development switch: a Kafka connection that does not authenticate reads and writes every stream of this tenant. Leave unset in production. |
@@ -1949,18 +2133,20 @@ absent. They are listed in that script rather than here.
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Kafka connections one source IP may hold, checked before the total, so one host cannot take every slot. Refusals are counted in `felix_kafka_refused_total{reason="per_ip_limit"}`. `0` is unlimited. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a Kafka connection has to finish SASL. Until it does, each request is capped at 64 KiB. A connection past the deadline is closed and counted under `reason="auth_timeout"`, an oversized unauthenticated request under `reason="unauthenticated_frame_size"`. Does not apply with `FELIX_KAFKA_ANONYMOUS_TENANT`, where every connection starts authenticated. |
 | `FELIX_REGION_BRIDGES` | unset | The same allowlist as the control plane's. A broker forwards a request to a shard's leader only in its own `FELIX_REGION_ID` or a region it has a bridge to, and refuses the rest as `shard_unavailable` with reason `region_not_routable`. Unset forwards within the broker's own region only. A malformed pair fails startup. |
-| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
-| `FELIX_NODE_REFRESH_TOKEN_FILE` | unset | Path to this broker's refresh token. With it the broker re-mints its access token before expiry and stays registered indefinitely. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
+| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, on a standalone broker as on a cluster member, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
+| `FELIX_NODE_REFRESH_TOKEN_FILE` | unset | Path to this broker's refresh token. With it the broker re-mints its access token before expiry, so it stays registered, and its catalog sync keeps working, indefinitely. Standalone brokers use it too. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
 | `FELIX_NODE_HEARTBEAT_INTERVAL_MS` | `5000` | How often a broker reports itself alive. |
 | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | `15000` | Silence after which a node is considered gone, plus `FELIX_NODE_REGRANT_MARGIN_MS`. The sweep also waits this long after the control plane starts, becomes Raft leader, or regains its store, so an outage does not expire the fleet. Brokers take 0.75 × this as their lease. Placement will not promote a replica whose last report is older than roughly twice this. |
 | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | `2000` | How often expiry is evaluated. |
 | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `FELIX_NODE_EXPIRY_TIMEOUT_MS` | How much longer than the expiry timeout a silent node stays live before it is marked down and its shards are handed on. Covers clock drift between a broker and the control plane. Startup fails below a quarter of the timeout. The silence has to be seen on the sweeping instance's own monotonic clock too, so a wall-clock step cannot shorten it. |
 | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | `5000` | How often placement re-plans. Bounds how quickly a failover happens, and how quickly a shard move advances a step. A pass fails over at most 64 shards to nodes that hold no copy of them. The rest wait for the next pass. |
-| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: shard moves, and followers being replaced on a draining broker. Each is a full copy of a shard's log. `0` holds every move. |
+| `FELIX_PLACEMENT_SETTLE_MS` | `10000` | How long after the cluster's first broker registered a new shard waits for as many live brokers as its replication factor, so a cluster started all at once is not placed on the first brokers to register. Placement runs as each broker registers, and places on whatever is live when the window ends. A cluster older than this places new shards straight away. `0` never waits. |
+| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: shard moves, followers being replaced on a draining broker, and restores. Each is a full copy of a shard's log. A restore that tops up a shard whose leader holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records does not count. `0` holds every move. |
 | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset | Copies in flight into or out of any one broker. Unset or `0` is no limit beyond the cluster-wide one. |
 | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader's tail a move's destination may be when the leader is fenced. The rest is copied before the cut-over, so this bounds the switch-over, not what is lost. A replacement follower takes the place of the one it replaces within the same bound; on a `Quorum` stream it must also hold what a majority of the replica set holds. |
 | `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | A move that has not reached its fence, or a follower replacement that has not caught up, this long after it started is abandoned and its slot goes to the next move. A fenced move is always finished. `0` never gives up. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone, or its copy reported halted by its leader, before placement replaces the copy on another live broker, bringing the shard back to its replication factor. Keep it above the longest broker restart. `0` never replaces a lost or halted follower; a replica set left short of its factor by a failover is still topped up. |
+| `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long the copy a restore is adding may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its move slot goes to the next shard. The shard retries after the shards that have not had a slot. `0` waits for `FELIX_SHARD_MOVE_TIMEOUT_MS`. |
 | `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | unset | Short aliases used by the demos and cluster harness. |
 
 ### Peer protocol, between brokers
@@ -1977,7 +2163,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_MAX_INFLIGHT` | `1024` | Outstanding requests allowed per peer. |
 | `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` | `5000` | Bounds one forwarded request. |
 | `FELIX_INTERNAL_HANDSHAKE_TIMEOUT_MS` | `2000` | Bounds dialling a peer that is gone. |
-| `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences nothing when promoted, and a shard it replicates opens on the lease alone wherever it is promoted. It also stops the broker reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
+| `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences no shard it takes, by promotion, cut-over or hand-back, and a shard it replicates opens on the lease alone wherever it is taken. It also stops the broker keeping ballots ("Ballots" in the same document), so it checks only the generation of what a leader sends it, and stops it reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
+| `FELIX_LEADER_SUSPECT_AFTER_MS` | `5000` | How long a leader of a shard this broker follows may go without answering its pings before the broker names it in its heartbeat. Pinged four times per window. Once a majority of a `Quorum` stream shard's set names its leader, and the fleet has finalized `majority_ack` and `lease_free_reads`, the control plane promotes a follower without waiting for the leader to be marked down (`docs/replication-design.md`, "Failover on the followers' word"). `0` turns the pings off. |
 | `FELIX_INTERNAL_IDLE_TIMEOUT_MS` | `60000` | Idle timeout on a peer connection. |
 | `FELIX_INTERNAL_RECONNECT_BASE_MS` | `50` | First reconnect backoff after losing a peer. |
 | `FELIX_INTERNAL_RECONNECT_MAX_MS` | `5000` | Backoff ceiling. |
@@ -1998,6 +2185,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_GROUP_MAX_ATTEMPTS` | `5` | Deliveries before a record is dead-lettered. |
 | `FELIX_GROUP_MAX_WAIT_MS` | `30000` | Cap on a long-polling client's requested wait. |
 | `FELIX_GROUP_MAX_IN_FLIGHT` | `10000` | Most records one group may have handed out and unsettled on a shard. A poll past it answers empty until room frees. |
+| `FELIX_GROUP_MAX_VISIBILITY_MS` | `43200000` | Cap on a poll's chosen visibility, a claim extension and a nack delay. Never below `FELIX_GROUP_VISIBILITY_TIMEOUT_MS`. |
 
 ### Durable storage tuning
 
@@ -2023,3 +2211,24 @@ absent. They are listed in that script rather than here.
 | `FELIX_WORKER_THREADS` | unset | Tokio worker threads. Defaults to the core count. |
 | `FELIX_TIMING_SAMPLE_EVERY` | unset | Sample rate for timing histograms. |
 | `FELIX_SERVICE_INSTANCE_ID` | unset | Instance identity reported in telemetry. |
+
+### felixctl
+
+`felixctl` reads these to override the current context. A flag overrides the
+variable, and the variable overrides the context. See
+[felixctl](/getting-started/felixctl/).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FELIX_CLI_CONFIG` | `felixctl/config.toml` in the platform config directory | The file holding the contexts. |
+| `FELIX_CONTEXT` | the file's current context | Context to use. |
+| `FELIX_BROKERS` | unset | Broker addresses, `host:port`, comma-separated. |
+| `FELIX_AUTH_TENANT` | unset | Tenant, the same variable the client reads. |
+| `FELIX_NAMESPACE` | `default` | Namespace. |
+| `FELIX_AUTH_TOKEN`, `FELIX_AUTH_TOKEN_FILE` | unset | Broker token, or a file holding it. |
+| `FELIX_CONTROLPLANE_URL` | unset | Control-plane base URL, for the listing commands and shard owners. |
+| `FELIX_CONTROLPLANE_TOKEN`, `FELIX_CONTROLPLANE_TOKEN_FILE` | unset | Control-plane token, or a file holding it. Brokers and the control plane accept different tokens. |
+| `FELIX_CA_FILE` | platform trust store | PEM bundle broker certificates are checked against. |
+| `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
+| `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
+| `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |

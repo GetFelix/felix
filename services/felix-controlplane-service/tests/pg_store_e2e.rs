@@ -252,7 +252,10 @@ async fn pg_container() -> Result<Option<&'static PgContainer>> {
     }
 
     if !docker_available() {
-        eprintln!("skipping pg-tests: docker not available");
+        eprintln!(
+            "skipping pg-tests: no FELIX_TEST_DATABASE_URL and no docker CLI \
+             (testcontainers runs `docker`; with Podman, `task test` starts the database)"
+        );
         return Ok(None);
     }
     let container = PG_CONTAINER

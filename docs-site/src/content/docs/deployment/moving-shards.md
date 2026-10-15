@@ -4,14 +4,14 @@ title: "Moving shards by hand"
 
 Placement moves shards on its own: off a draining broker, and from a broker
 leading more than its share to one leading less (see
-[Adding, draining and removing brokers](/felix/deployment/scaling/)). This
+[Adding, draining and removing brokers](/deployment/scaling/)). This
 page is for when you want to steer that: see what is moving and what would
 move next, move a shard yourself, cancel a move, stop placement starting any,
 or give up a shard whose log is out of reach.
 
 Every command below is `felix-controlplane admin`, a client of the control
 plane's HTTP API, so the same things can be done with `curl` against the
-endpoints in the [control-plane API](/felix/api/control-plane-api/#shard-moves-and-placement).
+endpoints in the [control-plane API](/api/control-plane-api/#shard-moves-and-placement).
 
 ```bash
 export FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
@@ -68,14 +68,34 @@ from `GET /v1/placement/replication`, every shard included.
 
 Placement fills these in on its own. Once a follower's broker has been down or
 gone for `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default), the shard
-is copied to a live broker outside its set. A set that a failover left short
-because too few brokers were live is topped up as soon as one is free. The copy
-is seated once it has caught up, and on a `Quorum` stream once it also holds
-what a majority of the old set holds. The seat drops the lost follower in the
+is copied to a live broker outside its set. A set left short because too few
+brokers were live, after a failover or when the shard was placed, is topped up
+as soon as one is free, even one placed on its leader alone. The copy
+is seated once it has caught up. On a `Quorum` stream or cache it must also
+hold what a majority of the old set holds, a cache's copy its counters as
+well, and a stream's copy its consumer groups' positions and dead letters. The seat drops the lost follower in the
 same write. If the broker being copied to fails, the copy is dropped and
 another broker is picked. If the lost broker comes back first, its copy is
 kept and the new one dropped. Restores take move slots after drains and before
-rebalancing, and `pause` stops new ones.
+rebalancing, and `pause` stops new ones. A top-up of a shard whose leader
+holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records takes no slot,
+since there is next to nothing to copy, so a cluster whose new shards went on
+too few brokers fills them all at once.
+
+A cluster started all at once avoids most of this. While its first broker
+registered less than `FELIX_PLACEMENT_SETTLE_MS` ago (ten seconds by default),
+a new shard with fewer live brokers than its replication factor is not placed
+yet: `plan` shows it as `settling`. It is placed as soon as enough brokers
+have registered, or on the brokers that are live when the window ends. An
+older cluster places new shards on what is live straight away, so a broker
+that is down for good does not hold up a new stream.
+
+The control plane logs `shards have fewer copies than their replication
+factor` when the first shard goes short and `every shard has its replication
+factor` when the last is filled. Broker `/ready` does not change: it says
+whether that broker can serve, and a short shard is still served. To wait for
+full replication, as a test harness about to stop a broker would, poll
+`GET /v1/placement/replication` for `under_replicated` reaching zero.
 
 A halted copy is replaced the same way once it has been halted for the restore
 delay. The wait gives its leader time to rebuild it, which usually clears the
@@ -177,7 +197,7 @@ still move shards by hand.
 Pausing is how to hold the cluster still: during an incident, while moving a
 few shards by hand, while taking a backup point
 (`felix-controlplane admin backup-point`, see
-[Backup and restore](/felix/deployment/backup-and-restore/)), or before
+[Backup and restore](/deployment/backup-and-restore/)), or before
 draining a broker you want to empty in a particular order. A drained broker keeps its shards while placement is
 paused, so resume before relying on a drain.
 

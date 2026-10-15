@@ -49,7 +49,7 @@ impl Subscribers {
         let target = Arc::new(Target {
             tenant_id: cluster.tenant_id.clone(),
             namespace: cluster.namespace.clone(),
-            token: cluster.client_token.clone(),
+            token: cluster.client_token(),
         });
         let running = lists
             .into_iter()

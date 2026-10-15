@@ -8,6 +8,7 @@ fn generation_start(generation: u64) -> AppendRecord {
         payload: Bytes::copy_from_slice(&generation.to_be_bytes()),
         timestamp_micros: 1,
         mark: RecordMark::GenerationStart,
+        publisher: None,
     }
 }
 

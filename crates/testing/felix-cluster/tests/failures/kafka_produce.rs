@@ -149,7 +149,8 @@ impl Producer {
             .call(
                 &SaslAuthenticateRequest::default().with_auth_bytes(Bytes::from(format!(
                     "\0{}\0{}",
-                    cluster.tenant_id, cluster.client_token
+                    cluster.tenant_id,
+                    cluster.client_token()
                 ))),
                 2,
             )

@@ -1054,7 +1054,7 @@ async fn drain_resume(
             }
         }
     }
-    for (_, payload) in &resumed.backlog {
+    for felix_broker::RingRecord { payload, .. } in &resumed.backlog {
         seen.push(String::from_utf8(payload.to_vec()).expect("utf8"));
     }
     seen
@@ -1305,10 +1305,13 @@ async fn backlog_entries_carry_their_own_offsets() {
     // `backlog_start`. The ring is not guaranteed contiguous -- a publish that
     // consumed disk offsets and was cancelled before reaching the ring leaves a
     // hole -- and numbering by position mislabels everything after one.
-    let offsets: Vec<u64> = resumed.backlog.iter().map(|(offset, _)| *offset).collect();
+    let offsets: Vec<u64> = resumed.backlog.iter().map(|record| record.offset).collect();
     assert_eq!(offsets, vec![2, 3, 4, 5]);
     assert_eq!(resumed.backlog_start, 2);
-    for (offset, payload) in &resumed.backlog {
+    for felix_broker::RingRecord {
+        offset, payload, ..
+    } in &resumed.backlog
+    {
         let expected = format!("v{offset}");
         assert_eq!(String::from_utf8(payload.to_vec()).expect("utf8"), expected);
     }
@@ -1783,6 +1786,35 @@ async fn only_a_durable_stream_names_an_offset_to_resume_from() {
     assert_eq!(moved.to, handoff());
 }
 
+/// Closing a shard that still has a reader tells it the shard moved, with
+/// where to resume, when the close knows where the shard went.
+#[tokio::test]
+async fn closing_a_shard_with_a_handoff_tells_its_readers_it_moved() {
+    let dir = tempdir().expect("dir");
+    let (broker, _storage) = broker_with_storage(&dir, FsyncMode::OnCommit).await;
+    register(&broker, "orders", true).await;
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+    broker
+        .publish("t1", "default", "orders", payload("r0"))
+        .await
+        .expect("publish");
+
+    broker
+        .close_stream_shard("t1", "default", "orders", 0, Some(handoff()))
+        .await
+        .expect("close");
+
+    assert!(receiver.recv().await.is_some());
+    assert!(receiver.recv().await.is_none());
+    let moved = receiver.moved().expect("ended by a move");
+    assert_eq!(moved.resume_from, Some(1));
+    assert_eq!(moved.to, handoff());
+}
+
 #[tokio::test]
 async fn an_offset_reader_is_woken_by_a_durable_publish() {
     let dir = tempdir().expect("dir");
@@ -1877,6 +1909,7 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
                     durable: true,
                     shards: 1,
                     consistency: felix_broker::ConsistencyLevel::Quorum,
+                    ..Default::default()
                 },
             )
             .await
@@ -1909,7 +1942,7 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
     let past_commit: Vec<u64> = resumed
         .backlog
         .iter()
-        .map(|(offset, _)| *offset)
+        .map(|record| record.offset)
         .filter(|offset| *offset >= 2)
         .collect();
     assert!(
@@ -1918,4 +1951,119 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
     );
     let history = resumed.history.expect("served from disk");
     assert_eq!((history.from_offset, history.until_offset), (0, 4));
+}
+
+/// A subscriber whose queue dropped the newest records hears about it even
+/// though nothing is published after them.
+#[tokio::test]
+async fn a_subscription_ends_at_its_first_drop_and_says_where_to_resume() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), log_config(FsyncMode::None)).expect("storage");
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_durable_storage(storage)
+        .with_topic_capacity(1)
+        .expect("capacity");
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    register(&broker, "orders", true).await;
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+    receiver.end_on_lag();
+
+    for value in ["a", "b", "c"] {
+        broker
+            .publish("t1", "default", "orders", payload(value))
+            .await
+            .expect("publish");
+    }
+
+    let first = receiver
+        .recv()
+        .await
+        .expect("the batch queued before the drop");
+    assert_eq!(first.base_offset(), Some(0));
+    let end = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("the drop ends the subscription without another publish");
+    assert!(end.is_none());
+    assert_eq!(receiver.lagged(), Some(1));
+}
+
+fn queued_offsets(receiver: &mut felix_broker::SubscriptionReceiver) -> Vec<u64> {
+    let mut offsets = Vec::new();
+    while let Ok(envelope) = receiver.try_recv() {
+        let base = envelope.base_offset().expect("durable offsets");
+        offsets.extend((0..envelope.len() as u64).map(|i| base + i));
+    }
+    offsets
+}
+
+/// A subscriber's own queue size bounds only that subscriber. The small one
+/// drops, and the jump in its offsets says exactly what it lost; the
+/// publisher is never refused and a subscriber on the default queue gets
+/// everything.
+#[tokio::test]
+async fn a_subscribers_queue_size_is_its_own() {
+    let dir = tempdir().expect("dir");
+    let storage =
+        DurableStorage::open(dir.path(), log_config(FsyncMode::OnCommit)).expect("storage");
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_durable_storage(storage)
+        .with_topic_capacity(8)
+        .expect("capacity");
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    register(&broker, "orders", true).await;
+
+    let (mut small, _small_guard) = broker
+        .subscribe_sized("t1", "default", "orders", 0, Some(2))
+        .await
+        .expect("small subscribe")
+        .into_parts();
+    let (mut default, _default_guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("default subscribe")
+        .into_parts();
+    let (mut large, _large_guard) = broker
+        .subscribe_from_sized(
+            "t1",
+            "default",
+            "orders",
+            0,
+            StartPosition::Latest,
+            Some(32),
+        )
+        .await
+        .expect("large subscribe")
+        .subscription
+        .into_parts();
+
+    for i in 0..12 {
+        broker
+            .publish("t1", "default", "orders", payload(&format!("r{i}")))
+            .await
+            .expect("a full subscriber queue never refuses the publisher");
+    }
+
+    assert_eq!(queued_offsets(&mut small), vec![0, 1]);
+    assert_eq!(queued_offsets(&mut default), (0..8).collect::<Vec<_>>());
+    assert_eq!(queued_offsets(&mut large), (0..12).collect::<Vec<_>>());
+
+    // Drained, the small queue takes the next record, and the jump from 1
+    // to 12 is the drop.
+    broker
+        .publish("t1", "default", "orders", payload("r12"))
+        .await
+        .expect("publish");
+    assert_eq!(queued_offsets(&mut small), vec![12]);
 }

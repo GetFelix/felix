@@ -45,6 +45,7 @@ SeededInit ==
     /\ staged = {}
     /\ heard = [m \in Brokers |-> NoReport]
     /\ promised = (a :> 1 @@ b :> 2 @@ c :> 2)
+    /\ ballot = IF Ballots THEN (a :> {a} @@ b :> {b} @@ c :> {b}) ELSE [m \in Brokers |-> {}]
     /\ fencing = [m \in Brokers |-> FALSE]
     /\ answered = (a :> {} @@ b :> {c} @@ c :> {})
     /\ confirmed = [m \in Brokers |-> [n \in Brokers |-> 0]]
@@ -53,6 +54,9 @@ SeededInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
+    \* Seeded histories are checked without self-election.
+    /\ opened = {}
 \* The same history one leadership further, with no start records in it: the
 \* fleet finalized `generation_start` only after c's promotion. c was
 \* promoted at 3, fenced a and took x, acknowledged nothing, and is now
@@ -89,6 +93,7 @@ SeededCutOverInit ==
     /\ staged = {}
     /\ heard = [m \in Brokers |-> NoReport]
     /\ promised = (a :> 3 @@ b :> 2 @@ c :> 3)
+    /\ ballot = IF Ballots THEN (a :> {c} @@ b :> {b} @@ c :> {c}) ELSE [m \in Brokers |-> {}]
     /\ fencing = [m \in Brokers |-> FALSE]
     /\ answered = (a :> {} @@ b :> {c} @@ c :> {a})
     /\ confirmed = [m \in Brokers |-> [n \in Brokers |-> 0]]
@@ -97,6 +102,9 @@ SeededCutOverInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
+    \* Seeded histories are checked without self-election.
+    /\ opened = {}
 \* The code moves no mark while it fences: nothing ships until it opens.
 NoAckWhileFencing == \A m \in Brokers : fencing[m] => hwm'[m] = hwm[m]
 SeededSpec == SeededInit /\ [][Next /\ NoAckWhileFencing]_vars

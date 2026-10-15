@@ -50,7 +50,7 @@ async fn a_stream_homed_in_one_region_is_refused_by_another() {
     // Inside the region a publish is served, forwarded or not.
     let eu = cluster.node(IN_EU[0]).expect("eu broker");
     let client =
-        felix_cluster::client::connect(eu.client_addr, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect(eu.client_addr, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("connect to eu");
     client
@@ -69,7 +69,7 @@ async fn a_stream_homed_in_one_region_is_refused_by_another() {
 
     let us = cluster.node(IN_US).expect("us broker");
     let client =
-        felix_cluster::client::connect(us.client_addr, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect(us.client_addr, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("connect to us");
     let err = client

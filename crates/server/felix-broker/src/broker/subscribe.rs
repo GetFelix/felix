@@ -25,11 +25,26 @@ impl Broker {
         stream: &str,
         shard: u32,
     ) -> Result<Subscription> {
+        self.subscribe_sized(tenant_id, namespace, stream, shard, None)
+            .await
+    }
+
+    /// [`Broker::subscribe`] with this subscriber's queue holding
+    /// `queue_capacity` envelopes instead of the stream's default. The caller
+    /// bounds it; the stream's overflow policy still applies.
+    pub async fn subscribe_sized(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        queue_capacity: Option<usize>,
+    ) -> Result<Subscription> {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
         let stream_state = handle.state;
-        let (subscriber_id, receiver) = stream_state.register_subscriber();
+        let (subscriber_id, receiver) = stream_state.register_subscriber_sized(queue_capacity);
         Ok(Subscription {
             receiver,
             guard: SubscriptionGuard {
@@ -49,6 +64,8 @@ impl Broker {
     /// durable tail. Handing out a cursor from the ring would then name a
     /// position that is already in the past on disk, and replaying from it
     /// fails as too old rather than resuming where the caller actually was.
+    /// The tail is read after appends already started have landed, so a
+    /// cancelled publish still being written is not left above the cursor.
     ///
     /// On a `Quorum` stream the tail is the committed mark: a position past it
     /// may name records a failover replaces.
@@ -66,7 +83,7 @@ impl Broker {
         let next_seq = match &handle.state.durable {
             Some(log) => committed_tail(
                 handle.state.read_bound(),
-                log.tail_offset().await?,
+                log.settled_tail_offset().await?,
                 stream,
                 shard,
             )?,
@@ -147,6 +164,21 @@ impl Broker {
         shard: u32,
         start: StartPosition,
     ) -> Result<ResumedSubscription> {
+        self.subscribe_from_sized(tenant_id, namespace, stream, shard, start, None)
+            .await
+    }
+
+    /// [`Broker::subscribe_from`] with a queue capacity, as
+    /// [`Broker::subscribe_sized`] takes it.
+    pub async fn subscribe_from_sized(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: StartPosition,
+        queue_capacity: Option<usize>,
+    ) -> Result<ResumedSubscription> {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
@@ -198,7 +230,7 @@ impl Broker {
         };
 
         let (backlog, backlog_start, subscriber_id, receiver) =
-            stream_state.register_clamped(requested);
+            stream_state.register_clamped(requested, queue_capacity);
         // Built the moment the subscriber exists, so every error path below
         // releases the registration by `Drop` instead of stranding a closed
         // sender in the registry for the publish path to reap later. Repeated
@@ -365,6 +397,42 @@ impl Broker {
         }
     }
 
+    /// The first offset on a durable stream shard whose record was appended
+    /// at or after `at_micros`, searching only what a subscriber may read.
+    /// `None` when no such record is readable yet, so `latest` is where to
+    /// wait for one. See [`StreamLog::offset_for_time`] for how exact it is.
+    ///
+    /// [`StreamLog::offset_for_time`]: crate::StreamLog::offset_for_time
+    pub async fn offset_for_time(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        at_micros: u64,
+    ) -> Result<Option<u64>> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        };
+        let until = committed_tail(
+            handle.state.read_bound(),
+            log.settled_tail_offset().await?,
+            stream,
+            shard,
+        )?;
+        Ok(log
+            .offset_for_time(at_micros, until)
+            .await?
+            .map(|(offset, _)| offset))
+    }
+
     /// Number of subscriber slots currently registered for a stream.
     ///
     /// Exposed for tests that need to prove a failed subscribe left nothing
@@ -385,7 +453,7 @@ impl Broker {
 }
 
 /// The durable `tail` as a reader may see it.
-fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u32) -> Result<u64> {
+pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u32) -> Result<u64> {
     match bound {
         ReadBound::Unbounded => Ok(tail),
         ReadBound::Committed(mark) => Ok(mark.min(tail)),
@@ -431,7 +499,7 @@ pub struct ResumedSubscription {
     /// holes -- a publish that took disk offsets and was cancelled before
     /// reaching the ring leaves one. A caller that numbered these sequentially
     /// from `backlog_start` would mislabel everything after a hole.
-    pub backlog: Vec<(u64, Bytes)>,
+    pub backlog: Vec<RingRecord>,
     /// Offset of the first backlog entry, and of the live edge when the backlog
     /// is empty.
     pub backlog_start: u64,
@@ -440,6 +508,18 @@ pub struct ResumedSubscription {
     /// compare these against.
     pub join: Option<JoinOffsets>,
     pub subscription: Subscription,
+}
+
+/// A record held in the replay ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RingRecord {
+    pub offset: u64,
+    pub payload: Bytes,
+    /// The principal that published it, when one was recorded.
+    pub publisher: Option<Bytes>,
+    /// When it was appended, in microseconds since the Unix epoch. `None` on
+    /// an in-memory stream.
+    pub timestamp_micros: Option<u64>,
 }
 
 /// The disk-backed range a resumed subscription must replay before its backlog.

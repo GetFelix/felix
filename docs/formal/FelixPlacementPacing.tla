@@ -34,6 +34,10 @@
 (* copy. That writes an assignment rather than starting a copy, takes no   *)
 (* slot here, and is paced separately (`FAILOVERS_PER_PASS` in the          *)
 (* reconciler); its safety is the generation check the shard model covers. *)
+(* Also out of scope: a restore that tops up a short set on a shard whose  *)
+(* leader holds at most the fence lag of records. It takes no slot and is  *)
+(* not counted, so the limits here are over the copies that remain; its    *)
+(* safety is the shard model's `Regenerate` and seat rule.                 *)
 (***************************************************************************)
 
 EXTENDS Naturals, FiniteSets, TLC
@@ -145,7 +149,8 @@ Seat(s) ==
     /\ WrittenByNobody
     /\ UNCHANGED << leader, fenced, holder, view >>
 
-\* Past `FELIX_SHARD_MOVE_TIMEOUT_MS`, which in this model may be any time
+\* Past `FELIX_SHARD_MOVE_TIMEOUT_MS`, or a restore whose copy has not moved
+\* for `FELIX_SHARD_RESTORE_STALL_MS`, which in this model may be any time
 \* before the fence.
 TimeOut(s) ==
     /\ Copying(s) /\ ~fenced[s]

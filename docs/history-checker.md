@@ -36,7 +36,11 @@ checked as registers (`history/register.rs`).
   the list. The rest start somewhere in the last 256 records, which keeps a long
   campaign's history small.
 - **The final read** of each list is taken from its leader after every fault is
-  healed. It must reach that tail with no holes, or the campaign retries it.
+  healed and every client has stopped. A stopping client first waits up to 15s
+  for the publishes it already sent to be answered, the producer's re-sends
+  included, and then stops its producer, so an unknown append does not land
+  after the final read. It must reach that tail with no holes, or the campaign
+  retries it.
 - Records below each list's **base** were in the stream before the run (the
   harness's readiness probe), and the checker ignores them.
 - **put(key, value)** stores a unique value under a cache key. It is **ok**
@@ -157,8 +161,8 @@ happen without anyone stepping them.
 
 `FELIX_HISTORY_MODE` picks which replication path the brokers take.
 `Campaign::start` starts the cluster and, in `lease-free` mode, finalizes the
-`generation_start`, `majority_ack` and `lease_free_reads` fleet features, then
-waits until every broker reports all three on
+`generation_start`, `majority_ack`, `lease_free_reads` and `fenced_caches`
+fleet features, then waits until every broker reports all four on
 (`felix_broker_fleet_feature_enabled`). A broker that does not turn them on
 fails the run before any fault, so a lease-free run cannot quietly test the
 lease. The features are described in
@@ -169,7 +173,7 @@ the clients commit.
 | Mode | Stream writes are acknowledged | Cache reads confirm leadership |
 | --- | --- | --- |
 | `lease` | Once the control plane stored a majority report, with the lease re-checked | With the lease |
-| `lease-free` | Once a majority answers at the leader's generation | With a majority round after taking the value |
+| `lease-free` | Once a majority answers at the leader's generation, cache puts too | With a majority round after taking the value |
 
 Unset, the main campaign runs `lease-free` and the every-family campaign runs
 `lease`, so every PR exercises both paths. Set, it applies to both.
@@ -249,12 +253,17 @@ happen behind one.
   that may have landed. Only these clients ever record a definite failure, so
   they are what exercise rule 6.
 - **Idempotent clients** re-send the same batch under the same sequence, up to
-  three times, and record an unknown outcome if all three fail. A cancelled
-  publish leaves the producer refusing all later sends, so the client replaces
-  it.
+  three times, and record an unknown outcome if all three fail; then the
+  client replaces the producer, since only that batch may go out under its
+  sequence. A publish that times out is recorded as unknown too, but the
+  producer is kept: the publish still runs to its answer, and the producer
+  re-sends it itself if that answer is in doubt.
 - **All clients** read 20% of the time, from a random broker. They follow one
   `not_leader` hop. A client reconnects from a fresh address book after three
-  failures in a row, because a restarted broker listens on new ports.
+  failures in a row over its connection, or after a single failure if a broker
+  has restarted since it connected, because a restarted broker listens on new
+  ports. Reads and cache ops open their own connection, so they neither count
+  toward that nor reset it.
 - **All clients** also put or get a cache key 20% of the time, half each,
   through a random broker, which forwards the operation to the key's leader.
 
@@ -445,6 +454,10 @@ faults a failing run printed, implement `Nemesis`.
 > 60-second lease-free campaign that alternates the two leaves a valid
 > history, and injects and heals at least one `ControlPlaneCrash` and, on
 > Linux, one `PowerLoss`.
+> `quorum_cache_writes_survive_a_promotion_in_a_campaign`: a 60-second
+> lease-free campaign that pauses, kills or partitions whichever broker leads
+> the cache, in turn, leaves a valid history, and the cache changes leader at
+> least once, so its puts are written across a fenced promotion.
 > `a_power_loss_needs_on_commit_flushes_and_the_model` and
 > `a_control_plane_crash_interrupts_a_move_a_drain_or_a_failover`: a power
 > loss runs only with on-commit flushes, and a control plane crash lands
@@ -484,8 +497,8 @@ list. It does not fix the interleaving, which depends on the scheduler and the
 brokers. A failing seed makes the failure likely to recur, not certain. Run it
 a few times.
 
-On a small disk, set `FELIX_DURABLE_PREALLOCATE=false` so each broker does not
-reserve full segments up front.
+Each active segment reserves blocks as it fills, up to a full segment. On a
+small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 
 The per-PR run uses the fixed seed and takes about a minute per test, cluster
 start-up included. The nightly workflow (`.github/workflows/history.yml`) runs

@@ -29,6 +29,7 @@ async fn a_shard_left_mid_swap_by_an_older_build_opens_whole() {
                     key: key.clone(),
                     value: value.clone(),
                     expires_at_millis: 0,
+                    version: None,
                 }
                 .encode()
             })

@@ -443,6 +443,18 @@ When the broker closes the event stream, iteration ends. A client that blocks
 forever instead turns a routine shutdown into a hung consumer.
 """
 
+[[scenario]]
+id = "client.stream_deleted_is_reported"
+required = false
+title = "A subscription ended by deleting its stream says so"
+detail = """
+Delete a stream with a live subscription. The subscription ends after the
+records already sent to it, and the client reports that the stream was
+deleted (the broker's `stream_deleted` frame, under `FEATURE_STREAM_DELETED`)
+rather than a plain end. A client that follows moved shards must not try to
+follow this one: there is nowhere to resubscribe.
+"""
+
 # ---------------------------------------------------------------------------
 # Connection faults
 #
@@ -480,6 +492,13 @@ forever instead turns a routine shutdown into a hung consumer.
 # A stall is shorter than the idle timeout, so the connection never dies, and
 # an error during one fails the scenario too: every publish is acknowledged
 # and every record arrives.
+#
+# `during = "cache"`: through the interposed client, `records` times, put key
+# `<id>-<n>` with its own name as the value, then add 1 to counter `<id>-count`,
+# in the fixture's `cache`. Every call must return, with an answer or an error.
+# Once the fault is over a put must succeed again, and then, read through the
+# same client: every acknowledged put has its value, and the counter is at
+# least the acknowledged adds and at most `records`.
 # ---------------------------------------------------------------------------
 
 [[scenario]]
@@ -546,6 +565,17 @@ Every packet is late and none is lost. The records published during the stall
 arrive after it, in order, with contiguous offsets.
 """
 step = { during = "subscribe", fault = "stall", after_records = 3, records = 10, hold_ms = 2000 }
+
+[[scenario]]
+id = "fault.cache_through_a_reset_link"
+required = true
+title = "Cache calls on a reset connection move to another connection"
+detail = """
+The connection the client entered by dies for good. Cache and counter calls
+must not keep going to it: each returns, the next ones land on a new
+connection, and every acknowledged write reads back.
+"""
+step = { during = "cache", fault = "reset", after_records = 2, records = 6, hold_ms = 0 }
 
 # ---------------------------------------------------------------------------
 # Queues (consumer groups)
@@ -741,6 +771,34 @@ detail = """
 After a commit that puts a key, a state read of that key through the same
 entity returns the value, a version equal to the commit's offset, and an as_of
 at or past it. A deleted or never-written key reads as absent, not empty.
+"""
+
+[[scenario]]
+id = "commit.expected_offset_refuses_a_stale_write"
+required = false
+title = "A commit with an expected offset is refused once the shard has moved on"
+detail = """
+A commit carrying an expected offset that is no longer the shard's next is
+refused with publish_refused and offset_mismatch naming the tail, and nothing
+is written. Optional until the bindings expose conditional writes.
+"""
+
+[[scenario]]
+id = "publish_if.lands_at_the_expected_offset"
+required = false
+title = "A conditional publish at the tail is written there"
+detail = """
+publish_if with the shard's next offset is answered with publish_ok carrying
+that offset.
+"""
+
+[[scenario]]
+id = "publish_if.refused_with_the_tail"
+required = false
+title = "Of two conditional publishes at one offset, the second is refused"
+detail = """
+A second publish_if expecting the offset the first took is refused with
+publish_refused and offset_mismatch naming the new tail, and writes nothing.
 """
 
 [[scenario]]

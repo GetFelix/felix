@@ -181,7 +181,16 @@ async fn a_refresh_token_is_spent_by_using_it() {
     let (state, store) = fixture().await;
     let token = issue_into(&store, vec![]).await;
 
-    assert_eq!(post_refresh(&state, &token).await.status(), StatusCode::OK);
+    let replacement = read_json(post_refresh(&state, &token).await).await["refresh_token"]
+        .as_str()
+        .expect("replacement")
+        .to_string();
+    // Once the replacement is used, the reuse grace window no longer covers
+    // the spent token.
+    assert_eq!(
+        post_refresh(&state, &replacement).await.status(),
+        StatusCode::OK
+    );
     assert_eq!(
         post_refresh(&state, &token).await.status(),
         StatusCode::FORBIDDEN,
@@ -216,7 +225,13 @@ async fn replaying_a_spent_token_ends_the_whole_chain() {
     let (state, store) = fixture().await;
     let first = issue_into(&store, vec![]).await;
 
-    let live = read_json(post_refresh(&state, &first).await).await["refresh_token"]
+    let replacement = read_json(post_refresh(&state, &first).await).await["refresh_token"]
+        .as_str()
+        .expect("replacement")
+        .to_string();
+    // The legitimate holder moves on, so the spent token's replacement is
+    // used and the reuse grace window does not apply.
+    let live = read_json(post_refresh(&state, &replacement).await).await["refresh_token"]
         .as_str()
         .expect("replacement")
         .to_string();
@@ -419,7 +434,9 @@ async fn a_refresh_keeps_the_exchanges_narrowing_and_audience() {
     record.narrowing = Some(Narrowing {
         requested: Some(vec!["stream.publish".to_string()]),
         resources: Some(vec!["stream:t1/payments/orders".to_string()]),
+        permissions: None,
         audience: "felix-broker".to_string(),
+        may_act: None,
     });
     store.insert_refresh_token(record).await.expect("insert");
 

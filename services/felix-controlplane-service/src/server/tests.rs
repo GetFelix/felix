@@ -25,6 +25,7 @@ fn config() -> ControlPlaneConfig {
             token: None,
             previous_token: None,
             tls: None,
+            dev_tokens: false,
         },
         node_liveness: NodeLivenessConfig::default(),
         shard_moves: placement::MovePolicy::default(),

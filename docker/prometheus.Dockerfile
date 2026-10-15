@@ -1,4 +1,4 @@
-FROM prom/prometheus:v3.15.0
+FROM docker.io/prom/prometheus:v3.15.0
 
 # Prometheus reads /etc/prometheus/prometheus.yml by default in this image’s entrypoint.
 COPY docker/prometheus/prometheus.yml /etc/prometheus/prometheus.yml

@@ -72,7 +72,7 @@ async fn a_moved_shard_keeps_its_group_state_and_counters() {
         for record in claimed {
             if record.payload.as_ref() == b"poison" {
                 cluster
-                    .group_nack_via(&first, STREAM, 0, GROUP, record.offset)
+                    .group_nack_via(&first, STREAM, 0, GROUP, &record)
                     .await
                     .expect("nack");
             } else {
@@ -217,9 +217,13 @@ struct Tally {
 
 async fn connect(cluster: &Cluster, via: &str) -> felix_client::Client {
     let node = cluster.node(via).expect("node");
-    felix_cluster::client::connect(node.client_addr, &cluster.tenant_id, &cluster.client_token)
-        .await
-        .expect("connect")
+    felix_cluster::client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect")
 }
 
 /// Put fresh keys through `via` until `stop`, deleting every fourth one again.
@@ -398,7 +402,7 @@ async fn writes_of_every_kind_through_a_move_are_never_refused() {
         felix_cluster::client::connect_cluster(
             &cluster.broker_addrs(),
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("connect a cluster client"),

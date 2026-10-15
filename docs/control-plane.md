@@ -106,6 +106,15 @@ plus the cadence expected of it:
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
 
+A broker that cannot reach the leader of a shard it follows also sends
+`"suspects": ["broker-2"]`, the leaders that have not answered its pings for
+`FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft
+state for two heartbeat intervals and asks for a placement pass; a broker
+suspecting nobody leaves the field out. Placement promotes on it only for a
+durable `Quorum` stream once `majority_ack` and `lease_free_reads` are
+finalized (`docs/replication-design.md`, "Failover on the followers' word").
+A record that cannot be stored is logged and does not fail the heartbeat.
+
 Four rules, each of which exists for a reason:
 
 - **The recorded time is the control plane's own clock.** A broker that could
@@ -257,7 +266,7 @@ generation check in the forwarding protocol does not cover this: a stale ex-owne
 never forwards, so nothing compares generations. A publish acknowledged in that
 window is durably written to a broker nobody reads it from, so this is write loss
 rather than a delay. It is tracked in
-[#239](https://github.com/gabloe/felix/issues/239), and closed by the leases in
+[#239](https://github.com/GetFelix/felix/issues/239), and closed by the leases in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See
@@ -435,7 +444,8 @@ and a request against it answers `401` whatever the token says.
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}` | tenant `t` |
-| `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` | any tenant |
+| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | both of the above, over every item in the batch | tenant `t` |
+| `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}`, `GET /v1/principal-revocations/changes` | `node.view:cluster:*` | any tenant |
 | `/v1/tenants/{t}/idp-issuers[/{issuer}]`, `/v1/tenants/{t}/signing-keys[/...]`, `POST /v1/tenants/{t}/refresh-tokens/revoke` | `tenant.manage` over `tenant:{t}` | tenant `t` |
 | `GET /v1/tenants/{t}/rbac/{policies,groupings}` | `rbac.view` | tenant `t` |
 | `POST`/`DELETE /v1/tenants/{t}/rbac/policies` | `rbac.policy.manage` over the rule's object | tenant `t` |
@@ -466,6 +476,62 @@ broker's does: bootstrap an operator tenant with a policy granting
 `tenant.manage`, `node.view` and `node.manage` over `cluster:*` to a role,
 assign the operator principal to it, and exchange an IdP token. No tenant admin
 can write those rules afterwards, because no tenant scope contains `cluster:*`.
+
+### Creating streams and caches together
+
+`POST /v1/tenants/{t}/namespaces/{ns}/resources` creates a namespace's streams
+and caches in one request, all of them or none:
+
+```http
+POST /v1/tenants/t1/namespaces/room-42/resources
+
+{ "streams": [ { "stream": "chat", "kind": "Stream", "shards": 1, ... } ],
+  "caches":  [ { "cache": "cursors", "display_name": "Cursors" },
+               { "cache": "board", "display_name": "Board" } ] }
+```
+
+Each item has the body its single create endpoint takes. The checks run in
+this order, and any failure creates nothing:
+
+1. The batch holds 1 to 256 items, or `400`.
+2. The token carries `stream.manage` or `cache.manage` over every item, or
+   `403`. This runs before anything is read, so a refusal says nothing about
+   what exists.
+3. Every item is valid and no name appears twice, or `400`.
+4. The namespace exists, or `404`.
+5. Each item either does not exist yet or exists with the same configuration.
+   Otherwise `409` naming the items that differ.
+
+The answer lists every item in request order with `"status": "created"` or
+`"unchanged"`. It is `201` when anything was created and `200` when everything
+already existed as asked, so a caller that died part-way, or never saw the
+answer, sends the same batch again.
+
+"The same configuration" compares what the request would store, after its
+defaults: a cache's `shards: 0` and an omitted `shards` both mean one. A
+stream's `routing` counts only when the request names it, because when left
+to the server it depends on whether the fleet has finalized
+`jump_hash_routing`, and a retry across a finalize would otherwise conflict
+with the stream its first attempt made. The single create endpoints use the
+same comparison, so creating a stream or cache that already exists as asked
+answers `200` with it, and `409` only when it differs.
+
+The new items are written by one store operation. Under Postgres that is one
+transaction, so a unique-key violation on any row, including one a concurrent
+create committed first, rolls the whole batch back. Under Raft it is one log
+entry (`create_resources`), applied whole or refused whole on every member.
+When a concurrent create of the same name wins the race, the batch looks
+again, up to three times: a winner with the same configuration becomes
+`unchanged`, and one with a different configuration is a `409`.
+
+Brokers read the catalog through the stream and cache feeds, which are
+separate. Each item gets its own `Created` change, so a broker can see a
+batch's streams one poll before its caches, but it never sees an item from a
+batch that failed.
+
+Under Raft the batch needs metadata level 5 on every member. Until the whole
+group runs a release that has it, the endpoint answers `503` with code
+`upgrade_in_progress`, and the single create endpoints keep working.
 
 ### Listing and pagination
 
@@ -530,6 +596,52 @@ collation, so the order of names differing only in punctuation can differ
 between backends; within one backend it is stable, which is all a cursor
 needs.
 
+### Snapshot and change feeds
+
+The control plane serves a snapshot and a change feed for each of tenants,
+namespaces, streams, caches, nodes and shard assignments. The snapshot
+returns every current item plus a `next_seq`; `changes?since=N` returns the
+changes with `seq >= N`, oldest first, and the `next_seq` to ask from next. A
+consumer that applies the snapshot and then follows the feed from its
+`next_seq` sees every committed change exactly once.
+
+Four properties make that hold on every backend:
+
+1. The snapshot's items and its `next_seq` are read at one point: one
+   `REPEATABLE READ` transaction on Postgres, and the resource's lock held
+   across both reads in memory and on Raft. Read separately, a delete landing
+   between them leaves the item in the snapshot while `next_seq` is already
+   past the delete.
+2. A `seq` is handed out in commit order. On Postgres each change table's
+   writers take that feed's advisory lock before anything else and hold it
+   until they commit, so a writer cannot take seq 11 and commit while seq 10
+   is still in flight. Without that, a reader could pass 10 and never see it.
+   Nodes and shard assignments get the same property from a locked counter
+   row. Writers in one instance queue in memory before they take a pooled
+   connection, so a long cascade does not starve reads of connections, and a
+   writer that waits more than 5 s for its feed gives up with a 503
+   `busy` that is safe to retry: nothing was written.
+3. A page holds at most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by
+   default). A full page's `next_seq` is the seq after its last change, and a
+   shorter page's is the feed's tail. A consumer further behind than one page
+   asks again from `next_seq` until a page comes back empty; the broker
+   follows up to 64 pages per feed in each sync pass.
+4. A consumer's cursor never moves backwards. On Raft each member answers
+   from its own applied state, so a broker that reaches a lagging member can
+   get a `next_seq` below its cursor, or a snapshot older than what it has
+   applied. The broker ignores such an answer and asks again. A feed that
+   answers only from behind for 60 s is taken as reset, and the broker takes
+   a new snapshot of it: the changes before the new `next_seq` are a history
+   it has never seen. A snapshot only adds and updates, so a tenant,
+   namespace, stream or cache deleted across the reset stays registered on
+   the broker. A broker registers only what the catalog holds when it starts,
+   so restarting it drops them. Its data stays on disk either way, as a
+   deleted stream's always does.
+
+The tenant, namespace, stream and cache feeds keep only their most recent
+`FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
+falls further behind than that has to take a new snapshot.
+
 ### Shard ownership
 
 `GET /v1/shard-assignments` lists which broker leads each shard, and
@@ -560,7 +672,10 @@ control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
 and among those by the one reported furthest ahead. A report may also carry
 `drained: true`, the leader's word that it has stopped serving the shard at
-that generation and its log will not grow: the fence of a planned move. Requires `node.manage` over
+that generation and its log will not grow: the fence of a planned move. For a
+cache, `replica_counter_offsets` says how far each replica has got with the
+counter log, which placement counts as a restore's progress; brokers that
+predate it leave it out. Requires `node.manage` over
 the reporting node, and the node must lead the shard it reports on; a report
 naming a generation ahead of the assignment is refused, since one claiming
 `u64::MAX` would otherwise block every real report after it.
@@ -811,6 +926,8 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
+| `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
+| `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
 
 #### Moving a shard
 
@@ -862,8 +979,9 @@ dropped from the move (`abandon`) or, after the fence, passed over for
 another caught-up replica or the old leader itself, which takes the shard
 back at a new generation. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
-`Quorum` stream: there the successor would open the shard as a cut-over,
-without the promotion fence, so failover passes it over. An ephemeral stream has
+`Quorum` stream: there a broker from before every change of leader was
+fenced would open the shard as a cut-over, without the fence, so failover
+passes it over. An ephemeral stream has
 no log to hand off and is reassigned as it always was.
 
 Between the fence and the new owner opening, nobody serves the shard. A
@@ -939,7 +1057,12 @@ control-plane restart or a change of placement lease holder. If the broker
 being copied to goes down, the copy is dropped (`abandon`) and the next pass
 picks another. If the lost broker comes back before the copy is seated, the
 copy is dropped as well. A copy that does not catch up within
-`shard_move_timeout_ms` is `timed_out` like any move. Restores take move
+`shard_move_timeout_ms` is `timed_out` like any move. A copy whose reported
+position, in the shard's log or a cache's counter log, has not moved for
+`shard_restore_stall_ms` is dropped sooner
+(`stalled`), so one restore that cannot finish does not hold the slot every
+other short shard is waiting for. The shard then waits behind those that have
+not had a slot. Restores take move
 slots after drains and before rebalancing, and pausing placement stops new
 ones. The details, and why a restore never happens inside a promotion, are in
 [replication-design.md](replication-design.md#who-may-be-promoted) under
@@ -953,11 +1076,11 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
 | `felix_placement_writes_fenced_total` | passes and operator requests that stopped because another placement write landed after they read the store; the pass re-plans, the request is decided again |
@@ -1147,7 +1270,7 @@ on from a checkpoint the control plane can no longer honour:
 | --- | --- | --- |
 | first returned `seq` > `since` | changes between were evicted from the window | re-snapshot |
 | empty page but `next_seq` > `since` | the whole span was evicted, not empty | re-snapshot |
-| `next_seq` < `since` | the sequence reset under us: a control plane restarted onto a store that does not persist it | re-snapshot |
+| `next_seq` < `since` | a Raft member behind the one asked before, or the sequence reset under us (a control plane restarted onto a store that does not persist it) | ignore it and ask again; re-snapshot once it has stayed behind for 60 s |
 
 The second is the subtle one: an empty page is only safe when the log has not
 moved. Treating it as "nothing new" whenever it is empty silently skips
@@ -1346,7 +1469,7 @@ Control plane:
 | `felix_shard_replicas_missing` | the copies under-replicated shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader has stopped shipping to them |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled` |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |
 | `felix_shard_assignment_write_conflicts_total` | placement writes skipped because the shard changed after the pass read it |
 | `felix_placement_writes_fenced_total` | passes and operator requests stopped because another placement write landed after they read the store |
@@ -1355,11 +1478,14 @@ Control plane:
 | `felix_shard_move_duration_seconds` | histogram: stage (or fence) to cut-over, as this instance observed it |
 | `felix_shard_move_fence_seconds` | histogram: fence to cut-over, as this instance observed it |
 | `felix_shard_reconcile_failures_total` | passes that could not read the catalog at all |
-| `felix_controlplane_auth_rejected_total{reason}` | credentials turned away by any authenticated endpoint, token exchange and token refresh included: `missing_token`, `malformed_token`, `invalid_token`, `tenant_mismatch`, `forbidden`, and `refresh_refused` for a refresh token that is unknown, expired, revoked, spent or has the wrong secret (replays and wrong secrets are also counted on their own, below). Each is also an `info` log line with the reason and the message the caller saw, never the token. A rising `invalid_token` or `forbidden` is a broker with a stale credential, or something that is not a broker |
+| `felix_controlplane_auth_rejected_total{reason}` | credentials turned away by any authenticated endpoint, token exchange and token refresh included: `missing_token`, `malformed_token`, `invalid_token`, `tenant_mismatch`, `forbidden`, `actor_refused` for an exchange's `actor_token` that does not verify or lacks `token.delegate`, or a gateway (on the exchange or on `/token/delegate`) whose token predates a revocation of it or that current RBAC no longer grants `token.delegate`, and `refresh_refused` for a refresh token that is unknown, expired, revoked, spent or has the wrong secret (replays and wrong secrets are also counted on their own, below). Each is also an `info` log line with the reason and the message the caller saw, never the token. A rising `invalid_token` or `forbidden` is a broker with a stale credential, or something that is not a broker |
+| `felix_refresh_token_grace_reuses_total` | spent refresh tokens presented again with the right secret within `FELIX_REFRESH_REUSE_GRACE_SECONDS`, answered with a working token instead of a revoked chain: retries of refreshes whose answer was lost, and concurrent refreshes. A steady rate is a client refreshing one chain from two places |
 | `felix_refresh_token_replays_total` | spent refresh tokens presented again. Each one revoked its whole rotation chain. Nobody legitimately does this, so any increase is a stolen token or a client that retried a refresh it already completed; alert on it |
 | `felix_refresh_token_bad_secret_total` | refresh tokens presented with a real token id and the wrong secret. The token is spent anyway, so guessing costs the guesser the token; any increase means someone holds half a credential |
 | `felix_refresh_tokens_revoked_total` | refresh tokens revoked by a replay |
+| `felix_principal_revocations_total` | principals revoked, by `refresh-tokens/revoke` or by removing an RBAC rule that reached them. A tenant-wide revocation counts once. See [auth.md](auth.md#revoking-a-principal) |
 | `felix_refresh_tokens_issued_total{via}` | refresh tokens issued: `exchange` or `refresh` |
+| `felix_delegated_tokens_issued_total` | tokens issued by `/token/delegate` |
 
 Broker side:
 
@@ -1387,6 +1513,9 @@ Broker:
 | `felix_broker_membership_live` | 1 while the cluster considers this broker placeable |
 | `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
+| `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
+| `felix_revocation_feed_last_success_seconds` | Unix time of this broker's last successful poll of the revocation feed, or of when it started following the feed until a poll succeeds. Alert on `time() - felix_revocation_feed_last_success_seconds`. While it is stale, revocations made meanwhile are not enforced here; see [auth.md](auth.md#while-a-broker-cannot-reach-the-feed) |
+| `felix_revocation_feed_poll_errors_total` | failed polls of the revocation feed. A run of failures is also a `warn` log line, repeated every minute while it lasts |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means
 the control plane answered and said no (a duplicate address, a superseded
@@ -1470,11 +1599,14 @@ Four reasons it is the wrong trade for Felix today:
   window between them is a place to hide the split-brain that the lease
   arithmetic exists to close.
 - **Safety already does not rest on detection speed.** Data-plane failover is
-  lease-driven: a lost leader is replaced in about a second, bounded by lease
-  expiry plus the safety margin, not by the 15s liveness timeout, which only
-  gates *placement eligibility*. SWIM's sub-second detection would accelerate
-  a decision Felix deliberately does not take quickly, on a signal that
-  fencing renders non-load-bearing.
+  lease-driven: the 15 s liveness timeout is the lease, so a crashed leader is
+  replaced only after the timeout plus the regrant margin (18.75 s after its
+  last heartbeat with the defaults) and the next placement pass. That wait is
+  what keeps two brokers from leading at once. SWIM's sub-second detection
+  would accelerate a decision Felix deliberately does not take quickly. Where
+  the lease is not needed for safety, a lease-free `Quorum` stream already
+  fails over on its followers' word in about 5 s
+  (`FELIX_LEADER_SUSPECT_AFTER_MS`), with no gossip.
 - **The scale that justifies SWIM is not this scale.** SWIM pays off in the
   hundreds-to-thousands of nodes, where heartbeat fan-in to a hub becomes the
   bottleneck. A Felix cluster is tens of brokers; the fan-in is one tiny

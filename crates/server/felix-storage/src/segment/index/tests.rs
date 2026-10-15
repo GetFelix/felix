@@ -158,9 +158,7 @@ fn writer_emits_entries_at_the_spacing_interval() {
 
     let mut position = SEGMENT_HEADER_LEN;
     for offset in 0..10u64 {
-        writer
-            .observe_record(offset, position, 40)
-            .expect("observe");
+        writer.observe_record(offset, position, 40);
         position += 40;
     }
     writer.sync().expect("sync");
@@ -182,9 +180,7 @@ fn writer_spacing_never_degenerates_to_every_record() {
         .expect("open")
         .with_spacing(0);
     for offset in 0..4u64 {
-        writer
-            .observe_record(offset, SEGMENT_HEADER_LEN + offset, 1)
-            .expect("observe");
+        writer.observe_record(offset, SEGMENT_HEADER_LEN + offset, 1);
     }
     // Spacing 1 still indexes every record, but the file stays bounded and
     // no divide-by-zero or unbounded growth is possible.

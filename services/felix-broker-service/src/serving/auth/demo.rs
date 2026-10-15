@@ -82,6 +82,41 @@ pub fn demo_auth_for_tenant(tenant_id: &str) -> Result<DemoAuth> {
     })
 }
 
+/// A token for `subject` in `tenant_id`, signed with the demo key and
+/// naming `actor` in its `act` claim, as the control plane's delegation does.
+#[cfg(test)]
+pub(crate) fn demo_token_with_actor(
+    tenant_id: &str,
+    subject: &str,
+    actor: Option<&str>,
+) -> Result<String> {
+    let signing_key = Ed25519SigningKey::from_bytes(&DEMO_PRIVATE_KEY);
+    let mut key_store: HashMap<String, TenantKeyMaterial> = HashMap::new();
+    key_store.insert(
+        tenant_id.to_string(),
+        TenantKeyMaterial {
+            kid: "demo-k1".to_string(),
+            alg: Algorithm::EdDSA,
+            private_key: DEMO_PRIVATE_KEY,
+            public_key: signing_key.verifying_key().to_bytes(),
+            jwks: build_jwks("demo-k1")?,
+        },
+    );
+    FelixTokenIssuer::new(
+        "felix-auth",
+        "felix-broker",
+        Duration::from_secs(900),
+        Arc::new(key_store),
+    )
+    .mint_with_actor(
+        &TenantId::new(tenant_id),
+        subject,
+        vec![format!("stream.subscribe:stream:{tenant_id}/*/*")],
+        actor,
+    )
+    .context("mint demo token")
+}
+
 fn build_jwks(kid: &str) -> Result<Jwks> {
     let signing_key = Ed25519SigningKey::from_bytes(&DEMO_PRIVATE_KEY);
     let public_key = signing_key.verifying_key().to_bytes();

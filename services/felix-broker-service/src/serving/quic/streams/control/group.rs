@@ -4,16 +4,21 @@ use std::time::Duration;
 
 use anyhow::Result;
 use felix_authz::Action;
-use felix_wire::Message;
+use felix_wire::{GroupRecord, Message};
 
 use super::authz::authorize_group;
 use super::{Ctx, Session, Step};
+use crate::serving::group_ops::Settle;
+use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
     Outgoing, PublishContext, handle_ack_enqueue_result, send_outgoing_critical,
 };
 use crate::shards::lifecycle::fence::FenceGuard;
 use crate::shards::routing::{Dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
+
+/// Longest `consumer` name a `group_poll` may carry.
+const MAX_CONSUMER_NAME_BYTES: usize = 128;
 
 // One parameter per field of the message it answers.
 #[allow(clippy::too_many_arguments)]
@@ -28,9 +33,13 @@ pub(super) async fn group_poll(
     max_records: u32,
     wait_ms: u64,
     request_id: u64,
+    consumer: Option<String>,
+    reclaim: bool,
+    visibility_ms: u64,
 ) -> Result<Step> {
     let Ctx {
         broker,
+        connection,
         config,
         publish_ctx,
         authz_ctx,
@@ -56,6 +65,40 @@ pub(super) async fn group_poll(
     {
         return Ok(Step::Close(false));
     }
+    // Each claim records its holder, so an unbounded name would cost its
+    // length per record handed out.
+    if let Some(name) = &consumer
+        && (name.is_empty() || name.len() > MAX_CONSUMER_NAME_BYTES)
+    {
+        let refusal = ClientError::invalid(format!(
+            "group consumer name must be 1 to {MAX_CONSUMER_NAME_BYTES} bytes, got {}",
+            name.len()
+        ));
+        handle_ack_enqueue_result(
+            send_outgoing_critical(
+                out_ack_tx,
+                out_ack_depth,
+                "felix_broker_out_ack_depth",
+                ack_throttle_tx,
+                Outgoing::Message(refusal.into_message()),
+            )
+            .await,
+            ack_timeout_state,
+            ack_throttle_tx,
+            cancel_tx,
+        )
+        .await?;
+        return Ok(Step::Next);
+    }
+    // Scoped to the principal, so naming another principal's member reaches
+    // nothing of theirs. Unauthenticated brokers share the empty principal.
+    let consumer = consumer.map(|name| {
+        let principal = session
+            .auth_ctx
+            .as_ref()
+            .map_or("", |auth| auth.subject.as_str());
+        felix_broker::GroupConsumer::new(principal, &name, connection.info().id.0, reclaim)
+    });
     let admitted = match group_admit(
         publish_ctx,
         session.peer_features,
@@ -93,10 +136,14 @@ pub(super) async fn group_poll(
         // Capped, so a client cannot hold a broker stream open for
         // as long as it likes.
         Duration::from_millis(wait_ms.min(config.group_max_wait_ms)),
+        consumer.as_ref(),
+        // Zero is the broker's own, as for a client that predates the field.
+        (visibility_ms > 0)
+            .then(|| Duration::from_millis(visibility_ms.min(config.group_max_visibility_ms))),
     )
     .await;
     let records = match polled {
-        Ok(records) => records,
+        Ok(records) => for_peer(records, session.peer_features),
         Err(reason) => {
             // Refused rather than answered with an empty batch: a
             // consumer told "nothing available" would poll for ever
@@ -138,21 +185,18 @@ pub(super) async fn group_poll(
     Ok(Step::Next)
 }
 
-// One parameter per field of the message it answers.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn group_ack(
+/// `group_ack`, `group_nack` and `group_dead_letter`.
+pub(super) async fn group_settle(
     cx: &Ctx<'_>,
     session: &mut Session,
-    tenant_id: String,
-    namespace: String,
-    stream: String,
-    shard: u32,
-    group: String,
+    target: GroupTarget,
     offset: u64,
+    action: Settle,
     request_id: u64,
 ) -> Result<Step> {
     let Ctx {
         broker,
+        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -162,6 +206,20 @@ pub(super) async fn group_ack(
         cancel_tx,
         ..
     } = *cx;
+    let respond = crate::serving::quic::handlers::cache_watch::WatchResponder {
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+    };
+    let GroupTarget {
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        group,
+    } = target;
     if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
@@ -187,19 +245,22 @@ pub(super) async fn group_ack(
     {
         Ok(admitted) => admitted,
         Err(answer) => {
-            crate::serving::quic::handlers::cache_watch::WatchResponder {
-                out_ack_tx,
-                out_ack_depth,
-                ack_throttle_tx,
-                ack_timeout_state,
-                cancel_tx,
-            }
-            .send(answer)
-            .await?;
+            respond.send(answer).await?;
             return Ok(Step::Next);
         }
     };
-    if let Err(reason) = crate::serving::group_ops::settle(
+    let (action, refused) = match action {
+        Settle::Ack => (Settle::Ack, "group ack not served"),
+        Settle::Nack { delay, attempts } => (
+            Settle::Nack {
+                delay: delay.min(Duration::from_millis(config.group_max_visibility_ms)),
+                attempts,
+            },
+            "group nack not served",
+        ),
+        Settle::DeadLetter => (Settle::DeadLetter, "group dead letter not served"),
+    };
+    let answer = crate::serving::group_ops::settle(
         broker,
         publish_ctx,
         admitted,
@@ -209,58 +270,28 @@ pub(super) async fn group_ack(
         shard,
         &group,
         offset,
-        true,
+        action,
     )
     .await
-    {
-        handle_ack_enqueue_result(
-            send_outgoing_critical(
-                out_ack_tx,
-                out_ack_depth,
-                "felix_broker_out_ack_depth",
-                ack_throttle_tx,
-                Outgoing::Message(reason.prefixed("group ack not served").into_message()),
-            )
-            .await,
-            ack_timeout_state,
-            ack_throttle_tx,
-            cancel_tx,
-        )
-        .await?;
-        return Ok(Step::Next);
-    }
-    handle_ack_enqueue_result(
-        send_outgoing_critical(
-            out_ack_tx,
-            out_ack_depth,
-            "felix_broker_out_ack_depth",
-            ack_throttle_tx,
-            Outgoing::Message(Message::CacheOk { request_id }),
-        )
-        .await,
-        ack_timeout_state,
-        ack_throttle_tx,
-        cancel_tx,
-    )
-    .await?;
+    .map(|()| Message::CacheOk { request_id })
+    .unwrap_or_else(|reason| reason.prefixed(refused).into_message());
+    respond.send(answer).await?;
     Ok(Step::Next)
 }
 
-// One parameter per field of the message it answers.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn group_nack(
+/// `group_extend`.
+pub(super) async fn group_extend(
     cx: &Ctx<'_>,
     session: &mut Session,
-    tenant_id: String,
-    namespace: String,
-    stream: String,
-    shard: u32,
-    group: String,
+    target: GroupTarget,
     offset: u64,
+    attempts: u32,
+    extend_ms: u64,
     request_id: u64,
 ) -> Result<Step> {
     let Ctx {
         broker,
+        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -270,6 +301,20 @@ pub(super) async fn group_nack(
         cancel_tx,
         ..
     } = *cx;
+    let respond = crate::serving::quic::handlers::cache_watch::WatchResponder {
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+    };
+    let GroupTarget {
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        group,
+    } = target;
     if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
@@ -283,6 +328,11 @@ pub(super) async fn group_nack(
     {
         return Ok(Step::Close(false));
     }
+    if extend_ms == 0 {
+        let refusal = ClientError::invalid("group extend_ms must be greater than zero");
+        respond.send(refusal.into_message()).await?;
+        return Ok(Step::Next);
+    }
     let admitted = match group_admit(
         publish_ctx,
         session.peer_features,
@@ -295,19 +345,12 @@ pub(super) async fn group_nack(
     {
         Ok(admitted) => admitted,
         Err(answer) => {
-            crate::serving::quic::handlers::cache_watch::WatchResponder {
-                out_ack_tx,
-                out_ack_depth,
-                ack_throttle_tx,
-                ack_timeout_state,
-                cancel_tx,
-            }
-            .send(answer)
-            .await?;
+            respond.send(answer).await?;
             return Ok(Step::Next);
         }
     };
-    if let Err(reason) = crate::serving::group_ops::settle(
+    let visible_ms = extend_ms.min(config.group_max_visibility_ms);
+    let answer = crate::serving::group_ops::extend(
         broker,
         publish_ctx,
         admitted,
@@ -317,40 +360,16 @@ pub(super) async fn group_nack(
         shard,
         &group,
         offset,
-        false,
+        attempts,
+        Duration::from_millis(visible_ms),
     )
     .await
-    {
-        handle_ack_enqueue_result(
-            send_outgoing_critical(
-                out_ack_tx,
-                out_ack_depth,
-                "felix_broker_out_ack_depth",
-                ack_throttle_tx,
-                Outgoing::Message(reason.prefixed("group nack not served").into_message()),
-            )
-            .await,
-            ack_timeout_state,
-            ack_throttle_tx,
-            cancel_tx,
-        )
-        .await?;
-        return Ok(Step::Next);
-    }
-    handle_ack_enqueue_result(
-        send_outgoing_critical(
-            out_ack_tx,
-            out_ack_depth,
-            "felix_broker_out_ack_depth",
-            ack_throttle_tx,
-            Outgoing::Message(Message::CacheOk { request_id }),
-        )
-        .await,
-        ack_timeout_state,
-        ack_throttle_tx,
-        cancel_tx,
-    )
-    .await?;
+    .map(|()| Message::GroupExtended {
+        visible_ms,
+        request_id,
+    })
+    .unwrap_or_else(|reason| reason.prefixed("group extend not served").into_message());
+    respond.send(answer).await?;
     Ok(Step::Next)
 }
 
@@ -685,6 +704,159 @@ pub(super) async fn group_redrive(
     Ok(Step::Next)
 }
 
+/// One group on one shard, as the admin requests name it.
+pub(super) struct GroupTarget {
+    pub(super) tenant_id: String,
+    pub(super) namespace: String,
+    pub(super) stream: String,
+    pub(super) shard: u32,
+    pub(super) group: String,
+}
+
+/// What an admin request asks for.
+pub(super) enum GroupAdmin {
+    Seek {
+        start: felix_wire::StartPosition,
+        if_new: bool,
+    },
+    Describe,
+    Delete,
+}
+
+/// `group_seek`, `group_describe` and `group_delete`.
+pub(super) async fn group_admin(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    target: GroupTarget,
+    request: GroupAdmin,
+    request_id: u64,
+) -> Result<Step> {
+    let Ctx {
+        broker,
+        publish_ctx,
+        authz_ctx,
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+        ..
+    } = *cx;
+    let respond = crate::serving::quic::handlers::cache_watch::WatchResponder {
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+    };
+    let GroupTarget {
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        group,
+    } = target;
+    // Reading where a group stands is a consumer's business, like listing
+    // its dead letters; moving or deleting it is an operator's.
+    let action = match request {
+        GroupAdmin::Describe => Action::GroupConsume,
+        GroupAdmin::Seek { .. } | GroupAdmin::Delete => Action::GroupManage,
+    };
+    if !authorize_group(
+        session.auth_ctx.as_ref(),
+        &tenant_id,
+        action,
+        &namespace,
+        &stream,
+        &group,
+        authz_ctx,
+    )
+    .await?
+    {
+        return Ok(Step::Close(false));
+    }
+    let admitted = match group_admit(
+        publish_ctx,
+        session.peer_features,
+        &tenant_id,
+        &namespace,
+        &stream,
+        shard,
+    )
+    .await
+    {
+        Ok(admitted) => admitted,
+        Err(answer) => {
+            respond.send(answer).await?;
+            return Ok(Step::Next);
+        }
+    };
+    let answer = match request {
+        GroupAdmin::Seek { start, if_new } => crate::serving::group_ops::seek(
+            broker,
+            publish_ctx,
+            admitted,
+            &tenant_id,
+            &namespace,
+            &stream,
+            shard,
+            &group,
+            start,
+            if_new,
+        )
+        .await
+        .map(|seek| Message::GroupPosition {
+            offset: seek.offset,
+            moved: seek.moved,
+            request_id,
+        })
+        .map_err(|reason| reason.prefixed("group seek not served")),
+        GroupAdmin::Describe => {
+            // A read does not hold the fence.
+            drop(admitted);
+            crate::serving::group_ops::describe(
+                broker,
+                publish_ctx,
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+                &group,
+            )
+            .await
+            .map(|(snapshot, tail)| Message::GroupInfo {
+                committed: snapshot.committed,
+                tail,
+                in_flight: snapshot.in_flight,
+                owed: snapshot.owed,
+                dead_letters: snapshot.dead_letters,
+                request_id,
+            })
+            .map_err(|reason| reason.prefixed("group describe not served"))
+        }
+        GroupAdmin::Delete => crate::serving::group_ops::delete(
+            broker,
+            publish_ctx,
+            admitted,
+            &tenant_id,
+            &namespace,
+            &stream,
+            shard,
+            &group,
+        )
+        .await
+        .map(|existed| Message::GroupDeleted {
+            existed,
+            request_id,
+        })
+        .map_err(|reason| reason.prefixed("group delete not served")),
+    };
+    respond
+        .send(answer.unwrap_or_else(|reason| reason.into_message()))
+        .await?;
+    Ok(Step::Next)
+}
+
 /// Hold a group operation while its shard moves, then say where it goes:
 /// here, with its place in the shard's write fence, or to the owner a
 /// redirect names.
@@ -724,3 +896,27 @@ async fn group_admit(
         _ => Ok(None),
     }
 }
+
+/// Clear what `peer_features` did not negotiate, so the field is left out of
+/// the frame for a client that cannot read it.
+fn for_peer(mut records: Vec<GroupRecord>, peer_features: u32) -> Vec<GroupRecord> {
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_SKIPPED) {
+        for record in &mut records {
+            record.skipped_before = 0;
+        }
+    }
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_PUBLISHER) {
+        for record in &mut records {
+            record.publisher = None;
+        }
+    }
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_RECORD_TIMESTAMPS) {
+        for record in &mut records {
+            record.timestamp_micros = None;
+        }
+    }
+    records
+}
+
+#[cfg(test)]
+mod tests;

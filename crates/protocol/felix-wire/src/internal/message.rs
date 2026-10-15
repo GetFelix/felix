@@ -2,8 +2,9 @@
 
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, Ping, Pong,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -59,16 +60,24 @@ pub enum InternalMessage {
     Fence(Fence),
     FenceOk(FenceOk),
     ReplicateFetch(ReplicateFetch),
+    Ping(Ping),
+    Pong(Pong),
 }
 
 /// The record kinds, whichever log they are for, send as
+/// `ReplicateTimedRecords` once they carry generations and times,
 /// `ReplicateLabelledRecords` once they carry generations, and otherwise as
 /// `ReplicateCommittedRecords` once they carry a commit offset.
 fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
-    if records.generations.is_some() {
+    if records.generations.is_some() && records.times.is_some() {
+        Kind::ReplicateTimedRecords
+    } else if records.generations.is_some() {
         Kind::ReplicateLabelledRecords
     } else if records.commit_offset.is_some() {
         Kind::ReplicateCommittedRecords
+    } else if own == Kind::ReplicateRecords && !records.publishers.is_empty() {
+        // Publishers ride the marks section, which the plain kind lacks.
+        Kind::ReplicateMarkedRecords
     } else {
         own
     }
@@ -93,8 +102,10 @@ impl InternalMessage {
             Self::ReplicateOk(_) => Kind::ReplicateOk,
             Self::ReplicateError(_) => Kind::ReplicateError,
             Self::ReplicateBootstrap(_) => Kind::ReplicateBootstrap,
+            Self::ForwardCacheOp(m) if m.condition.is_some() => Kind::ConditionalForwardCacheOp,
             Self::ForwardCacheOp(m) if m.credential.is_empty() => Kind::ForwardCacheOp,
             Self::ForwardCacheOp(_) => Kind::AuthorizedForwardCacheOp,
+            Self::ForwardCacheOk(m) if m.outcome.is_some() => Kind::ConditionalForwardCacheOk,
             Self::ForwardCacheOk(_) => Kind::ForwardCacheOk,
             Self::ForwardCacheError(_) => Kind::ForwardCacheError,
             Self::ReplicateCacheRecords(m) => records_kind(m, Kind::ReplicateCacheRecords),
@@ -111,8 +122,11 @@ impl InternalMessage {
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(m) if m.labelled && m.timed => Kind::ReplicateTimedFetch,
             Self::ReplicateFetch(m) if m.labelled => Kind::ReplicateLabelledFetch,
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
+            Self::Ping(_) => Kind::Ping,
+            Self::Pong(_) => Kind::Pong,
         }
     }
 
@@ -149,6 +163,8 @@ impl InternalMessage {
             Self::Fence(m) => m.correlation_id,
             Self::FenceOk(m) => m.correlation_id,
             Self::ReplicateFetch(m) => m.correlation_id,
+            Self::Ping(m) => m.correlation_id,
+            Self::Pong(m) => m.correlation_id,
         }
     }
 }

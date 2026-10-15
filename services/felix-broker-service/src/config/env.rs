@@ -45,6 +45,30 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(2000);
         let controlplane_token = controlplane_token_from_env()?;
+        // A value, not a path — which cannot work, so say why rather than accept
+        // it and lock the broker out at its first restart.
+        if std::env::var("FELIX_NODE_REFRESH_TOKEN")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            anyhow::bail!(
+                "FELIX_NODE_REFRESH_TOKEN is set, but a refresh token cannot be \
+                 passed by value: refreshing spends it and mints a replacement, so \
+                 the broker has to write that replacement back somewhere. Use \
+                 FELIX_NODE_REFRESH_TOKEN_FILE and make the path writable."
+            );
+        }
+        let node_refresh_token_file = std::env::var("FELIX_NODE_REFRESH_TOKEN_FILE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+
+        let node_token_file = std::env::var("FELIX_NODE_TOKEN_FILE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
         let membership = membership_from_env(&controlplane_url, &controlplane_token)?;
         let peer_transport = match &membership {
             Some(membership) => {
@@ -76,6 +100,10 @@ impl BrokerConfig {
             None => None,
         };
         let ack_on_commit = std::env::var("FELIX_ACK_ON_COMMIT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        let record_publishers = std::env::var("FELIX_RECORD_PUBLISHERS")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
@@ -128,6 +156,12 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_GROUP_MAX_WAIT_MS);
+        let group_max_visibility_ms = std::env::var("FELIX_GROUP_MAX_VISIBILITY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_GROUP_MAX_VISIBILITY_MS)
+            .max(group_visibility_timeout_ms);
         let group_max_in_flight = std::env::var("FELIX_GROUP_MAX_IN_FLIGHT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -158,16 +192,14 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_SHUTDOWN_HANDOFF_TIMEOUT_MS);
-        let cache_conn_recv_window = std::env::var("FELIX_CACHE_CONN_RECV_WINDOW")
+        let pub_conn_recv_window = std::env::var("FELIX_BROKER_PUB_CONN_RECV_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_CACHE_CONN_RECV_WINDOW);
-        let cache_stream_recv_window = std::env::var("FELIX_CACHE_STREAM_RECV_WINDOW")
+            .filter(|value| *value > 0);
+        let pub_stream_recv_window = std::env::var("FELIX_BROKER_PUB_STREAM_RECV_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_CACHE_STREAM_RECV_WINDOW);
+            .filter(|value| *value > 0);
         let cache_send_window = std::env::var("FELIX_CACHE_SEND_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -216,6 +248,11 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_PUB_CONN_INFLIGHT_BYTES);
+        let pub_conn_total_inflight_bytes =
+            std::env::var("FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0);
         let publish_window = std::env::var("FELIX_BROKER_PUBLISH_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
@@ -234,11 +271,29 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_CAPACITY);
+        let subscriber_queue_capacity_max = std::env::var("FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX);
         let max_subscriptions_per_conn = std::env::var("FELIX_MAX_SUBSCRIPTIONS_PER_CONN")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN);
+        let max_subscriptions_per_conn_total =
+            std::env::var("FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0);
+        let subscriber_queue_max_bytes = std::env::var("FELIX_SUB_QUEUE_MAX_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES);
+        let subscriber_queue_max_bytes_total = std::env::var("FELIX_SUB_QUEUE_MAX_BYTES_TOTAL")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
         let subscriber_queue_policy = std::env::var("FELIX_SUB_QUEUE_POLICY")
             .ok()
             .and_then(|value| parse_sub_queue_policy(&value))
@@ -330,12 +385,15 @@ impl BrokerConfig {
             metrics_bind,
             controlplane_url,
             controlplane_token,
+            node_refresh_token_file,
+            node_token_file,
             controlplane_sync_interval_ms,
             controlplane_ca: super::tls::controlplane_ca_from_env(),
             client_tls: super::ClientTlsConfig::from_env()?,
             membership,
             peer_transport,
             ack_on_commit,
+            record_publishers,
             max_frame_bytes,
             preauth_max_frame_bytes,
             preauth_max_streams_per_conn,
@@ -346,14 +404,15 @@ impl BrokerConfig {
             group_visibility_timeout_ms,
             group_max_attempts,
             group_max_wait_ms,
+            group_max_visibility_ms,
             group_max_in_flight,
             disable_timings,
             control_stream_drain_timeout_ms,
             shutdown_drain_timeout_ms,
             shutdown_predrain_ms,
             shutdown_handoff_timeout_ms,
-            cache_conn_recv_window,
-            cache_stream_recv_window,
+            pub_conn_recv_window,
+            pub_stream_recv_window,
             cache_send_window,
             event_batch_max_events,
             event_batch_max_bytes,
@@ -364,11 +423,16 @@ impl BrokerConfig {
             pub_queue_depth,
             pub_inflight_bytes,
             pub_conn_inflight_bytes,
+            pub_conn_total_inflight_bytes,
             publish_window,
             pub_ingress_wait,
             core_shards,
             subscriber_queue_capacity,
+            subscriber_queue_capacity_max,
             max_subscriptions_per_conn,
+            max_subscriptions_per_conn_total,
+            subscriber_queue_max_bytes,
+            subscriber_queue_max_bytes_total,
             subscriber_queue_policy,
             subscriber_writer_lanes,
             subscriber_lane_queue_depth,

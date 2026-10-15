@@ -18,7 +18,7 @@ the first thing here rather than the last.
 ## Build
 
 ```bash
-git clone https://github.com/gabloe/felix.git
+git clone https://github.com/GetFelix/felix.git
 cd felix
 cargo build --release
 ```
@@ -106,6 +106,14 @@ cargo run --release -p felix-cluster -- status       # membership and shard owne
 
 `up` first for `subscribe` and `publish`; the others start their own cluster.
 
+### With felixctl
+
+[`felixctl`](/getting-started/felixctl/) works against the same cluster
+and covers more: keyed and idempotent publishes, subscribing from an offset,
+cache reads and watches, shard owners, creating streams and caches, moving
+shards, draining brokers and benchmarks.
+That page shows how to turn the session file into a `felixctl` context.
+
 ## One process, no cluster
 
 If you would rather see the data path than the cluster, the demos embed a
@@ -159,10 +167,10 @@ at it, and giving each one a node credential:
 - **Locally**, `felix-cluster up` does all three, and the session file it writes
   names every address it chose.
 - **On Kubernetes**, the Helm chart at `deploy/helm/felix` wires them together.
-  See [Kubernetes](/felix/deployment/kubernetes/).
+  See [Kubernetes](/deployment/kubernetes/).
 - **With containers**, the images are published on every release and pull
-  without credentials. See [Installation](/felix/getting-started/installation/#docker-alternative)
-  and [Docker Compose](/felix/deployment/docker-compose/). The broker image
+  without credentials. See [Installation](/getting-started/installation/#docker-alternative)
+  and [Docker Compose](/deployment/docker-compose/). The broker image
   needs the same control-plane URL and credential as any other broker.
 
 ## Using the Rust client
@@ -173,7 +181,7 @@ broker's certificate. Where each comes from:
 - **The tenant and token.** A client token is a Felix token issued by the
   control plane's token exchange (`POST /v1/tenants/{tenant}/token/exchange`)
   for an identity-provider token; see
-  [Security](/felix/features/security/#token-exchange-oidc--felix). For a
+  [Security](/features/security/#token-exchange-oidc--felix). For a
   `felix-cluster up` cluster, the session file holds a ready-made one
   (`tenant_id`, `namespace`, `client_token`) along with each broker's client
   address.
@@ -189,7 +197,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use felix_client::{Client, ClientConfig, quic_client_config};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
@@ -246,8 +254,8 @@ if let Some(value) = client.cache_get("t1", "ns", "users", "user:123").await? {
 }
 ```
 
-The cache must exist in the control plane too, and `felix-cluster up` creates
-none. [Rust client](/felix/clients/rust/) covers the rest of the API.
+The cache must exist in the control plane too. `felix-cluster up` creates one
+named `users`. [Rust client](/clients/rust/) covers the rest of the API.
 
 ## Performance Testing
 
@@ -317,14 +325,14 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 event_batch_max_events: 64
 event_batch_max_delay_us: 250
-cache_conn_recv_window: 268435456
+pub_conn_recv_window: 16777216
 ```
 
 Point the broker at it with `FELIX_BROKER_CONFIG=/tmp/felix-config.yml`. It
 still needs `FELIX_CONTROLPLANE_URL` and a node credential. See [Running a
 broker yourself](#running-a-broker-yourself).
 
-See [Configuration Reference](/felix/reference/configuration/) for all options.
+See [Configuration Reference](/reference/configuration/) for all options.
 
 ## Using Task
 
@@ -362,11 +370,12 @@ See `Taskfile.yml` in the repository root for all available tasks.
 
 Now that you have Felix running:
 
-- **Explore the Architecture:** [System Design](/felix/architecture/system-design/)
-- **Learn the APIs:** [Broker API](/felix/api/broker-api/)
-- **Tune Performance:** [Performance Guide](/felix/features/performance/)
-- **Deploy Properly:** [Deployment Guides](/felix/deployment/local/)
-- **Contribute:** [Development Guide](/felix/development/contributing/)
+- **Explore the Architecture:** [System Design](/architecture/system-design/)
+- **Work from the terminal:** [felixctl](/getting-started/felixctl/)
+- **Learn the APIs:** [Broker API](/api/broker-api/)
+- **Tune Performance:** [Performance Guide](/features/performance/)
+- **Deploy Properly:** [Deployment Guides](/deployment/local/)
+- **Contribute:** [Development Guide](/development/contributing/)
 
 ## Troubleshooting
 
@@ -412,4 +421,4 @@ lsof -i :5000
 A broker that exits right after logging `broker started` is missing its
 control-plane configuration, not failing to bind. Read the line after it.
 
-See [Troubleshooting Guide](/felix/reference/troubleshooting/) for more help.
+See [Troubleshooting Guide](/reference/troubleshooting/) for more help.

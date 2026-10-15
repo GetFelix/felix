@@ -40,8 +40,8 @@ impl BrokerConfig {
         };
         if let Some(contents) = contents {
             // YAML overrides allow ops-friendly config files.
-            let override_cfg: BrokerConfigOverride =
-                serde_yaml_ng::from_str(&contents).with_context(|| "parse broker config yaml")?;
+            let override_cfg: BrokerConfigOverride = felix_common::yaml::from_str(&contents)
+                .with_context(|| "parse broker config yaml")?;
             config.apply(override_cfg)?;
         }
         // After the file, which may move `quic_bind`.
@@ -74,6 +74,9 @@ impl BrokerConfig {
         }
         if let Some(value) = override_cfg.ack_on_commit {
             config.ack_on_commit = value;
+        }
+        if let Some(value) = override_cfg.record_publishers {
+            config.record_publishers = value;
         }
         if let Some(value) = override_cfg.max_frame_bytes {
             config.max_frame_bytes = value;
@@ -119,15 +122,15 @@ impl BrokerConfig {
         if let Some(value) = override_cfg.shutdown_handoff_timeout_ms {
             config.shutdown_handoff_timeout_ms = value;
         }
-        if let Some(value) = override_cfg.cache_conn_recv_window
+        if let Some(value) = override_cfg.pub_conn_recv_window
             && value > 0
         {
-            config.cache_conn_recv_window = value;
+            config.pub_conn_recv_window = Some(value);
         }
-        if let Some(value) = override_cfg.cache_stream_recv_window
+        if let Some(value) = override_cfg.pub_stream_recv_window
             && value > 0
         {
-            config.cache_stream_recv_window = value;
+            config.pub_stream_recv_window = Some(value);
         }
         if let Some(value) = override_cfg.cache_send_window
             && value > 0
@@ -172,6 +175,11 @@ impl BrokerConfig {
         {
             config.pub_conn_inflight_bytes = value;
         }
+        if let Some(value) = override_cfg.pub_conn_total_inflight_bytes
+            && value > 0
+        {
+            config.pub_conn_total_inflight_bytes = Some(value);
+        }
         if let Some(value) = override_cfg.publish_window {
             config.publish_window = value;
         }
@@ -186,10 +194,26 @@ impl BrokerConfig {
         {
             config.subscriber_queue_capacity = value;
         }
+        if let Some(value) = override_cfg.subscriber_queue_capacity_max
+            && value > 0
+        {
+            config.subscriber_queue_capacity_max = value;
+        }
         if let Some(value) = override_cfg.max_subscriptions_per_conn
             && value > 0
         {
             config.max_subscriptions_per_conn = value;
+        }
+        if let Some(value) = override_cfg.max_subscriptions_per_conn_total
+            && value > 0
+        {
+            config.max_subscriptions_per_conn_total = Some(value);
+        }
+        if let Some(value) = override_cfg.subscriber_queue_max_bytes {
+            config.subscriber_queue_max_bytes = value;
+        }
+        if let Some(value) = override_cfg.subscriber_queue_max_bytes_total {
+            config.subscriber_queue_max_bytes_total = value;
         }
         if let Some(value) = override_cfg.subscriber_queue_policy
             && let Some(parsed) = parse_sub_queue_policy(&value)
@@ -261,6 +285,7 @@ pub(super) struct BrokerConfigOverride {
     controlplane_url: Option<String>,
     controlplane_sync_interval_ms: Option<u64>,
     ack_on_commit: Option<bool>,
+    record_publishers: Option<bool>,
     max_frame_bytes: Option<usize>,
     preauth_max_frame_bytes: Option<usize>,
     preauth_max_streams_per_conn: Option<usize>,
@@ -273,8 +298,8 @@ pub(super) struct BrokerConfigOverride {
     shutdown_drain_timeout_ms: Option<u64>,
     shutdown_predrain_ms: Option<u64>,
     shutdown_handoff_timeout_ms: Option<u64>,
-    cache_conn_recv_window: Option<u64>,
-    cache_stream_recv_window: Option<u64>,
+    pub_conn_recv_window: Option<u64>,
+    pub_stream_recv_window: Option<u64>,
     cache_send_window: Option<u64>,
     event_batch_max_events: Option<usize>,
     event_batch_max_bytes: Option<usize>,
@@ -284,11 +309,16 @@ pub(super) struct BrokerConfigOverride {
     pub_queue_depth: Option<usize>,
     pub_inflight_bytes: Option<usize>,
     pub_conn_inflight_bytes: Option<usize>,
+    pub_conn_total_inflight_bytes: Option<usize>,
     publish_window: Option<u32>,
     pub_ingress_wait: Option<bool>,
     core_shards: Option<usize>,
     subscriber_queue_capacity: Option<usize>,
+    subscriber_queue_capacity_max: Option<usize>,
     max_subscriptions_per_conn: Option<usize>,
+    max_subscriptions_per_conn_total: Option<usize>,
+    subscriber_queue_max_bytes: Option<usize>,
+    subscriber_queue_max_bytes_total: Option<usize>,
     subscriber_queue_policy: Option<String>,
     subscriber_writer_lanes: Option<usize>,
     subscriber_lane_queue_depth: Option<usize>,

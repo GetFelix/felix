@@ -57,7 +57,7 @@ async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> Broker {
                 .await
                 .expect("handle");
             broker
-                .publish_batch_with_outcome(&handle, &[Bytes::from_static(payload)])
+                .publish_batch_with_outcome(&handle, &[Bytes::from_static(payload)], None)
                 .await
                 .expect("publish");
         }

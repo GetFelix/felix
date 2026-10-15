@@ -1,6 +1,7 @@
 # Testing
 
-Tools for exercising Felix rather than running it. None is published.
+Tools for exercising Felix rather than running it. Only `felix-loadgen` is
+publishable, because `felixctl bench` links it.
 
 - [`felix-cluster`](felix-cluster) starts a real multi-node cluster on one
   machine: an in-process control plane and several `felix-broker` processes. It
@@ -11,4 +12,5 @@ Tools for exercising Felix rather than running it. None is published.
   scenario catalogue and the verifier that checks a client's results against
   it. Apache-2.0, so a third party can vendor it.
 - [`felix-loadgen`](felix-loadgen) drives a remote cluster for the
-  real-network performance suite.
+  real-network performance suite. Its scenarios are also a library, which
+  `felixctl bench` runs.

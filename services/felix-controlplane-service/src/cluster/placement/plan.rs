@@ -63,6 +63,15 @@ impl Plan {
         })
     }
 
+    /// New shards held back for more brokers to register, with how many
+    /// were live and when the hold ends.
+    pub fn settling(&self) -> impl Iterator<Item = (&ShardKey, u32, u64)> {
+        self.shards.iter().filter_map(|plan| match plan.decision {
+            Decision::Settling { live, until_millis } => Some((&plan.key, live, until_millis)),
+            _ => None,
+        })
+    }
+
     pub fn waiting(&self) -> impl Iterator<Item = (&ShardKey, &Blocked)> {
         self.shards.iter().filter_map(|plan| match &plan.decision {
             Decision::Waiting(reason) => Some((&plan.key, reason)),
@@ -256,12 +265,32 @@ pub(super) fn plan_abandoning(
         (keys.len() as u32).div_ceil(eligible.len() as u32).max(1)
     };
 
+    // Brokers started together register moments apart, and a shard placed
+    // before the last of them gets fewer copies than its factor, each added
+    // later by a restore. While the cluster is that young, a new shard waits
+    // for enough brokers instead.
+    let settling_until = match (policy.settle_millis, now) {
+        (Some(settle), Some(now)) => nodes
+            .iter()
+            .map(|node| node.status.registered_at_millis)
+            .min()
+            .map(|first| first.saturating_add(settle))
+            .filter(|until| now < *until),
+        _ => None,
+    };
+
     let regions = Arc::clone(&policy.regions);
     let region_of: HashMap<&str, &String> = nodes
         .iter()
         .map(|node| (node.node_id.as_str(), &node.spec.region))
         .collect();
-    let mut moves = Moves::counting(existing, policy);
+    let unpaced_max = policy.fence_max_lag_records;
+    let mut moves = Moves::counting(existing, policy, &|assignment| {
+        let replication_factor = placeable_of
+            .get(owner_of(&assignment.key).as_str())
+            .map_or(1, |p| p.replication_factor);
+        restore::unpaced(assignment, replication_factor, caught_up, unpaced_max)
+    });
 
     // Slots go to drains first, then to rebalancing, and last to shards whose
     // previous move timed out; see `start_order`. Planned in that order, and
@@ -278,10 +307,16 @@ pub(super) fn plan_abandoning(
             })
         })
     };
-    keys.sort_by(|a, b| {
-        class(a)
-            .cmp(&class(b))
-            .then_with(|| order(a).cmp(&order(b)))
+    // Among shards whose last move was given up, the one that last had a slot
+    // longest ago goes first, so two that keep failing take turns. Stable, so
+    // key order breaks the remaining ties.
+    keys.sort_by_cached_key(|key| {
+        let class = class(key);
+        let retried = current
+            .get(key)
+            .filter(|_| class >= RETRIED)
+            .and_then(|existing| existing.move_started_at_millis);
+        (class, retried)
     });
 
     let is_empty_cluster = eligible.is_empty();
@@ -312,11 +347,23 @@ pub(super) fn plan_abandoning(
         let is_live = |id: &str| is_live(id) && allowed(id);
         let is_draining = |id: &str| is_draining(id) || (!allowed(id) && is_serving(id));
 
+        // A majority of the set says the leader is gone, though the control
+        // plane still hears from it. Only where a promoted leader fences a
+        // majority before it serves and the old one serves nothing on its
+        // lease alone, so the old one is kept out without waiting for it.
+        let deposed = current.get(&key).is_some_and(|existing| {
+            fenced
+                && is_live(&existing.leader)
+                && deposed_by_followers(&key, existing, &is_live, caught_up)
+                && promote(&key, existing, &eligible, caught_up).is_some()
+        });
+
         // The leader is still serving: a move, not a reassignment, unless
         // there is no log to move.
         if let Some(existing) = current.get(&key)
             && is_serving(&existing.leader)
             && (durable || is_live(&existing.leader))
+            && !deposed
         {
             let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(
@@ -412,6 +459,21 @@ pub(super) fn plan_abandoning(
             continue;
         }
 
+        if let Some(until_millis) = settling_until
+            && !current.contains_key(&key)
+            && !eligible.is_empty()
+            && (eligible.len() as u32) < replication_factor
+        {
+            shards.push(ShardPlan {
+                key,
+                decision: Decision::Settling {
+                    live: eligible.len() as u32,
+                    until_millis,
+                },
+            });
+            continue;
+        }
+
         let decision = match choose(&key, &eligible, &load, cap, &leaders, leader_share) {
             Some(leader) => {
                 *load.entry(leader).or_default() += 1;
@@ -500,6 +562,37 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
     }
 }
 
+/// Whether enough of `existing`'s followers say they cannot reach its leader
+/// to replace it while it still heartbeats.
+///
+/// Enough is a majority of the whole set, the leader counted in the set but
+/// not among those saying so. A leader that a majority cannot reach cannot
+/// get a write acknowledged anyway, and those followers are a majority that
+/// can answer the next leader's fence. Not while a move or a replacement is
+/// under way: those change the set, and finish or end through their own
+/// steps.
+fn deposed_by_followers(
+    key: &ShardKey,
+    existing: &ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> bool {
+    if existing.successor.is_some()
+        || existing.joining.is_some()
+        || existing.state == ShardState::Draining
+    {
+        return false;
+    }
+    let saying = existing
+        .replicas
+        .iter()
+        .filter(|follower| is_live(follower))
+        .filter(|follower| caught_up.suspects(key, follower, &existing.leader))
+        .count();
+    // A majority of the set, the leader in it.
+    saying * 2 > existing.replicas.len() + 1
+}
+
 /// The followers of a fenced shard promoted to `promoted`: the previous set,
 /// the dead leader included, without a copy staged on top of it, and without
 /// a joining copy unless an acknowledgement may have needed it.
@@ -547,6 +640,10 @@ fn keep_replicas<'a>(
     kept.into_iter().map(str::to_string).collect()
 }
 
+/// Added to a shard's class in [`start_order`] while its last move's start
+/// is still recorded: one that was given up.
+const RETRIED: u8 = 3;
+
 /// Which shards get a move slot first. Only matters for shards that may
 /// start a move; one already moving holds its slot whatever its class.
 ///
@@ -579,7 +676,7 @@ fn start_order(
         2
     };
     if existing.move_started_at_millis.is_some() {
-        class + 3
+        class + RETRIED
     } else {
         class
     }
@@ -604,8 +701,9 @@ struct Placeable<'a> {
     durable: bool,
     /// The home region, for a stream that has one.
     region: Option<&'a String>,
-    /// A durable `Quorum` stream: a promoted leader fences a majority of the
-    /// replica set before it serves, so failover keeps the set.
+    /// A durable `Quorum` stream or a `Quorum` cache: a promoted leader
+    /// fences a majority of the replica set before it serves, so failover
+    /// keeps the set.
     fenced: bool,
 }
 
@@ -635,8 +733,9 @@ impl<'a> Placeable<'a> {
             // A cache is durable wherever the broker is; assume it is.
             durable: true,
             region: None,
-            // Never fenced: its successor is only as good as its report.
-            fenced: false,
+            // A promoted `Quorum` cache fences its cache and counter logs on a
+            // majority of the set before it serves, as a `Quorum` stream does.
+            fenced: matches!(cache.consistency, ConsistencyLevel::Quorum),
         }
     }
 

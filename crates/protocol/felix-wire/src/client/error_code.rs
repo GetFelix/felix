@@ -57,13 +57,22 @@ pub enum ErrorCode {
     /// shard failed over) after the record was handed out. Nothing was
     /// applied, and the record will be delivered again.
     StaleClaim,
+    /// The credential the stream authenticated with was revoked, or the
+    /// token presented was issued before its principal was revoked. Ends
+    /// streams that were already open. A token minted after the revocation
+    /// may still be accepted.
+    Revoked,
+    /// A keyed publish was routed by a width (`publish_width`) the stream no
+    /// longer has here, most likely because it was deleted and created again.
+    /// Nothing was written. Ask the stream's width again before retrying.
+    StaleWidth,
     /// A code this version does not know. Its retry class still applies.
     Unknown(String),
 }
 
 impl ErrorCode {
     /// Every code this version defines, for tables and checks.
-    pub const ALL: [ErrorCode; 15] = [
+    pub const ALL: [ErrorCode; 17] = [
         ErrorCode::Unauthenticated,
         ErrorCode::Forbidden,
         ErrorCode::NotFound,
@@ -79,6 +88,8 @@ impl ErrorCode {
         ErrorCode::Internal,
         ErrorCode::Storage,
         ErrorCode::StaleClaim,
+        ErrorCode::Revoked,
+        ErrorCode::StaleWidth,
     ];
 
     /// The wire name.
@@ -99,6 +110,8 @@ impl ErrorCode {
             ErrorCode::Internal => "internal",
             ErrorCode::Storage => "storage",
             ErrorCode::StaleClaim => "stale_claim",
+            ErrorCode::Revoked => "revoked",
+            ErrorCode::StaleWidth => "stale_width",
             ErrorCode::Unknown(name) => name,
         }
     }
@@ -131,6 +144,8 @@ impl ErrorCode {
             ErrorCode::Internal => 13,
             ErrorCode::Storage => 14,
             ErrorCode::StaleClaim => 15,
+            ErrorCode::Revoked => 16,
+            ErrorCode::StaleWidth => 17,
             ErrorCode::Unknown(_) => 0,
         }
     }
@@ -151,13 +166,15 @@ impl ErrorCode {
             ErrorCode::Unauthenticated
             | ErrorCode::Forbidden
             | ErrorCode::InvalidRequest
-            | ErrorCode::LimitExceeded => RetryClass::Fatal,
+            | ErrorCode::LimitExceeded
+            | ErrorCode::Revoked => RetryClass::Fatal,
             // A broker learns streams from the control plane, so a promoted
             // broker says "not found" for a stream it is about to serve.
             ErrorCode::NotFound | ErrorCode::Overloaded => RetryClass::RetryAfter,
-            ErrorCode::ShardUnavailable | ErrorCode::Draining | ErrorCode::StaleClaim => {
-                RetryClass::Retry
-            }
+            ErrorCode::ShardUnavailable
+            | ErrorCode::Draining
+            | ErrorCode::StaleClaim
+            | ErrorCode::StaleWidth => RetryClass::Retry,
             ErrorCode::NotLeader => RetryClass::Redirect,
             ErrorCode::QuorumTimeout
             | ErrorCode::LeadershipLost

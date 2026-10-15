@@ -12,15 +12,1606 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Security
+- A revoked gateway can no longer delegate with a `felix-controlplane` token
+  it got before the revocation (#1205). `/token/delegate` checked the
+  revocation cutoffs against the user's token only, and trusted
+  `token.delegate` from the caller's token, which stays valid for its TTL. Now
+  `/token/delegate` and `actor_token` on `/token/exchange` refuse, with
+  `actor_refused`, a gateway whose token predates a revocation of it or that
+  current RBAC no longer grants `token.delegate`. A refresh of a user chain
+  bound to a gateway is refused, and the chain ended, once RBAC no longer
+  grants the gateway `token.delegate`.
+- Revocation cutoffs are read on the Raft leader when minting or delegating,
+  so a member that has not applied a revocation yet no longer mints past it.
+- Deleting an IdP issuer, or narrowing or replacing what it trusts (an
+  audience dropped, the subject or groups claim changed, or `jwks_url` or
+  `discovery_url` changed), revokes the tenant's sessions, as removing a rule
+  that reached an IdP group does. Adding an audience revokes nobody.
+
+### Changed
+- **YAML parser: `serde_yaml_ng` replaced by `serde-saphyr` (#1211).** The broker,
+  control plane and `felix-client` read their config files with
+  `serde-saphyr` 1.3, a pure-Rust parser. `serde_yaml_ng` pulled in
+  `unsafe-libyaml`, which is unmaintained (RUSTSEC-2024-0449). `felix-client`
+  users get the new dependency in place of `serde_yaml_ng`. A config file that
+  loaded before loads to the same values, and the 1.1 spellings that were
+  refused still are: `yes`/`no`/`on`/`off` for a boolean, `0777`, a `<<` merge
+  key, a duplicate key, an unknown key. Some inputs behave differently:
+  - Now accepted: a quoted number or boolean (`max_frame_bytes: "1024"`,
+    `ack_on_commit: "true"`), `1_000`, a file that is only `~` or `null`, and
+    a tab before the first key.
+  - Now refused: an explicit tag that contradicts the setting's type
+    (`!!str 5` for a number, `!!int "5"` for a string); a tag the parser does
+    not know (`!custom x`, which used to read as `x`); and a bare or
+    null `tls.cert_path`/`key_path` in the control plane file (`cert_path:` or
+    `cert_path: ~`), which used to be read as the path `""` or `~`. A quoted
+    `cert_path: ''` is still accepted, as before. `!!binary` on a string
+    setting is still kept as written, not decoded.
+  - Parse errors name the key and give a line and column. A wrong-typed
+    value is no longer quoted, since it could be a token; an unknown enum
+    value still is.
+  - `--print-config` puts double quotes, not single quotes, around strings
+    that need them, and also quotes `yes` and `1_000`. The output still reads
+    back to the same values.
+- An auth change that takes rights back (an RBAC rule removed, an issuer
+  deleted or narrowed) and its revocation are one store write: one Raft entry
+  (metadata level 9) or one Postgres transaction. A failed request changed
+  nothing and is safe to retry. Below level 9 the Raft proposer writes them
+  separately, as before.
+- `/token/refresh` does its store reads before spending the refresh token, and
+  spends it in the same write that stores the replacement (Raft level 9), so a
+  failed refresh no longer turns the client's retry into a replay that ends
+  the chain.
+- `/token/delegate` reads the subject's and the caller's revocation cutoffs in
+  one leader read.
+- A spent refresh token presented again with the right secret within
+  `FELIX_REFRESH_REUSE_GRACE_SECONDS` (30 by default; 0 turns it off) of its
+  rotation, while its replacement is unused, gets a working token instead of
+  revoking the chain. This covers a refresh whose answer was lost and two
+  concurrent refreshes. Replay detection is blind for that window. Postgres
+  migration `0027_refresh_token_rotation`; under Raft, metadata level 9.
+- Deleting an IdP issuer the tenant does not have answers `404` and revokes
+  nobody.
+
+**Upgrade note.** A Raft control plane needs every member at metadata level 9
+before auth changes and their revocations, and refresh rotations, are single
+entries.
+
+### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+
+### Fixed
+- The power-loss test model no longer mixes up a file with an earlier one that
+  had the same inode number (#1221). A file created after another was deleted
+  could get its inode number, and the model then spliced the new file's bytes
+  onto the old one's, or gave a deleted name whose unlink was not flushed the
+  new file's bytes after a crash. Files are now told apart by birth time and
+  inode generation as well.
+- A broker following the control plane's catalog no longer misses tenant,
+  namespace, stream or cache changes (#1224). Three ways to lose one are
+  closed, on Postgres and in memory: a snapshot now reads its items and its
+  `next_seq` at one point, so a delete landing between the two reads is no
+  longer counted but unseen; Postgres hands out each change table's `seq` in
+  commit order, so a reader can no longer pass a change that is still
+  committing; and a full page of changes (`FELIX_CONTROLPLANE_CHANGES_LIMIT`,
+  1000 by default) answers with the seq after its last change instead of the
+  feed's tail, which skipped everything past the first page. The node and
+  shard-assignment feeds had the same page bug and are fixed too. Brokers now
+  follow each feed page by page within a sync pass, up to 64 pages. The wire
+  format is unchanged; an older broker against a fixed control plane catches
+  up one page per sync interval.
+- A broker no longer moves a change-feed cursor backwards (#1224). On Raft a
+  control-plane member answers from its own applied state, so a broker whose
+  request reached a lagging member could replay changes it had already applied
+  (a stale delete removing a stream created again since) or, for shard
+  assignments, re-snapshot onto the member's older view. The catalog sync and
+  the shard watch now ignore an answer from behind what they applied and ask
+  again. Once a feed has answered from behind for 60 s it is taken as reset,
+  and the broker takes a new snapshot of it.
+- A Postgres catalog write that waits more than 5 s for other writes to the
+  same change feed now gives up with a retryable 503 `unavailable`, and writes
+  queued in one control-plane instance no longer hold pooled connections while
+  they wait, so a long cascading delete cannot starve reads (#1224). The
+  commit-order guarantee holds once every control-plane instance runs this
+  release. A Postgres write that gives up waiting answers 503
+  `busy` (nothing written, safe to retry); `felixctl` retries only `busy`, up
+  to three times over about two seconds. A Raft 503 `unavailable` may have
+  committed, so it is not retried.
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
+- A `ClusterClient` recovers when every broker changes IP at once, as in a
+  rollout that restarts every pod (#1227). Reconnect dialled only the addresses
+  it already held, and discovery needs one of them to answer, so the client
+  failed every operation until it was rebuilt. When none of them answers, it
+  now resolves its seed names, and the names brokers last advertised, again
+  and dials the new addresses. The names are looked up at the same time, each
+  bounded to 2 s, without holding the lock every operation reads the client
+  through, and at most once a second for a client and the identities derived
+  from it, including when callers give up waiting. Discovery's names are
+  looked up the same way. A seed name that stops resolving keeps its last
+  addresses. felixctl and the
+  Python, TypeScript and C clients pass the configured `host:port` through as
+  a name instead of resolving it once at startup; a name that does not
+  resolve at connect is still refused as an invalid argument.
+- A `ClusterClient` reconnect replaces the client only if it is still the one
+  the failing operation used. Every operation that failed on the same broker
+  used to throw away whatever client was in place, including a fresh
+  replacement, and dial again with the endpoint list it had read before
+  waiting for the lock.
+- A history campaign client no longer keeps publishing over a connection to
+  brokers that restarted on new ports (#1223). A successful read or cache op,
+  which opens its own connection, reset the client's count of failures in a
+  row, so a client could spend most of the outage campaign waiting out 10 s
+  publish timeouts, and the campaign fell short of its floor of cache puts.
+  A failed op over the connection now reconnects at once when the address
+  book changed since the client connected, and only ops over the connection
+  count toward reconnecting.
+- The power-loss test model no longer loses a sync it saw (#1218). When two
+  flushes of one file overlapped, the one that read the file first could
+  record its read last, so the model held less than the device would. A flush
+  that read the active segment just before a background roll retired it could
+  undo the seal's sync of that segment, and the nightly sweep then built
+  crashes that cut a sealed segment short and failed when recovery refused
+  them. Each capture now takes a ticket before it reads, and an older read
+  never replaces a newer one. Storage itself is unchanged.
+- A client can no longer split one shard across two writers by routing with
+  the width of a stream that was deleted and created again at another width
+  (#1067). The client declares the width it routed each keyed batch by in a
+  new `publish_width` message, sent once per width per publish stream, and a
+  broker advertising the new extended feature `FEATURE_PUBLISH_WIDTH` refuses
+  a keyed batch routed by a width the stream does not have: acknowledged
+  publishes fail with the new error code `stale_width` (`retry`, 17), and the
+  client drops the width so the retry asks for the current one;
+  fire-and-forget publishes are dropped. Against such a broker the Rust
+  client also asks a stream's width again every 5 seconds while it publishes
+  to it, so a fire-and-forget or idle client catches up. A `ClusterClient`'s
+  widths and an idempotent producer's numbering follow the same rules, and
+  their batches are declared by the width that routed or numbered them. Under
+  a new width a producer starts the stream's sequences again under a fresh
+  producer id for that stream, except while a batch on it is in doubt: that
+  batch keeps the width and id it was numbered by until it settles, and a
+  re-send under a width that has since gone is refused with an error saying
+  so. The new `IdempotentProducer::abandon_in_doubt(tenant, namespace, stream)`
+  gives such batches up and numbers the stream afresh under a new id; an
+  abandoned batch may land twice. `IdempotentProducer::producer_id` keeps returning the first id; the new
+  `IdempotentProducer::producer_id_for(tenant, namespace, stream)` returns the
+  id a stream's batches go out under. Older brokers and
+  clients exchange the frames they always did.
+- `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and `FELIX_SUB_QUEUE_MAX_BYTES` above 4 GiB were
+  silently cut to 4 GiB. Larger budgets now hold as configured; above 4 GiB they count
+  in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit (#1200).
+- A consumer group could pass a record that was neither finished nor listed
+  as dead. The dead letter is written before the cursor passes the record,
+  but replication shipped cursors first, the two logs flush separately, and
+  a follower's dead letters can be replaced by a newer leader's, so a copy
+  could hold a cursor without the dead letter it relied on and serve it once
+  promoted. Each cursor now records the dead-letter log it needs (its end
+  and the generation that wrote it) and the group's origin; dead letters
+  are synced before a cursor that needs them; and before a broker serves a
+  shard's groups, a cursor that no longer stands is put back to the latest
+  one that does or to its origin, never removed. Dead letters ship before
+  cursors. A promoted stream leader fences both group logs in one round
+  beside its records, takes the dead-letter log of the replica furthest
+  ahead and merges that replica's cursors into its own, on replicas that
+  offer the new internal capability `GROUP_FENCE` (`1 << 8`). Group logs
+  carry generation labels like the records, and a `Quorum` stream's report
+  leaves out a follower short of the pair a majority holds. The cursor
+  value is a new 33-byte layout, written once the fleet finalizes the new
+  `group_cursor_dependencies` feature, and by a single broker from the
+  start; an older build cannot read it (#1202).
+
+### Documentation
+- Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
+  `FELIX_SUB_QUEUE_MAX_BYTES` or its largest batch, whichever is larger, and with the
+  per-subscriber bound at `0` only queue capacity times batch size limits it; the docs now
+  say so and recommend setting the total in production. They also say that under `block` one subscriber that stops reading holds
+  a shard's publishers with no timeout, and that the replay ring and cache watch queues are
+  bounded by entry count only (#1201).
+- The replication design no longer says a lagging non-successor follower is skipped while
+  a shard drains: it is not gated on, but the drained pass still ships to it and waits.
+
+## [0.6.0-preview.7] - 2026-10-11
+
+The seventh preview of 0.6.0. Subscriber memory on the broker is now bounded
+by bytes end to end: each subscriber queue, and the writer lanes behind it,
+stop at `FELIX_SUB_QUEUE_MAX_BYTES` (256 MiB by default) as well as at their
+entry count. The bound is sized so a subscriber keeping up at line rate with
+4 MiB batches never reaches it. Under the `block` policy, one full subscriber
+no longer holds up a batch's fanout to the others. Revoking a principal now
+ends the streams its tokens already opened, with the new `revoked` error code,
+and a subscription whose stream is deleted ends with `stream_deleted` for
+clients that offer it. `ClusterClient::with_identity` lets a gateway act as
+another user over shared cluster connections, and a delegating gateway can
+hold a connection-only broker token instead of a grant it never uses.
+Replication and placement fixes: group and dead-letter logs ride each
+follower's exchange, a new `Quorum` copy is seated only once the leader names
+it caught up, and a counters-only cache restore is no longer dropped as
+stalled.
+
+**Upgrade notes.**
+
+- A Raft control plane needs every member upgraded before revocation (metadata
+  level 7) and counter-offset reports (level 8) take effect. Until then the
+  revoke endpoint answers `409` after revoking the refresh tokens, and reports
+  are recorded without counter offsets.
+- A Postgres control plane runs migrations `0025` and `0026` on start.
+
+### Added
+- Subscriber queues on the broker are bounded by bytes as well as entries.
+  An entry is a whole published batch, so the count alone let one slow
+  subscriber hold up to 4096 batches of up to 16 MiB each. Each queue now also
+  stops at `FELIX_SUB_QUEUE_MAX_BYTES` of payload (256 MiB by default, `0` for
+  none), and the queue policy handles a full byte bound as it handles a full
+  count: `drop_new` drops the batch for that subscriber, with the same offset
+  gap and drop counters, and `block` waits. A batch larger than the bound
+  still goes into an empty queue. `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` (off by
+  default) caps the bytes held across all subscriber queues, at the cost of
+  isolation between subscribers. New metrics: `felix_sub_queue_bytes` and
+  `felix_sub_queue_byte_dropped_total{bound}`. `Broker` gains
+  `with_subscriber_queue_max_bytes` and `with_subscriber_queue_max_bytes_total`
+  (#1157, #1189).
+- A delegating gateway no longer needs a broker grant it never uses. A
+  principal holding `token.delegate:tenant:{tenant_id}` can exchange for a
+  connection-only broker token, its own subject with no permissions, by
+  sending `"requested": [], "permissions": []` to `/token/exchange` (or the
+  dev-token bootstrap endpoint). Its shared connections authenticate with it,
+  and every request still runs under the user's delegated token. Refresh
+  checks `token.delegate` again and ends the chain once it is removed. Anyone
+  else asking for no permissions still gets `403` `no permissions` (#1130).
+- `ClusterClient::with_identity(tenant_id, token_provider)` and
+  `ClusterClient::with_identity_token` act as another user over the cluster
+  client's connections (#1129), as `Client::with_identity` does for one
+  broker. The result is a `ClusterClient` with its own routing state that
+  follows moved shards, redirects and failovers, reaching each broker over the
+  parent's connection to it, so a gateway sharing connections keeps a user's
+  subscription across a shard move and still holds one connection per broker.
+  The Python `Client.with_identity` and `AsyncClient.with_identity` and the
+  TypeScript `Client.withIdentity` wrap it with a fixed token. No wire change.
+- Revoking a principal ends what its tokens already opened, on every broker,
+  within about one control-plane sync interval (#1132). Until now a revoked
+  principal kept its open subscriptions, cache watches, publish streams and
+  Kafka connections until its token expired. `POST
+  /v1/tenants/{t}/refresh-tokens/revoke` now also records a revocation, and so
+  does removing an RBAC policy or role assignment, for everyone the rule
+  reached (the whole tenant when it reached an IdP group). Brokers poll the new
+  `GET /v1/principal-revocations/changes` feed, refuse broker tokens issued at
+  or before a revocation, and end the streams they opened with the new
+  `revoked` error code (16, `fatal`): an `error` on a control stream, or as the
+  last frame on a subscription's or cache watch's event stream. A Kafka
+  connection is closed at its next request. Under the Raft store this is
+  metadata version 7, and until every member has it the revoke endpoint
+  answers `409` after revoking the refresh tokens. See
+  [docs/auth.md](docs/auth.md#revoking-a-principal).
+- `CacheWatch::refusal` in the Rust client says why the broker ended a watch
+  with an error, such as `revoked`. A subscription ended that way returns the
+  `BrokerError` from `next_event` instead of an "unexpected message" error
+  (#1132).
+- The subscriber byte bounds also cover the broker's writer lanes. A batch's
+  bytes stay held until the frame carrying it is written to the subscriber's
+  QUIC stream, so frames queued behind a flow-controlled subscription count
+  toward `FELIX_SUB_QUEUE_MAX_BYTES` instead of piling up in the lanes by entry
+  count alone (up to 64 frames of up to 16 MiB each per subscription). Under
+  `drop_new` the next batch is dropped at the subscriber queue as before;
+  publishers still never wait. `SubscriptionReceiver` gains `recv_held` and
+  `try_recv_held`, and `HeldBytes` is public (#1163).
+- A subscription ended because its stream was deleted now says so. The broker
+  sends `stream_deleted` as its last frame to a client that offered the new
+  extended feature bit `FEATURE_STREAM_DELETED`; any other client sees the
+  stream end as before. Removing a stream used to leave its subscribers
+  waiting on a feed nothing would end. The Rust client reports it as
+  `Subscription::stream_deleted` and `ClusterSubscription::stream_deleted`,
+  and a sharded subscription yields `ShardEvent::StreamDeleted` for each shard
+  instead of trying to resubscribe it (`StreamDeleted` in Python,
+  `streamDeleted` in TypeScript) (#1119).
+
+### Changed
+- A broker closing a shard it no longer has any role in tells a reader still
+  attached that the shard moved, naming its current leader, rather than just
+  ending the stream. `Broker::close_stream_shard` takes the handoff (#1119).
+
+### Fixed
+- Under the `block` queue policy, one subscriber at its byte or entry bound no
+  longer holds up the rest of a batch's fanout. The broker queues the batch
+  for every subscriber with room first and waits only on the full ones, so a
+  fast subscriber gets each batch as soon as it is durable. Each subscriber
+  still receives batches in publish order. The latency demo now passes
+  `FELIX_SUB_QUEUE_MAX_BYTES` and `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` to the
+  broker it builds (#1179).
+- The Node client returns `null`, as `index.d.ts` says, for an absent field on
+  a delivered item: `laggedResumeFrom`, `change` and `shardMoved` on a cache
+  watch item, `value` on a cache change, `offset` on an event, `event`,
+  `lostError` and `recovered` on a sharded item, and `resumeFrom`, `nodeId` and
+  `addr` on a shard move. They came back `undefined`, so a caller testing
+  `!== null` read every cache watch item as a lag notice (#1140).
+- The cluster test harness's `wait_for_replication` now waits until the
+  control plane holds a report naming a follower at the leader's current tail.
+  It used to return once the leader had shipped anything, which the harness's
+  start-up publish already guaranteed, so a test that killed the leader next
+  could fail over without the records it had just published (#1136).
+- Right after a broker died, a stream with consumer groups could hold each
+  replication pass on it for a request timeout or a dial: the group cursor and
+  dead-letter logs shipped to every follower at the end of the pass, and the
+  next publish waited behind that pass. They now ride each follower's
+  exchange, as a `Quorum` cache's counters do since #1137, and so do a
+  non-`Quorum` cache's counters (#1143).
+- A new copy of a `Quorum` cache is no longer seated before it holds the
+  cache's counter log. Seating checked only the cache log's offsets, so the
+  set could count toward its majority a copy that promotion would refuse.
+  A seat on a `Quorum` stream or cache now also waits until the leader's
+  report names the copy caught up (#1139).
+- A restore of a cache used only for counters is no longer dropped as stalled
+  while it copies a large counter log. The stall window
+  (`FELIX_SHARD_RESTORE_STALL_MS`) watched only the cache log's offset, which
+  stays at 0 for such a cache. Replica reports now carry each replica's
+  counter-log position (`replica_counter_offsets`, omitted for streams and by
+  older brokers), and placement counts a move there as progress. The control
+  plane stores it in the report (Postgres migration
+  `0026_replica_report_counter_offsets`, Raft metadata level 8; below level 8
+  reports are recorded without it) (#1164).
+
+## [0.6.0-preview.6] - 2026-10-10
+
+The sixth preview of 0.6.0, fixes to shard placement, broker readiness and the
+control plane. A cluster started all at once now places its shards on all its
+brokers: while its first broker registered less than
+`FELIX_PLACEMENT_SETTLE_MS` ago (10 s by default), a new shard waits for as
+many live brokers as its factor, and a restore that only tops up a nearly
+empty shard no longer takes the move slot. A shard placed while its leader was
+the only live broker now gets its other copies once more brokers join. A
+broker fetches every tenant's signing keys before it reports ready, so after a
+restart it no longer refuses forwarded writes, such as cache puts, while the
+control plane is down. A stopped control-plane Raft member no longer claims
+leadership, and a second SIGTERM sent just as the control plane starts
+draining is no longer missed. The docs now give failover timings per case with
+the default settings.
+
+### Fixed
+- A cluster started all at once now places its new shards on all the brokers
+  it starts with. Placement ran as soon as the first one or two brokers had
+  registered, so each shard got fewer copies than its replication factor, and
+  restores added the rest one shard at a time behind the single move slot:
+  eleven shards spent about 90 s short, and stopping a broker then could leave
+  some without a majority. While the cluster's first broker registered less
+  than `FELIX_PLACEMENT_SETTLE_MS` ago (10 s by default), a new shard waits for
+  as many live brokers as its factor, and a broker registering runs placement
+  at once. A restore that only tops up a short shard whose leader holds at
+  most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records no longer takes a move
+  slot, so a cluster whose shards did go short fills them together. The control
+  plane logs when shards go short of their factor and when they are full again
+  (#1151).
+- A second SIGTERM sent to the control plane just after its readiness flipped
+  to draining could be missed, so the pre-drain hold-off ran in full. The
+  listener for it is now installed before readiness changes.
+- A shard placed while its leader was the only live broker now gets the
+  copies its replication factor asks for once other brokers join. Placement
+  adds a copy only after the leader has reported at the shard's generation,
+  and a leader with no followers never reported, so the shard stayed at one
+  copy with `under_replicated: true` and nothing logged. A leader with no
+  followers now reports itself, after its promotion fence as before (#1153).
+- A broker fetches the JWKS of every tenant in its catalog when its first
+  catalog sync lands, before it reports ready. It used to fetch them only when
+  a client of that tenant connected, so a broker that restarted and then lost
+  the control plane refused every write a peer forwarded to it, such as a
+  cache put sent to a broker that does not own the key, until the control
+  plane came back (#1148).
+- A control-plane Raft member that had shut down still reported itself as
+  leader and answered leader-only requests (heartbeats, expiry) from its last
+  term's view. It now reports no leadership and refuses them with the same
+  `unavailable` answer an instance without a leader gives, so callers move on
+  to a live member (#1144).
+
+### Documentation
+- The failover docs said a lost leader is replaced in about a second, which is
+  the cluster harness's 1 s expiry window. They now give each case with the
+  defaults: a crashed Leader-stream or cache leader is marked down 18.75 s
+  after its last heartbeat and replaced on the next placement pass, a SIGTERM
+  hands leaderships off as planned moves, and a lease-free Quorum stream fails
+  over about 5 s after its leader goes quiet (#1152).
+
+## [0.6.0-preview.5] - 2026-10-10
+
+The fifth preview of 0.6.0, mostly fixes to shard restores and replication.
+A restore that could not finish no longer holds the only move slot for the
+30-minute move timeout: one whose new copy stops moving for
+`FELIX_SHARD_RESTORE_STALL_MS` (default two minutes) is dropped, and dropped
+shards take turns at the slot. A restore of an empty shard is now seated, so a
+cluster whose brokers registered a moment apart no longer stays on two of
+three brokers. A `Quorum` cache's writes no longer stall for seconds after one
+follower dies. Token delegation now takes only tokens minted for the
+delegating gateway: token exchange accepts an RFC 8693 `actor_token`, and
+gateways must send it on the exchanges whose tokens they delegate
+(`FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` keeps the old behaviour
+during an upgrade).
+
+### Changed
+- `POST /v1/tenants/{tenant_id}/token/exchange` takes an optional RFC 8693
+  `actor_token` (with `actor_token_type`): a gateway's own `felix-controlplane`
+  token holding `token.delegate` on the tenant. The broker token it mints, and
+  every token refreshed from it, carries `may_act: {"sub": "<gateway>"}`. The
+  refresh record keeps the actor as a Raft metadata version 6 field, so under
+  the Raft store an exchange with `actor_token` is a `409` until every member
+  is upgraded.
+- An exchange whose `actor_token` does not verify for the tenant or lacks
+  `token.delegate` answers `403` with code `actor_refused` instead of
+  `forbidden`, and counts as `reason="actor_refused"` in
+  `felix_controlplane_auth_rejected_total`. A gateway can now tell its own
+  token being refused from a user without permissions, which stays `forbidden`.
+- `POST /v1/tenants/{tenant_id}/token/delegate` refuses a subject token whose
+  `may_act` does not name the caller. A token with no `may_act` is refused too
+  unless `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. Gateways must send
+  `actor_token` on the exchanges whose tokens they delegate.
+
+### Fixed
+- A restore of a shard whose log was empty, such as a cache used only for
+  counters or one nothing had written to yet, was never seated: with nothing
+  to ship, the leader never reported the new copy's position. It held the
+  cluster's move slot until the 30-minute move timeout, so every other restore
+  waited behind it. A cluster whose brokers registered a moment apart placed
+  its shards on two of three brokers and stayed that way, and a `Quorum` cache
+  on such a pair refused every write once either broker died (#1133). A
+  follower of an empty log is now reported level at offset zero.
+- A `Quorum` cache's writes stalled for seconds after one of its followers
+  died, even with a majority alive: the leader shipped the counter log to
+  every follower and waited for all of them before shipping the cache log,
+  and again at the end of each pass. The counters now ride each follower's
+  exchange, so a follower that does not answer holds neither mark (#1137).
+- One restore that could not finish held the only move slot for the whole
+  30-minute move timeout, so every other shard short of its replication
+  factor stayed short (#1138). A restore whose new copy's reported position
+  has not moved for `FELIX_SHARD_RESTORE_STALL_MS` (`shard_restore_stall_ms`,
+  default two minutes, `0` waits for the move timeout) is now dropped as
+  `stalled` and its slot goes to the next shard. Shards whose restores were
+  dropped take turns at the slot, oldest attempt first, instead of the first in
+  key order retaking it every time.
+- Any holder of `token.delegate` could delegate any broker token of the tenant
+  it got hold of, a stolen one included, and present it over its own
+  certificate. Delegation now takes only tokens minted for the caller.
+
+### Documentation
+- The shared-connection docs said each user's limits kept one user at a limit
+  from blocking the others. The users share a connection ceiling of four
+  users' worth by default, so four at their limits can starve a fifth; the
+  docs now say so, and a test covers the per-user publish byte budget and the
+  ceiling over QUIC.
+- `docs/security/rbac.md` says what `token.delegate` lets its holder do.
+
+## [0.6.0-preview.4] - 2026-10-09
+
+The fourth preview of 0.6.0, mostly fixes. A `Quorum` stream with a tight
+retention bound could acknowledge a publish whose records no broker still
+held; retention now stops at the commit offset on every replica, and that hold
+survives a restart. A promoted cache or counter shard whose log fails to open
+no longer opens unfenced. A consumer group's cursor no longer moves backwards
+after a cancelled commit, and a late nack can no longer take a record from the
+next consumer. An offload outage no longer fails durable logs at open, and
+offload keys now start with the node id, so two brokers sharing a directory
+cannot overwrite each other's copies. A shared connection's subscription and
+publish limits now apply per identity, and a gateway can trade a user's token
+for a delegated one carrying `act`, which subject binding accepts. A durable
+`Quorum` stream with `majority_ack` and `lease_free_reads` finalized fails
+over on its followers' word in about 5 s instead of waiting out the lease. A
+subscriber that registers just as its shard moves is refused rather than left
+attached to nothing, and a publish forwarded to a shard its new owner is still
+fencing is held rather than refused. `felix-broker inspect segments` checks a
+data directory offline and reports what startup would do. The docs site covers
+felix-gateway and the projects built on Felix. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
+
+### Added
+- Failover on the followers' word (part of #1009). Each broker pings the
+  leaders of the shards it follows (new internal kinds `Ping` 38 and `Pong`
+  39, capability `PING`, `1 << 7`) and names in its heartbeat the ones that
+  have not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s; `0` turns it
+  off). Once the fleet has finalized `majority_ack` and `lease_free_reads`,
+  placement promotes a reported follower of a durable `Quorum` stream as soon
+  as a majority of its set names the leader, without waiting for the leader
+  to be marked down, so failover takes about 5 s instead of `L + margin`, and
+  a leader cut off from its followers while still heartbeating is replaced
+  too. The promotion keeps the set and fences as before. `Leader` streams and
+  caches still fail over on the lease, and with the control plane down a dead
+  leader is still not replaced. The heartbeat request gains an optional
+  `suspects` list; the store gains `record_suspicion`/`list_suspicions`
+  (Postgres migration `0024_node_suspicions`, Raft leader soft state).
+  `run_heartbeat` and `membership::spawn` take the broker's `Suspects`.
+  TLA+: `Suspicions` constant, `FelixShardSuspicion.cfg` (pass) and
+  `FelixShardSuspicionLease.cfg` (violates `AtMostOneServing`).
+- `felix-broker inspect segments <data-dir> [TENANT/NAMESPACE/NAME/SHARD]`
+  (part of #1077): a broker's data directory read from disk, by the broker
+  binary without starting a broker; it binds nothing and reads no
+  configuration. For every shard of every store (streams, `caches/`,
+  `groups/`, `dead-letters/`, `counters/`) it lists the segments, checks every
+  record's checksum and each index against one rebuilt from its segment, and
+  gives the verdict startup would reach: clean, repair (and what it would cut
+  or remove), or refuse (and the segment and byte). Strictly read-only: files
+  are opened for reading and nothing is created, cut, removed or re-indexed.
+  `--repair-checksum-tail`, `--index-spacing` and `--verify-all-on-open` match
+  the broker's settings, `--kind` narrows to one store, `--segments` lists
+  every shard's segments and `--json` prints one line per shard. It exits 0
+  when every shard would open as it is, 6 when startup would repair one, and 7
+  when it would refuse one or a record fails its checksum. Diagnosing a
+  cluster covers a broker that will not start, on Kubernetes, Docker and
+  Podman, and on a copy. Decoding records offline (`inspect records`) comes
+  next.
+- A cache shard's compaction pass now writes its key index to `keys.idx` in
+  the shard directory, and an open loads it and replays only the log past it
+  instead of the whole log (part of #1073). The snapshot is checked against
+  the log (CRC-32C, the offset range it covers, the checksum of the last
+  record it saw) and ignored for a full replay when anything disagrees; a log
+  truncation and `forget_index` remove it. Memory is unchanged: the index is
+  still held whole in memory. Format in `docs/storage-format.md`.
+
+### Changed
+- `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN` are now per identity (tenant and token
+  subject) on a connection, which for a plain client is the whole connection.
+  Two new settings cap a connection across its identities:
+  `FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES` (default four times the
+  per-identity budget, at most `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`) and
+  `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (default four times the
+  per-identity cap), also settable in the config file. Startup refuses either
+  below its per-identity value. A subscription past the connection's ceiling
+  is refused with `max subscriptions per connection exceeded across
+  identities`.
+
+- `Client::group_nack` and `ClusterClient::group_nack` in felix-client take the
+  `GroupRecord` instead of its offset, and send `record.attempts` to a broker
+  advertising `FEATURE_GROUP_CLAIM_CONTROL`. The Python `group_nack` takes the
+  `GroupRecord` and the Node `groupNack` takes the record (any object with
+  `offset` and `attempts`). felixctl's `group nack` sends the attempt count of
+  a `SHARD:OFFSET:ATTEMPTS` claim with or without `--delay-ms`.
+- felix-storage: `OffloadTarget::LocalDir` is now `LocalDir { dir, node }`,
+  and `LogConfig::validate` refuses a node id that is not one path segment
+  (letters, digits, `-`, `_`, `.`, not starting with `.`). In
+  felix-broker-service, `DurableStorageConfig::stream_log` takes the cluster
+  node id and returns a `Result` (#1109).
+- Startup recovery of a shard now plans every write before it makes any
+  (`plan_recovery` in felix-storage's `disk_log/recovery/plan.rs`), then makes
+  them in the same order as before. What recovery does is unchanged; the plan
+  is what `felix_storage::inspect` and `felix-broker inspect segments` report.
+  An I/O error while planning now stops before any repair is written, where it
+  used to stop partway. The `segment_recovery` fuzz target also checks that
+  plan and recovery agree.
+
+### Fixed
+- A publish forwarded to a moved shard's new owner while it was still fencing
+  the replicas was refused as `not_ready` instead of held, so a planned move or
+  shutdown handoff whose fence took longer than the forwarding broker's retries
+  could refuse a publish (#1120). The owner now holds it until the shard
+  serves, as it already did for a publish sent to it directly.
+- A subscription or cache watch that registered just after a lease lapse,
+  deposal or release ended its shard's readers is now refused instead of being
+  left attached to a shard the broker no longer serves, where it got nothing
+  and never heard the shard moved (#1117). The broker checks again after
+  registering, and a broker deposed at a shard's generation now refuses new
+  readers of it even while its lease holds.
+- A retention sweep after a restart could delete records above a `Quorum`
+  shard's commit offset, on an idle leader or a follower cut off from its
+  leader, until replication reached the shard again (#1109). The hold at the
+  commit offset is now kept in the shard's `replica` file (a flag in what was
+  a reserved field, which older builds ignore) and restored at open, before
+  retention starts. A stream or cache raised to `Quorum` is held as the
+  broker applies the change, not from the first replication pass. A leader
+  whose shard has no followers left lifts the hold, and so does a broker with
+  neither membership nor a peer transport, at open, since nothing there
+  advances a commit offset. In felix-storage and felix-broker,
+  `hold_retention_at_commit` is now async and returns whether the change was
+  written; felix-storage adds `LogConfig::retention_hold`,
+  `DiskLogProvider::set_stream_retention_hold` and
+  `StorageApi::set_retention_hold`.
+- A consumer-group commit cancelled after it handed its write to a task, but
+  before that task first ran, could still let the next commit read the old
+  cursor and move the group backwards (part of #1109; the case #1097 left
+  open). A log-backed cache put or delete that checks no condition now marks
+  its key in flight before it spawns the write, so a settled read waits for it.
+- A plain nack can no longer take a record from the consumer it was handed to
+  next (part of #1109). `group_nack` names the delivery by its attempt count,
+  as `group_nack_after` does, so a late one is refused with `stale_claim`.
+- Two brokers offloading to one directory could write the same object key,
+  because keys held only the shard directory name, which every replica of a
+  shard shares, so one broker could replace a copy the other had recorded
+  (#1109). Keys now start with the node id:
+  `<node id>/<shard directory>/<base>-<segment id>.segment`. The node id is
+  `FELIX_NODE_ID`, or, on a broker without one, an id generated once and kept
+  in `node-id` under `FELIX_DURABLE_STORAGE_DIR`.
+  Copies made by 0.6.0-preview.3 keep their old keys, which their manifest
+  entries still name.
+- One client acting for many users over a shared connection
+  (`Client::with_identity`) no longer lets one user starve the rest (part of
+  #1098). The broker's subscription cap (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`)
+  and publish byte budget (`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`) now
+  apply per tenant and token subject on a connection, so one user at either
+  limit is refused or slowed while the others keep their room. A user's share
+  is dropped once nothing of theirs is open or in flight on the connection. A
+  client that authenticates every stream as one identity sees the same limits,
+  refusals and frames as before.
+- Subject binding (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`) refused every user's
+  token a gateway presented over its own certificate (part of #1098). The
+  control plane has a new RFC 8693 token exchange,
+  `POST /v1/tenants/{tenant_id}/token/delegate`: a caller holding the new
+  `token.delegate:tenant:{tenant_id}` permission trades a user's broker token
+  for one with the same subject, no wider permissions and no later expiry, and
+  `act: {"sub": "<caller>"}`. The broker binds such a token to a certificate
+  issued to its actor, on QUIC and Kafka SASL alike; a token without `act`
+  binds only to its subject, as before. `token.delegate` is never put in a
+  broker token, so brokers that predate it are unaffected.
+- The docs said a delegated identity had its own publish budget when only the
+  client's was per identity; they now describe what the broker enforces.
+- An in-memory cache's versions restarted at 0 with the broker, so a
+  `cache_put_if` or `cache_delete_if` holding a version read before a restart
+  could apply against a value written after it (#1098). Versions now start
+  each run at the wall-clock time in microseconds. Log-backed caches were
+  not affected: their versions are log offsets.
+- A late nack can no longer take a record from the consumer it was handed to
+  next (#1098). `group_nack` takes an optional `attempts` that names the
+  delivery, as on `group_extend`, and is refused with `stale_claim` once that
+  claim has lapsed or the record has gone out again. Without it, a delayed
+  nack arriving after a redelivery parked the new delivery behind its delay.
+  Left out at `0`, so a nack that does not name a delivery is the frame it
+  always was; a broker that predates the field ignores it. felix-client's
+  `group_nack_after` now takes the `GroupRecord` rather than its offset (on
+  `Client` and `ClusterClient`), and sends `attempts` to a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL`. felixctl sends it for a `nack --delay-ms`
+  claim given as `SHARD:OFFSET:ATTEMPTS`. In felix-broker,
+  `GroupReader::nack_after` takes the attempt count to check and nacks at once
+  for a zero delay.
+- `felixctl` saved its config through a temporary file with a predictable
+  name, opened without `O_EXCL`, so a symlink planted at that path in a
+  shared directory was followed and the target overwritten (#1098). The
+  temporary file now gets a random name and is created exclusively,
+  owner-only on Unix, before it is renamed over the config.
+- A first segment whose header and records had all been zeroed was deleted at
+  startup as a segment whose creation never finished, and the log came back
+  empty (part of #1098). Creation syncs the header before anything appends,
+  so only a file no longer than a header can be an unfinished creation.
+  Recovery now refuses a longer one as corruption.
+- Retention could acknowledge a `Quorum` publish for records no broker held
+  (#1094). With both followers of a shard down, a tight retention bound
+  deleted records only the leader had, including ones publishes were still
+  waiting on. The followers came back below the leader's new base, were
+  rebuilt there, and their answers moved the quorum mark over the deleted
+  records. Retention and compaction's head trims now stop at the commit
+  offset on every replica of a `Quorum` shard, and the leader will not
+  bootstrap or rebuild a follower at a base above it. A stream whose
+  followers are down can therefore grow past its retention bound until a
+  majority is back. `DiskLog::hold_retention_at_commit` and
+  `StreamLog::hold_retention_at_commit` are new.
+- A consumer group's cursor can no longer move backwards after a cancelled
+  commit (#1097). The cancelled commit's write still finished on its own task,
+  but the next commit read the position from before it and wrote over it. A
+  commit now waits for a write to the cursor that is still applying. Finishing
+  a redrive had the same race against a cancelled return to dead and could
+  drop the dead letter; it waits the same way.
+- A missing or read-only offload directory no longer fails every durable
+  stream log at open. The directory is opened by the offload pass, which
+  reports a failure through `felix_storage_offload_failures_total`, the new
+  `felix_storage_offload_failing_logs` and `felix_storage_offload_held_bytes`
+  gauges and a backed-off log line, and retries on the next tick. Retention
+  still never deletes a segment without a recorded copy, so an outage grows
+  local disk; deletion resumes once the directory is back (#1096).
+- A promoted cache shard whose cache log or counter log failed to open (the
+  shard closing, too many open files, a failed recovery) opened on the lease
+  without a fence, even once caches acknowledge by their followers and the
+  lease no longer stops the old leader. It now stays closed and the next pass
+  tries again (#1095).
+
+### Documentation
+- The docs said an in-memory cache's versions never repeat across a restart.
+  They can if the clock steps back across the restart or the last run averaged
+  more than one write per microsecond; `docs/protocol.md` and the cache page
+  now say so (#1109). That cache runs only on a broker with no data directory,
+  so there is nowhere to record where its counter stopped.
+- The docs site documents felix-gateway, the WebSocket relay that lets
+  browsers use Felix, under Clients, and has a Built on Felix section for
+  felix-canvas, felix-webhook-relay and felix-arena that says which Felix
+  features each one uses and what it relies on Felix to guarantee.
+
+## [0.6.0-preview.3] - 2026-10-08
+
+The third preview of 0.6.0. felixctl now manages a cluster as well as using
+it: it creates, changes and deletes tenants, namespaces, streams and caches,
+works consumer groups, counters and RBAC rules, and shows a shard's or a
+subscriber's live state with `felixctl inspect`. It installs with Homebrew.
+Every change of a shard's leader is fenced, and replicas keep a ballot with
+each generation they accept. Sealed segments can be copied to an object store
+before retention deletes them, the first step toward tiered storage.
+`felix-capi` adds a C ABI over the Rust client, the base for Go and C# SDKs.
+Caches gain conditional writes and key-scoped grants, and a client can read a
+bounded range of a stream. Development works with Docker or Podman. Several
+move, failover and lease-timing bugs are fixed. The Rust API has breaking
+changes, listed under Changed. `pip` will not install it without `--pre`.
+
+### Added
+- A Homebrew formula for felixctl: `brew install getfelix/tap/felixctl` on
+  macOS and Linux, with completions and man pages (#1005). `release.yml`
+  writes it from each release's archive checksums and pushes it to
+  `<owner>/homebrew-tap` when `PUBLISH_HOMEBREW` is `true`, using the
+  `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap); dry runs keep it as an artifact and nightlies
+  skip it.
+- `felixctl inspect subs` and the `subscriptions_list` request (part of
+  #1077). A broker advertising `FEATURE_INSPECT` now also answers
+  `subscriptions_list` with `subscriptions_list_info`: one page of the
+  subscriptions it serves, each with its stream and shard, subscriber and
+  subscription ids, connection id, client address and principal, overflow
+  policy, queue depth and capacity in batches, records dropped, position and
+  the shard's tail. The filter narrows by tenant, namespace, stream, shard,
+  principal, or to subscriptions that have dropped records. A page is 100 by
+  default and at most 1000, and a cursor of shard and subscriber id continues
+  it. It needs `node.view:cluster:*`. The broker reads each shard's fanout
+  snapshot and never touches a queue. On the delivery path, a subscriber's
+  receiver now stores one past the offset of each batch it takes (a relaxed
+  store), and a drop adds to a per-subscriber count beside the existing
+  metric. felixctl asks every broker, or only `--node`, and prints one table
+  or one JSON line per broker, with `--principal`, `--dropping`, `--limit` and
+  `--cursor`. felix-broker adds `Broker::list_subscriptions`,
+  `SubscriberStats`, `SubscriberOwner` and `Subscription::set_owner`;
+  felix-client adds `Client::list_subscriptions` and `SubscriptionsPage`, and
+  its inspect calls now report a broker's `unsupported` answer as such.
+  Diagnosing a cluster covers a subscriber missing records and one falling
+  behind.
+- Stream logs can copy their sealed segments to an object store before
+  retention deletes them, the first part of tiered storage (#172). Off by
+  default; `FELIX_DURABLE_OFFLOAD_DIR` turns it on, and the only backend is a
+  directory, through the `object_store` crate's local filesystem backend. A
+  pass on the retention timer uploads each sealed segment, reads it back to
+  check size and CRC-32, and records it in a per-shard `offload.manifest`,
+  fsynced. Retention then deletes only recorded segments, so a crash at any
+  step leaves the local segment or a recorded copy. Recovery accepts a gap in
+  the local chain when the manifest covers it. Nothing reads the copies yet: a
+  read below the local head is still `Trimmed`. New metrics
+  `felix_storage_offload_segments_total`, `felix_storage_offload_bytes_total`
+  and `felix_storage_offload_failures_total`. Breaking for code that builds
+  felix-storage's `LogConfig` without `..Default::default()`: it gains
+  `offload`.
+- `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
+  A broker advertising `FEATURE_INSPECT`, the first bit of the extended
+  feature word (`server_features_hi` `0x1`), answers `shard_inspect` with
+  `shard_inspect_info`: its own view of one shard, with its phase and
+  generation, whether it serves and why not (`opening`, `fencing`, `failed`
+  with the open error, `draining`, `lease_lapsed`, `not_assigned_here`,
+  `behind_generation`), which replicas took a promoted leader's fence and
+  how many attempts it has made, its lease, tail and commit mark, and as
+  leader each follower's next offset, lag and state. It needs
+  `node.view:cluster:*` and may name any tenant. The answer is read from
+  snapshots the lifecycle and the replication driver publish (the new
+  `felix_replication::status::ShardStatusBoard`), so it takes neither's lock
+  and opens no log. felixctl asks the leader and every replica and prints a
+  table, or one JSON line per shard with `--json`; a broker that cannot be
+  reached is listed as unreachable. felix-client adds
+  `Client::inspect_shard` and `Client::supports_inspect`. A new docs page,
+  Diagnosing a cluster, goes through shard, replication, subscriber, auth
+  and startup problems by symptom.
+- `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
+  SDKs (part of #618). It builds `libfelix` as a shared and a static library
+  with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
+  and covers connect, publish and a polled subscribe (`felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe`,
+  `felix_subscription_next_event`). Handles are opaque with a free function
+  each, every call returns a status code whose classes match the other SDKs,
+  the message for a failure is per thread (`felix_last_error_message`), panics
+  never cross the boundary, and each client owns its Tokio runtime. A test
+  fails while the header is stale, and CI runs a C program against the
+  conformance fixture. Not published to crates.io.
+- Replicas keep a ballot with each accepted generation (part of #1009): the
+  leader they accepted it from, by the node id its `Hello` gave. At that
+  generation a replica refuses a fence, a batch, a bootstrap, a rebuild or a
+  tail fetch from any other node with `FencedEpoch`, and a broker will not
+  lead a generation it already accepted from another node. The ballot is a new
+  `ballot` file in the shard directory, fsynced before anything from that
+  leader is answered and read back on open; builds without ballots ignore it,
+  so rolling back still opens the shard. A new internal capability, `BALLOTS`
+  (`1 << 6`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
+  turns ballots off with it. Nothing changes while the control plane names
+  every leader, since it never names two at one generation; this is the
+  safety layer replica elections will need. The TLA+ model gains `Ballots`,
+  `Elections` and `OneLeaderPerGeneration`, with `FelixShardElect.cfg` and
+  two configurations that must fail: `FelixShardElectNoBallot.cfg` (two
+  leaders at one generation) and `FelixShardElectStaleSet.cfg` (a replica
+  standing on a set it has left). Breaking for callers of felix-storage's
+  `DiskLog::accept_generation` and felix-broker's
+  `StreamLog::accept_generation`, which take the leader, of felix-replication's
+  `ReplicaHandler` entry points, which take the sender, and for code matching
+  `GenerationCheck`, which gains `Promised` and is no longer `Copy`.
+- `felixctl group` and `felixctl counter` (#1005). `group create|describe|seek|rm`
+  manage a consumer group on every shard of a stream, or on `--shard`.
+  `group poll` claims records and prints each with its claim,
+  `SHARD:OFFSET:ATTEMPTS`, which `group ack`, `nack` (with `--delay-ms`),
+  `extend` and `dead-letters add` take. `group dead-letters ls|redrive|discard`
+  work the dead-letter list. `group rm`, `dead-letters discard` and a `seek`
+  that moves a cursor back over finished records ask `[y/N]` at a terminal and
+  need `--yes` elsewhere. `counter get|add` read and add to counters. All go
+  through `ClusterClient`. felix-client now re-exports `GroupRecord`, which
+  `group_extend` takes.
+- Nightly TLC simulation of long random walks over replica-set changes
+  (#934). `FelixShardWalkSpares`, `FelixShardWalkMoves` and
+  `FelixShardWalkHandoff` lift the bounds the exhaustive configurations
+  stop at (time to 40, six writes, six moves) and sample traces up to 300
+  steps; each has a negative twin that must find its violation within the
+  budget. `scripts/check_tla.sh --simulate` (`task tla:walk`) runs them,
+  and `tla-walk.yml` runs them nightly and uploads TLC's trace on a
+  failure. `Tick` in `FelixShard.tla` enumerates clocks over the drift
+  window only, with the same states.
+- felixctl writes to the control plane (part of #1005). `tenant`, `namespace`,
+  `stream` and `cache` gain `create` and `rm`; `stream set` changes
+  consistency, delivery, durability and retention, keeping a retention bound
+  not given, and `cache set` the display name; each prints what changed.
+  `node drain` and `node deregister`, `shard move NAME SHARD --to NODE` (with
+  `--dry-run` and `--cache`) and `shard move cancel`, and `placement pause`,
+  `resume` and `abandon` drive placement. Deletes, drains and deregistrations
+  ask on a terminal and need `--yes` anywhere else, stopping with status 2
+  without it; `placement abandon` never asks and always needs `--yes`.
+- `felixctl rbac policy ls|add|rm` and `felixctl rbac grouping ls|add|rm` list,
+  grant and revoke the current tenant's RBAC policies and role assignments
+  through the control plane (#1005). `policy add` checks the object against
+  the RBAC grammar first, including cache key and key-prefix objects and their
+  `cache.read`/`cache.write`-only rule, and stops with status 2 and the reason;
+  action names and delegation scope are left to the control plane, whose
+  refusal is printed with status 4. `rm` asks on a terminal and needs `--yes`
+  elsewhere, and exits 5 when the rule does not exist. `felix-cluster` adds
+  `Credentials::rbac_admin_token`.
+- A subscriber can choose its own broker-side queue capacity on a broker
+  advertising `FEATURE_SUBSCRIBE_QUEUE` (`0x4000_0000`) (#1019). `subscribe`
+  takes an optional `queue_capacity`, counted in published batches; the broker
+  clamps it to `1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (new, default 4096)
+  and echoes the grant as `queue_capacity` on `subscribed`. A subscribe
+  without it, and the answer, are byte-identical to before. The overflow policy
+  stays the stream's: a subscriber that could choose `Block` could stall every
+  publisher on its shard. felix-client adds
+  `ClientConfig::broker_sub_queue_capacity` and `Subscription::queue_capacity`;
+  felix-broker adds `Broker::subscribe_sized` and
+  `Broker::subscribe_from_sized`. `ClientConfig` gains a public field, so code
+  building it with a struct literal must set it.
+- One Rust `Client` can act for many users over the same connections (#969).
+  `Client::with_identity(tenant_id, token_provider)` and
+  `Client::with_identity_token` return a client that shares the parent's
+  connections and authenticates every stream it opens with the user's token,
+  so the broker checks each user's publish, subscribe, cache and group
+  requests against that user's grants alone. It opens one publish and one
+  cache stream and no connections. One user's token expiring or being revoked
+  stops only that user's streams. No wire change: the broker already
+  authenticates per stream. A refused publish or cache request still ends the
+  stream it came on, so a gateway should build a new identity after one.
+  `ClusterClient` does not offer it yet.
+- A write can be made only at the offset its writer expects, on a broker
+  advertising `FEATURE_PUBLISH_CONDITIONAL` (`0x1000_0000`) (#1017).
+  `publish_if` appends a batch only if it would start at `expected_offset`, the
+  shard's next; `commit` takes the same optional `expected_offset` as a
+  compare-and-set on the whole shard. The check is made where the log assigns
+  offsets, under the same lock, so of two writers at one offset exactly one is
+  written. A refusal is `publish_refused` with the new `offset_mismatch` reason
+  and the shard's tail; it writes nothing, consumes no offset and holds up no
+  later publish. The tail counts a new leader's generation-start record, so a
+  writer's expected offset goes stale on failover. Served by the shard's
+  leader only: a non-leader answers `not_leader`. An in-memory stream refuses
+  it. A commit without `expected_offset` is byte-identical to before.
+  `publish_if` is charged against the tenant's publish quota and the ingress
+  byte budgets like any acked publish, and refused over quota the same way.
+  felix-client adds `publish_if` and `commit_if` on `Client` and
+  `ClusterClient`, answering `ConditionalWrite`; felix-storage adds
+  `DiskLog::append_claimed_at`, and felix-broker `Broker::claim_publish_at`,
+  `publish_batch_at` and `commit_to_handle_at`. Per-key version
+  preconditions are #1051.
+- A second feature word for when the `u32` feature set runs out (#1055).
+  `FEATURE_EXTENDED` (`0x8000_0000`) in `client_features` or
+  `server_features` says the peer sends and reads `client_features_hi` /
+  `server_features_hi`. A peer sends the marker and the word only when it
+  knows a feature there, and a broker answers with its word only to a client
+  that set the marker, so every existing frame is unchanged. No feature uses
+  the word yet. felix-wire adds `FEATURE_EXTENDED`, `KNOWN_FEATURES_HI`,
+  `offer_features`, `answer_features` and `peer_features_hi`. Breaking for
+  code that builds `Message::Auth` or `Message::AuthOk`: both have a new
+  field.
+- A client can read a bounded range of a durable stream and stop (#1018). A
+  broker advertising `FEATURE_STREAM_READ` (`0x2000_0000`) answers
+  `stream_read` (shard, `from`, optional `end`, `max_records`, `max_bytes`)
+  with `stream_records`: one page of committed records and the `next_offset`
+  to continue from, which steps over generation-start records. No subscriber
+  is registered and the read never waits. A page stops at the committed mark
+  on a `Quorum` shard and, under `FsyncMode::OnCommit`, at the durable offset,
+  and is capped at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of
+  payload. A `from` below retention or past the tail gets
+  `subscribe_cursor_error`. Needs `stream.subscribe`; only the shard's leader
+  answers. In felix-client, `Client::read` and `ClusterClient::read` return a
+  `StreamPage`; felix-broker has `Broker::read_range`. Frames to clients that
+  do not send the request are unchanged. An `end` on `Subscribe` is tracked
+  in #1053.
+- A consumer can manage its own claims on a broker advertising
+  `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
+  claim standing while the work goes on, answered with `group_extended`; it
+  names the delivery by `offset` and `attempts`, so once the claim lapses and
+  the record goes out again it is refused with `stale_claim`. `delay_ms` on
+  `group_nack` makes the record owed only after a delay, holding a place under
+  the in-flight cap until then. `group_dead_letter` lists a record as a dead
+  letter and finishes it, written to the dead-letter log first as when the
+  broker gives up, so `group_redrive` works on it. `visibility_ms` on
+  `group_poll` sets how long that poll's claims stand. All need
+  `group.consume`. Durations are capped by the new
+  `FELIX_GROUP_MAX_VISIBILITY_MS` (12 hours, never below the visibility
+  timeout). Both new fields are left out at zero, so nacks and polls that do
+  not use them are byte-identical to before. A group's in-flight state is no
+  longer evicted while a claim stands. felix-client adds `group_poll_with` and
+  `GroupPollOptions`, `group_extend`, `group_nack_after`, `group_dead_letter`
+  and `supports_group_claim_control` on `Client` and `ClusterClient`, and
+  `extend`, `nack_after` and `dead_letter` on `ShardedGroup`. Breaking for
+  callers of felix-broker's `GroupReader::poll_below`, which takes the claims'
+  visibility, and for code matching felix-wire's `GroupPoll` and `GroupNack`,
+  which gain fields.
+- Streams and caches can be created together, all or none (#967).
+  `POST /v1/tenants/{t}/namespaces/{ns}/resources` takes up to 256 stream and
+  cache create bodies and writes the new ones in one Postgres transaction or
+  one Raft log entry. A missing permission, an invalid item, a name given
+  twice, or an item that already exists with a different configuration fails
+  the whole batch and creates nothing. An item that already exists as asked is
+  reported `unchanged`, so a batch can be sent again after a failure. Under
+  Raft this is metadata level 5; the endpoint answers `503` until every
+  control-plane member runs a release that has it.
+- Cache grants can name a key or a key prefix (#966). A fourth segment on a
+  cache object, `cache:{tenant}/{ns}/{cache}/{key}` or `.../{prefix}*`, limits
+  `cache.read` or `cache.write` to that key, or to keys starting with the
+  prefix (a plain string prefix: `user:1*` covers `user:10`). The broker checks
+  get, put, delete, conditional writes, counters and key watches against the
+  key, a prefix watch against its prefix, and a forwarded op again at the
+  owner. Grants without a key segment still cover the whole cache. The control
+  plane refuses a key with `*` anywhere but the end, a bare `*`, a wildcard
+  namespace or cache under a key, and any other action on a key object; token
+  exchange narrows a whole-cache grant to a key hint. No wire change. Mixed
+  versions fail closed: an older broker refuses requests a key grant would
+  allow. `felix-authz` adds `PermissionMatcher::allows_cache_keys` and
+  `CacheKeys`; the control plane's `ParsedObject::Cache` gains a `key` field.
+- Token exchange can narrow by action and resource pairs (#968).
+  `permissions: ["stream.subscribe:stream:t1/ns/a", "stream.publish:stream:t1/ns/b"]`
+  narrows each pair on its own against the grants with exactly that action,
+  where `requested` and `resources` apply every action to every resource. It
+  never widens what RBAC grants. It must be sent with `"requested": []` (a
+  `400` otherwise), so a control plane that predates the field refuses rather
+  than minting full rights, and the refresh record stores the same `[]` for
+  the same reason. Refresh keeps the pairs, and the dev-token route accepts
+  them too. Under the Raft store the field is metadata version 5: an exchange
+  with pairs is a `409` until every member reports it.
+- Delivered events and group records can carry the record's append time, and
+  a client can look up an offset by time (#975). A subscriber that offers
+  `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets a `u64` of microseconds before
+  each event on batches from a durable stream, the same live and on replay. A
+  broker advertising `FEATURE_RECORD_TIMESTAMPS` (`0x400_0000`) answers
+  `offset_for_time` with `offset_value`: the first offset on a shard appended
+  at or after a time, found by the binary search the Kafka listener's
+  `ListOffsets` now shares through `StreamLog::offset_for_time`. A client that
+  offers the feature gets `timestamp_micros` on group records. Nobody else's
+  frames change, and no storage format changes. In felix-client, set
+  `ClientConfig::timestamps` and read `Event::timestamp_micros`; call
+  `Client::offset_for_time` and subscribe at the answer. Times are the clock of
+  the broker that led when the record was written, and replicas keep them
+  (#1045). Breaking for callers of
+  felix-broker's `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
+  `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
+  field.
+- `felix-loadgen --scenario subscribe` (#980): subscribers only, at the live
+  tail, counting deliveries for `--duration-secs` while another generator
+  publishes. `--fanout` subscriptions are spread over `--concurrency` cluster
+  clients, every shard of a sharded stream is read, and the run reports
+  delivered events and `delivered_throughput_msg_s`, offset gaps (records
+  dropped) and, with `--stamp-send-time`, delivery latency. It reports no
+  publish throughput, since it publishes nothing. `ingest --stamp-send-time`
+  writes the wall-clock send time into each payload's first 8 bytes for it;
+  that latency compares two machines' clocks, so it needs them in sync.
+- Nightly builds. `nightly.yml` builds the newest green commit on main through
+  `release.yml` once a day, smoke-tests the images with a publish and
+  subscribe, and publishes to GitHub only: images as `nightly` and
+  `nightly-YYYYMMDD` on GHCR, and the binaries, wheels and Node addons on a
+  rolling `nightly` pre-release. `release.yml` can now be called as a reusable
+  workflow.
+- Delivered events can say who published them (#1010). A subscriber that
+  offers `FLAG_EVENT_BATCH_PUBLISHER` (`0x2000`) gets the principal (the
+  token's `sub`) on each event batch, and a group consumer that offers
+  `FEATURE_GROUP_PUBLISHER` (`0x80_0000`) gets it as `publisher` on each
+  record. Nobody else's frames change. In felix-client, set
+  `ClientConfig::publishers` and read `Event::publisher`. A durable stream
+  stores the principal with each record (storage format v6, a byte-length
+  trailer on the body), and replication ships it, so replay, promoted replicas
+  and consumer groups report the same value. Storing it is off until enabled:
+  finalize the `publisher_principal` fleet feature in a cluster, or set
+  `FELIX_RECORD_PUBLISHERS=true` on a single broker. Either is one-way for the
+  data directory, since an older broker cannot open a v6 segment.
+- A consumer group has a lifecycle. `group_seek` moves a group's cursor on one
+  shard to `earliest`, `latest` or an offset, backwards or forwards; with
+  `if_new` it creates the group there and leaves an existing one alone.
+  `group_describe` reports the committed cursor, the shard's committed tail, and
+  what the group has in flight and owed; `group_delete` removes the cursor and
+  dead letters. Advertised as `FEATURE_GROUP_ADMIN` (`0x100_0000`). Seek and
+  delete need `group.manage`, describe needs `group.consume`. A seek voids the
+  claims standing when it lands, so a late ack cannot move the new cursor or
+  finish a record the group now owes. felix-client adds `group_create`,
+  `group_seek`, `group_describe` and `group_delete` on `Client` and
+  `ClusterClient`, and `ClusterClient::group_*_stream` to make the call on
+  every shard of a stream. (#973)
+
+- Cache shards are fenced on promotion like stream shards. A promoted cache
+  leader fences a majority of the replica set on the cache log, then on the
+  counter log, takes the furthest ahead of each by (last generation, length),
+  and writes a generation-start record on each before it serves; with
+  `generation_start` finalized, the cache and counter marks count only past
+  their own log's record. A new internal capability, `CACHE_FENCE` (`1 << 4`),
+  says a peer answers `Fence` and `ReplicateFetch` for the counter log and
+  reads labelled cache and counter batches; a cache shard is fenced only when
+  every replica offers it, and opens on the lease otherwise. A failover of a
+  `Quorum` cache keeps its replica set, the dead leader in it, as a `Quorum`
+  stream's does. The new `fenced_caches` fleet feature, finalized with
+  `majority_ack` and `generation_start`, has replicated `Quorum` caches
+  acknowledge puts, deletes and counter adds on their followers' answers
+  without the report or the lease, and never open a promoted cache shard on
+  the lease. Upgrade the control plane before finalizing it. Model-checked in
+  `FelixShardFencedCache.cfg`. (#933)
+
+- Conditional cache writes. `cache_put_if` stores a value only if the key is
+  absent or at a given version, and `cache_delete_if` removes it only at a
+  given version; both answer `cache_condition_result` with whether the write
+  was made and the key's version. A get's `cache_value` carries the version
+  for a client that offered the bit. The condition check and the write are
+  atomic per key, including against a write to the key still waiting on its
+  fsync. Negotiated as `FEATURE_CACHE_CONDITIONAL` (`0x200_0000`); forwarded
+  between brokers as a new internal kind that an older owner refuses rather
+  than applying unconditionally. felix-client and `ClusterClient` gain
+  `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
+
+### Changed
+- Containers run under Docker or Podman. `scripts/container_engine.sh` picks
+  the engine (`CONTAINER_ENGINE`, else whichever of `docker` and `podman`
+  answers) for `task test`, `task coverage`, `task pg:*` and `task
+  tla:check`; the kcat tests read the same variable and run
+  `host.containers.internal` under Podman. Dockerfiles, the control plane's
+  compose file and the docs name images fully qualified
+  (`docker.io/library/...`). A new docs page, Docker or Podman, covers setup
+  and the differences. `felix_cluster::ports::docker_host` is now
+  `felix_cluster::container::host`.
+- `felix_replication::promotion::Outcome::Pending` is a struct variant
+  carrying `why` and `took`, the replicas that took the fence in that
+  attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`
+  takes the error. `felix_wire::KNOWN_FEATURES_HI` is now `FEATURE_INSPECT`,
+  so felix-client sets `FEATURE_EXTENDED` and sends `client_features_hi` in
+  its `auth`; an older broker ignores the field.
+- Every change of a shard's leader is fenced, not only a promotion (part of
+  #1009). A move's cut-over, a failover that names a move's destination, a
+  cancelled move's hand-back, and a generation of a shard its leader serves
+  that skips one (a promotion elsewhere that the broker only saw coalesced
+  away) now wait in `fencing` until a majority of the replica set takes the
+  new generation, and take the answer furthest ahead, before they serve. The
+  generation right after one the leader serves (a move's staging or a
+  follower replacement step) still opens at once: nobody led in between. Each was a generation the control
+  plane picked from its own view, opened at once; a leader it did not know
+  about, from a second planner or a later replica election, could keep
+  writing beside it. A write that reaches the broker while it fences is held,
+  within `FELIX_SHARD_MOVE_HOLD_MS`, rather than refused. The lease fallback
+  is unchanged: when a replica does not offer the fence the shard opens on
+  the lease as before. `felix_broker_promotions_opened_total{path}` now counts
+  every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
+  `FelixShardElectHandoff.cfg` (passes; an hour, so nightly),
+  `FelixShardElectHandoffLeaders.cfg` (the same without a write, per PR) and
+  `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
+  leader at an elected generation). The CI model check now runs on seven jobs, filled
+  by each configuration's measured time, to stay under the hour.
+- A publish acknowledged on commit is answered by the task that sees it
+  commit (#926). The commit task, or the executor for an in-memory write, puts
+  the ack straight onto the control stream's writer queue, instead of
+  completing a oneshot that a per-stream ack-waiter task awaited under a
+  per-publish timer. The ack timeout is now one deadline sweep per control
+  stream, and the writer sends every answer already queued in one write. An
+  ack is still never sent before the publish is durable under the stream's
+  fsync mode, a pipelining client still gets answers in request order, and a
+  failed, dropped or timed-out publish still gets its error. Not yet measured;
+  numbers come from an Azure `nats-latency.sh` run. The test-only subscriber
+  `event_writer` is removed; its byte-cap test moved onto the lane feeder.
+  `felix_broker_ack_waiter_queue_full_total` is gone with the waiter queue.
+- A plain `Client` spreads one stream's shards over its connections, as a
+  `ClusterClient` already did (#724). Its publishers learn a stream's width
+  from the broker on the first keyed publish to it (`StreamShards`, one round
+  trip, kept for the client's life) and put each shard on a publish stream of
+  its own, placed on the least-loaded connection, so one client's hot
+  multi-shard stream no longer rides one connection and one listener. Order is
+  kept per shard: every publish a client makes to one shard still goes through
+  one writer and one QUIC stream. Unkeyed publishes are shard 0, so a stream
+  published without keys, or a single-shard stream, stays on one stream for
+  total order. A stream whose width cannot be learned keeps all its keyed
+  publishes on shard 0's stream. The writer for a key always comes from the
+  width the client keeps, never from a caller's own shard, so plain
+  publishes, a `ClusterClient` and an idempotent producer through one client
+  share a key's writer even if they disagree about the width. The kept width
+  is dropped when a publish is refused with `not_found`, so a stream deleted
+  and created with another width is routed by its new width. A
+  `ClusterClient` now asks each broker it publishes keyed records through for
+  the stream's width once. Unkeyed publishes through a plain
+  `Client` move from a pooled stream to shard 0's own, which costs one stream
+  open per stream on the first publish. `FELIX_PUB_SHARD_STREAMS` now applies
+  to plain clients too; `0` restores the old routing.
+- A follower stores the leader's append time with each record it replicates,
+  instead of stamping it with its own clock, so after a failover the new
+  leader reports the same record times, and `offset_for_time` gives the same
+  answer, as before (#1045). Brokers offer the new `RECORD_TIMES` peer
+  capability (`1 << 5`); a leader sends a follower that offered it
+  `ReplicateTimedRecords` (internal kind 36), a labelled batch with one time
+  per record, and a promoted leader taking a replica's tail asks with
+  `ReplicateTimedFetch` (kind 37). An older follower is sent what it reads,
+  and a newer follower receiving from an older leader uses its own clock, as
+  before. Breaking for callers of felix-broker's
+  `StreamLog::begin_append_marked_at` and `replication::apply`, which take the
+  records' times (empty for this broker's clock), and of felix-wire's
+  `ReplicateRecords` and `ReplicateFetch`, which gain `times` and `timed`.
+- Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
+  `expected_offset` field, and `PublishRefusalReason` and
+  `felix_broker::BrokerError` have new variants, so struct literals and
+  exhaustive matches need updating.
+- A durable stream no longer reserves a whole 256 MiB segment of disk per
+  shard when it is created (#1016). The active segment reserves 1 MiB (or a
+  sixteenth of the segment size, if smaller) and doubles the reservation each
+  time its records pass half of it, up to the segment size. Each extension runs
+  on a blocking thread after the append that earned it and is best effort: a
+  failure is logged, counted in `felix_storage_segment_reserve_failed_total`,
+  and never fails an append. Reserving still leaves the file size alone, so
+  recovery is unchanged. `SegmentWriter::reopen` takes a reservation limit.
+- Creating a stream or cache that already exists with the same configuration
+  answers `200` with the existing one instead of `409` (#967). A different
+  configuration under the same name is still `409`. A stream's `routing` only
+  counts when the request names it. A caller that took `409` to mean "already
+  there" should accept `200` as well.
+- Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
+  `claim_batch_idempotent` and `commit_to_handle` take the publisher;
+  `ResumedSubscription::backlog` is a `Vec<RingRecord>`; `AppendRecord` and
+  `LogRecord` have a `publisher` field; `StreamLog`'s append methods and
+  `replication::apply` take per-record publishers; `ReplicateRecords` has
+  `publishers` and `batch_checksum` covers them.
+- A compacted cache log can no longer be read by an older broker. Compaction
+  now writes each copied value as a version 2 cache record, which carries the
+  value's original version; a broker from before this change refuses those
+  records as corruption, so a node cannot be downgraded once it has compacted
+  a cache. Records a client writes are unchanged. (#976)
+- `felix_storage::StorageApi` has three new required methods (`put_if`,
+  `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
+- Breaking, Rust API: `IdempotentProducer` owns its client and has no
+  lifetime parameter. `Client::idempotent_producer` and
+  `ClusterClient::idempotent_producer` take `self: &Arc<Self>`, so wrap the
+  client in an `Arc` first. The producer can now be stored or moved into a
+  task. (#977)
+
+### Fixed
+- A request the broker refuses and then closes the stream for, such as a
+  group describe without permission, reaches the client as the broker's coded
+  error (#1078). The broker's response writer could see the stream's
+  cancellation before the queued error and finish the stream without it, so the
+  client reported "the broker closed the group stream" instead of `forbidden`.
+- A broker notices its lease lapse within a sixteenth of the lease the control
+  plane hands out, not of the 10s placeholder it starts on (#1071). The refresh
+  that clears the cached admission flag, sets `felix_broker_lease_held` and
+  ends a deposed leader's readers was paced once, at startup, so under a 1s
+  lease it ran every 470ms instead of every 47ms. The commit-time lease check
+  was always exact; this was admission and the metric running late. It also
+  made the cluster harness's clock faults land late, since that refresh is
+  what reads the clock on an idle broker, which failed
+  `a_frozen_leader_is_refused_by_the_majority_its_successor_fenced`.
+- A write that reaches a shard's new owner while it is still opening the
+  shard, or just after its fence settles but before it publishes that it
+  serves, is held until it serves instead of being refused with
+  `shard_unavailable` / `not_ready` (#1085). Publishes, cache writes and
+  counter adds were all exposed; a move's cut-over showed it as a refused
+  counter add.
+- The Rust client's cache worker keeps its stream after the broker refuses a
+  cache or counter request (#1085). It used to stop on any error, so one
+  refusal turned the requests that later landed on that worker into
+  `cache worker closed`.
+- A `Quorum` publish no longer waits out an unreachable follower when the
+  other follower already holds the record but is still answering an earlier
+  replication pass (#1080). The pass waiting for a majority had shipped only to
+  the unreachable one, and the busy follower's answer reached the driver, not
+  that pass, so the mark stayed put until the peer request timed out (5 s by
+  default, past most publish timeouts). The answer now ends that wait and the
+  next pass counts it.
+- `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
+  so a promoted shard waiting for its fence was counted in no phase.
+- A broker accepts a token carrying `node.view` or `node.manage`. Neither was
+  an action it knew, so an operator token that also served the control plane
+  failed to authenticate there.
+- The docs no longer list `DropOld` as a working overflow policy (#1019). It is
+  accepted at the broker, writer-lane and client stages but behaves as
+  `DropNew` at each: the arriving batch is dropped, not the oldest. The status
+  table, configuration reference and client docs now say so.
+- JSON numbers survive a decode and re-encode exactly. serde_json's default
+  float parser could land a long literal one ulp off, so an extension body the
+  broker passed on carried a different number. Nightly fuzzing found it.
+- Dropping an `IdempotentProducer` publish no longer ends the producer. The
+  producer sends from a task of its own and a call waits on it, so a call
+  dropped by a timeout, a `select!` or a hung-up handler still runs to its
+  answer and the next batch goes out under the next sequence. A batch left in
+  doubt with nobody waiting is re-sent by the producer, under its sequence,
+  before the next batch on that shard. Dropping the producer lets what it was
+  handed finish; `IdempotentProducer::close` waits for it. (#977)
+- The history campaign could report a record delivered past the end of the
+  final log (`lost-delivery`). Since #977 a dropped producer still sends what
+  it was handed, so an append recorded as unknown could land after the final
+  read. A stopping client now closes its producer and finishes its publishes
+  before the final read is taken. `IdempotentProducer::close_within(timeout)`
+  is new: `close`, but the producer's task is stopped at the timeout, so
+  nothing it held is sent later. (#1075)
+- `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
+  terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
+  piped output is unchanged. `felixctl bench latency` payloads showed it.
+- A log-backed cache's expiry could delete a value a put had just refreshed,
+  when the put was waiting on its fsync as the expiry was written. The expiry
+  now waits for a write to the key in flight before it checks. (#976)
+- `felix-cluster up` held for more than an hour lost every control-plane call,
+  teardown included, because its tokens and the brokers' node tokens were
+  minted once with a one-hour life. The harness now mints tokens on use,
+  rewrites each broker's node token file and the session file every half hour.
+  `Cluster`'s `client_token`, `admin_token`, `operator_token`,
+  `subscribe_only_token` and `group_operator_token` fields are now methods, and
+  `ControlPlane`'s token methods moved to `felix_cluster::Credentials`.
+- A cache follower that dropped a divergent suffix of its cache log, or of its
+  counter log, kept the in-memory index or counter sums built from the dropped
+  records, so after a promotion a key could read the value of whatever record
+  replaced its offset. Both are now rebuilt from the log as it is. (#933)
+
+### Documentation
+- `Leader` mode's single writer is stated as resting on the lease: which
+  faults let a deposed `Leader` leader acknowledge a write its successor never
+  sees (a pause past the lease margins, a broker clock running slow against
+  the control plane's), and that a clock step and `Quorum` with
+  `majority_ack` are not exposed. A cluster test pins that a `Leader` stream
+  refuses writes on a lapsed lease after `majority_ack` is finalized. (#1008)
+- A publish acknowledged on enqueue (a `Leader` stream with `ack_on_commit`
+  off, the default) is not readable until it is written, so a group poll,
+  history read or replay sent right after the ack can miss it. Stated in the
+  semantics and queues pages and on `Client::group_poll`. The end-to-end group
+  tests in `cache_durability` now publish with commit acks; they assumed
+  otherwise and failed intermittently. (#1025)
+- Corrected four replication claims. Counter adds on a `Quorum` cache wait for
+  a majority like puts and deletes; the log-backed cache stays Partial for its
+  in-memory key index (#1073). A `Quorum` publish with no reachable majority
+  is not refused up front: it waits, then fails with `quorum_timeout`. Under
+  `majority_ack` a move's destination cut off from its followers at the
+  cut-over waits for a majority instead of opening on the lease. A promoted
+  leader's fence retries back off from 200 ms to 2 s. (#1074)
+
+## [0.6.0-preview.2] - 2026-10-04
+
+The second preview of 0.6.0, and the first release from the GetFelix
+organization: images are under `ghcr.io/getfelix`, and the crates, npm and
+Python packages point at `GetFelix/felix`. Subscribers learn when they fall
+behind and where to resume, consumer groups report skipped offsets, a slow
+disk or a stalled shard no longer holds up the rest of a broker, and several
+failover and many-subscription delivery bugs are fixed. `pip` will not install
+it without `--pre`.
+
+### Added
+- A durable-stream subscription that falls behind is told so, even when
+  nothing is published after the drop. A broker ends it with
+  `subscription_lagged` (`FEATURE_SUBSCRIPTION_LAGGED`, `0x20_0000`) naming the
+  first offset its queue for that subscriber dropped, after delivering what was
+  queued before it. felix-client does the same for drops in its own queue, and
+  `Subscription::next_event` returns a `SubscriptionLagged { resume_from }`
+  error. `ClusterSubscription` resubscribes after its last event, which replays
+  the dropped records from the log, and `ShardedSubscription` reports the shard
+  lost and recovers it the same way, also after its last event. Neither resumes
+  at `resume_from`: the broker's connection writer can drop a frame for a slow
+  subscription without reporting it, below that offset. Drops a resume already
+  filled from disk do not count. (#965)
+
+- A client can ask for commit acks, and the offsets they carry, on its own
+  connections: `ClientConfig::ack_on_commit` offers `FEATURE_ACK_ON_COMMIT`
+  (`0x8_0000`), and a broker that honours it answers that connection's
+  acknowledged publishes after the write, as `FELIX_ACK_ON_COMMIT=true` does
+  for every client. `Client::supports_ack_on_commit` says whether a broker
+  does. Other clients on the broker are unchanged. (#956)
+- A consumer-group record says how many offsets directly below it were
+  settled without delivery (generation-start records, records retention
+  removed first): `skipped_before` on `GroupRecord`, in the wire's
+  `group_records`, and in the Python and Node clients (`skippedBefore`).
+  Negotiated as `FEATURE_GROUP_SKIPPED` (`0x40_0000`), which the Felix
+  clients offer: a client that did not offer it, or a record with nothing
+  skipped, gets the frame without the field. (#963)
+  Left out when zero, so older clients get the same frames. (#963)
+- A consumer-group member can name itself and take back what a previous
+  process under its name held: `group_poll` accepts `consumer` and `reclaim`
+  (`FEATURE_GROUP_CONSUMER`, `0x10_0000`), `Client::group_poll_as` and
+  `ClusterClient::group_poll_as` take a `GroupMember`, and the Python and Node
+  `group_poll` take `consumer` and `reclaim`. A restarted member no longer
+  waits out the visibility timeout for its records. A member is the name and
+  the connection's principal, and a name is 1 to 128 bytes. A connection's
+  first poll with `reclaim` reserves the claims the member holds from older
+  connections; they go back to it before anything else, over as many polls as
+  it takes, until taken back or lapsed. Later reclaims on that connection, and
+  reclaims from older connections, do nothing. (#962)
+- Development tokens without an identity provider. With
+  `FELIX_BOOTSTRAP_DEV_TOKENS=true` the bootstrap listener serves
+  `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix
+  token (and refresh token) for any principal of an initialized tenant with
+  what RBAC grants it. Startup refuses it unless bootstrap is on a loopback
+  bind. (#954)
+- `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
+  so an application no longer needs `felix-wire` as a direct dependency to
+  call it. (#937)
+- `quic_client_config_with_identity` presents a client certificate, and
+  `ClientIdentity::from_pem_files` and `root_store_from_pem_file` read one and
+  a CA from PEM files, so mutual TLS no longer means building the rustls
+  config by hand. felixctl uses them and drops its `rustls` and `felix-wire`
+  dependencies. (#937)
+- `ClusterClient::subscribe_shard` subscribes to one chosen shard and follows
+  it to its owner and through moves, as `subscribe_from` does for shard 0.
+  `felixctl sub --shard` uses it, so it now follows a moved shard too. (#937)
+- `ClusterClient::finish` flushes unacknowledged publishes on every broker the
+  client holds before the process exits. `felixctl pub --ack none` now
+  publishes through the cluster client and calls it. (#937)
+- `IdempotentProducer::publish_keyed` and `publish_batch_keyed` publish
+  idempotently with a routing key. The producer keeps a sequence per shard,
+  which is what the leader checks, rather than one per stream. `felixctl pub`
+  accepts `--idempotent` with `--key`. (#937)
+- Brokers answer `shard_owners` (`FEATURE_SHARD_OWNERS`, `0x4_0000`): which
+  broker owns each shard of a stream or cache, with its client address and
+  generation.
+  `Client::shard_owners` asks it. `felixctl topology` takes owners from the
+  broker and needs a control-plane URL only for replicas and state. (#937)
+- `ClusterClient` has `cache_put`, `cache_get`, `cache_delete`, `counter_add`
+  and `counter_get`. Each goes to the key's shard owner when the client knows
+  it (asked once per cache with `shard_owners`), else through the broker in
+  use, which forwards; a failed read is asked again once, a write is not sent
+  twice. `felixctl cache` uses them. (#937)
+- The storage fault file takes `write_delay_ms=<n>`, which delays every
+  segment write the way a throttled `write()` does. (#909)
+
+### Changed
+- **Breaking:** a felix-client subscription to a durable stream no longer
+  carries on past a dropped record. Under `DropNew` or `DropOld` it ends with
+  `SubscriptionLagged` at the first drop instead, in this client's queue or
+  the broker's. In-memory streams, which have no offset to resume from, keep
+  dropping as before. (#965)
+
+- Connection ids (`felix_transport::ConnectionId`) count up from 1 per process
+  instead of reusing quinn's `stable_id`, which is an address and can repeat
+  once a connection is freed.
+- The control plane accepts RS256 ID tokens from an upstream identity
+  provider by default, next to ES256. Most providers sign with RS256, so a
+  first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer
+  fails with an unsupported algorithm. `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS`
+  still narrows it. (#984)
+- A subscribe with no start position, from a client that negotiated event
+  offsets, is now `latest`: on a durable stream its `subscribed` carries
+  `start_offset` and `live_offset`, so the client knows where live delivery
+  began. Before, only an explicit `latest` reported them. Clients without
+  offsets get the frame they always did. Like an explicit `latest`, such a
+  subscribe can now be refused with a retryable `not_ready` or `fenced` on a
+  `Quorum` shard that is settling or refusing reads. And a
+  `ClusterSubscription` that loses its connection before delivering anything
+  now resumes from that exact offset rather than the new tail: no gap, but it
+  can fail with "cursor too old" if retention passed it meanwhile. (#961)
+- A cache entry whose TTL passes is now a change a watch receives. The
+  shard's leader writes a delete for it within about a second, through the
+  write fence and replicated like any write, so a watcher no longer has to
+  run its own timers. Reads still treat an entry as absent the moment it
+  lapses. `StorageApi` gains `open_shards` and `expire_due`. (#960)
+- `felixctl pub` says how many acknowledgements came back without an offset
+  and why, instead of leaving it to a `null` in `--json`. An owner that acks
+  on enqueue (`ack_on_commit` off) answers before the record has an offset,
+  while a publish forwarded through another broker is answered after the
+  write and carries one. The protocol and client docs now state that rule
+  (#941).
+
+- The broker's client listeners take their QUIC receive windows from new
+  settings, `pub_conn_recv_window` and `pub_stream_recv_window`
+  (`FELIX_BROKER_PUB_CONN_RECV_WINDOW`, `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`).
+  Both default to `pub_conn_inflight_bytes` (16 MiB), raised to
+  `max_frame_bytes` if that is larger. They used the cache windows, 256 MiB per
+  connection and 64 MiB per stream, so a client whose publishes waited on
+  ingress could leave far more unread data in the broker than the ingress
+  budget allows, and learned about a slow disk minutes late (#923). Startup
+  refuses a window below `max_frame_bytes` or a stream window above the
+  connection window. Larger windows can still help on a path with a large
+  bandwidth-delay product; set both settings to the old values to get them
+  back.
+- **Breaking:** the broker no longer reads `cache_conn_recv_window` and
+  `cache_stream_recv_window` from its config file, which now refuses them as
+  unknown keys, and ignores `FELIX_CACHE_CONN_RECV_WINDOW` and
+  `FELIX_CACHE_STREAM_RECV_WINDOW`. Those remain client settings.
+
+### Fixed
+
+- **A stream's retention from the control plane now bounds its logs.** It
+  was stored and never read: every durable stream got the broker-wide
+  `FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`. A
+  stream's `max_size_bytes` and `max_age_seconds` now bound its shard logs,
+  each falling back to the broker's setting when unset, and a patch reaches
+  open logs without a restart. The control plane refuses a zero bound.
+  `StreamMetadata` gains `retention`, and `DiskLog::set_retention` and
+  `DiskLogProvider::set_stream_retention` set bounds after a log opens. (#964)
+- The Docker Compose, installation and Kubernetes pages pull the
+  `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
+  `check_release_version.py` while any doc pins a `ghcr.io/getfelix/felix*`
+  image at another version. (#957)
+- `felixctl` saves its config through a temporary file that is synced and
+  renamed into place, and makes it owner-only even when it already existed
+  with wider permissions. A crash mid-save no longer leaves an empty config.
+- **The npm client's Linux addons load on glibc 2.28.** They were built
+  against the release runners' glibc 2.38 and failed to load on Debian
+  bookworm, RHEL 8 and `node:*-bookworm` images. The release now links them
+  against glibc 2.28 with cargo-zigbuild and fails if an addon needs a newer
+  glibc symbol. (#981)
+- **A broker promoted after it moved a shard away is fenced again.** A
+  broker that had drained a shard into a move kept that fact after the move
+  finished, and when a later failover gave it the shard back it took that
+  for a cancelled move and opened without fencing. The previous leader, cut
+  off rather than gone, could then still commit a write with a follower that
+  had not heard of the promotion, at the offset the new leader started its
+  generation at. The history campaign saw one value at two offsets and a
+  subscriber told the first held no event. Only the generation right after
+  the draining one now counts as a hand-back. (#971)
+- **Cluster discovery reaches brokers that advertise a DNS name.**
+  `ClusterClient` kept only advertised client addresses that parsed as IP
+  addresses, silently, so a cluster advertising names looked like its seeds
+  alone, and shard owners, cache owners, redirects and moved-shard hints given
+  by name fell back to the entry broker. It now resolves a name each time it
+  is handed one, logs one that does not resolve, and checks that broker's
+  certificate against the name. The broker refuses a `FELIX_CLIENT_ADVERTISE_ADDR`
+  that is not `host:port` at startup. (#982)
+- **The npm and Python clients' cache, counter and stream-shard calls fail
+  over.** They called the broker the client entered by directly, so once it
+  died they kept going to it while other seeds were up. They now go through
+  `ClusterClient` like publishes do, which routes cache calls to the key's
+  owner and moves to another broker when the one in use is gone.
+  `ClusterClient::stream_shards` is new. The conformance catalogue gains
+  `fault.cache_through_a_reset_link`. (#979)
+- **A full disk is reported as a full disk.** When the disk filled while a
+  log was being created, its first segment was left with no header, and every
+  later open reported corruption, even once space was freed. Group polls on a
+  new shard hit it first, since a shard's cursor and dead-letter logs are made
+  on demand. A segment whose creation fails is now removed, and recovery
+  starts a log whose only segment never got a header afresh. `ENOSPC` and
+  quota errors are `StorageError::Full` and `BrokerError::StorageFull`,
+  counted by `felix_storage_full_total`, and clients see `overloaded` (retry
+  after) with nothing written. Breaking for code that matches either enum
+  exhaustively. (#983)
+- **A cache watch that reaches a broker just after it stopped serving the
+  shard is refused instead of left waiting**, as subscribes already were. One
+  registered in that moment was never ended and looked like a quiet key. It
+  is now answered `shard_unavailable` (`moving`), and the client retries
+  where the shard is served. (#986)
+- **Many subscriptions on one connection no longer lose deliveries at the
+  default queue bound.** A publish fanned out to every subscription on a
+  connection put one entry per subscription on the connection's writer lane
+  and on its connection writer queue, both 64 deep by default, and under
+  `drop_new` the overflow was dropped, the connection queue's without a
+  count. Those two hand-offs now wait when full. Drops happen only in each
+  subscription's own queues and are all counted in
+  `felix_sub_queue_dropped_total`. `felix_subscriber_lane_dropped_total` is
+  gone, since nothing is dropped where it counted. (#978)
+- **A standalone broker keeps its control-plane credential current.** A
+  broker without `FELIX_NODE_ID` read its node token once at startup and
+  never refreshed it, so its catalog sync was refused once an exchanged token
+  expired, fifteen minutes in. It now re-reads `FELIX_NODE_TOKEN_FILE` and
+  honours `FELIX_NODE_REFRESH_TOKEN_FILE` the way cluster members do. The two
+  settings moved from `MembershipConfig` to `BrokerConfig`. (#955)
+- **A subscribe that reaches a broker just after it stopped serving the shard
+  is refused instead of left waiting.** A broker ends a shard's readers before
+  its routes catch up with the move or failover, so for that moment it still
+  accepted subscribes, and one registered then was never ended: it delivered
+  nothing more, for good. It is now answered `shard_unavailable` (`moving`),
+  and the client retries where the shard is served.
+
+- **A `Quorum` stream's held batch is no longer stranded when the last mark
+  that covers it arrives while the shard's bound is refused or settling.** The
+  release now rechecks the bound while anything is held, so a route or lease
+  change that makes the bound cover it delivers it to live subscribers. Before,
+  a subscriber could stop short of records every read of the log returned.
+
+- **A slow or throttled disk no longer stalls the broker's runtime.** A
+  durable append's `write()` ran on the Tokio worker that called it, under a
+  synchronous lock every reader of that log also took, and once Linux
+  throttles a process that dirties pages faster than the device takes them,
+  `write()` blocks for up to hundreds of milliseconds. Each log now appends on
+  a thread of its own, started on demand and stopped after 10 s idle like its
+  flush thread, and the write runs with the lock released. A lone unbatched
+  publisher loses 4 to 6% of its throughput to the hand-off, one sending
+  batches of 16 gains about a tenth, and several publishers on one log get
+  about twice the throughput with p99 in tens of microseconds. Sparse index
+  entries are written 256 at a time instead of with each append that crosses
+  an interval. `felix_storage_sync_batch_appends` now counts the records each
+  flush covered rather than the callers waiting when it started, so publishes
+  the broker merges into one append count once each, and a client batch of N
+  records counts N. See
+  `docs/storage-performance.md`. (#909)
+- **Breaking:** `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch` take the stream's `CommitSequencer` and return the claimed
+  `CommitTurn` with the `PendingAppend`. `DiskLog::append_claimed` and
+  `continue_claimed` (which replaces `continue_pending`) make that claim on the
+  append thread, so a caller cancelled before it hears its offsets still
+  releases its range. (#909)
+- **A stalled shard no longer stalls publishes to healthy shards on the same
+  connection.** The pipelined publish window was counted per connection, so a
+  stream whose publishes waited on one stuck shard (a quorum wait, say) could
+  take every slot and stop the connection's other streams. The broker now
+  grants `publish_window` per stream and says so with a new feature bit,
+  `FEATURE_STREAM_PUBLISH_WINDOW` (`0x2_0000`). The Rust client gives each
+  stream its own window against such a broker and keeps sharing one per
+  connection against an older broker. Older clients keep working: they share
+  one window across their streams, which stays inside every stream's. (#843)
+- **Through a `ClusterClient`, a stalled shard no longer holds up other
+  shards of the same stream, or streams that share its QUIC stream.** A
+  pipelining stream is answered in request order, and the Rust client hashed
+  every shard of a stream onto one of its pooled QUIC streams, so a stuck
+  shard held back answers the other shards had already committed.
+  `ClusterClient` knows the shard of every publish it makes, so it now gives
+  each shard a QUIC stream of its own: plain, keyed and idempotent publishes
+  alike. Up to `publish_shard_streams` of them per broker it talks to
+  (`FELIX_PUB_SHARD_STREAMS`, default 16), opened on a shard's first publish
+  and kept; shards past that share the pool as before, and `0` turns them
+  off. A plain `Client` does not know a stream's width and routes exactly as
+  before, one writer per stream. No wire change. (#843)
+
+- The control plane's Raft leader no longer retries a down or misconfigured
+  member in a tight loop. Refused connections, timeouts and non-2xx replies
+  now back off (one heartbeat interval, doubling to one second), and the
+  error names the HTTP status instead of a JSON parse failure. Unit tests in
+  the control-plane crate no longer print their logs to stdout.
+
+## [0.6.0-preview] - 2026-10-02
+
+A preview of 0.6.0. Shards move between live brokers without refusing
+writes, `Quorum` streams can acknowledge by their followers and serve reads
+without the lease once an operator finalizes the matching fleet features,
+storage recovers from power loss and failed fsyncs without losing
+acknowledged records, and Kafka clients can produce and consume. `pip` will not install it without `--pre`.
+
+**A note on the version string.** Cargo and npm carry `0.6.0-preview`
+verbatim. PEP 440 normalises it to `0.6.0rc0` (`preview` is one of its
+spellings of `rc`), so the wheel's version differs from the crate's and the
+npm package's on purpose. It sorts before `0.6.0` on all three.
+
+**Upgrade notes.** These need action, and each is marked **Breaking** below:
+
+- Raft control planes need `FELIX_RAFT_CLUSTER_ID`, `FELIX_RAFT_BIND_ADDR`
+  and `FELIX_RAFT_PEER_TOKEN` (or `FELIX_RAFT_INSECURE_PEERS=true`);
+  `FELIX_RAFT_PEERS` now lists peer-listener addresses, and a new group needs
+  `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. The Helm chart needs a peer-token
+  Secret.
+- Clustered brokers need peer mTLS (`FELIX_INTERNAL_TLS_*`) or
+  `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`; the chart needs
+  `broker.peerTls.enabled` or `broker.peerTls.allowUnauthenticated`.
+- A broker outside Helm with `FELIX_QUIC_LISTENERS` unset binds up to four
+  client listeners on consecutive ports. A container that publishes only
+  port 5000 needs `FELIX_QUIC_LISTENERS=1`.
+- A replication-factor-1 durable shard now waits for its owner instead of
+  failing over empty.
+- Publish scheduling settings (`FELIX_BROKER_PUB_*`) keep their names but
+  change meaning.
+- Control-plane listings return at most 1000 entries per page.
+- `stream.subscribe` alone no longer allows redriving or discarding dead
+  letters.
+- New segments are written in storage format v3 and later, which 0.5.0
+  cannot read.
+- Prefix cache watches on multi-shard caches must name a shard.
+- Several metrics, Rust APIs and crate paths changed; see Changed.
+
+
+### Security
 
 - **A refresh cannot widen its exchange.** The exchange's `requested`,
   `resources` and `audience` are stored with the refresh chain and re-applied
   on every refresh; a refresh naming another audience is a `400`. Postgres
   gains a nullable `refresh_tokens.narrowing` column; older tokens refresh as
   before. On Raft, roll every member before relying on it.
-- **Re-pointing an IdP issuer takes cluster rights.** Changing an existing
-  issuer's `jwks_url`/`discovery_url`, or deleting an issuer, needs
-  `tenant.manage:cluster:*`. IdP
+- **Changing an IdP issuer's trust takes cluster rights.** Changing an
+  existing issuer's `jwks_url`/`discovery_url`, audiences or claim mapping,
+  registering an issuer another tenant already uses, or deleting an issuer
+  needs `tenant.manage:cluster:*`. A tenant admin can still add an issuer no
+  other tenant uses. (#755, #852) IdP
   fetches no longer follow redirects and refuse private, link-local and
   unique-local addresses unless `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`
   is set.
@@ -28,7 +1619,8 @@ for what the current release guarantees.
   `.../rbac/groupings` remove rules (same scope as adding them);
   `POST /v1/tenants/{t}/refresh-tokens/revoke` ends a principal's refresh
   chains; `/v1/tenants/{t}/signing-keys` stages, activates and retires tenant
-  signing keys. On Raft these are new commands: roll every member first.
+  signing keys. On Raft they are refused (409) until every member runs this
+  release.
 - **IdP groups are scoped by issuer** (`group:{issuer}#{name}`), so an IdP a
   tenant admin registers cannot claim another IdP's groups. Bare
   `group:{name}` groupings need migrating; see `docs/auth.md`
@@ -49,9 +1641,96 @@ for what the current release guarantees.
   still a replica can no longer be deleted.
 - Live tokens no longer appear in `Debug` output, and migration exports are
   written mode `0600`.
+- **Breaking: Raft peers are served on their own authenticated listener.**
+  Raft RPCs used to sit on the public API port with no authentication, where
+  one `propose` could replace the metadata store. They are now served only on
+  `FELIX_RAFT_BIND_ADDR`, and every request carries the cluster id and
+  `FELIX_RAFT_PEER_TOKEN` (at least 32 characters; `FELIX_RAFT_INSECURE_PEERS=true`
+  skips it). `FELIX_RAFT_PEERS` now lists peer-listener addresses. Optional peer
+  mTLS: `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY`, `FELIX_RAFT_TLS_CA`, all
+  three or none. `felix-controlplane migrate import` authenticates as a peer
+  and must target a peer address. Helm gains
+  `controlplane.storage.raft.peerPort` (8444), `clusterId`,
+  `peerToken.existingSecret`/`tokenKey` and `insecurePeers`, and refuses to
+  render without a token Secret. (#727)
+- **Breaking: clustered brokers require peer mTLS.** A broker with
+  `FELIX_NODE_ID` set refuses to start without `FELIX_INTERNAL_TLS_CERT`,
+  `FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA`, unless
+  `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. This holds at replication
+  factor 1 too, since writes are forwarded over that port. The Helm chart
+  refuses to render unless `broker.peerTls.enabled` or
+  `broker.peerTls.allowUnauthenticated` is set. (#739)
+- **Unauthenticated QUIC connections are bounded.** A peer could make the
+  broker reserve 16 MiB per stream from a 12-byte header, on up to 2,048
+  streams, with no deadline. Before a connection authenticates, frames are
+  capped at `FELIX_PREAUTH_MAX_FRAME_BYTES` (default 64 KiB) and at most
+  `FELIX_PREAUTH_MAX_STREAMS_PER_CONN` (default 16) streams are read. A
+  connection with no authenticated stream after `FELIX_AUTH_TIMEOUT_MS`
+  (default 10 s, `0` off) is closed. `FELIX_MAX_CLIENT_CONNECTIONS` (default
+  8192) caps connections per broker, and a stalled handshake no longer blocks
+  the accept loop. New metrics `felix_quic_connections_refused_total`,
+  `felix_quic_handshake_failures_total` and `felix_quic_auth_timeout_total`.
+  A client older than this release that leaves an event connection idle for
+  over 10 s before subscribing loses it; raise or disable
+  `FELIX_AUTH_TIMEOUT_MS` for those. (#736)
+- **The broker's pre-auth JWKS fetch cannot be used to flood the control
+  plane.** Implausible tenant ids are refused without a request, unknown
+  tenants are refused locally once the first catalog sync lands, concurrent
+  misses share one fetch, failures are cached for 5 s, and at most 8 fetches
+  run at once with a 5 s timeout. (#736)
+- **Tokens can be bound to the client certificate.** With
+  `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` (which needs
+  `FELIX_TLS_CLIENT_CA`), a client that presents a certificate must use a
+  token whose `sub` the certificate names: a URI SAN `felix:principal:<sub>`,
+  or a DNS or IP SAN equal to `sub`. Control-plane principal ids match only
+  through the URI SAN. The check covers QUIC `auth` and Kafka SASL/PLAIN over
+  TLS. (#751, #758, #771)
+- **The vendored Kafka decoder no longer trusts counts from the wire.** A
+  66-byte produce batch could make it reserve over 3 GB, and a 1 MiB Metadata
+  frame about 72 MiB, before decoding anything. Reservations are now capped by
+  the bytes left in the frame. A record whose offset or timestamp delta
+  overflows the batch base is refused instead of panicking or wrapping.
+  (#762, #768, #821)
+- **Breaking: consumer groups have their own authorization actions.**
+  `group.consume` covers poll, ack, nack and listing dead letters;
+  `group.manage` covers redrive and discard. `stream.subscribe` still grants
+  `group.consume` and `stream.manage` still grants `group.manage`, but a
+  principal with only `stream.subscribe` can no longer redrive or discard.
+  Both can be granted on one group, `group:{tenant}/{namespace}/{stream}/{group}`;
+  where a principal holds a group grant for an action on a stream, only its
+  group grants count there. Upgrade brokers before writing policies that use
+  the new actions, since an older broker refuses tokens that carry them.
+  (#731, #744)
 
 ### Added
 
+- **`felixctl`, a command-line tool (#872).** `pub` (from an argument, a file
+  or stdin; keyed, unacknowledged or idempotent), `sub` (from `latest`,
+  `earliest` or an offset, one shard or all), `cache get|put|del|watch`,
+  `topology` (shard count, owners and brokers), read-only `tenant`,
+  `namespace`, `stream`, `cache ls|info`, `node` and `shard` listings that
+  follow `next_cursor`, and `bench ingest|latency|fanout|cache`. Named contexts
+  in `felixctl/config.toml`, overridden by new `FELIX_*` variables
+  (`FELIX_CLI_CONFIG`, `FELIX_CONTEXT`, `FELIX_BROKERS`, `FELIX_NAMESPACE`,
+  `FELIX_AUTH_TOKEN_FILE`, `FELIX_CONTROLPLANE_TOKEN`,
+  `FELIX_CONTROLPLANE_TOKEN_FILE`, `FELIX_CA_FILE`, `FELIX_CLIENT_CERT_FILE`,
+  `FELIX_CLIENT_KEY_FILE`, `FELIX_SERVER_NAME`), overridden by flags. `--json`
+  everywhere, distinct exit statuses, shell completions and man pages.
+- **Releases ship felixctl.** A tag attaches `felixctl-<tag>-<target>`
+  archives for Linux x86_64 and aarch64, macOS aarch64 and x86_64, and Windows
+  x86_64, each with a `.sha256`, completions and man pages; pushes
+  `ghcr.io/<owner>/felixctl` for amd64 and arm64; and publishes `felix-loadgen`
+  and `felixctl` to crates.io after the client. The crates.io job packages
+  every crate before uploading any, and uses trusted publishing when no
+  `CARGO_REGISTRY_TOKEN` is set. `release.yml` takes `dry_run` (build
+  everything, publish nothing) and `ref` (build a branch as if it were `tag`,
+  dry runs only), so a release can be rehearsed before its tag exists.
+- **`felix-loadgen` is also a library.** `felix_loadgen::run` runs a scenario
+  and returns its `LOADGEN_JSON` object; `felixctl bench` uses it. The binary's
+  flags and output are unchanged. The crate is now publishable.
+- **`felix-cluster up` creates a cache named `users`, and its session file
+  names each broker's certificate (`cert_file`),** so a client can verify the
+  brokers it connects to.
 - **`felix-loadgen` ingest: `--in-flight <n>`, `--duration-secs`, `--start-at`.** `--in-flight`
   sends acked batches with `n` outstanding per publisher and reports their ack latency, so a
   run measures what a client that waits for durability gets and uses the publish window.
@@ -187,8 +1866,9 @@ for what the current release guarantees.
   acknowledgement). A leader counts itself only while it has accepted no newer
   generation, and a promoted leader never opens a stream shard on the lease.
   Needs `generation_start` finalized too. A broker running with
-  `FELIX_INTERNAL_FENCE=false` does not report the feature. `Leader` streams,
-  caches, group state and reads keep the lease. TLA+: `HeldAtGen` counts
+  `FELIX_INTERNAL_FENCE=false` does not report the feature. `Leader` streams
+  and cache writes keep the lease; `lease_free_reads` takes it off reads and
+  group operations. TLA+: `HeldAtGen` counts
   follower answers (`confirmed`), and `FelixShardFigure8FollowerAcks` /
   `FelixShardFigure8FollowerAcksNoStartRecord` join `check_tla.sh`;
   `FelixShardFencedAck` now includes the start record. See
@@ -206,7 +1886,9 @@ for what the current release guarantees.
   `felix_common::fleet::FleetGate` and export
   `felix_broker_fleet_feature_enabled`. Before a finalize any broker can be
   rolled back; after it, finalizing is one-way and a broker without the
-  feature is refused at registration (409). No feature uses the gate yet.
+  feature is refused at registration (409). `generation_start`,
+  `majority_ack`, `lease_free_reads`, `jump_hash_routing` and `atomic_commit`
+  use it.
   Postgres gains `nodes.features` and a `fleet_features` table; on Raft the
   control plane keeps features and accepts a finalize only once every member
   is at metadata version 2.
@@ -253,17 +1935,18 @@ for what the current release guarantees.
   capability `TAIL_FETCH`). A deposed leader's ships are then refused by that
   majority even where the control plane never reached the follower. Applies
   only when every replica offers both capabilities; otherwise the shard opens
-  on the lease as before. `felix_broker_promotions_opened_total{path}` says
-  which. Acknowledgements are unchanged: still the report and the lease.
-  Each peer connection opens one more stream, for the handshake and the
-  fence's requests only, so they never wait behind a forwarded publish.
-- **Replicas answer a promoted leader's fence.** A new peer message, `Fence`,
-  makes a replica persist the leader's generation before it answers with its
-  log end, commit offset and last record's generation, and refuse every older
-  leader from then on. It is negotiated: brokers offer capability bits in the
-  peer handshake (`HelloCapable`, kinds 27 and 28), and a peer that did not
-  offer `FENCE` is never sent one. `FELIX_INTERNAL_FENCE=false` withdraws the
-  offer. No leader sends the fence yet.
+  on the lease as before, except that under `majority_ack` a stream shard
+  never opens on the lease.
+  `felix_broker_promotions_opened_total{path}` says which. A replica that
+  takes `Fence` persists the leader's generation before it answers with its
+  log end, commit offset and last record's generation, and refuses every
+  older leader from then on. Brokers offer capability bits in the peer
+  handshake (`HelloCapable`, kinds 27 and 28), and a peer that did not offer
+  `FENCE` is never sent one; `FELIX_INTERNAL_FENCE=false` withdraws the offer.
+  Until `majority_ack` is finalized, acknowledgements still go by the report
+  and the lease. Each peer connection opens one more stream, for the
+  handshake and the fence's requests only, so they never wait behind a
+  forwarded publish. (#794, #798)
 - **Clients can offer the `felix/1` ALPN.** `felix_client::quic_client_config`
   builds the QUIC TLS config and offers `felix/1` when asked; the Python
   (`offer_alpn=True`) and TypeScript (`offerAlpn`) clients expose the same
@@ -291,7 +1974,8 @@ for what the current release guarantees.
   re-sent after a failover or a move is answered with its original offset.
   Transactions are refused with `TRANSACTIONAL_ID_AUTHORIZATION_FAILED` and a
   message; legacy v0/v1 message sets with `UNSUPPORTED_FOR_MESSAGE_FORMAT`.
-  Keys, headers and producer timestamps are dropped and counted. New metrics:
+  Keys and headers are dropped and counted; producer timestamps are dropped
+  (a record's timestamp is its append time). New metrics:
   `felix_kafka_produce_records_total`, `felix_kafka_produce_bytes_total`,
   `felix_kafka_produce_duplicate_records_total`,
   `felix_kafka_produce_errors_total` and `felix_kafka_produce_dropped_total`.
@@ -299,7 +1983,7 @@ for what the current release guarantees.
   docs-site page "Reading with Kafka Clients" is now "Kafka Compatibility".
 
 - **Kafka consumers can read durable streams.** A broker started with
-  `FELIX_KAFKA_LISTEN` serves the Kafka protocol, read-only, for consumers that
+  `FELIX_KAFKA_LISTEN` serves the Kafka protocol for consumers that
   assign their own partitions: kcat, librdkafka programs and Java
   `KafkaConsumer`s. A durable stream is topic `<namespace>.<stream>`, partition
   N is shard N, and offsets are Felix's log offsets. It speaks `ApiVersions`,
@@ -314,7 +1998,7 @@ for what the current release guarantees.
   `0018_node_kafka_addr.sql` adds the column. Consumer groups are refused:
   `FindCoordinator` answers `GROUP_AUTHORIZATION_FAILED` with a message saying
   to assign partitions, so a group consumer fails with a reason instead of
-  hanging. `Produce` is refused with `POLICY_VIOLATION`. Metrics are under
+  hanging. Metrics are under
   `felix_kafka_*`. `docs/kafka-compatibility.md` replaces the spike write-up,
   and the spike crate under `spikes/` is removed.
 
@@ -465,7 +2149,7 @@ for what the current release guarantees.
 - **Typed error codes on the client wire.** A client that offers
   `FEATURE_ERROR_CODES` (`0x0800`) gets a `code`, a `retry` class and an
   optional `detail` on every `error` and `publish_error`, and on a failed binary
-  publish ack when it also offers `BINARY_PUBLISH_ACK_CODE` (`0x0200`). The
+  publish ack when it also offers `FLAG_BINARY_PUBLISH_ACK_CODE` (`0x0200`). The
   retry class says whether the request may have been applied: a quorum timeout
   is now `quorum_timeout` with `outcome_unknown`, distinct from a refusal, and
   `shard_unavailable` names its reason. An unknown code decodes with its retry
@@ -507,10 +2191,10 @@ for what the current release guarantees.
 
 - **Online shard rebalancing** (#130). A shard whose leader is alive is now
   moved instead of reassigned. The control plane stages the destination as a
-  replica and lets the leader catch it up. Once the copy is level it fences the
-  leader (the assignment goes `draining`, and a broker never serves a draining
-  assignment), waits for the leader to report that its log has stopped
-  growing, and only then names the destination leader at a new generation.
+  replica and lets the leader catch it up. Once the copy is close to the
+  leader's tail it fences the leader (the assignment goes `draining`, and a
+  broker never serves a draining assignment), waits for the leader's drained
+  report, and only then names the destination leader at a new generation.
   Each step is an assignment write, so any control-plane instance resumes a
   half-done move from the store.
 
@@ -526,8 +2210,8 @@ for what the current release guarantees.
 
   A destination that dies before it leads is passed over; a leader that dies
   mid-move is an ordinary failover with the destination as a candidate.
-  Publishes to the shard are refused, not lost, between the fence and the new
-  owner opening. Real-process tests cover drain, join, a destination dying
+  Writes that arrive between the fence and the new owner opening are held and
+  sent on (see "Publishes are not refused while their shard moves"). Real-process tests cover drain, join, a destination dying
   mid-transfer, a drain and a join at once, and publishes arriving throughout.
 
   The fence is model-checked. `docs/formal/FelixShardHandoff.cfg` adds the
@@ -541,10 +2225,158 @@ for what the current release guarantees.
   `0012_shard_moves`. `felix_shard_move_steps_total{step}` and
   `felix_shard_moves_waiting` report progress. The harness gained `add_node`,
   `drain_node`, `undrain_node` and `drain_until_empty`.
+- **A broker can bind several client listeners.** `FELIX_QUIC_LISTENERS`
+  binds that many QUIC listeners on consecutive ports from the
+  `FELIX_QUIC_BIND` port, each with its own socket and accept loop. A broker
+  with more than one names their ports in `auth_ok` (`listener_ports`,
+  omitted otherwise), and the client spreads its publish, cache and event
+  pools over them, always keeping the host it dialled. The Helm chart gains
+  `broker.ports.listeners` (default `1`) and refuses to render if
+  `broker.ports.internal` falls inside the range. See Changed for the default
+  count. (#595)
+- **`ClusterClient` sends publishes straight to the shard's owner.** It
+  learns each shard's owner from the publish ack and sends later batches
+  there, keyed or not, instead of having the entry broker forward every one.
+  It falls back to forwarding when the owner is unknown or unreachable.
+  `felix_client::publishes_forwarded()` counts acks that came back forwarded.
+  (#600)
+- **`PATCH` and `DELETE /v1/nodes/{id}`.** Both were documented but answered
+  405. `PATCH` changes a node's region, labels, capacity, or lifecycle
+  between `live` and `draining` (which cancels a drain); it cannot mark a
+  down node live. `DELETE` needs `node.manage` on `cluster:*` and is refused
+  with 409 while the node is live or draining or any shard still names it.
+  (#644)
+- **`FELIX_SHUTDOWN_PREDRAIN_MS`.** A stopping broker keeps accepting
+  connections for this long after `/ready` turns false, so a load balancer
+  polling `/ready` notices first (default `0`; a second SIGTERM ends the
+  wait). In Kubernetes the chart's preStop sleep already does this. (#645)
+- **A cache can be created with `Quorum` consistency.** `Cache` and
+  `CacheCreateRequest` gain `consistency` (`Leader` or `Quorum`, default
+  `Leader`), set at creation only. On a `Quorum` cache a put, delete or
+  counter update is acknowledged once a majority of the shard's replicas hold
+  it, and survives the loss of its leader. Postgres migration
+  `0013_cache_consistency.sql`. `felix_broker::CacheMetadata` gains a
+  `consistency` field. (#648, #750)
+- **One consumer group across every shard of a stream.**
+  `ClusterClient::group_sharded` returns a `ShardedGroup` that finds each
+  shard's leader by following redirects, polls the shards in turn, and sends
+  acks and nacks to the right leader. Ordering holds per shard. A broker now
+  answers group requests for a shard it does not lead with `NotLeader` to
+  clients that offer `FEATURE_REDIRECT`; a client that offered the bit but
+  predates this sees an unexpected-answer error instead of the old refusal.
+  (#649)
+- **The Rust client refreshes its token for streams opened after connect.**
+  `ClientConfig::token_provider` is asked for a token whenever a stream
+  authenticates, and overrides `auth_token`. `RefreshingToken` wraps a fetch
+  function and refreshes once two thirds of the token's life has passed. Before,
+  subscriptions, watches, group requests and reconnects failed once the
+  connect-time token expired. (#652)
+- **Watch a cache prefix across every shard.**
+  `ClusterClient::watch_cache_sharded` and `watch_cache_sharded_retained` open
+  one prefix watch per shard on its owner and merge them. A retained watch
+  emits `StateComplete` once every shard has delivered its retained values,
+  and `resume_offsets()` gives one offset per shard. New request
+  `cache_shards`, feature bit `FEATURE_CACHE_SHARDS` (`0x0400`) and
+  `Client::cache_shards`. Rust only for now. (#654)
+- **A resumed subscription reports where it joined.** A subscribe with a
+  start position on a durable stream answers `subscribed` with `start_offset`
+  (the first record delivered) and `live_offset` (the tail when it was
+  registered), to clients that negotiated `FLAG_EVENT_BATCH_OFFSETS` only.
+  `Subscription::start_offset()` and `live_offset()` expose them. (#655)
+- **Idempotent publishes use the binary frame.** The negotiated flag
+  `FLAG_BINARY_PUBLISH_IDEMPOTENT` (`0x0100`) carries a producer id and
+  sequence on an acked binary publish. `Publisher::publish_idempotent_batch`
+  uses it when the broker offers it and falls back to JSON otherwise. (#656)
+- **A different batch under a reused producer sequence is refused.** A leader
+  answered any batch under a sequence it already held as a duplicate, so a
+  producer that reused a sequence got `ok` for data never written. Each held
+  batch now keeps a digest of its payloads, and a mismatch is refused with
+  reason `sequence_reused` to clients that offer `FEATURE_SEQUENCE_REUSED`
+  (`0x4000`); older clients still get the duplicate answer. The Rust
+  `IdempotentProducer` offers it. (#764)
+- **Brokers negotiate the `felix/1` ALPN.** Client listeners select `felix/1`
+  when offered and refuse clients that offer only other protocols. Clients
+  that offer none are accepted unless `FELIX_TLS_REQUIRE_ALPN=true`. (#751)
+- **Unknown requests get an answer instead of a closed stream.** A client that
+  offers `FEATURE_UNSUPPORTED` gets `unsupported` for a request type the
+  broker does not know, and the stream stays open. (#751)
+- **Brokers can serve a real certificate and require client certificates.**
+  `FELIX_TLS_CERT`/`FELIX_TLS_KEY` serve a certificate from files, re-read
+  every 30 s. `FELIX_TLS_CLIENT_CA` makes the QUIC and Kafka listeners
+  require client certificates. Without a certificate the broker still
+  generates a self-signed one and warns; `FELIX_TLS_REQUIRE_CERT=true` refuses
+  to start instead. Helm: `broker.clientTls.*`. The Python and TypeScript
+  clients cannot present client certificates yet. (#739)
+- **The control-plane API can serve TLS.** `FELIX_CONTROLPLANE_TLS_CERT` and
+  `FELIX_CONTROLPLANE_TLS_KEY` (or `tls:` in the config file) serve the REST
+  API over TLS, reloaded on rotation. Brokers and `felix-controlplane admin`
+  trust a private CA from `FELIX_CONTROLPLANE_CA`. Helm:
+  `controlplane.tls.*`. (#739)
+- **Per-IP connection caps and Kafka pre-auth limits.**
+  `FELIX_MAX_CONNECTIONS_PER_IP` (default 512, `0` unlimited) caps QUIC
+  connections from one source address per broker, and
+  `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` (default 128) does the same on the
+  Kafka listener, where requests before SASL are capped at 64 KiB and SASL
+  must finish within `FELIX_KAFKA_AUTH_TIMEOUT_MS` (default 10 s). Clients
+  behind one NAT or proxy address may need a higher cap. (#749)
+- **Per-tenant publish quotas.** `FELIX_TENANT_PUBLISH_BYTES_PER_SEC` and
+  `FELIX_TENANT_PUBLISH_MSGS_PER_SEC` (default `0`, unlimited) set a
+  per-tenant token bucket on each broker, with `FELIX_TENANT_PUBLISH_BURST_MS`
+  (default 1000) and per-tenant overrides in `FELIX_TENANT_PUBLISH_QUOTAS`
+  (`tenant:bytes:msgs,...`). An acked publish over quota is refused as
+  `overloaded` with reason `tenant_quota` and `retry_after_ms`; Kafka produce
+  is throttled with `throttle_time_ms`. (#749)
+- **Per-tenant metrics.** `felix_tenant_published_{messages,bytes}_total` and
+  `felix_tenant_delivered_{messages,bytes}_total`. Tenants past the first
+  `FELIX_TENANT_METRICS_MAX` (default 100) share the label `_overflow`. (#749)
+- **Control-plane listings are paged.** Tenants, namespaces, streams, caches,
+  nodes, shard assignments and the RBAC listings take `limit` (1-10000,
+  default 1000) and `cursor`, and carry `next_cursor` when more remain.
+  **Breaking:** a caller that ignores `next_cursor` now sees only the first
+  1000. The RBAC listings still return a bare array when called with neither
+  parameter. (#767)
+- **Consistent backups across brokers.** `felix-controlplane admin
+  backup-point <name>` records one committed offset per shard log from each
+  leader after a single barrier, and writes a JSON manifest. Brokers serve
+  the offsets at `GET /backup/offsets` on the metrics listener. After copying
+  the leaders' shard directories, `felix-broker restore-point --point FILE`
+  cuts every copied log back to the point, offline. (#799)
+- **Giving up a durable shard's records is an explicit step.**
+  `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}`
+  (`?kind=cache` for a cache) or `felix-controlplane admin abandon` lets
+  placement move a shard it is holding for a dead owner (see Changed). It
+  needs `node.manage:cluster:*` and is refused with 409 unless placement is
+  holding the shard. (#728)
+- **The Helm chart forms a Raft group once, and can encrypt the peer port.** A
+  post-install hook creates the ConfigMap `<fullname>-controlplane-raft-formed`
+  once the API is ready; members start with
+  `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` only while it is absent, so a member
+  that later loses its volume waits instead of starting an empty group.
+  `bootstrapTimeoutSeconds` (default 270) bounds the hook; keep
+  `helm --timeout` above it. `controlplane.storage.raft.tls.*` turns on peer
+  mTLS. A new NetworkPolicy (`controlplane.networkPolicy.enabled`, on by
+  default under Raft) admits the peer port only from members and
+  `raftPeerFrom`; add a migration tool's pods there. (#761)
 
 ### Changed
 
-- **The broker's default listener count follows its cores.** With
+- **Durable publishes queued on one shard are written as one append.** When
+  an executor takes a durable publish, it also takes the plain publishes
+  queued behind it on the same shard (up to 64, or 1 MiB) and claims them
+  together: one write, one flush wait and one fanout, with each publish still
+  answered with its own offset, in order. The fence is checked per publish; a
+  failed append or flush fails every publish in the claim.
+  `felix_broker_publish_claim_jobs` reports the group size. Group commit
+  waiters now also watch the durable bound, so one flush wakes all of them at
+  once instead of one at a time through the flush lock.
+
+- **A lone subscriber event is sent without waiting for a batch.** A
+  subscription batch takes what is already queued and flushes at once; it
+  waits up to `FELIX_EVENT_BATCH_MAX_DELAY_US` for more only after the
+  previous batch found events queued behind its first. With one message in
+  flight, delivery no longer sits out the batch delay. (part of #926)
+
+- **Breaking: the broker's default listener count follows its cores.** With
   `FELIX_QUIC_LISTENERS` unset, a broker binds `max(1, min(cores / 2, 4))`
   client listeners, using the cores it may run on (cgroup limits included).
   The count is shortened so the range stops before `FELIX_INTERNAL_BIND`, so
@@ -612,10 +2444,12 @@ for what the current release guarantees.
   `refresh_refused` reason. The refresh replay, bad-secret, revoked and issued
   counters are now in the control plane's metrics table.
 
-- **`MovePolicy` is no longer `Copy`.** It carries the region allowlist
-  (`regions: Arc<RegionRouter<String>>`); clone it where it was copied. The
-  control-plane `Stream` model gains `region: Option<String>`, and the broker's
-  `MembershipConfig` gains `region_bridges`.
+- **Breaking for Rust callers: `MovePolicy` is no longer `Copy`.** It gains
+  `regions`, `max_per_node`, `fence_max_lag_records`, `timeout_millis`,
+  `restore_after_millis` and `paused`; clone it where it was copied. The
+  control-plane config holds it as `shard_moves`. The control-plane `Stream`
+  model gains `region: Option<String>`, and the broker's `MembershipConfig`
+  gains `region_bridges`.
 
 - **Cache watches follow a moved shard.** `ClusterClient::watch_cache` and
   `watch_cache_retained` now return a `ClusterCacheWatch` (and take
@@ -632,20 +2466,23 @@ for what the current release guarantees.
   copies, so with the default limit of one a follower's copy no longer holds
   the slot while the broker's leaderships wait.
 - **Online rebalancing is marked done** on the status page. The row now
-  cites the tests behind each claim and names what is left: cache, counter
-  and group writes are refused briefly during a switch-over, the move limits
-  hold per planner, and stopping a broker is a failover rather than a
-  handoff. Load-aware placement has its own row. Pages that still said a
+  cites the tests behind each claim. Load-aware placement has its own row. Pages that still said a
   move refuses publishes or ends subscriptions rather than letting them
   follow were corrected, and the docs-site semantics page no longer says a
   cache cannot declare `Quorum` or that metadata lives only in Postgres.
-- **Storage format v3.** A record's length word now carries two flag bits
+- **Breaking for downgrades: storage format v3.** A record's length word now carries two flag bits
   and, for the first record of an idempotent producer's batch, a 20-byte tag
   (see `docs/storage-format.md`, "Producer marks"). v2 segments are still read
   and an unmarked record is byte for byte a v2 record, but new segments are
   written as v3, which a v2 build refuses to open: downgrading past this needs
   the data directory discarded. A shard directory may also hold a `producers`
   snapshot beside `epochs`.
+- **Storage format v4.** The generation-start record is flag bit 29 of a
+  record's `payload_len`, and only a v4 segment may hold one. Segments stay
+  v3 until a log's first generation-start record, so an upgrade stays
+  reversible until `generation_start` is finalized; after that an older build
+  cannot open the logs. v2 and v3 segments are still read. No migration is
+  needed. (Format v5, for commit records, is under "Atomic commits".)
 - **Internal protocol kind 25, `ReplicateMarkedRecords`**, ships records
   together with their producer marks. A batch without marks still travels as
   `ReplicateRecords`, unchanged; a follower that predates the kind refuses it
@@ -654,9 +2491,9 @@ for what the current release guarantees.
   takes the marks, `AppendRecord` and `LogRecord` have a `mark`, and
   `felix_broker::replication::apply` takes the marks.
 - **Breaking for Rust callers of the control-plane crate:** `AppState` has a
-  `move_policy` field, `ShardAssignment` a `move_reason` field, `MovePolicy` a
-  `paused` field, and `ControlPlaneStore` the `moves_paused` and
-  `set_moves_paused` methods. `Default::default()` fills the first three.
+  `move_policy` field, `ShardAssignment` a `move_reason` field, and
+  `ControlPlaneStore` the `moves_paused` and
+  `set_moves_paused` methods. `Default::default()` fills the fields.
 - **Breaking for Rust callers: `ClusterClient::subscribe` and `subscribe_from`
   take `self: &Arc<Self>` and return a `ClusterSubscription`** instead of a
   `(client, Subscription)` pair, so the subscription can follow its shard.
@@ -671,8 +2508,6 @@ for what the current release guarantees.
 - **A replica report leaves out followers the leader could not reach**, as it
   already left out halted ones, so an unreachable move destination is never
   fenced on its last position.
-- **`MovePolicy` gained fields** (`max_per_node`, `fence_max_lag_records`,
-  `timeout_millis`); the control-plane config holds it as `shard_moves`.
 
 - **Breaking for TypeScript callers: `err.code` is now the broker's error
   code.** It used to hold this client's own kind (`FELIX_AUTH`,
@@ -746,6 +2581,140 @@ for what the current release guarantees.
 - Only `felix-wire`, `felix-transport` and `felix-client` are published to
   crates.io. The server crates were only there because of the `in-process`
   feature below.
+- **Breaking: Raft members need an explicit cluster id and never form an
+  empty group by accident.** `FELIX_RAFT_CLUSTER_ID` is required and recorded
+  in the data directory; a member refuses a store recorded under another id,
+  and an existing data directory adopts the configured one.
+  `FELIX_RAFT_INITIAL_CLUSTER_STATE` (`new` or `existing`, default
+  `existing`): empty members form a group only under `new`, so a brand-new
+  group needs `new` (the Helm chart's hook sets it). The chart's StatefulSet
+  now creates members in parallel. (#727, #761)
+- **Breaking: a durable shard with no caught-up replica waits for its owner.**
+  A durable shard with no replicas, which is every `replication_factor: 1`
+  stream, used to be placed on another broker about 15 s after its owner went
+  quiet, where it served an empty log. Placement now holds it until the owner
+  returns, which keeps its records at the same generation. It shows as
+  `owner_unavailable` in `GET /v1/placement/plan` and in
+  `felix_shards_unplaceable`; giving the records up is the new `abandon`
+  step. In-memory shards still move at once. (#728)
+- **Breaking: publishes are scheduled per shard and shared fairly across
+  tenants.** The process-wide pool of four publish workers, hashed by stream,
+  is replaced by one ordered lane per shard (or per remote shard being
+  forwarded to), run on `FELIX_BROKER_PUB_WORKERS_PER_CONN` executors (default
+  4) and picked by byte-weighted round robin across tenants, so a slow shard,
+  a forward or a quorum wait no longer holds up other streams. Each tenant is
+  guaranteed `FELIX_BROKER_PUB_QUEUE_DEPTH` slots (default 64) out of depth x
+  workers and may borrow idle room. `FELIX_BROKER_PUB_FLUSH_CONCURRENCY` now
+  counts per shard. A full queue answers an acked publish `overloaded` with
+  reason `publish_queue_full`. Existing settings keep their names but change
+  meaning, so revisit tuned values. New metric
+  `felix_tenant_publish_queue_full_total`. (#774, #802)
+- **Every write path checks the lease.** Forwarded publishes, cache puts and
+  deletes, counter adds, group acks, nacks and dead-letter changes, and Kafka
+  produce go through the same per-shard fence as a direct publish, which
+  re-checks the lease when a queued write claims its offsets; a lapsed lease
+  answers `shard_unavailable`/`fenced`. Once `majority_ack` is finalized,
+  `Quorum` stream writes are acknowledged by their followers instead.
+  (#738)
+- **Replica reports get an answer per shard.** `POST
+  /v1/nodes/{id}/replica-status` answers one outcome per shard (`accepted`,
+  `stale`, `not_leader`, `unassigned`, `future_generation`) with 200 when all
+  were accepted and 409 otherwise, where it used to answer 204. The control
+  plane writes a report only if the node still leads the shard at that
+  generation, checked in the same step, so a deposed leader's report is no
+  longer stored. Old and new brokers and control planes interoperate. (#738,
+  #757)
+- **Readers of a `Quorum` shard see only committed records.** Subscriptions,
+  replay, cache gets, counter gets, cache watches, group polls and Kafka
+  `Fetch` on a replicated `Quorum` shard stop at the quorum mark, and Kafka
+  reports the mark as the high watermark. Until `lease_free_reads` is
+  finalized, a lapsed lease ends these readers with `shard_moved` and refuses
+  cache reads as `shard_unavailable`/`fenced`. `Leader` streams are
+  unchanged. (#738, #750)
+- **Followers remember the newest leader they accepted.** Each shard
+  directory holds a `replica` file with the highest accepted generation and
+  the commit offset, synced before the first batch at a new generation, so a
+  restarted follower still refuses an older leader. A `Quorum` leader sends
+  its mark with each batch (peer kind 26), and a follower refuses a
+  truncation below it. (#743)
+- **Node expiry tolerates clock steps.** The control plane marks a silent
+  broker down only after `FELIX_NODE_EXPIRY_TIMEOUT_MS` plus
+  `FELIX_NODE_REGRANT_MARGIN_MS` (default a quarter of the timeout), measured
+  on its own monotonic clock. A dead broker is placed elsewhere a little later
+  than before. On Linux the broker times its lease on `CLOCK_BOOTTIME`, so a
+  host suspended past the lease no longer wakes up holding it. (#743, #758)
+- **Under Raft, heartbeats and the placement lease stay off the log.** The
+  leader keeps them as soft state, answers a heartbeat only after a quorum
+  confirms it still leads, and writes only expiries and a heartbeat checkpoint
+  every 5 s. The placement lease now expires on Raft as on Postgres. (#745)
+- **Raft upgrades no longer depend on rollout order.** Each member reports the
+  metadata version it supports, and the leader proposes nothing above the
+  group's minimum: new commands answer 409 until every member is upgraded, and
+  new fields are either left out on every member or the command is refused. A
+  member that receives an entry it would drop refuses it and counts it in
+  `felix_meta_raft_unsupported_commands_total`, so a rolled-back member stops
+  with an error instead of diverging. (#761, #857)
+- **Faster shard move switch-over, broker side.** The broker long-polls
+  `GET /v1/shard-assignments/changes` and acts on a change at once instead of
+  on the next `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` tick, and a move's
+  successor opens the shard ahead of the cut-over. On a local cluster the
+  switch-over drops from about 8 s to under 100 ms. New metrics
+  `felix_broker_shard_move_seconds` and
+  `felix_broker_shard_switchover_seconds`. (#673)
+- **Breaking: a prefix cache watch on a multi-shard cache must name its
+  shard.** Without `shard` it read shard 0 and saw only the keys that hash
+  there; it is now refused with the shard count. Open one watch per shard or
+  use `ClusterClient::watch_cache_sharded`. (#647)
+- **Each durable log flushes on its own thread** instead of tokio's shared
+  blocking pool, where it queued behind other shards' work. The thread stops
+  after 10 s idle. With `FELIX_STORAGE_IO_URING=1`, new work wakes the ring
+  at once instead of waiting behind another log's fsync. (#692, #699, #716)
+- **Cache and counter compaction runs in the background.** The write that
+  crossed the threshold used to rewrite the whole live set under the shard
+  lock (about 20 s with 20 MiB live). A write now only starts a pass, which
+  copies live entries forward and deletes the sealed segments below the cut.
+  `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` (default 64 MiB/s, `0` unlimited)
+  paces it. (#789)
+- **Opening a log no longer opens its sealed segments.** Recovery reads each
+  sealed segment's header and last index entry only; files open on first read,
+  with at most 256 open per log (`felix_storage_open_sealed_segments`).
+  Retention no longer holds the segment lock while it unlinks. A broker also
+  closes a shard's logs once it has no role in the shard, and opens shards in
+  parallel. (#746, #765)
+- **Breaking: connection-labelled subscriber metrics are gone.**
+  `felix_sub_connection_subscribers` lost its `connection_id` label, and
+  `felix_sub_conn_queue_len{connection_id}` is replaced by the histogram
+  `felix_sub_conn_queue_depth`. The demo signing key is behind a new `demo`
+  cargo feature, so `pubsub-demo-simple`, `cache-demo` and `latency-demo` need
+  `--features demo`. (#747)
+- **Breaking: unknown frame flag bits are refused on every stream.**
+  `FrameHeader::decode` refuses any bit outside `KNOWN_FLAGS` with the new
+  `felix_wire::Error::UnknownFlags`, which an exhaustive match must handle.
+  (#737)
+- **MTU overrides are clamped on Linux.** `FELIX_INITIAL_MTU` and
+  `FELIX_MTU_UPPER_BOUND` above 6550 are lowered with a warning, so ten GSO
+  segments fit one UDP datagram. (#737, #754)
+- **A keep-alive that cannot keep the connection open is replaced.** A
+  `FELIX_KEEPALIVE_MS` of zero, or not below half of
+  `FELIX_MAX_IDLE_TIMEOUT_MS`, becomes a third of the idle timeout, with a
+  warning. (#751)
+- **A Raft write that cannot reach a quorum answers 503** instead of 500.
+  The outcome is unknown, so a retried create may answer 409. (#813)
+- **Group polls and in-memory group state are bounded.** One poll returns at
+  most 1,000 records and about 4 MiB. A group untouched for 10 minutes (or
+  twice its visibility timeout) is dropped from memory and rebuilt from disk.
+  `FELIX_GROUP_MAX_IN_FLIGHT` (default 10000) caps a group's unsettled
+  records; a poll at the cap returns empty, counted in
+  `felix_group_polls_capped_total`. Long polls wake on appends instead of
+  re-checking every 20 ms. (#731, #744)
+- **`felix-loadgen` ingest stops at its deadline and spreads keys over every
+  shard.** `--duration-secs` now bounds each send and ack wait, and the JSON
+  report gains `completed_records`, `acked_records`, `acked_throughput_*` and
+  `cut_off_records`. (#924)
+- **npm publishes through trusted publishing instead of a token**, and each
+  package is published with an explicit `npm publish`, platform packages
+  first. A manual `npm_stage` input stages versions for a maintainer to
+  promote. (#580, #581, #582)
 
 ### Removed
 
@@ -759,6 +2728,20 @@ for what the current release guarantees.
   instead.
 
 ### Fixed
+
+- **In-memory replicated streams open after `generation_start` is finalized
+  (#930).** A promoted shard of an in-memory stream tried to append a
+  generation-start record, which only a durable log can take, so it never
+  opened for writes and its promotion retried five times a second. In-memory
+  streams now skip the record: their publishes take no log offsets and are not
+  replicated, so there is nothing inherited for it to cover. A promoted shard
+  kept closed after its fence now backs off, doubling from 200 ms to 2 s.
+  
+- **A cache put or delete ships without waiting for the replication tick
+  (#928).** Stream publishes and counter updates woke the replication driver,
+  but cache writes waited for its next tick (`controlplane_sync_interval_ms`,
+  2 s by default), so a `Quorum` cache put took about 840 ms. Every cache write
+  now starts a replication pass, for `Leader` caches too.
 
 - **A broker's rotated refresh token is no longer world-readable (#913).** Each
   rotation wrote `FELIX_NODE_REFRESH_TOKEN_FILE` through a temporary created
@@ -908,12 +2891,6 @@ for what the current release guarantees.
   `docs/protocol.md` for how a subscriber tells it from a drop. Finalize it
   only once every broker runs this version; it is one-way (see the upgrades
   page).
-- **Storage format v4.** The generation-start record is flag bit 29 of a
-  record's `payload_len`, and only a v4 segment may hold one. Segments stay
-  v3 until a log's first record, so an upgrade stays reversible until
-  `generation_start` is finalized; after that an older build cannot open the
-  logs. v2 and v3 segments are still read. No migration is needed.
-
 - **Opening a `ClusterClient` subscription waits out a shard that is still
   opening.** `subscribe`, `subscribe_from` and `subscribe_sharded` failed at
   once on `shard_unavailable`/`not_ready`, which a leader answers while it
@@ -921,7 +2898,7 @@ for what the current release guarantees.
   retry `retry`-class refusals with the `ReconnectPolicy` attempts and
   backoff, as a publish does; a `fatal` refusal still returns at once.
 - **A cache or counter shard that an older build left mid-compaction opens
-  whole again.** Up to 0.6.0-preview, compaction swapped a shard directory
+  whole again.** In 0.5.0 and earlier, compaction swapped a shard directory
   with `<shard>.retired` and `<shard>.compacting` siblings. Background
   compaction dropped that swap and its recovery, so on upgrade a shard
   stopped between the two renames opened empty. Opening a shard now settles
@@ -972,11 +2949,13 @@ for what the current release guarantees.
   follower (or its log was rebuilt) was woken by the reset and went on to put
   its offsets from the old log into the cleared replay ring and fan them out.
   It now fails with `unacknowledged` and applies nothing.
-- **Acks for forgotten group claims are retryable.** After a group's in-memory
-  state was evicted or the shard failed over, an ack or nack for an earlier
-  claim was refused as `invalid_request`, which is fatal. It is now the new
-  `stale_claim` code with retry class `retry`; an older client sees an unknown
-  code with that class. An offset past the log tail is still `invalid_request`.
+- **Acks for group claims made before a failover, move or eviction are
+  settled.** A new owner refused acks and nacks for records an earlier owner
+  had handed out, as `invalid_request`, which is fatal. It now accepts any ack
+  below the log tail it inherited. An ack for a record written after that and
+  not yet polled is refused with the new `stale_claim` code (retry class
+  `retry`; an older client sees an unknown code with that class). An offset
+  past the log tail is still `invalid_request`. (#760, #776)
 - **A traced publish no longer panics a stream handler.** The binary batch,
   JSON publish, JSON batch and subscribe handlers held a span guard across an
   `.await`. When the task resumed on another worker the guard exited there,
@@ -1022,9 +3001,8 @@ for what the current release guarantees.
   timeout. The default QUIC idle timeout is now 6 s and keep-alives go every
   2 s (`FELIX_MAX_IDLE_TIMEOUT_MS`, `FELIX_KEEPALIVE_MS`), so the dead
   connection fails the waiting publish and `ClusterClient` retries on the new
-  leader in about 6 s. Quiet connections stay open on the keep-alives. A client
-  or broker that overrides only one of the two should keep the keep-alive well
-  under the idle timeout.
+  leader in about 6 s. Quiet connections stay open on the keep-alives. A
+  keep-alive not below half the idle timeout is replaced (see Changed).
 
 - **A publish to a shard that cannot be served is no longer called "stream not
   found".** The broker kept the right code but replaced the message with
@@ -1197,9 +3175,6 @@ for what the current release guarantees.
   leader ends now receive every record it committed first. The TLA+ model splits
   admission from the claim, and `FelixShardHandoffNoClaimFence.cfg` shows the
   loss without the check.
-- **A shard moved off a broker that stays up left its subscriptions and cache
-  watches open and silent.** The old leader now ends them, after delivering
-  what was queued, whenever it stops serving a shard.
 - **A planned shard move could lose a dead letter or a counter add.** The old
   leader reported `drained` on the shard's own log and shipped its consumer
   groups' cursors and dead letters, and its cache's counters, only afterwards,
@@ -1214,216 +3189,121 @@ for what the current release guarantees.
   warning naming the shard and follower say why. Brokers now read the
   assignment's `successor`.
 
-### Fixed
-
 - A broker shutting down in the middle of a credential refresh could exit after
   the control plane had rotated its refresh token but before writing the
   replacement, so the next start presented a spent token and the chain was
   revoked. Shutdown now waits, within the drain deadline, for a refresh in
   flight to finish.
+- **A failed fsync poisons the log.** Linux can drop the dirty pages behind a
+  failed fsync, so a later successful sync could acknowledge lost data. Any
+  flush, seal, truncate or reset failure, including a failed directory or
+  epoch-file sync, now stops the log's durable offset, and every later write
+  returns the error until the broker restarts. Readers of a poisoned `Leader`
+  stream stop at the durable offset. (#726, #777, #851)
+- **Recovery repairs what a power loss leaves.** A zero-filled tail is cut
+  back as a torn tail; a roll interrupted by power loss, a segment cut short
+  while it was sealed, and an empty segment left by a lost background roll are
+  repaired; a sealed segment whose index points at the wrong place is
+  rescanned. Each log keeps a `durable.mark` file, and damage past it is
+  repaired as a torn tail, so a power loss under `Periodic` or `None` fsync no
+  longer leaves a shard that refuses to start. Damage before the mark is still
+  fatal. (#726, #746, #754, #759, #775)
+- **A cancelled cache put or delete is still applied.** A write cancelled
+  after it claimed its offset released its commit turn before its fsync
+  finished, so readers could see a record that was not yet durable. (#726)
+- **A follower's commit offset is on disk before it acknowledges, under
+  `OnCommit`.** It was written at most once a second, so a crashed follower
+  could read back a lower offset and allow a deeper truncation. (#769)
+- **A panicking publish worker is restarted**, and only the job it was
+  running fails (`felix_broker_publish_worker_restarts_total`). Graceful
+  shutdown now waits for queued publishes, including ones acknowledged on
+  enqueue, to be written. (#747)
+- **One stalled subscription no longer blocks the others on its
+  connection.** Each subscriber has its own queue in the connection writer
+  and drops only its own frames (`felix_sub_queue_dropped_total`). A `Latest`
+  subscriber no longer gets live records from below its start offset. (#747)
+- **An idempotent producer no longer reuses a sequence after an ambiguous
+  failure.** The next, different batch went out under the same sequence and
+  was answered as a duplicate without being written. Such a batch is now held
+  in doubt: only the same payloads may be re-sent under it. (#737)
+- **A lost connection ends a subscription with an error, not as the end of
+  the stream.** It surfaces as `felix_client::SubscriptionLost`, and
+  `ClusterSubscription` resubscribes from the next offset until the retry
+  policy's deadline. A publish larger than the 4 MiB in-flight budget now goes
+  out alone instead of never. (#737)
+- **A redrive survives a failover.** It is one durable write, so a new leader
+  delivers redriven entries again, and a failed dead-letter write is retried
+  on the next poll instead of stalling the group. (#731)
+- **A consumer group cannot redeliver acked records after its shard moves
+  back.** The in-flight tracker now resets when a broker starts a new term
+  leading the shard. (#688)
+- **A follower's leftover tail from an older leader is compared before a new
+  leader ships past it**, so a dead leader's unacknowledged write cannot
+  survive at an offset the new leader filled differently. A dropped suffix is
+  dropped from the replay ring too. (#779, #782)
+- **A follower keeps the generation each record was written at.** It labelled
+  every record with the sender's generation, so a copy of an inherited record
+  looked newer and a later promotion could prefer that log and lose an
+  acknowledged record. Batches now carry per-record generations (peer kinds 32
+  and 33, capability `GENERATION_LABELS`); the fix holds once every broker
+  runs this version. (#814, #837)
+- **A `Quorum` publish no longer fails while a move is staged.** It waits for
+  the new generation's first quorum mark instead of being refused. (#796)
+- **A slow peer no longer holds other quorum marks.** One unresponsive peer
+  could delay every `Quorum` acknowledgement on the broker by about 2 s; each
+  shard now replicates on its own schedule. (#804)
+- **One slow peer request no longer stalls every peer.** Broker-to-broker
+  handlers ran inline on the QUIC I/O thread. (#767)
+- **Brokers rejoin after being marked down, and a control-plane outage no
+  longer expires the fleet.** The expiry sweep waits a full window after
+  start, an election or a lost store, and broker calls to the control plane
+  have deadlines. (#730)
+- **Deregistering a live broker no longer allows two leaders.** A `left` node
+  is treated as draining until one expiry window plus the regrant margin has
+  passed since its last heartbeat. (#766)
+- **A dead broker expires in one window after the control plane's clock steps
+  back** on the memory and Postgres stores. (#785)
+- **Replica reports survive a Raft snapshot** and the `migrate` export.
+  (#849)
+- **A retried Raft write no longer answers 409 for its own success.** Each
+  write carries a request id fixed before the first attempt. (#602)
+- **A Raft member that lost its volume does not vote until it has caught
+  up**, so it cannot win an election and truncate acknowledged metadata
+  writes. (#670)
+- **A control-plane member that cannot verify a token says so** with `503
+  cannot_verify` instead of `401 invalid token`. (#603)
+- **Two control-plane instances could undo each other's shard moves.** Each
+  instance wrote what it planned unconditionally, so one that stalled could
+  hand a shard back to its old leader after another had cut over. Every
+  placement, promotion and move step is now written only if the shard is still
+  at the generation it was planned from
+  (`ControlPlaneStore::put_shard_assignment_if`, Raft command
+  `PutShardAssignmentIf`); a skipped write is counted in
+  `felix_shard_assignment_write_conflicts_total` and re-planned. (#660)
+- **The docs said the clients were not installable.** `felix-client` is on
+  crates.io, PyPI and npm; the client pages and binding READMEs now say how to
+  install it. (#585)
+- **Release pipeline fixes.** The npm job published nothing and reported
+  success; it now moves each binary into its platform package, publishes the
+  main package last, and checks the registry. The Node addon's
+  `x86_64-apple-darwin` leg uses the pinned toolchain. The PyPI step skips
+  files already uploaded, the crates.io job waits out the new-crate rate
+  limit, and every npm command pins the public registry.
+  `scripts/npm_first_publish.sh` claims a new package name, which CI cannot.
+  (#578, #579, #580, #582, #583, #584)
 
+### Known limitations
 
-## [0.6.0-preview] - 2026-09-20
+Deliberately not in this preview:
 
-Development towards 0.6.0. Not a release: published from this line only if and
-when something needs to be, and `pip` will not install it without `--pre`.
-
-**A note on the version string.** Cargo and npm carry `0.6.0-preview`
-verbatim. PEP 440 normalises it to `0.6.0rc0` (`preview` is one of its
-spellings of `rc`), so the wheel's version differs from the crate's and the
-npm package's on purpose. It sorts before `0.6.0` on all three.
-
-### Fixed
-
-- **Two control-plane instances could undo each other's shard moves.** Every
-  instance over Postgres runs placement, and each wrote what it planned
-  unconditionally. An instance that planned a fence, then stalled, could write
-  it after another instance had already cut over, handing the shard back to
-  the old leader after the new one may have acknowledged writes the old one
-  never saw; two instances could likewise promote different followers after
-  one failure. Placement now writes every placement, promotion and move step
-  only if the shard is still at the generation it planned from, through a new
-  `ControlPlaneStore::put_shard_assignment_if` (a new `PutShardAssignmentIf`
-  Raft command). A write that finds the shard changed is skipped, counted in
-  `felix_shard_assignment_write_conflicts_total`, and re-planned on the next
-  pass. `docs/formal/FelixShardStalePlanner.cfg` is the race without the
-  check, and TLC finds two brokers serving the shard.
-
-- **The docs said the clients were not installable.** They are: `felix-client`
-  is on crates.io, PyPI and npm, the same name on all three. The client pages
-  still told readers to point `pip` at a release asset, to build the Node addon
-  from a checkout, and to depend on `felix-client = "0.1"`, a version that was
-  never published.
-
-  Now `cargo add felix-client`, `pip install felix-client`, `npm install
-  felix-client`, with the platform coverage each one actually has. The status
-  table's client row said TypeScript "is not published to npm", which mattered
-  more than the rest: that table is the page every other page defers to.
-
-  The binding READMEs gained an install section too. They are what npm and PyPI
-  render on the package page, and neither said how to install the package it
-  was describing.
-
-### Fixed
-
-- **`npm stage publish` cannot claim a name either**, so the staging path added
-  for that purpose does not work for a package that has never been published:
-
-  ```
-  POST /-/stage/package/felix-client-darwin-arm64
-  404 Package "felix-client-darwin-arm64" not found
-  ```
-
-  Staging uploads a new *version* of an existing package. npm's documentation
-  requires the package to exist before a trusted publisher can be configured
-  too ([npm/cli#8544](https://github.com/npm/cli/issues/8544) tracks lifting
-  that), which leaves no way for CI to create a name at all: the remaining
-  option is a direct publish. That needs either a token that bypasses 2FA
-  (restricted, and losing publish rights around January 2027) or a person
-  answering the prompt.
-
-  `scripts/npm_first_publish.sh` is that person's script. It publishes the
-  binaries from a GitHub release, so what reaches npm is what CI built and what
-  the conformance suite ran against, checks the tag against the manifest before
-  it starts, and confirms all six are live afterwards. Run once per package
-  name, ever; trusted publishing takes over from the second release.
-
-  `npm_stage` stays, correctly described: it stages a version of a package that
-  already exists.
-
-- **A publish could have gone to a corporate mirror.** `npm publish` uses
-  whatever registry is configured, and a mirror in `~/.npmrc` is a normal thing
-  for a machine to have. This one had one, and the publish went to it and
-  stopped only because it demanded credentials. Every npm command in the script
-  now pins `--registry` explicitly, and `crates/felix-typescript` and each
-  platform package carry an `.npmrc` naming the public registry, the way
-  `docs-site` already did for resolution.
-
-  It falls back to plain HTTPS when `gh` is absent, so it runs in Azure Cloud
-  Shell and other minimal environments. Publishing is likely to happen there,
-  since a corporate network cannot reach npm at all. The release is
-  public, so there is nothing to authenticate to.
-
-  The script also checks, before it downloads or packs anything, that the
-  public registry is reachable and that you are logged in to *it* rather than
-  to a mirror. A corporate network usually cannot reach npm at all, and finding
-  that out at the upload wastes the run and leaves binaries lying around.
-
-### Changed
-
-- **npm publishes through trusted publishing instead of a token.** The job
-  exchanges the workflow's OIDC identity for a short-lived credential, the way
-  the PyPI job already did, so there is no `NPM_TOKEN` to store, rotate or
-  leak. npm's own guidance is to prefer this over an automation token, and the
-  alternative was a token configured to bypass 2FA: a standing credential with
-  publish rights, held in CI and exempt from the control meant to protect it.
-
-  Two details the failure mode hides: the job needs `id-token: write`, and Node
-  22 ships an npm too old to know about OIDC, so the job upgrades npm first.
-  Without either, a publish falls back to looking for a token and fails as
-  though none were configured.
-
-  Each of the six packages needs a trusted publisher configured on npm that
-  names this repository, this workflow and the `npm` environment.
-
-- **`napi prepublish` is no longer how the packages are published.** What it
-  still did for this repository was sync the platform versions, which are
-  committed and asserted by `check_npm_packages.py`, and upload the binaries to
-  the GitHub release, which the release-assets job already did. What it did
-  besides was swallow "this package has no binary" and exit 0. That is how a
-  publish job went green having uploaded nothing.
-
-  It is an explicit `npm publish` per package now, platform packages before the
-  one that declares them as optional dependencies, and any failure stops the
-  run.
-
-- **The release can stage npm packages instead of publishing them.** A
-  `npm_stage` input on the manual dispatch runs `npm stage publish`, which a
-  stage-only token can do and which leaves each version for a maintainer with
-  2FA to promote. It exists to claim a name for the first time: trusted
-  publishing is configured on a package, and a package that has never been
-  published is not there to configure.
-
-  A trusted publisher can only be configured on a package that already exists,
-  so the first release of a new name cannot use one, and direct publishing
-  with a token that bypasses 2FA is deprecated and removed in January 2027.
-  That leaves staging, which is also the better design: a person with 2FA
-  confirms the one irreversible act, claiming a permanent name. The token is
-  passed only in staging mode. Trusted publishing is the normal path, and a
-  token sitting alongside it would be a second way in that nobody meant to
-  leave open.
-
-  The workflow records the one-time sequence, since nobody will remember it
-  by the next release: stage, promote, configure the
-  publishers now that the packages exist, delete the token.
-
-  In staging mode the job prints what to promote and in what order, and does
-  not assert the versions are live, because a staged version deliberately is
-  not.
-
-### Fixed
-
-- **The npm job published nothing and reported success.** `napi prepublish`
-  publishes the platform packages, but it does not assemble them: the binaries
-  were downloaded beside the manifest, so every `npm/<triple>/` directory was
-  empty, and each one was skipped with `[...felix.darwin-arm64.node] doesn't
-  exist` on stdout, which is not treated as a failure. The job went green having uploaded
-  nothing.
-
-  Three steps now, because it is three things: `napi artifacts` moves each
-  binary into the platform package that carries it, `napi prepublish` publishes
-  those, and `npm publish` sends the JavaScript package that declares them as
-  optional dependencies. The last step was missing outright, because
-  `prepublish` never publishes the main package.
-
-  The job now also asks the registry whether each of the six is really there,
-  and fails if any is not. Without that check this step reported success
-  twice after publishing nothing.
-
-- **The PyPI step no longer fails on a rerun.** PyPI refuses a duplicate file
-  instead of ignoring it, so once 0.5.0 was up, every later run failed on it.
-  Later runs are the norm here, because the three registries finish at
-  different rates and whichever run completes the slowest one will always find
-  PyPI already done. `skip-existing` makes it idempotent.
-
-### Fixed
-
-- **The npm publish step passed an option the pinned CLI does not have.**
-  `napi prepublish -t npm --access public` is a napi 3 spelling; the CLI is
-  pinned to 2, to match the napi crate, and it refused the flag before
-  uploading anything. The flag was never needed once the packages went
-  unscoped. npm publishes an unscoped package publicly by default, and a
-  scoped one takes `publishConfig.access` in its manifest instead of a flag
-  on the command.
-
-- **The crates.io job now waits out the new-crate rate limit** instead of
-  failing the release. crates.io allows a short burst of *new* crate names and
-  then roughly one per ten minutes: publishing this workspace for the first
-  time got five up and was refused on the sixth with a `429` naming the time it
-  would accept the next.
-
-  That is a queue, and it only applies to names that have never been
-  published. Later versions of an existing crate are not limited this way. The job reads the time from the response, waits, and retries, and
-  gives up immediately on any failure that is not a rate limit. The existing
-  skip-what-is-already-published behaviour means a resumed run picks up where
-  the last one stopped instead of erroring on what already landed.
-
-### Fixed
-
-- **The Node addon's cross-compile leg could not build.** The 0.5.0 release
-  pipeline failed on `x86_64-apple-darwin` with `can't find crate for core`,
-  which took the npm assets with it.
-
-  The job asked for `dtolnay/rust-toolchain@stable` while every other Rust job
-  in the file pins `1.97.1`. The action added the target to *stable*, and then
-  `rust-toolchain.toml` switched cargo to the pinned toolchain, which did not
-  have it. Four of the five legs passed anyway, because their target is the
-  runner's own and was already installed. Only the leg that really
-  cross-compiles, x86-64 on an arm64 macOS runner, had anything to notice.
-
-  `task ci:toolchains` now asserts every workflow's Rust setup asks for the
-  pinned channel, with an explicit `toolchain-exempt:` marker for the fuzz job,
-  which needs nightly for `cargo-fuzz` and says so.
+- A single acked publish on the fsync path still takes longer to be
+  acknowledged than the comparable NATS JetStream setup (#926).
+- Claiming a lane's queued publishes as one durable append is still being
+  measured (#932).
+- A publish connection's QUIC receive windows can buffer far more than the
+  ingress budget before backpressure applies (#923).
+- `Quorum` cache and counter shards still open on the lease, not on a fenced
+  majority (#933).
 
 ## [0.5.0] - 2026-09-19
 
@@ -2482,11 +4362,19 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/gabloe/felix/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/gabloe/felix/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/gabloe/felix/compare/v0.3.1...v0.4.0
-[0.3.1]: https://github.com/gabloe/felix/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/gabloe/felix/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/gabloe/felix/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/gabloe/felix/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/gabloe/felix/releases/tag/v0.1.0
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.7...HEAD
+[0.6.0-preview.7]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.6...v0.6.0-preview.7
+[0.6.0-preview.6]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.5...v0.6.0-preview.6
+[0.6.0-preview.5]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...v0.6.0-preview.5
+[0.6.0-preview.4]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.3...v0.6.0-preview.4
+[0.6.0-preview.3]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...v0.6.0-preview.3
+[0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2
+[0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
+[0.5.0]: https://github.com/GetFelix/felix/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/GetFelix/felix/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/GetFelix/felix/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/GetFelix/felix/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/GetFelix/felix/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/GetFelix/felix/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/GetFelix/felix/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/GetFelix/felix/releases/tag/v0.1.0

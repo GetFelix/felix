@@ -34,7 +34,7 @@ first.
   wrong about most of the keyspace, with no signal that it is.
 - Demonstrates what dropping costs, which is the case for choosing a durable
   stream or a queue when a consumer keeps derived state.
-- See [Local State Divergence](/felix/demos/state-divergence/).
+- See [Local State Divergence](/demos/state-divergence/).
 
 ```bash
 cargo run --release --manifest-path demos/state-divergence/Cargo.toml
@@ -65,7 +65,7 @@ cargo run --release -p felix-broker-service --bin durable-restart-demo
   promise about loss and not about duplicates.
 - Deterministic, because it drives the visibility timeout rather than
   sleeping, so `task demo:check` runs it as a behavioural test.
-- See [Queue Semantics](/felix/demos/queue-semantics/).
+- See [Queue Semantics](/demos/queue-semantics/).
 
 ```bash
 cargo run --release -p felix-broker-service --bin queue-semantics-demo
@@ -80,7 +80,7 @@ cargo run --release -p felix-broker-service --bin queue-semantics-demo
   would drop a record that was acknowledged.
 - Neither is data loss. The demo's point is that `Leader` trades availability
   for latency, and moves when you find out.
-- See [Leader vs Quorum](/felix/demos/cluster-consistency/).
+- See [Leader vs Quorum](/demos/cluster-consistency/).
 
 ```bash
 task cluster:consistency
@@ -92,7 +92,7 @@ task cluster:consistency
 - Runs the identical workload under both subscriber queue policies and compares
   them, so the trade-off is measured rather than claimed.
 - Live terminal UI, with automatic plain-text fallback when stdout is not a TTY.
-- See [Slow-consumer Isolation](/felix/demos/slow-consumer-isolation/).
+- See [Slow-consumer Isolation](/demos/slow-consumer-isolation/).
 
 ```bash
 cargo run --release --manifest-path demos/slow-consumer/Cargo.toml

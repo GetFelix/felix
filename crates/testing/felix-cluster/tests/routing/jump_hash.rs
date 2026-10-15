@@ -29,7 +29,7 @@ async fn create_fresh(cluster: &Cluster) -> serde_json::Value {
             cluster.tenant_id,
             cluster.namespace
         ))
-        .bearer_auth(&cluster.admin_token)
+        .bearer_auth(cluster.admin_token())
         .json(&serde_json::json!({
             "stream": FRESH,
             "kind": "Stream",
@@ -184,7 +184,7 @@ async fn a_jump_hash_stream_routes_alike_everywhere_and_a_legacy_one_is_unaffect
     let client = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect a cluster client");

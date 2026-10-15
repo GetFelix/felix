@@ -34,6 +34,17 @@ pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 /// restart does not copy every shard once per broker.
 pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
 
+/// How long a restore's new copy may go without its reported position moving
+/// before the restore is given up. A copy being shipped to moves every pass;
+/// one that has not in two minutes is not going to, and it holds the move slot
+/// every other short shard is waiting for.
+pub const DEFAULT_RESTORE_STALL_MILLIS: u64 = 2 * 60 * 1_000;
+
+/// How long after a cluster's first broker registered a new shard waits for
+/// enough brokers to hold all its copies before it is placed on fewer.
+/// Brokers started together register within a second or two of each other.
+pub const DEFAULT_PLACEMENT_SETTLE_MILLIS: u64 = 10_000;
+
 /// How moves are paced, and which regions a shard may be placed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovePolicy {
@@ -58,6 +69,16 @@ pub struct MovePolicy {
     /// `None` never replaces one; a replica set short of the factor is still
     /// topped up.
     pub restore_after_millis: Option<u64>,
+    /// How long a restore's new copy may go without its reported position
+    /// moving, as this instance watched it, before the restore is given up and
+    /// its slot goes to the next shard. `None` waits for `timeout_millis`.
+    pub restore_stall_millis: Option<u64>,
+    /// How long after the cluster's first broker registered a new shard
+    /// waits for as many live brokers as its replication factor before it
+    /// is placed on fewer. Only a young cluster waits: one whose oldest
+    /// broker registered longer ago places on whatever is live. `None` never
+    /// waits.
+    pub settle_millis: Option<u64>,
     /// Placement starts no moves or replacements of its own; those in flight
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
@@ -76,6 +97,8 @@ impl Default for MovePolicy {
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
+            restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
+            settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
@@ -90,8 +113,13 @@ pub(super) struct Moves {
 }
 
 impl Moves {
-    /// The copies `existing` already has in flight.
-    pub(super) fn counting(existing: &[ShardAssignment], policy: MovePolicy) -> Self {
+    /// The copies `existing` already has in flight, except a copy joining a
+    /// shard that is `unpaced`.
+    pub(super) fn counting(
+        existing: &[ShardAssignment],
+        policy: MovePolicy,
+        unpaced: &dyn Fn(&ShardAssignment) -> bool,
+    ) -> Self {
         let mut moves = Self {
             in_flight: 0,
             per_node: HashMap::new(),
@@ -101,11 +129,27 @@ impl Moves {
             if assignment.successor.is_some() || assignment.state == ShardState::Draining {
                 moves.take(&assignment.leader, assignment.successor.as_deref());
             }
-            if let Some(joining) = assignment.joining.as_deref() {
+            if let Some(joining) = assignment.joining.as_deref()
+                && !unpaced(assignment)
+            {
                 moves.take(&assignment.leader, Some(joining));
             }
         }
         moves
+    }
+
+    /// The most records a shard's leader may hold for a copy into it to
+    /// start without a slot.
+    pub(super) fn unpaced_max_records(&self) -> u64 {
+        self.policy.fence_max_lag_records
+    }
+
+    /// Start a copy that takes no slot, unless placement is paused.
+    pub(super) fn begin_unpaced(&self) -> Result<(), Blocked> {
+        if self.policy.paused {
+            return Err(Blocked::Paused);
+        }
+        Ok(())
     }
 
     /// Take a slot for a copy placement wants from `from` to `to`, if
@@ -165,6 +209,19 @@ impl Moves {
             caught_up.as_of_millis(),
         ) {
             (Some(timeout), Some(started), Some(now)) => now.saturating_sub(started) > timeout,
+            _ => false,
+        }
+    }
+
+    /// Whether a restore's copy into `joining` has gone the stall window
+    /// without its position moving, as this instance watched it.
+    pub(super) fn stalled(&self, caught_up: &dyn CaughtUp, key: &ShardKey, joining: &str) -> bool {
+        match (
+            self.policy.restore_stall_millis,
+            caught_up.progressed_at_millis(key, joining),
+            caught_up.as_of_millis(),
+        ) {
+            (Some(window), Some(progressed), Some(now)) => now.saturating_sub(progressed) > window,
             _ => false,
         }
     }
@@ -732,12 +789,20 @@ fn replacement_step(
 ///
 /// A member the report leaves out is taken to be level with the leader: its
 /// position is unknown, and assuming less could pass a record it holds.
+///
+/// The joiner must also be one the leader offers as a successor. Offsets
+/// cover only the shard's own log, and a `Quorum` cache's acknowledged
+/// counter updates reach placement only through that offer: a copy seated
+/// without them counts toward the majority but could not take over.
 pub(super) fn holds_what_the_set_held(
     existing: &ShardAssignment,
     joining: &str,
     caught_up: &dyn CaughtUp,
 ) -> bool {
     let key = &existing.key;
+    if !caught_up.is_caught_up(key, joining) {
+        return false;
+    }
     let (Some(tail), Some(held)) = (
         caught_up.leader_offset(key),
         caught_up.reported_offset(key, joining),
@@ -982,6 +1047,12 @@ impl CaughtUp for AtGeneration<'_> {
             .flatten()
     }
 
+    fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.current(key)
+            .then(|| self.inner.reported_counter_offset(key, node_id))
+            .flatten()
+    }
+
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
         self.inner.is_drained(key, generation)
     }
@@ -1004,6 +1075,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn as_of_millis(&self) -> Option<u64> {
         self.inner.as_of_millis()
+    }
+
+    fn progressed_at_millis(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.inner.progressed_at_millis(key, node_id)
     }
 
     // Not held to the generation: a copy that halted under the previous one

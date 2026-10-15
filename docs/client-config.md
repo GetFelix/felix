@@ -20,7 +20,11 @@ of it is configured here: it is chosen by using `ClusterClient` rather than
 - Environment variables next
 - YAML overrides last (if provided by `config_path` or `FELIX_CLIENT_CONFIG`)
 
-If a YAML path is provided and cannot be read or parsed, it returns an error.
+If a YAML path is provided and cannot be read or parsed, it returns an error. The file is read
+with the same rules as the broker's (only `true`/`false` are booleans, `<<` is
+not a merge key); see
+[Configuration](../docs-site/src/content/docs/reference/configuration.md#how-the-file-is-read).
+Unknown keys are ignored here, unlike in the broker.
 
 ## Config File Path
 
@@ -55,6 +59,19 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 - `publish_sharding` (env: `FELIX_PUB_SHARDING`)
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
+- `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
+  - Most publish streams a client opens per broker for one shard each,
+    beside the pool. Default: `16`. `0` turns them off.
+  - Each publish goes on its shard's own stream, so a shard stalled on the
+    broker holds up only itself, and one stream's shards spread over the
+    client's connections and listeners. Opened on the shard's first publish,
+    on the least-loaded connection, and kept. Shards past the cap use the
+    pool. Only with `hash_stream`. A plain `Client` learns a stream's width
+    from the broker on its first keyed publish to it; a `ClusterClient`
+    already knows it. Against a broker with `FEATURE_PUBLISH_WIDTH` the
+    width is declared ahead of keyed batches and checked by the broker, and
+    asked again every 5 s, so a stream created again at another width is
+    picked up.
 
 ### Cache Parallelism
 
@@ -70,7 +87,8 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 - `client_sub_queue_capacity` (env: `FELIX_CLIENT_SUB_QUEUE_CAPACITY`)
   - Per-subscription delivery queue depth. Default: `256`.
 - `client_sub_queue_policy` (env: `FELIX_CLIENT_SUB_QUEUE_POLICY`)
-  - Behavior when the delivery queue is full: `block`, `drop_new`, or `drop_old`.
+  - Behavior when the delivery queue is full: `block`, `drop_new`, or `drop_old`. `drop_old`
+    behaves as `drop_new`: the arriving event is dropped, not the oldest.
   - Default: `drop_new`, which bounds latency and exposes overload through dropped-event telemetry.
   - Applies to live records only. History replayed by `subscribe_from` (records below the
     subscription's `live_offset`) always waits for room, so a replay is never dropped.

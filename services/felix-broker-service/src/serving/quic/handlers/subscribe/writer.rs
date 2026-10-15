@@ -39,18 +39,6 @@ where
 }
 
 #[cfg(test)]
-pub(super) async fn write_parts(
-    send: &mut quinn::SendStream,
-    parts: felix_wire::binary::EncodedEventBatchParts,
-) -> Result<()> {
-    let mut segments = parts.into_segments();
-    send.write_all_chunks(segments.as_mut_slice())
-        .await
-        .context("write subscription frame chunks")?;
-    Ok(())
-}
-
-#[cfg(test)]
 pub(super) async fn write_parts_many(
     send: &mut quinn::SendStream,
     frames: Vec<felix_wire::binary::EncodedEventBatchParts>,
@@ -175,6 +163,7 @@ pub(super) async fn run_writer_lane(
                     item_count,
                     first_enqueued_at,
                     enqueue_at,
+                    held,
                 } => {
                     let Some(connection_id) = manager
                         .subscriber_connections
@@ -192,6 +181,7 @@ pub(super) async fn run_writer_lane(
                                 item_count,
                                 first_enqueued_at,
                                 enqueue_at,
+                                held,
                             },
                         )
                         .await;
@@ -271,6 +261,7 @@ pub(super) async fn run_connection_writer(
             debug_dequeues = debug_dequeues.saturating_add(1);
 
             let first_subscriber_id = first.subscriber_id;
+            let mut held = first.held;
             let mut frames = vec![first.frame];
             let mut item_count = first.item_count;
             let mut coalesced_bytes = frames[0].len();
@@ -283,6 +274,7 @@ pub(super) async fn run_connection_writer(
                     item_count = item_count.saturating_add(next_frame.item_count);
                     coalesced_bytes = coalesced_bytes.saturating_add(next_frame.frame.len());
                     frames.push(next_frame.frame);
+                    held.absorb(next_frame.held);
                 }
             }
 
@@ -320,6 +312,7 @@ pub(super) async fn run_connection_writer(
                     write_frames_many(&mut subscriber.event_send, frames).await
                 };
                 let write_ns = write_start.map(|start| start.elapsed().as_nanos() as u64);
+                drop(held);
                 (
                     subscriber_id,
                     first_subscriber_id,
@@ -390,6 +383,7 @@ pub(super) async fn run_connection_writer(
                                         item_count: 0,
                                         first_enqueued_at: now,
                                         enqueue_at: now,
+                                        held: felix_broker::HeldBytes::default(),
                                     });
                             }
                             // What was queued ahead of this is the subscription's
@@ -411,6 +405,7 @@ pub(super) async fn run_connection_writer(
                             item_count,
                             first_enqueued_at,
                             enqueue_at,
+                            held,
                         } => {
                             if leaving.contains(&subscriber_id) {
                                 continue;
@@ -432,6 +427,7 @@ pub(super) async fn run_connection_writer(
                                 item_count,
                                 first_enqueued_at,
                                 enqueue_at,
+                                held,
                             });
                         }
                     }

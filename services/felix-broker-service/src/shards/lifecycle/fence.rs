@@ -18,9 +18,10 @@
 //! group acks -- so checking the lease here, against the clock, is what makes
 //! a lapsed lease refuse all of them rather than whichever paths remembered to
 //! ask. See "Leases" in `docs/replication-design.md`. The exception is a
-//! `Quorum` stream shard whose acknowledgements its followers decide: its
-//! writes get in without the lease. Its group state does too once the fleet
-//! reads by round, confirmed by a round instead ([`ShardFence::sessions_lease_free`]).
+//! `Quorum` shard whose acknowledgements its followers decide: its writes,
+//! a cache's puts and counter adds included, get in without the lease. Its
+//! group state does too once the fleet reads by round, confirmed by a round
+//! instead ([`ShardFence::sessions_lease_free`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
@@ -29,6 +30,7 @@ use std::sync::{Arc, OnceLock};
 use parking_lot::RwLock;
 use tokio::sync::Notify;
 
+use super::Phase;
 use crate::cluster::lease::LeaseState;
 use crate::cluster::lease::metrics as lease_metrics;
 use crate::shards::ShardKey;
@@ -50,6 +52,11 @@ pub struct ShardFence {
     /// `Active`; kept here so replication, which runs the fence, can read it
     /// without the lifecycle's lock.
     promotions: RwLock<HashMap<ShardKey, u64>>,
+    /// Each shard's lifecycle phase, mirrored as the lifecycle sets it, for an
+    /// operator's `shard_inspect`. Here for the reason `promotions` is: the
+    /// lifecycle sets the phase and the fence together, and a read must not
+    /// take the lifecycle's lock.
+    phases: RwLock<HashMap<ShardKey, PhaseRecord>>,
     /// Shards found deposed at a generation, not yet taken by
     /// [`Self::take_deposals`].
     deposals: parking_lot::Mutex<Vec<(ShardKey, u64)>>,
@@ -85,6 +92,38 @@ impl ShardFence {
         self.promotions.write().remove(key);
     }
 
+    /// Mirror the phase the lifecycle just set for `key`.
+    pub(crate) fn record_phase(&self, key: &ShardKey, phase: Phase, generation: u64) {
+        self.phases.write().insert(
+            key.clone(),
+            PhaseRecord {
+                phase,
+                generation,
+                error: None,
+            },
+        );
+    }
+
+    /// Keep why `key`'s log could not be opened beside its `Failed` phase.
+    pub(crate) fn record_open_error(&self, key: &ShardKey, error: String) {
+        if let Some(record) = self.phases.write().get_mut(key) {
+            record.error = Some(error);
+        }
+    }
+
+    /// The phase the lifecycle last set for `key`, if it has held it.
+    pub(crate) fn phase_of(&self, key: &ShardKey) -> Option<PhaseRecord> {
+        self.phases.read().get(key).cloned()
+    }
+
+    /// Whether writes to `key` at `generation` get in without the lease.
+    pub(crate) fn lease_free(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.lease_free_at.load(SeqCst) == generation)
+    }
+
     /// The generation `key` waits at for the promotion fence, if it does.
     pub fn awaiting_promotion(&self, key: &ShardKey) -> Option<u64> {
         self.promotions.read().get(key).copied()
@@ -102,6 +141,15 @@ impl ShardFence {
         if let Some(gate) = self.gates.read().get(key) {
             gate.open_at.store(CLOSED, SeqCst);
         }
+    }
+
+    /// Whether `key` served here and its fence has since closed. False for a
+    /// shard that never opened here.
+    pub fn is_closed(&self, key: &ShardKey) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.open_at.load(SeqCst) == CLOSED)
     }
 
     /// Enter the fence for one write admitted at `generation`, right before it
@@ -187,6 +235,14 @@ impl ShardFence {
         }
         self.deposals.lock().push((key.clone(), generation));
         self.deposal.notify_one();
+    }
+
+    /// Whether this broker learned `key` has a newer leader than `generation`.
+    pub fn is_deposed(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.deposed_at.load(SeqCst) == generation)
     }
 
     /// Resolves once a deposal is queued, or at once if one was queued with
@@ -324,6 +380,15 @@ impl std::fmt::Display for Fenced {
 
 impl std::error::Error for Fenced {}
 
+/// A shard's phase as the lifecycle last set it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PhaseRecord {
+    pub(crate) phase: Phase,
+    pub(crate) generation: u64,
+    /// Why the log could not be opened, while the phase is `Failed`.
+    pub(crate) error: Option<String>,
+}
+
 /// One write inside the fence. Dropping it lets the fence quiesce.
 #[derive(Debug)]
 pub struct FenceGuard {
@@ -336,6 +401,11 @@ impl FenceGuard {
     /// needs no lease.
     pub(crate) fn lease_free(&self) -> bool {
         self.gate.lease_free_at.load(SeqCst) == self.generation
+    }
+
+    /// Whether the fence this guard entered is still open at its generation.
+    pub(crate) fn still_open(&self) -> bool {
+        self.gate.open_at.load(SeqCst) == self.generation
     }
 }
 

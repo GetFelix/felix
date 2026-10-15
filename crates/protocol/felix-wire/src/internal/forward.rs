@@ -130,6 +130,24 @@ pub struct ForwardCacheOp {
     ///
     /// [`Kind::AuthorizedForwardCacheOp`]: super::Kind::AuthorizedForwardCacheOp
     pub credential: String,
+    /// Set for a request that wants a versioned answer: a conditional put or
+    /// delete, or a get that reports its version. Encodes as
+    /// [`Kind::ConditionalForwardCacheOp`], which an older owner refuses
+    /// rather than serving as an unconditional write.
+    ///
+    /// [`Kind::ConditionalForwardCacheOp`]: super::Kind::ConditionalForwardCacheOp
+    pub condition: Option<ForwardCacheCondition>,
+}
+
+/// What a versioned forwarded cache request asks of the key's entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardCacheCondition {
+    /// No condition: a `Get` that wants the version with its value.
+    Unconditional,
+    /// The key has no live entry.
+    Absent,
+    /// The key's live entry has this version.
+    Version(u64),
 }
 
 /// Which cache operation a forwarded request carries.
@@ -172,6 +190,23 @@ pub struct ForwardCacheOk {
     /// operations share one response shape, and "no value to report" is the
     /// honest reading for a write.
     pub value: Option<Bytes>,
+    /// The answer to a request that carried a condition. Encodes as
+    /// [`Kind::ConditionalForwardCacheOk`], sent only in reply to
+    /// [`Kind::ConditionalForwardCacheOp`].
+    ///
+    /// [`Kind::ConditionalForwardCacheOk`]: super::Kind::ConditionalForwardCacheOk
+    /// [`Kind::ConditionalForwardCacheOp`]: super::Kind::ConditionalForwardCacheOp
+    pub outcome: Option<ForwardCacheOutcome>,
+}
+
+/// Whether a versioned request's write was made, and the version that answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardCacheOutcome {
+    /// Always true for a get.
+    pub applied: bool,
+    /// For an applied put, the version written; for a get, the value's;
+    /// otherwise the key's current version. `None` when the key has none.
+    pub version: Option<u64>,
 }
 
 /// The owner could not apply the operation.

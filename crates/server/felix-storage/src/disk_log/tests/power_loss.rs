@@ -94,6 +94,7 @@ async fn run(scenario: Scenario) {
                     payload: Bytes::from(payload(scenario.seed, offset)),
                     timestamp_micros: 1_700_000_000 + offset,
                     mark: Default::default(),
+                    publisher: None,
                 })
                 .collect();
             let appended = log.append(&records).await.expect("append");
@@ -186,6 +187,7 @@ async fn verify(
         payload: Bytes::from_static(b"after the crash"),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     };
     let appended = log
         .append(std::slice::from_ref(&more))
@@ -335,6 +337,7 @@ impl ParkedSeal {
             payload: Bytes::from(payload(self.scenario.seed, self.next)),
             timestamp_micros: 1_700_000_000 + self.next,
             mark: Default::default(),
+            publisher: None,
         };
         self.log.append(&[record]).await.expect("append");
         self.next += 1;
@@ -473,6 +476,91 @@ async fn a_segment_overshoots_rather_than_rolls_while_a_seal_is_parked() {
         parked.append().await;
     }
     parked.finish().await;
+}
+
+/// The race behind the nightly failure on workload seed 1333428443 (#1218),
+/// made deterministic. A flush reads the active segment, then a background
+/// roll retires that segment and its seal syncs it whole before the flush
+/// records its read. The seal's sync is the newer one, so the model must keep
+/// what it read; a later flush of the new segment then moves the durable mark past the
+/// retired one, and a model left holding the flush's shorter read builds
+/// crashes that cut a sealed segment short, which recovery rightly refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flush_overtaken_by_a_seal_does_not_rewind_the_sealed_segment() {
+    let scenario = Scenario {
+        fsync_mode: FsyncMode::None,
+        background_roll: true,
+        writeback: Writeback::InOrder,
+        seed: BASE_SEED,
+    };
+    let config = scenario.config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    std::fs::create_dir_all(&root).expect("log dir");
+    let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+    let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+    let mut next: Offset = 0;
+    let append = async |next: &mut Offset| {
+        let record = AppendRecord {
+            payload: Bytes::from(payload(scenario.seed, *next)),
+            timestamp_micros: 1_700_000_000 + *next,
+            mark: Default::default(),
+            publisher: None,
+        };
+        log.append(&[record]).await.expect("append");
+        *next += 1;
+    };
+    for _ in 0..2 {
+        append(&mut next).await;
+    }
+
+    // The flush reads the segment and parks before recording the read.
+    let (parked, release) = observer.park_next_capture();
+    let flushing = tokio::spawn(Arc::clone(&log.inner).flush());
+    tokio::task::spawn_blocking(move || parked.recv_timeout(Duration::from_secs(10)))
+        .await
+        .expect("join")
+        .expect("the flush never reached its capture");
+
+    // Fill the segment past the early-roll threshold and let the roll seal it.
+    let first = log.segments()[0].id;
+    while log.segments().len() == 1 {
+        append(&mut next).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    for _ in 0..5_000 {
+        if log.inner.roll_state.load(Ordering::Acquire) == RollState::Idle as u8
+            && log.inner.pending_seal.lock().is_none()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(
+        log.inner.pending_seal.lock().is_none(),
+        "the background roll never sealed segment {first}"
+    );
+
+    release.send(()).expect("release the flush");
+    flushing.await.expect("join").expect("flush");
+    append(&mut next).await;
+    log.sync().await.expect("sync the new segment");
+
+    let acknowledged = log.durable_offset();
+    for seed in 0..64 {
+        for writeback in [Writeback::InOrder, Writeback::AnySubset] {
+            let image = tempdir().expect("image dir");
+            observer
+                .crash(seed, writeback, image.path())
+                .expect("build the crash image");
+            let scenario = Scenario {
+                writeback,
+                ..scenario
+            };
+            verify(image.path(), &config, scenario, seed, acknowledged, next).await;
+        }
+    }
+    log.shutdown().await.expect("shutdown");
 }
 
 /// Whether segment `retired` in `image` is intact but ends before segment
@@ -707,4 +795,57 @@ async fn a_power_loss_during_a_reset_leaves_old_or_new() {
             break;
         }
     }
+}
+
+/// Power goes while the active segment's reservation is being extended. The
+/// extension reserves blocks without moving the file's length, so every crash
+/// must recover exactly what a crash without it would: the acknowledged
+/// records and a gap-free prefix of the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_mid_extension_recovers_the_written_records() {
+    let scenario = Scenario {
+        fsync_mode: FsyncMode::OnCommit,
+        background_roll: false,
+        writeback: Writeback::AnySubset,
+        seed: BASE_SEED,
+    };
+    let config = scenario.config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    std::fs::create_dir_all(&root).expect("log dir");
+    let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+    let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+    let (release, held) = std::sync::mpsc::channel();
+    *log.inner.hold_next_extension.lock() = Some(held);
+
+    let mut next: Offset = 0;
+    let append = async |next: &mut Offset| {
+        let record = AppendRecord {
+            payload: Bytes::from(payload(scenario.seed, *next)),
+            timestamp_micros: 1_700_000_000 + *next,
+            mark: Default::default(),
+            publisher: None,
+        };
+        log.append(&[record]).await.expect("append");
+        *next += 1;
+    };
+    while log.inner.hold_next_extension.lock().is_some() {
+        append(&mut next).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // The extension is parked; keep writing while it is.
+    for _ in 0..3 {
+        append(&mut next).await;
+    }
+
+    let acknowledged = log.durable_offset();
+    for seed in 0..24 {
+        let image = tempdir().expect("image dir");
+        observer
+            .crash(seed, scenario.writeback, image.path())
+            .expect("build the crash image");
+        verify(image.path(), &config, scenario, seed, acknowledged, next).await;
+    }
+    drop(release);
+    log.shutdown().await.expect("shutdown");
 }

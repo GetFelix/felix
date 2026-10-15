@@ -1,5 +1,7 @@
 //! End-to-end: real endpoints on loopback, with a self-signed certificate.
 
+mod idle_reset;
+
 use std::sync::Arc;
 use std::time::Duration;
 

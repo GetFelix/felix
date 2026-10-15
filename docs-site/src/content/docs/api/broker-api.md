@@ -5,7 +5,7 @@ title: "Broker API Reference"
 The broker's data-plane API: what each operation does on the wire, what it
 returns, and how it fails. Message shapes are shown as JSON control messages;
 the binary framing that carries the hot paths is in the
-[wire protocol](/felix/architecture/wire-protocol/).
+[wire protocol](/architecture/wire-protocol/).
 
 ## Connection Model
 
@@ -76,7 +76,7 @@ The JSON `publish` and `publish_batch` messages below are the compatibility
 path. Current clients publish with binary frames and fall back to JSON only
 against a broker that did not advertise the frame they need. The binary forms
 also carry a routing key, a request id for acks, and an idempotent producer's
-sequence. See [Binary PublishBatch](https://github.com/gabloe/felix/blob/main/docs/protocol.md#binary-publishbatch)
+sequence. See [Binary PublishBatch](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#binary-publishbatch)
 and the keyed, acked and idempotent variants after it in `docs/protocol.md`.
 
 ### Single Message Publish
@@ -135,7 +135,7 @@ once the publish is committed, or with the reason it was refused:
 
 ```rust
 use felix_client::{Client, ClientConfig};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
@@ -162,7 +162,7 @@ publisher
 ```
 
 Every message costs a frame of its own, so batch when throughput matters.
-Measured numbers are on the [Benchmarks](/felix/features/benchmarks/) page.
+Measured numbers are on the [Benchmarks](/features/benchmarks/) page.
 
 ### Batch Publish
 
@@ -203,7 +203,7 @@ let messages = vec![
     b"Event 3".to_vec(),
 ];
 
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish_batch("acme", "prod", "events", messages, AckMode::PerBatch)
@@ -211,7 +211,7 @@ publisher
 ```
 
 Larger batches raise throughput and add latency. See
-[Benchmarks](/felix/features/benchmarks/) for measured trade-offs.
+[Benchmarks](/features/benchmarks/) for measured trade-offs.
 
 ### Binary Batch Publish
 
@@ -244,6 +244,42 @@ publisher
 
 The Rust client uses this frame for every publish once the broker advertises
 it, so `publish` and `publish_batch` already take this path.
+
+### Conditional Publish
+
+Appends a batch only if it would start at exactly `expected_offset`, the
+shard's next offset. Sent only to a broker that advertised
+`FEATURE_PUBLISH_CONDITIONAL`.
+
+```json
+{
+  "type": "publish_if",
+  "tenant_id": "acme",
+  "namespace": "games",
+  "stream": "match-7",
+  "payloads": ["<base64>"],
+  "expected_offset": 120,
+  "request_id": 9
+}
+```
+
+`key` is optional and routes the batch like `publish_batch`. Written, the
+answer is `publish_ok` with `offset`, once the batch is durable. Refused, it is
+`publish_refused` with `{"offset_mismatch": {"tail": <u64>}}`, and nothing was
+written. A broker that does not lead the shard answers `not_leader`. `commit`
+takes the same optional `expected_offset`.
+
+```rust
+use felix_client::ConditionalWrite;
+
+match client
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], 120)
+    .await?
+{
+    ConditionalWrite::Written { offset } => assert_eq!(offset, 120),
+    ConditionalWrite::Refused { tail } => println!("the shard is at {tail}"),
+}
+```
 
 ### Publish Pipeline Configuration
 
@@ -357,7 +393,85 @@ negotiated, each batch starts with a `base_offset`, and event `i` sits at
 events. With `FLAG_EVENT_BATCH_SKIPPED` as well, a batch also carries
 `skipped_before`, the count of offsets before it that hold no event, so a gap
 can be told apart from a record that was never an event. See
-[Event batch offsets](https://github.com/gabloe/felix/blob/main/docs/protocol.md#event-batch-offsets).
+[Event batch offsets](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-offsets).
+
+#### Who published an event
+
+A subscriber that offers `FLAG_EVENT_BATCH_PUBLISHER` (`0x2000`) is told the
+principal that published each batch: the `sub` of the token the broker
+accepted the write from. A consumer that offers `FEATURE_GROUP_PUBLISHER` gets
+the same value as `publisher` on each group record. Nobody else's frames
+change.
+
+It proves that the broker accepted the write from a connection authenticated
+as that principal, with permission to publish to the stream. It does not say
+who wrote the payload's contents. An in-memory stream reports the publishing
+connection's principal. A durable stream reports what it stored with the
+record, so live delivery, replay from any offset, a promoted replica and a
+consumer group agree, and it stores one only once enabled: by finalizing the
+`publisher_principal` fleet feature in a cluster, or with
+`FELIX_RECORD_PUBLISHERS=true` on a single broker. See
+[Event batch publisher](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-publisher).
+
+#### When an event was written
+
+A subscriber that offers `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets each
+event's append time, in microseconds since the Unix epoch, on every batch from
+a durable stream. A consumer that offers `FEATURE_RECORD_TIMESTAMPS` gets it as
+`timestamp_micros` on each group record. Live delivery and replay report the
+same time, because the broker stamps it once, when it appends the publish
+batch. It is the leading broker's clock, not the publisher's. In-memory
+streams store no time and send none. See
+[Event batch timestamps](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-timestamps).
+
+#### Starting from a time
+
+To replay from a point in time, ask for the offset first and subscribe at it:
+
+```json
+{ "type": "offset_for_time", "tenant_id": "acme", "namespace": "prod",
+  "stream": "events", "shard": 0, "at_micros": 1767225600000000, "request_id": 9 }
+```
+
+```json
+{ "type": "offset_value", "offset": 48210, "request_id": 9 }
+```
+
+The answer is the first offset on that shard appended at or after
+`at_micros`. `offset` is absent when nothing that recent is committed yet, so
+subscribe at `latest`; a time older than the shard's oldest record answers with
+that record. It needs `stream.subscribe`, only the shard's leader answers, and
+the broker must advertise `FEATURE_RECORD_TIMESTAMPS`. The lookup is a binary
+search over append times, so if the leader's clock stepped back the answer is
+close to the right record rather than exactly it. See
+[OffsetForTime](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#offsetfortime).
+
+#### Reading a range without subscribing
+
+A subscription has no end: replay runs on into live delivery. To read a slice
+of a durable stream and stop, send `stream_read`:
+
+```json
+{ "type": "stream_read", "tenant_id": "acme", "namespace": "prod",
+  "stream": "events", "shard": 0, "from": 48210, "end": 48300,
+  "max_records": 50, "request_id": 10 }
+```
+
+```json
+{ "type": "stream_records",
+  "records": [{ "offset": 48210, "payload": "eyJ...", "timestamp_micros": 1767225600000000 }],
+  "next_offset": 48260, "request_id": 10 }
+```
+
+Read the next page from `next_offset`. The range is done once it reaches
+`end`. Leave `end` out to read up to what is committed. The broker caps a page
+at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of payload, and
+returns only committed records without waiting for more, so a page can come
+back short or empty. A `from` below what retention kept, or past the tail, gets
+a `subscribe_cursor_error`. No subscriber is registered. It needs
+`stream.subscribe`, only the shard's leader answers, and the broker must
+advertise `FEATURE_STREAM_READ`. See
+[StreamRead](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#streamread).
 
 **Event stream lifecycle**:
 
@@ -400,7 +514,7 @@ max_subscriber_writer_lanes: 8       # Safety clamp
 subscriber_lane_shard: auto          # auto|subscriber_id_hash|connection_id_hash|round_robin_pin
 event_batch_max_events: 64           # Max events per batch
 event_batch_max_bytes: 65536         # Max batch size (64 KB)
-event_batch_max_delay_us: 250        # Max batching delay (250 µs)
+event_batch_max_delay_us: 250        # Max batching delay under load (250 µs)
 ```
 
 **Batching trade-offs**:
@@ -526,7 +640,7 @@ client
 ```
 
 Measured latency and throughput are on the
-[Benchmarks](/felix/features/benchmarks/) page.
+[Benchmarks](/features/benchmarks/) page.
 
 ### Cache Get
 
@@ -604,6 +718,44 @@ match client.cache_delete("acme", "prod", "sessions", session_id).await? {
 }
 ```
 
+### Cache Conditional Writes
+
+```json
+{
+  "type": "cache_put_if",
+  "request_id": 7,
+  "tenant_id": "acme",
+  "namespace": "prod",
+  "cache": "leases",
+  "key": "endpoint-7",
+  "value": "base64-encoded-bytes",
+  "ttl_ms": 30000,
+  "condition": "absent"
+}
+```
+
+`condition` is `"absent"` (no live entry) or `{"version": 41}` (the live entry
+is at that version). `cache_delete_if` names the key and a `version` instead of
+a value and condition. Both are answered with:
+
+```json
+{ "type": "cache_condition_result", "applied": false, "version": 41, "request_id": 7 }
+```
+
+Applied, `version` is the version the put wrote. Refused, it is the key's
+current version, left out when the key has none. The check and the write are
+atomic on the key's owner. A `cache_value` answering a get carries the value's
+`version` too, for a client that offered the bit. Sent only to a broker that
+advertised `FEATURE_CACHE_CONDITIONAL`.
+
+```rust
+use felix_client::CacheCondition;
+
+let taken = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me, Some(30_000), CacheCondition::Absent)
+    .await?;
+```
+
 ### Cache Request Pipelining
 
 Cache streams support pipelining multiple requests:
@@ -636,15 +788,16 @@ cache_streams_per_conn: 4         # Streams per connection
 ```
 
 More streams allow more requests in flight. See
-[Benchmarks](/felix/features/benchmarks/) for measured numbers.
+[Benchmarks](/features/benchmarks/) for measured numbers.
 
 ### Cache Configuration
 
-Broker-side cache tuning:
+Broker-side cache tuning. Cache requests arrive on the same listener as
+publishes, so the receive windows are the publish ones:
 
 ```yaml
-cache_conn_recv_window: 268435456    # 256 MiB per connection
-cache_stream_recv_window: 67108864   # 64 MiB per stream
+pub_conn_recv_window: 16777216       # 16 MiB per connection
+pub_stream_recv_window: 16777216     # 16 MiB per stream
 cache_send_window: 268435456         # 256 MiB send window
 ```
 
@@ -653,7 +806,7 @@ cache_send_window: 268435456         # 256 MiB send window
 The third way to read a stream. Where `subscribe` pushes every record to every
 subscriber, a **consumer group** hands each record to one consumer and takes it
 back if nobody says it was handled. See
-[Queues](/felix/features/queues/) for the semantics.
+[Queues](/features/queues/) for the semantics.
 
 Every request below goes **only to the broker that leads the shard**, and only
 to one that advertised `FEATURE_CONSUMER_GROUP`. A poll is refused rather than
@@ -722,6 +875,36 @@ nack for a claim made before it: anything below the log tail it first saw.
 An offset written after that and not yet handed out is answered `stale_claim`
 (retryable): nothing was applied and the record comes round.
 
+### Claim Control
+
+```json
+{ "type": "group_poll", "...": "as above", "visibility_ms": 300000 }
+{ "type": "group_extend", "...": "scope", "offset": 41, "attempts": 1,
+  "extend_ms": 60000, "request_id": 9 }
+{ "type": "group_extended", "visible_ms": 60000, "request_id": 9 }
+{ "type": "group_nack", "...": "scope", "offset": 41, "delay_ms": 30000, "attempts": 1,
+  "request_id": 10 }
+{ "type": "group_dead_letter", "...": "scope", "offset": 41, "request_id": 11 }
+```
+
+Sent only to a broker that advertised `FEATURE_GROUP_CLAIM_CONTROL`. That
+includes the two new fields: an older broker ignores `visibility_ms` and
+`delay_ms` and would claim for its own timeout or nack at once.
+
+`visibility_ms` sets how long one poll's claims stand. `group_extend` keeps a
+claim standing for `extend_ms` from now and answers with what it granted. It is
+refused with `stale_claim` once the claim named by `offset` and `attempts` no
+longer stands, because it lapsed or the record went out again. `delay_ms` on a
+nack makes the record owed only after the delay, holding a place under the
+in-flight cap until then. `attempts` on a nack names the delivery the same way
+and is refused the same way, so a late nack cannot take the record from whoever
+holds it now; left out, the nack hands back whatever claim stands. The clients
+name the delivery on every nack, delayed or not. `group_dead_letter` lists the record as a dead letter
+and finishes it, answered with `cache_ok`; a record already finished is
+`invalid_request`. The broker caps every duration at
+`FELIX_GROUP_MAX_VISIBILITY_MS`. All of these need `group.consume`. Extensions
+and delays are the leader's memory, so a failover redelivers sooner.
+
 ### Dead Letters
 
 Past `FELIX_GROUP_MAX_ATTEMPTS` (5) a record is dead-lettered, so one poison
@@ -741,6 +924,34 @@ A dead letter is a pointer to the record, not a copy of it. The record is still 
 log at that offset, readable by an ordinary replay. `group_discard` drops it
 from the list; `group_redrive` puts it back in play.
 
+### Group Lifecycle
+
+```json
+{ "type": "group_seek", "...": "scope", "start": "latest", "if_new": true, "request_id": 6 }
+{ "type": "group_position", "offset": 118, "moved": true, "request_id": 6 }
+{ "type": "group_describe", "...": "scope", "request_id": 7 }
+{ "type": "group_info", "committed": 118, "tail": 130, "in_flight": 4, "owed": 1,
+  "dead_letters": 0, "request_id": 7 }
+{ "type": "group_delete", "...": "scope", "request_id": 8 }
+{ "type": "group_deleted", "existed": true, "request_id": 8 }
+```
+
+Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+
+`group_seek` moves a group's cursor on one shard to `earliest` (the oldest
+record held), `latest` (the committed tail) or `{"offset": n}` between the two;
+anything outside is `invalid_request`. With `if_new` it moves only a group that
+does not exist yet, which is how a group is created somewhere other than offset
+0. A seek voids the claims standing when it lands: an ack for a record the group
+now owes is answered `stale_claim`. Dead letters are kept.
+
+`group_info` leaves out `committed` for a group with no cursor. `in_flight` and
+`owed` are the leader's memory and start again from zero when the shard changes
+leader. `group_delete` removes the cursor and dead letters; the next poll
+starts the group afresh.
+
+Seek and delete need `group.manage`, describe needs `group.consume`.
+
 **Example**:
 
 ```rust
@@ -751,7 +962,7 @@ let records = client
 for record in records {
     match handle(&record.payload) {
         Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
-        Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
+        Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", &record).await?,
     }
 }
 ```
@@ -829,21 +1040,39 @@ A prefix watch reads **one shard**, so watching a prefix across a whole cache
 means one `cache_watch` per shard. `0` means the broker knows nothing of that
 cache.
 
+### Shard Owners
+
+```json
+{ "type": "shard_owners", "tenant_id": "acme", "namespace": "prod",
+  "name": "orders", "kind": "stream", "request_id": 3 }
+{ "type": "shard_owners_view", "request_id": 3, "owners": [
+  { "shard": 0, "node_id": "broker-2", "addr": "10.0.0.6:5000", "generation": 4 },
+  { "shard": 1, "generation": 0, "unavailable": "not_assigned" } ] }
+```
+
+Which broker owns each shard of a stream or cache (`kind` is `stream` or
+`cache`). Gated by `FEATURE_SHARD_OWNERS`. A shard nobody can serve right now
+has no `node_id` and says why in `unavailable`. A broker not in a cluster
+answers one shard with no `node_id`. `Client::shard_owners` asks it.
+
 `ClusterClient::subscribe_sharded` does all of this for you: it asks, opens one
 subscription per shard, and follows each shard's own redirect.
 
 ## Other Messages
 
 The control stream carries more than this page walks through. Each is
-specified in [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md):
+specified in [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md):
 
 | Message | What it does |
 | --- | --- |
 | `auth` / `auth_ok` | The first round trip on every control stream. The client offers `client_flags` and features, and the broker answers with `server_flags`, `server_features` and, when granted, a `publish_window`. |
 | `subscribe_cursor_error` | A subscribe asked for an offset the broker cannot serve: `too_old` (retention removed it) or `in_future`. |
 | `shard_moved` | The last frame on a subscription's or cache watch's event stream when its shard moved, with where to resume. Sent only with `FEATURE_SHARD_MOVED`. |
+| `stream_deleted` | The last frame on a subscription's event stream when its stream was deleted. Sent only with `FEATURE_STREAM_DELETED`. |
+| `subscription_lagged` | The last frame on a durable-stream subscription whose queue on the broker dropped records, with the offset to resume from. Sent only with `FEATURE_SUBSCRIPTION_LAGGED`. |
 | `cache_watch` | Watch a cache key or prefix: current values, then every change. |
 | `counter_add` / `counter_get` | Add to and read a cache's counters. |
+| `publish_width` | The width the client routed the keyed batches that follow to one stream by. The broker refuses a keyed batch routed by a width the stream does not have with `stale_width`. Sent only with `FEATURE_PUBLISH_WIDTH`. |
 | `producer_init` / `publish_idempotent` | Take a producer id and publish numbered batches that land once when re-sent. |
 | `unsupported` | The answer to a request type the broker does not know, when both sides negotiated `FEATURE_UNSUPPORTED`. |
 
@@ -852,7 +1081,7 @@ specified in [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs
 Besides QUIC, each broker serves plain HTTP on its metrics listener
 (`FELIX_BROKER_METRICS_BIND`, `0.0.0.0:8080` by default): `/metrics`, `/live`,
 `/ready`, `/replication/halted` (see
-[Observability](/felix/features/observability/)) and the one below. The
+[Observability](/features/observability/)) and the one below. The
 listener has no authentication, so everything on it is read-only.
 
 ### Backup Offsets
@@ -898,7 +1127,7 @@ again shortly. A broker with no cluster leads nothing and answers with empty
 lists.
 
 `felix-controlplane admin backup-point` is what reads this; see
-[Backup and restore](/felix/deployment/backup-and-restore/).
+[Backup and restore](/deployment/backup-and-restore/).
 
 ## Error Handling
 
@@ -996,7 +1225,7 @@ safe only through an idempotent producer.
 
 ```rust
 use felix_client::{BrokerError, Client, RetryClass};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::time::Duration;
 
 async fn publish_with_retry(client: &Client, data: &[u8], retries: u32) -> anyhow::Result<()> {
@@ -1108,4 +1337,4 @@ cache_conn_recv_window: 134217728  # Smaller windows for lower memory
 Change these knobs based on measurements. High queue depth means too few workers; contention
 means too many; dropped events mean buffers too small for the workload's
 bursts; high memory means the opposite. Broker telemetry and client metrics
-(see [Observability](/felix/features/observability/)) tell you which.
+(see [Observability](/features/observability/)) tell you which.

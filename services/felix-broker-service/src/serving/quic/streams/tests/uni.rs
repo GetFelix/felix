@@ -109,6 +109,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
     let (scheduler, _tx, rx) = test_channel(1);
     drop(rx);
     let publish_ctx = PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,
@@ -120,14 +121,14 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: WriterLaneManager::new(&BrokerConfig::default()),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     };
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let binary =

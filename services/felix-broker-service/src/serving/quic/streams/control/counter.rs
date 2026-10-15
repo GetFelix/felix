@@ -1,7 +1,7 @@
 //! Counter requests on the control stream.
 
 use anyhow::Result;
-use felix_authz::Action;
+use felix_authz::{Action, CacheKeys};
 use felix_wire::Message;
 
 use super::authz::authorize_cache;
@@ -41,6 +41,7 @@ pub(super) async fn counter_add(
         Action::CacheWrite,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?
@@ -152,6 +153,7 @@ pub(super) async fn counter_get(
         Action::CacheRead,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?

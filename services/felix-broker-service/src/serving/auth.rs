@@ -33,6 +33,8 @@ use jsonwebtoken::Algorithm;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::serving::revocation::{Revocable, Revocations, Revoked};
+
 /// Verifies Felix tokens against control-plane JWKS. Cloning shares the
 /// verifier and key store.
 #[derive(Clone)]
@@ -79,7 +81,8 @@ impl BrokerAuth {
     }
 
     /// Require every token presented over a connection with a client
-    /// certificate to name that certificate's identity as its subject.
+    /// certificate to name that certificate's identity as its subject, or as
+    /// its actor (`act`) on a token the control plane minted by delegation.
     pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
         self.bind_subject = bind_subject;
         self
@@ -96,8 +99,12 @@ impl BrokerAuth {
     ) -> Result<AuthContext> {
         let context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
-            crate::serving::tls::check_subject_binding(peer_certs, &context.subject)
-                .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
+            crate::serving::tls::check_subject_binding(
+                peer_certs,
+                &context.subject,
+                context.actor.as_deref(),
+            )
+            .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
         }
         Ok(context)
     }
@@ -107,17 +114,32 @@ impl BrokerAuth {
     ///
     /// # Errors
     /// JWKS fetch failures (control plane unreachable) and token verification
-    /// failures.
+    /// failures, and [`Revoked`] for a token issued before its principal was
+    /// revoked.
     pub async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<AuthContext> {
         ensure_jwks_cached(&self.key_store, tenant_id).await?;
         let tenant = TenantId::new(tenant_id);
         let claims = self.verifier.verify(&tenant, token)?;
         let matcher = PermissionMatcher::from_strings(&claims.perms)?;
+        let actor = claims.act.map(|actor| actor.sub);
+        let revocable = Revocable::new(
+            Arc::clone(&self.key_store.revocations),
+            tenant_id.to_string(),
+            claims.sub.clone(),
+            actor.clone(),
+            claims.iat,
+        );
+        if revocable.is_revoked() {
+            return Err(anyhow::Error::new(Revoked));
+        }
         Ok(AuthContext {
             tenant_id: tenant_id.to_string(),
             matcher,
             token: token.to_string(),
+            publisher: publisher_of(&claims.sub),
             subject: claims.sub,
+            actor,
+            revocable,
         })
     }
 }
@@ -132,6 +154,38 @@ pub struct AuthContext {
     pub token: String,
     /// The principal the token was issued to (`sub`).
     pub subject: String,
+    /// Who may present the token for `subject` (`act.sub`), when the control
+    /// plane minted it by delegation. Only subject binding reads it.
+    pub actor: Option<String>,
+    /// `subject` as it is recorded on what this connection publishes. `None`
+    /// when it is too long to record.
+    pub publisher: Option<bytes::Bytes>,
+    /// What ends this session when its principal is revoked.
+    pub revocable: Revocable,
+}
+
+impl AuthContext {
+    /// This connection as a publisher.
+    pub(crate) fn publishing_as(&self) -> crate::serving::quic::handlers::publish::PublishAs {
+        crate::serving::quic::handlers::publish::PublishAs {
+            credential: self.token.clone(),
+            publisher: self.publisher.clone(),
+        }
+    }
+}
+
+/// A subject as a record's publisher: what is recorded is a principal id,
+/// bounded, never the token. A longer subject is not recorded rather than
+/// cut, since a shortened one could name a different principal.
+fn publisher_of(subject: &str) -> Option<bytes::Bytes> {
+    if subject.len() > felix_wire::binary::MAX_PUBLISHER_BYTES {
+        tracing::warn!(
+            len = subject.len(),
+            "token subject too long to record as a publisher"
+        );
+        return None;
+    }
+    Some(bytes::Bytes::copy_from_slice(subject.as_bytes()))
 }
 
 /// How long one JWKS request may take, connect included.
@@ -188,6 +242,7 @@ pub struct ControlPlaneKeyStore {
     ttl: Duration,
     key_cache: Arc<TenantKeyCache>,
     catalog: Option<TenantCatalog>,
+    revocations: Arc<Revocations>,
 }
 
 #[derive(Clone)]
@@ -213,7 +268,14 @@ impl ControlPlaneKeyStore {
             ttl: Duration::from_secs(3600),
             key_cache,
             catalog: None,
+            revocations: Arc::new(Revocations::default()),
         }
+    }
+
+    /// The revocations every token verified against this store is checked
+    /// against. The control-plane sync fills it.
+    pub fn revocations(&self) -> &Arc<Revocations> {
+        &self.revocations
     }
 
     /// Refuse to fetch for tenants `catalog` does not know, once it is seeded.
@@ -302,6 +364,27 @@ impl ControlPlaneKeyStore {
         self.inflight
             .remove_if(tenant_id, |_, current| Arc::ptr_eq(current, &flight));
         result
+    }
+
+    /// Fetch JWKS for every tenant in `tenants` that is not cached yet,
+    /// giving up after `budget`. A failure is logged, not returned.
+    ///
+    /// Keys fetched only on demand leave a broker unable to verify any token
+    /// of a tenant it has not served yet while the control plane is down,
+    /// and that includes the credential on a write a peer forwards to it.
+    pub(crate) async fn warm(&self, tenants: Vec<String>, budget: Duration) {
+        use futures::StreamExt;
+        let fetches = futures::stream::iter(tenants).for_each_concurrent(
+            JWKS_FETCH_CONCURRENCY,
+            |tenant_id| async move {
+                if let Err(err) = self.ensure_cached(&tenant_id).await {
+                    tracing::warn!(tenant_id, error = %err, "could not fetch a tenant's jwks ahead of use");
+                }
+            },
+        );
+        if tokio::time::timeout(budget, fetches).await.is_err() {
+            tracing::warn!(?budget, "gave up fetching tenant jwks ahead of use");
+        }
     }
 
     fn jwks_url(&self, tenant_id: &str) -> Result<reqwest::Url> {

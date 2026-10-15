@@ -12,14 +12,16 @@ use felix_storage::{CommitSequencer, CommitTurn};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use super::budget::{QueueBytes, SubscriberBytes};
 use super::committed::{CommitHold, ReadBound};
 use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
 use super::subscription::SubscriptionReceiver;
 use crate::ConsistencyLevel;
+use crate::broker::RingRecord;
 use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
-use crate::handoff::{ShardHandoff, ShardMoved};
+use crate::handoff::{Ending, FeedEnd, ShardMoved};
 
 /// One stream shard's live state, shared by every handle to it.
 #[derive(Debug)]
@@ -36,6 +38,8 @@ pub(crate) struct StreamState {
     pub(crate) subscriber_queue_capacity: usize,
     // Queue admission policy when subscriber queue is full.
     pub(crate) subscriber_queue_policy: SubQueuePolicy,
+    // Byte bounds each subscriber queue is held to.
+    subscriber_queue_bytes: QueueBytes,
     // Approximate number of queued items across subscribers in this stream.
     pub(crate) queued_items: Arc<AtomicUsize>,
     // Disk-backed log, present only for streams registered as durable. The
@@ -74,6 +78,7 @@ impl StreamState {
         handle_id: u64,
         subscriber_queue_capacity: usize,
         subscriber_queue_policy: SubQueuePolicy,
+        subscriber_queue_bytes: QueueBytes,
         durable: Option<StreamLog>,
         consistency: ConsistencyLevel,
     ) -> Self {
@@ -91,6 +96,7 @@ impl StreamState {
             }),
             subscriber_queue_capacity,
             subscriber_queue_policy,
+            subscriber_queue_bytes,
             queued_items: Arc::new(AtomicUsize::new(0)),
             durable,
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
@@ -209,9 +215,12 @@ impl StreamState {
             if record.offset >= next_seq {
                 continue;
             }
+            let record = crate::commit::client_record(record);
             state.log.push_back(LogEntry {
                 seq: record.offset,
-                payload: crate::commit::client_record(record).payload,
+                payload: record.payload,
+                publisher: record.publisher,
+                timestamp_micros: Some(record.timestamp_micros),
             });
         }
         let overflow = state.log.len().saturating_sub(capacity);
@@ -315,6 +324,7 @@ impl StreamState {
     /// `commit` is a commit's state updates. They go to the state view under
     /// the same lock as the event goes to the ring, so no reader sees one
     /// without the other.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn append_batch_at(
         &self,
         payloads: &[Bytes],
@@ -322,6 +332,8 @@ impl StreamState {
         turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
         commit: Option<&[StateOp]>,
+        publisher: Option<&Bytes>,
+        timestamp_micros: Option<u64>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -356,6 +368,8 @@ impl StreamState {
             state.log.push_back(LogEntry {
                 seq,
                 payload: payload.clone(),
+                publisher: publisher.cloned(),
+                timestamp_micros,
             });
             seq = seq.checked_add(1).expect("log sequence overflow");
         }
@@ -439,17 +453,48 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None);
+        self.append_batch_at(payloads, None, None, log_capacity, None, None, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
+        self.register_subscriber_sized(None)
+    }
+
+    /// Register a subscriber whose queue holds `capacity` envelopes, or the
+    /// stream's default for `None`. The overflow policy is always the stream's.
+    pub(crate) fn register_subscriber_sized(
+        &self,
+        capacity: Option<usize>,
+    ) -> (u64, SubscriptionReceiver) {
+        let capacity = capacity.unwrap_or(self.subscriber_queue_capacity).max(1);
         let mut state = self.subscribers.lock();
-        let (tx, rx) = mpsc::channel(self.subscriber_queue_capacity);
+        let (tx, rx) = mpsc::channel(capacity);
         let id = state.next_id;
         state.next_id += 1;
-        state.senders.insert(id, tx);
+        let lag = Arc::default();
+        let stats = Arc::default();
+        // A subscribe that resolved this state before the stream was deleted
+        // gets a feed that is already over, rather than one nothing will end.
+        if matches!(state.ended.get(), Some(FeedEnd::Deleted)) {
+            return (
+                id,
+                SubscriptionReceiver::new(rx, Arc::clone(&state.ended), lag, stats),
+            );
+        }
+        state.senders.insert(
+            id,
+            RegisteredSubscriber {
+                sender: tx,
+                bytes: self.subscriber_queue_bytes.for_subscriber(),
+                lag: Arc::clone(&lag),
+                stats: Arc::clone(&stats),
+            },
+        );
         self.rebuild_subscriber_snapshot(&state);
-        (id, SubscriptionReceiver::new(rx, Arc::clone(&state.moved)))
+        (
+            id,
+            SubscriptionReceiver::new(rx, Arc::clone(&state.ended), lag, stats),
+        )
     }
 
     /// Register a subscriber and capture its backlog atomically.
@@ -508,7 +553,8 @@ impl StreamState {
     pub(crate) fn register_clamped(
         &self,
         from_seq: u64,
-    ) -> (Vec<(u64, Bytes)>, u64, u64, SubscriptionReceiver) {
+        queue_capacity: Option<usize>,
+    ) -> (Vec<RingRecord>, u64, u64, SubscriptionReceiver) {
         let state = self.log_state.lock();
         let oldest = state
             .log
@@ -521,22 +567,27 @@ impl StreamState {
         // before reaching the ring leaves a hole. Returning bare payloads made
         // the caller assume `start, start+1, start+2, ...`, which both mislabels
         // every offset after a hole and hides the missing record entirely.
-        let backlog: Vec<(u64, Bytes)> = state
+        let backlog: Vec<RingRecord> = state
             .log
             .iter()
             .filter(|entry| entry.seq >= start)
-            .map(|entry| (entry.seq, entry.payload.clone()))
+            .map(|entry| RingRecord {
+                offset: entry.seq,
+                payload: entry.payload.clone(),
+                publisher: entry.publisher.clone(),
+                timestamp_micros: entry.timestamp_micros,
+            })
             .collect();
         // Where the backlog *actually* begins, which is not `start` when the
         // first surviving entry sits above it.
         let backlog_start = match backlog.first() {
-            Some((seq, _)) => *seq,
+            Some(record) => record.offset,
             // An empty ring means the live edge is `next_seq`, and that is where
             // the backlog would have started had there been one.
             None => state.next_seq.max(start),
         };
 
-        let (subscriber_id, receiver) = self.register_subscriber();
+        let (subscriber_id, receiver) = self.register_subscriber_sized(queue_capacity);
         drop(state);
         (backlog, backlog_start, subscriber_id, receiver)
     }
@@ -565,23 +616,34 @@ impl StreamState {
     /// The fanout snapshot holds clones of the senders, so it is emptied too;
     /// otherwise the channels would stay open until the next publish.
     ///
-    /// With a `handoff`, each receiver also learns the shard moved and where
-    /// to resume. `resume_from` is read under the log lock, the lock
+    /// With `Ending::Moved`, each receiver also learns the shard moved and
+    /// where to resume. `resume_from` is read under the log lock, the lock
     /// `append_batch_at` captures its fanout list under, so every batch below
     /// it was offered to these subscribers and none at or above it will be.
     /// That holds per subscriber whatever its queue dropped, which is why it
     /// is the stream's position and not what the subscriber received.
-    pub(crate) fn end_subscribers(&self, handoff: Option<ShardHandoff>) -> usize {
+    ///
+    /// With `Ending::Deleted`, each receiver learns the stream is gone, and so
+    /// does any subscriber that registers on this state afterwards.
+    pub(crate) fn end_subscribers(&self, ending: Option<Ending>) -> usize {
         let log = self.log_state.lock();
         let mut state = self.subscribers.lock();
         let ended = state.senders.len();
-        if let Some(to) = handoff {
-            // An in-memory stream's sequence is local to this broker.
-            let resume_from = self.durable.is_some().then_some(log.next_seq);
-            let _ = state.moved.set(ShardMoved { resume_from, to });
-            // A subscriber that registers after this, if the shard comes
-            // back, must not inherit the old move.
-            state.moved = Arc::default();
+        match ending {
+            Some(Ending::Moved(to)) => {
+                // An in-memory stream's sequence is local to this broker.
+                let resume_from = self.durable.is_some().then_some(log.next_seq);
+                let _ = state
+                    .ended
+                    .set(FeedEnd::Moved(ShardMoved { resume_from, to }));
+                // A subscriber that registers after this, if the shard comes
+                // back, must not inherit the old move.
+                state.ended = Arc::default();
+            }
+            Some(Ending::Deleted) => {
+                let _ = state.ended.set(FeedEnd::Deleted);
+            }
+            None => {}
         }
         state.senders.clear();
         self.rebuild_subscriber_snapshot(&state);
@@ -607,10 +669,13 @@ impl StreamState {
 
     fn rebuild_subscriber_snapshot(&self, state: &SubscriberRegistry) {
         let mut snapshot = Vec::with_capacity(state.senders.len());
-        for (id, sender) in state.senders.iter() {
+        for (id, registered) in state.senders.iter() {
             snapshot.push(SubscriberEntry {
                 id: *id,
-                sender: sender.clone(),
+                sender: registered.sender.clone(),
+                bytes: registered.bytes.clone(),
+                lag: Arc::clone(&registered.lag),
+                stats: Arc::clone(&registered.stats),
             });
         }
         // The fanout reads this in order and a HashMap does not have one.
@@ -626,6 +691,19 @@ impl StreamState {
 pub(crate) struct SubscriberEntry {
     pub(crate) id: u64,
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    pub(crate) bytes: SubscriberBytes,
+    /// Told where this subscriber's queue first dropped a batch.
+    pub(crate) lag: Arc<super::subscription::Lag>,
+    pub(crate) stats: Arc<super::stats::SubscriberStats>,
+}
+
+/// A live subscriber as the registry holds it.
+#[derive(Debug)]
+pub(crate) struct RegisteredSubscriber {
+    pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    pub(crate) bytes: SubscriberBytes,
+    pub(crate) lag: Arc<super::subscription::Lag>,
+    pub(crate) stats: Arc<super::stats::SubscriberStats>,
 }
 
 /// The stream's live subscribers, keyed by an id that is never reused.
@@ -639,11 +717,11 @@ pub(crate) struct SubscriberEntry {
 /// never delivers again.
 #[derive(Debug, Default)]
 pub(crate) struct SubscriberRegistry {
-    pub(crate) senders: HashMap<u64, mpsc::Sender<QueuedDelivery>>,
+    pub(crate) senders: HashMap<u64, RegisteredSubscriber>,
     next_id: u64,
     /// Shared with every receiver registered since the last move; set when
-    /// the shard moves away.
-    moved: Arc<OnceLock<ShardMoved>>,
+    /// the shard moves away or the stream is deleted.
+    ended: Arc<OnceLock<FeedEnd>>,
 }
 
 #[derive(Debug)]
@@ -665,6 +743,8 @@ pub(crate) struct LogState {
 pub(crate) struct LogEntry {
     pub(crate) seq: u64,
     pub(crate) payload: Bytes,
+    pub(crate) publisher: Option<Bytes>,
+    pub(crate) timestamp_micros: Option<u64>,
 }
 
 #[cfg(test)]

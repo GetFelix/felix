@@ -219,3 +219,36 @@ async fn a_departed_node_is_heard_from_no_earlier_than_this_leader_began() {
         "a heartbeat after leaving moved the stamp",
     );
 }
+
+/// **A suspicion is the leader's soft state, like a heartbeat.** It is kept
+/// and listed for placement, stamped with the leader's clock, and writes
+/// nothing to the log.
+#[tokio::test]
+async fn a_suspicion_is_kept_by_the_leader_and_written_nowhere() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .register_node(registered("broker-b", 7002))
+        .await
+        .expect("register");
+    let before = applied(&store);
+
+    store
+        .record_suspicion(crate::model::NodeSuspicion {
+            node_id: "broker-b".to_string(),
+            incarnation: 0,
+            suspects: ["broker-a".to_string()].into_iter().collect(),
+            reported_at_millis: 0,
+        })
+        .await
+        .expect("record");
+
+    assert_eq!(applied(&store), before, "a suspicion became a log entry");
+    let held = store.list_suspicions().await.expect("list");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(held[0].suspects.contains("broker-a"));
+    assert!(
+        held[0].reported_at_millis > 0,
+        "the leader's clock stamps it"
+    );
+}

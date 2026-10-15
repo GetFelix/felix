@@ -3,18 +3,12 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::scenarios::{Common, IngestOptions};
+use felix_loadgen::{Common, IngestOptions, Scenario, SubscribeOptions};
 
 /// What the command line asked for.
 pub(crate) struct Args {
     pub(crate) common: Common,
-    pub(crate) ingest: IngestOptions,
-    pub(crate) scenario: String,
-    pub(crate) stream: String,
-    pub(crate) cache: String,
-    pub(crate) binary: bool,
-    /// pubsub: publish through the first broker instead of the shard's owner.
-    pub(crate) via_entry: bool,
+    pub(crate) scenario: Scenario,
 }
 
 /// Print the flags and exit with status 2.
@@ -26,15 +20,22 @@ pub(crate) fn usage() -> ! {
   --tenant <id>               tenant to authenticate as (required)
   --token <jwt>               Felix token, or --token-file <path>
   --namespace <ns>            default: default
-  --scenario <name>           pubsub | cache | counter | watch | queue | retained (required)
-  --stream <name>             stream for pubsub (default: perf)
+  --scenario <name>           pubsub | cache | counter | watch | queue | retained |
+                              ingest | subscribe (required)
+  --stream <name>             stream for pubsub, queue, ingest, subscribe (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
+  --shards <n>                ingest: the stream's shard count, so --keys can be chosen
+                              to cover every shard (default: ask the broker)
   --in-flight <n>             ingest: acked batches each publisher keeps outstanding
                               (default 0, fire-and-forget)
-  --duration-secs <n>         ingest: publish for n seconds instead of --total records
-  --start-at <unix-secs>      ingest: connect, then start publishing at this wall-clock
+  --duration-secs <n>         ingest: publish for n seconds instead of --total records;
+                              subscribe: how long to count deliveries (required)
+  --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
                               time (fractional seconds), so generators overlap
+  --stamp-send-time           ingest: put the wall-clock send time in each payload's first
+                              8 bytes; subscribe: report delivery latency from it (needs
+                              the machines' clocks in sync)
   --cache <name>              cache scope for cache/counter/watch (default: perf)
   --warmup <n>                discarded operations (default: 2000)
   --total <n>                 measured operations (default: 20000)
@@ -46,7 +47,8 @@ pub(crate) fn usage() -> ! {
   --binary                    binary publish framing (no per-message ack)
   --via-entry                 pubsub: publish through the first broker, which relays
                               to the shard's owner, instead of to the owner directly
-  --concurrency <n>           workers for cache/counter (default: 8)
+  --concurrency <n>           workers for cache/counter, publishers for ingest, clients
+                              the subscribe fanout is spread over (default: 8)
   --environment <label>       stamped into LOADGEN_JSON (default: unknown)
 
 Certificates are accepted without verification — brokers self-sign and
@@ -135,6 +137,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             // shard 0 regardless of the stream's shard count -- which is what
             // made every multi-shard measurement so far a single-shard one.
             "--keys" => ingest.keys = value("--keys")?.parse().context("--keys")?,
+            "--shards" => ingest.shards = Some(value("--shards")?.parse().context("--shards")?),
             "--in-flight" => {
                 ingest.in_flight = value("--in-flight")?.parse().context("--in-flight")?
             }
@@ -149,6 +152,7 @@ pub(crate) fn parse_args() -> Result<Args> {
                 ingest.start_at =
                     Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs));
             }
+            "--stamp-send-time" => ingest.stamp_send_time = true,
             "--concurrency" => {
                 concurrency = value("--concurrency")?.parse().context("--concurrency")?
             }
@@ -168,27 +172,43 @@ pub(crate) fn parse_args() -> Result<Args> {
     let token = token.context("--token or --token-file is required")?;
     let scenario = scenario.context("--scenario is required")?;
 
-    Ok(Args {
-        ingest,
-        common: Common {
-            brokers,
-            tenant,
-            namespace,
-            token,
-            warmup,
-            total,
-            payload_bytes,
-            fanout,
-            batch,
-            concurrency,
-            environment,
-            slow_subscribers,
-            slow_delay: std::time::Duration::from_millis(slow_delay_ms),
+    let scenario = match scenario.as_str() {
+        "pubsub" => Scenario::Pubsub {
+            stream,
+            binary,
+            via_entry,
         },
-        scenario,
-        stream,
-        cache,
-        binary,
-        via_entry,
-    })
+        "cache" => Scenario::Cache { cache },
+        "counter" => Scenario::Counter { cache },
+        "watch" => Scenario::Watch { cache },
+        "queue" => Scenario::Queue { stream },
+        "retained" => Scenario::Retained { cache },
+        "subscribe" => Scenario::Subscribe {
+            stream,
+            options: SubscribeOptions {
+                duration: ingest.duration.context("subscribe needs --duration-secs")?,
+                start_at: ingest.start_at,
+                stamp_send_time: ingest.stamp_send_time,
+            },
+        },
+        "ingest" => Scenario::Ingest {
+            stream,
+            options: ingest,
+        },
+        other => bail!(
+            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe)"
+        ),
+    };
+
+    let mut common = Common::new(brokers, tenant, namespace, token);
+    common.warmup = warmup;
+    common.total = total;
+    common.payload_bytes = payload_bytes;
+    common.fanout = fanout;
+    common.batch = batch;
+    common.concurrency = concurrency;
+    common.environment = environment;
+    common.slow_subscribers = slow_subscribers;
+    common.slow_delay = std::time::Duration::from_millis(slow_delay_ms);
+    Ok(Args { common, scenario })
 }

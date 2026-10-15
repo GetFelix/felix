@@ -60,12 +60,13 @@ reached the disk.
 | `Quorum` | A majority of the replica set, leader included, has it durably | None within the replica set |
 
 `Quorum` waits. A publish is not acknowledged until the leader can show a
-majority holds the record; if no majority is reachable it is **refused**, with
-an error that says this broker cannot vouch for the write rather than one that
-claims it failed.
+majority holds the record. There is no up-front refusal: with no majority
+reachable it waits up to `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s by default),
+then fails with `quorum_timeout`, an error that says this broker cannot vouch
+for the write rather than one that claims it failed.
 
 > `a_quorum_publish_without_a_majority_is_refused`: freeze every follower and
-> the publish is refused rather than acknowledged.
+> the publish fails rather than being acknowledged.
 > `a_frozen_follower_does_not_block_a_quorum`: losing a *minority* does not
 > stop it, which is the case `Quorum` exists to tolerate.
 > `a_quorum_acknowledged_record_survives_its_leader`: the acknowledged record
@@ -102,6 +103,13 @@ the record is on disk, turn `ack_on_commit` on or declare the stream `Quorum`.
 > `a_publish_admitted_near_lease_expiry_waits_for_the_write`,
 > `a_batch_admitted_near_lease_expiry_waits_for_the_write`,
 > `an_acked_publish_the_lease_strands_is_counted`.
+
+The same ack does not make the record readable yet. A history read, a
+subscriber's replay or a consumer-group poll sent right after it can come back
+without the record, because nothing reads a record before it is written. A
+client that needs to read what it was told is acknowledged can ask for commit
+acks on its own connections (`ClientConfig::ack_on_commit`) without changing the
+broker's default.
 
 **The `Leader` loss window is bounded by replication lag**, exported as
 `felix_broker_replication_lag_records`. An operator choosing `Leader` is
@@ -205,6 +213,58 @@ quarter of the lease as margin, and the control plane hands a silent broker's
 shards on only a further quarter past the expiry, measured on its own
 monotonic clock as well as the store's. See "Where the guarantees stop" below.
 
+## Conditional writes
+
+`publish_if` appends a batch only if it would start at exactly the offset the
+writer expects, the shard's next. `commit` takes the same `expected_offset`.
+Both are negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
+
+**Of two writers expecting the same offset, exactly one is written.** The
+check is made where the log assigns offsets, under the lock that assigns
+them, so no other append can land between the check and the claim.
+
+> `of_writers_racing_at_one_offset_exactly_one_wins`,
+> `one_of_many_appends_at_the_same_offset_is_written`,
+> `a_conditional_publish_lands_once_and_names_the_tail`.
+
+**A refused write leaves nothing behind.** It writes no record, consumes no
+offset and claims no place in the commit order, so the next publish takes the
+offset it would have had and waits on nothing. The refusal is
+`publish_refused` with `offset_mismatch` and the tail it was checked against.
+
+> `a_refused_publish_leaves_no_record_and_no_gap`,
+> `an_append_at_a_stale_offset_writes_and_claims_nothing`,
+> `a_commit_at_a_stale_offset_changes_no_state`.
+
+**The tail counts every record.** Plain publishes, commits, and the
+generation-start record a new leader writes all move it. After a failover a
+writer's expected offset is stale even when nobody else wrote, and the refusal
+names the offset to resume from. A writer that still owns the shard re-reads
+from its old tail to the new one and carries on.
+
+> `a_generation_start_moves_the_expected_offset`.
+
+**The fence is as strong as leadership.** The check runs on the shard's
+leader, against its log. On a `Quorum` stream a leader that has lost its
+majority cannot answer, so a write it accepted is not acknowledged. On a
+`Leader` stream a deposed leader still inside its lease checks against its own
+tail, which may be stale; see "Consistency" above and "Where the guarantees
+stop". A write to a broker that does not lead the shard is not forwarded: it
+is answered `not_leader`.
+
+**A lost answer cannot be retried blindly.** The retry is refused by the write
+it repeats, which looks the same as losing to a rival. The writer reads the
+shard at its expected offset to see whose batch is there.
+
+`publish_if` is answered outside the publish queue, but it is charged
+against the tenant's publish quota and the ingress byte budgets before the
+check, as a queued publish is, and refused over quota with the same
+retryable `overloaded` answer.
+
+> `a_conditional_publish_over_quota_is_refused_like_a_publish`.
+
+An in-memory stream has no offsets, so it refuses a conditional write.
+
 ## Moves
 
 A shard whose leader is alive is moved rather than failed over: the
@@ -244,9 +304,10 @@ what a client sees.
 > `a_producer_keeps_its_sequence_across_a_planned_move`,
 > `a_durable_publish_claimed_after_the_fence_is_refused`.
 
-Stopping a broker is not a move: the shards it leads fail over, and the ones
-it holds the only copy of wait for it to return. Drain it first
-(`POST /v1/nodes/{id}/drain`) to hand them off.
+A broker stopped with SIGTERM hands the shards it leads to followers as
+planned moves before it exits, for up to `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
+(30 s). Whatever it still leads after that fails over as after a crash, and a
+shard it holds the only copy of waits for it to return.
 
 ## Routing
 
@@ -315,8 +376,21 @@ throughput rather than correctness.
   new leader's generation-start record, which takes an offset and is never
   delivered; a client that negotiated `EVENT_BATCH_SKIPPED` is told about it on
   the next event (`skipped_before`), and an older client reads it as a drop of
-  one. This is the only way an application can tell, and it is why offsets are
-  on the event rather than inferred.
+  one. A gap needs a later event, though, so the broker also ends a
+  durable-stream subscription at its first drop with `subscription_lagged`,
+  naming the offset to resume from, for a client that offered
+  `FEATURE_SUBSCRIPTION_LAGGED`. felix-client reports drops in its own queue
+  the same way, as a `SubscriptionLagged` error. A lag is reported over a
+  shard move, since the move's resume point is past the drop. The connection
+  writer's queue for a subscription can also drop a frame, unreported and below
+  that offset, so felix-client resumes after the last event it delivered.
+
+  > `a_subscription_ends_at_its_first_drop_and_says_where_to_resume`,
+  > `lane_feeder_ends_a_lagged_subscription_with_where_to_resume`,
+  > `lane_feeder_reports_a_lag_over_a_shard_move`,
+  > `a_lag_after_catch_up_ends_where_the_replay_did`,
+  > `a_lagged_shard_resumes_after_its_last_event`,
+  > `the_clients_own_drop_ends_the_subscription`.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.
 - **What a reader sees of a `Quorum` stream.** Every reader stops at the
@@ -366,7 +440,7 @@ accepts them and stores them; the broker reads only `durable`, `shards` and
 | Field | What actually decides |
 | --- | --- |
 | `delivery` (`AtMostOnce` / `AtLeastOnce`) | How a client reads: a plain subscription, or a consumer group |
-| `retention` (`max_age_seconds`, `max_size_bytes`) | The broker-wide `FELIX_DURABLE_RETENTION_*` settings |
+| `retention` (`max_age_seconds`, `max_size_bytes`) | Itself, for a durable stream. A bound left unset is the broker's `FELIX_DURABLE_RETENTION_*` |
 | `kind` (`Stream` / `Queue` / `Cache`) | Nothing. A queue is a way of *reading* a stream, not a kind of stream |
 
 `kind` is the one most likely to mislead. Creating a stream with `kind: Queue`
@@ -593,6 +667,32 @@ Stated because a guarantee without its failure model is a slogan.
   A broker suspended *between* the commit-time lease check and its write
   reaching disk is a residual window bounded by the margin. The margin is a
   choice rather than a proof, and it is the one clock-shaped assumption left.
+- **`Leader` mode rests on the lease; `Quorum` does not.** A `Leader` write is
+  acknowledged by the leader alone, so nothing but the lease stops a deposed
+  leader from acknowledging one. A promoted leader fences its replicas (when
+  every replica supports the fence), so the old leader's records never reach
+  the new log, but a write it acknowledged
+  after the new leader took over is lost. That happens only if one of these
+  outlasts the slack between the broker giving up its lease and the control
+  plane handing the shard on (a quarter of the lease on the broker, plus
+  `FELIX_NODE_REGRANT_MARGIN_MS` on the control plane):
+
+  - the broker is suspended between its last lease check and the
+    acknowledgement;
+  - the broker's monotonic clock runs slow against the control plane's;
+  - the control plane counts a silent broker's time from a clock that runs
+    fast.
+
+  A clock step does none of these, since neither side reads a wall clock for
+  the lease. With `majority_ack` finalized, a `Quorum` stream acknowledges
+  only what a majority holds at its generation, and so does a `Quorum` cache
+  once `fenced_caches` is finalized too, so none of the three can lose an
+  acknowledged write there. Choose `Quorum` where that matters;
+  `Leader` trades it for latency. Closing the gap for `Leader` would take a
+  majority round on every write, which is what `Quorum` is.
+
+  > `a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize`,
+  > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 - **Idempotent producers, not exactly-once delivery.** A producer that takes an
   id from the broker and numbers its batches can re-send a batch whose
   acknowledgement never arrived and have it land once: the shard's leader
@@ -684,7 +784,9 @@ Stated because a guarantee without its failure model is a slogan.
   > `crates/testing/felix-cluster/tests/queues/consumer_groups.rs`, including
   > `a_group_position_survives_a_leader_failover` and
   > `a_dead_letter_survives_a_leader_failover`.
-- **Retention is set per broker and unbounded by default.** The broker applies
-  `FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS` to each
-  stream's log. The retention policy recorded on a stream is not read. With
-  neither variable set, a log grows until the disk is full.
+- **Retention is set per stream and unbounded by default.** A stream's
+  `retention` bounds each of its shard logs on every broker that holds one, and
+  a patch reaches open logs without a restart. A bound the stream leaves unset
+  is the broker's `FELIX_DURABLE_RETENTION_BYTES` or
+  `FELIX_DURABLE_RETENTION_SECONDS`. With neither set, a log grows until the
+  disk is full.

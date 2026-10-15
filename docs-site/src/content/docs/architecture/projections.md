@@ -13,7 +13,7 @@ rebuilds from the log, and cites the test behind each claim. A claim here
 without a citation is one nothing checks. `scripts/check_doc_evidence.py` verifies that every test
 named below still exists.
 
-![One append-only log read three ways at once. Records carrying a key and a value are appended with ascending offsets. A stream marker advances across every record in order; a queue marker advances over the same records but trails, moving only as they are acknowledged; and a cache is not one position but one marker per key, each jumping to that key's newest record. Records superseded by a later write to the same key are marked as dead for the cache alone, and the stream still reads them.](/felix/diagrams/three-readings.svg)
+![One append-only log read three ways at once. Records carrying a key and a value are appended with ascending offsets. A stream marker advances across every record in order; a queue marker advances over the same records but trails, moving only as they are acknowledged; and a cache is not one position but one marker per key, each jumping to that key's newest record. Records superseded by a later write to the same key are marked as dead for the cache alone, and the stream still reads them.](/diagrams/three-readings.svg)
 
 A stream, a queue and a cache are **three ways of pointing into one log**, and
 they run at the same time over the same bytes:
@@ -77,9 +77,10 @@ at that offset.
 - **In the log:** one record per put and per delete, each carrying the key.
 - **In memory:** an index of key to the offset of its latest record, plus the
   bytes each record occupies, so compaction knows when it is worth running.
-- **Rebuilt from the log:** the whole index. It is never read from disk, and it
-  catches up to the log's tail whenever it is behind. That lets a promoted
-  follower serve records that arrived by replication instead of through a put.
+- **Rebuilt from the log:** the whole index. Compaction leaves a snapshot of
+  it on disk, which an open uses only after checking it against the log, to
+  replay just the records past it. It catches up to the log's tail whenever
+  it is behind. That lets a promoted follower serve records that arrived by replication instead of through a put.
 
 Compaction copies the live set forward and drops superseded and expired
 records. It **appends the live set at the tail** rather than renumbering from

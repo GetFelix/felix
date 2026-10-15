@@ -1,6 +1,7 @@
 //! Ownership transitions: what this broker serves, and when it stops.
 use super::*;
 
+mod every_change;
 mod promotion;
 
 fn key(shard: u32) -> ShardKey {
@@ -205,10 +206,14 @@ fn a_closed_shard_can_be_reacquired() {
 fn a_failed_open_does_not_serve() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     assert_eq!(own.phase(&key(0)), Phase::Failed);
     assert!(!own.may_serve(&key(0)));
+    // Readable without the lifecycle's lock, with the reason it failed.
+    let mirrored = own.fence().phase_of(&key(0)).expect("mirrored");
+    assert_eq!(mirrored.phase, Phase::Failed);
+    assert_eq!(mirrored.error.as_deref(), Some("disk full"));
     // Not retried on every poll: the same assignment repeating is not new
     // information, and a failure that logs each tick buries itself.
     assert_eq!(
@@ -222,7 +227,7 @@ fn a_failed_open_does_not_serve() {
 fn a_new_generation_retries_a_failed_open() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     let action = own.observe(&key(0), Some(&assigned_to("broker-a", 2)));
     assert_eq!(
@@ -234,6 +239,9 @@ fn a_new_generation_retries_a_failed_open() {
             fence: false,
         }
     );
+    // The old error goes with the phase it explained.
+    let mirrored = own.fence().phase_of(&key(0)).expect("mirrored");
+    assert_eq!((mirrored.phase, mirrored.error), (Phase::Opening, None));
 }
 
 /// A failed open never served, so losing the shard closes it without a drain.
@@ -241,7 +249,7 @@ fn a_new_generation_retries_a_failed_open() {
 fn a_failed_shard_closes_without_draining() {
     let mut own = lifecycle();
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
-    own.open_failed(&key(0), 1);
+    own.open_failed(&key(0), 1, "disk full".to_string());
 
     assert_eq!(own.observe(&key(0), None), Action::None);
     assert_eq!(own.phase(&key(0)), Phase::Closed);
@@ -377,7 +385,11 @@ mod driver {
             Ok(())
         }
 
-        async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+        async fn close(
+            &self,
+            key: &ShardKey,
+            _handoff: Option<felix_broker::ShardHandoff>,
+        ) -> anyhow::Result<()> {
             self.teardown
                 .lock()
                 .expect("lock")
@@ -741,6 +753,32 @@ mod recording_where_a_leadership_begins {
             log.generations().last().map(|epoch| epoch.start_offset),
             Some(7),
         );
+    }
+
+    /// Leading a generation is accepting it from itself. A broker whose log
+    /// already answered another node at that generation must not lead it
+    /// too, or the shard has two leaders at one generation.
+    #[tokio::test]
+    async fn a_generation_promised_to_another_node_is_not_led() {
+        let (storage, _dir) = storage(3).await;
+        let log = storage
+            .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
+            .expect("open");
+        log.accept_generation(4, Some("broker-c"))
+            .await
+            .expect("accept");
+        let store =
+            DurableShardStore::new(std::sync::Arc::clone(&storage)).with_ballots("broker-a");
+
+        store
+            .open(&key(0), 4, true)
+            .await
+            .expect_err("promised to broker-c");
+        store
+            .open(&key(0), 5, true)
+            .await
+            .expect("a newer generation");
+        assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
     }
 
     /// A cache shard's log is opened lazily on first use, not here, so there is
@@ -1109,4 +1147,45 @@ fn a_moving_shard_names_where_it_is_headed() {
 
     own.observe(&key(0), None);
     assert_eq!(own.headed(&key(0)), None);
+}
+
+/// A close says where the shard went when it still has an assignment, so a
+/// reader still attached is told it moved; one whose assignment is gone has
+/// nowhere to point.
+#[test]
+fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
+    let mut own = lifecycle();
+    let mine = HashMap::from([
+        (key(0), assigned_to("broker-a", 1)),
+        (key(1), {
+            let mut assignment = assigned_to("broker-a", 1);
+            assignment.key = key(1);
+            assignment
+        }),
+    ]);
+    assert!(own.relinquished(&mine).is_empty());
+
+    let elsewhere = HashMap::from([(key(0), assigned_to("broker-b", 4))]);
+    let mut closes = own.relinquished(&elsewhere);
+    closes.sort_by_key(|action| match action {
+        Action::Close { key, .. } => key.shard,
+        _ => u32::MAX,
+    });
+    assert_eq!(
+        closes,
+        [
+            Action::Close {
+                key: key(0),
+                handoff: Some(felix_broker::ShardHandoff {
+                    node_id: Some("broker-b".to_string()),
+                    addr: None,
+                    generation: 4,
+                }),
+            },
+            Action::Close {
+                key: key(1),
+                handoff: None,
+            },
+        ]
+    );
 }

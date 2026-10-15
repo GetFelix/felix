@@ -16,20 +16,20 @@ mod pubsub;
 mod queue;
 mod retained;
 mod round_trips;
+mod subscribe;
 mod watch;
 
-pub(crate) use cache::{cache, counter};
-pub(crate) use ingest::{IngestOptions, ingest};
-pub(crate) use pubsub::pubsub;
-pub(crate) use queue::queue;
-pub(crate) use retained::retained;
-pub(crate) use watch::watch;
+pub use ingest::IngestOptions;
+pub use subscribe::SubscribeOptions;
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
+
+use anyhow::Result;
+use felix_client::ClientConfig;
 
 /// The settings every scenario shares.
-pub(crate) struct Common {
+pub struct Common {
     pub brokers: Vec<SocketAddr>,
     pub tenant: String,
     pub namespace: String,
@@ -46,6 +46,95 @@ pub(crate) struct Common {
     // one) and the publisher can be measured while others fall behind and drop.
     pub slow_subscribers: usize,
     pub slow_delay: Duration,
+    /// How to reach the brokers. `None` is the instrument's own setup, which
+    /// accepts any broker certificate; see `tls`.
+    pub client_config: Option<ClientConfig>,
+    /// The TLS server name sent to every broker.
+    pub server_name: String,
+    /// Print the human-readable result lines `scripts/perf` parses.
+    pub prose: bool,
+}
+
+impl Common {
+    /// The instrument's defaults for everything but where and who.
+    pub fn new(brokers: Vec<SocketAddr>, tenant: String, namespace: String, token: String) -> Self {
+        Self {
+            brokers,
+            tenant,
+            namespace,
+            token,
+            warmup: 2000,
+            total: 20000,
+            payload_bytes: 256,
+            fanout: 1,
+            batch: 1,
+            concurrency: 8,
+            environment: "unknown".to_string(),
+            slow_subscribers: 0,
+            slow_delay: Duration::ZERO,
+            client_config: None,
+            server_name: "localhost".to_string(),
+            prose: true,
+        }
+    }
+}
+
+/// A workload and the scenario-specific settings it takes.
+pub enum Scenario {
+    /// Publish/subscribe latency. `binary` publishes without per-message acks;
+    /// `via_entry` publishes through the first broker instead of the owner.
+    Pubsub {
+        stream: String,
+        binary: bool,
+        via_entry: bool,
+    },
+    Cache {
+        cache: String,
+    },
+    Counter {
+        cache: String,
+    },
+    Watch {
+        cache: String,
+    },
+    Queue {
+        stream: String,
+    },
+    Retained {
+        cache: String,
+    },
+    Ingest {
+        stream: String,
+        options: IngestOptions,
+    },
+    /// Subscribers only, at the live tail, for a fixed time. Something else
+    /// publishes.
+    Subscribe {
+        stream: String,
+        options: SubscribeOptions,
+    },
+}
+
+/// Run one scenario and return its `LOADGEN_JSON` object. The prose lines are
+/// printed as the run goes when `common.prose` is set; the JSON is left to the
+/// caller.
+pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Value> {
+    match scenario {
+        Scenario::Pubsub {
+            stream,
+            binary,
+            via_entry,
+        } => pubsub::pubsub(common, stream, *binary, *via_entry).await,
+        Scenario::Cache { cache } => cache::cache(common, cache).await,
+        Scenario::Counter { cache } => cache::counter(common, cache).await,
+        Scenario::Watch { cache } => watch::watch(common, cache).await,
+        Scenario::Queue { stream } => queue::queue(common, stream).await,
+        Scenario::Retained { cache } => retained::retained(common, cache).await,
+        Scenario::Ingest { stream, options } => ingest::ingest(common, stream, options).await,
+        Scenario::Subscribe { stream, options } => {
+            subscribe::subscribe(common, stream, options).await
+        }
+    }
 }
 
 /// A momentary "the pipe was not ready" the instrument retries rather than
@@ -72,6 +161,24 @@ fn is_retriable_transient(err: &anyhow::Error) -> bool {
     text.contains("stream not found")
         || text.contains("cannot be subscribed")
         || text.contains("queue full")
+}
+
+/// `--start-at` as a local monotonic instant, converted once so every task
+/// waits for the same moment. A time already past means now.
+fn start_instant(start_at: Option<SystemTime>, scenario: &str) -> Instant {
+    match start_at {
+        Some(at) => match at.duration_since(SystemTime::now()) {
+            Ok(wait) => Instant::now() + wait,
+            Err(late) => {
+                eprintln!(
+                    "{scenario}: --start-at passed {:?} ago; starting now",
+                    late.duration()
+                );
+                Instant::now()
+            }
+        },
+        None => Instant::now(),
+    }
 }
 
 fn scope(common: &Common, cache: &str) -> (String, String, String) {

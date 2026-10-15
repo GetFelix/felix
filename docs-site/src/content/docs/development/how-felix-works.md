@@ -15,7 +15,7 @@ what they do not own, replicate what they lead, fail over to a caught-up
 replica, and move shards between brokers online. Durable storage, the
 log-backed cache, and consumer groups are wired into the running broker.
 
-The [status table](/felix/getting-started/what-felix-is-for/) is the page to
+The [status table](/getting-started/what-felix-is-for/) is the page to
 trust per capability. Tiered storage and load-aware placement are among what is
 not built.
 :::
@@ -492,7 +492,7 @@ For a bidirectional stream, `handle_stream` creates:
 
 - one outbound response queue;
 - one `run_writer_loop` task owning the stream's `SendStream`;
-- an optional commit-ack waiter task;
+- the commit-ack deadline sweep, which times out commit acks that are owed;
 - cancellation and throttling channels; and
 - a per-stream cache of resolved stream handles.
 
@@ -652,22 +652,32 @@ stream it is the in-memory append and fanout, and nothing more. For a durable
 stream it is a write that has reached disk under the stream's fsync policy; for
 one declared `Quorum` it is a write a majority of the shard's replicas hold.
 
-Commit acknowledgements use:
+Commit acknowledgements are sent by whoever settles the publish: the executor
+for an in-memory write, the commit task for a durable one. Nothing waits in
+between. They use:
 
-- `handlers/publish/ack.rs::AckWaiterMessage`;
-- a bounded waiter semaphore; and
-- `streams/ack_waiter.rs::run_ack_waiter_loop`.
+- `handlers/publish/commit_ack.rs::CommitAcks`, one per control stream, which
+  makes a `CommitReply` that travels with the job and answers the client;
+- a bounded semaphore of answers owed; and
+- `CommitAcks::run_deadlines`, one deadline sweep per stream in place of a
+  timer per publish.
+
+The writer takes every answer already queued and sends them in one write. It
+never waits for more.
 
 Acknowledgements carry request IDs and may be emitted out of order, allowing
 independent completed jobs to respond without waiting for an earlier slow job.
 A client that negotiated `FEATURE_PUBLISH_PIPELINE` is the exception: the
 control loop registers each of its acked publishes as it reads it
-(`handlers/publish/order.rs::AckOrder`), taking a slot in the connection's
+(`handlers/publish/order.rs::AckOrder`), taking a slot in the stream's
 publish window, and the stream's writer holds an answer back until everything
 read before it has been answered. The slot is freed when the answer is
 written, and while none is free the control loop stops reading, so the window
-bounds a connection's unanswered publishes and pushes back through QUIC flow
-control.
+bounds a stream's unanswered publishes and pushes back through QUIC flow
+control. Each stream has its own window so that one stuck behind a stalled
+shard cannot take the slots its connection's other streams need. The Rust
+`ClusterClient` puts each shard on a stream of its own, so for it the window
+and the request order are in effect per shard.
 
 Commit acknowledgement is not an exactly-once outcome protocol. The publish job
 is enqueued before the broker reserves and submits all acknowledgement-waiter
@@ -877,7 +887,7 @@ There are six main checkpoints in publish-to-delivery order:
 | 3 | Broker publish admission | Per-connection and process-wide publish bytes |
 | 4 | Broker publish scheduler queue | Queued publish jobs, shared fairly between tenants |
 | 5 | Broker-core subscriber channel | Envelopes waiting for one subscriber |
-| 6 | Writer lane/connection queues | Encoded deliveries waiting for QUIC writers |
+| 6 | Connection writer, per subscription | Encoded deliveries waiting for one subscription's QUIC stream |
 
 QUIC flow control is the final transport-level checkpoint beneath these.
 
@@ -907,7 +917,10 @@ Under `Block`, one stalled subscriber makes every publisher of its shard wait,
 each on its own enqueue. The commit turn held across fanout does not widen
 this: a second publisher would wait on the same full queue with no turn at
 all, which `block_policy_stalls_every_publisher_of_the_shard_without_a_commit_turn`
-shows on an ephemeral stream. The blast radius of `Block` is the shard. Under
+shows on an ephemeral stream. The blast radius of `Block` is the shard. Within
+one batch, though, the fanout first queues it for every subscriber with room
+and only then waits on the full ones, so the batch reaches fast subscribers
+without waiting on a slow one. Under
 `DropNew`, the default, the work per subscriber is one non-blocking
 `try_reserve`, and publish latency stays flat across fanout.
 
@@ -1024,7 +1037,7 @@ When investigating missing messages, begin with:
 
 - broker ingress drop/rejection counters;
 - `felix_subscribe_dropped_total`;
-- subscriber lane drop counters;
+- `felix_sub_queue_dropped_total`, which counts every drop on the subscribe path;
 - client subscription queue drop counters; and
 - QUIC connection close/write-error logs.
 
@@ -1067,8 +1080,8 @@ than published pages.
 This guide follows one broker's data path. Replication (`felix-replication`),
 failover, shard moves, consumer groups and the control plane's placement are
 all in the running system and have their own pages under
-[Architecture](/felix/architecture/system-design/). The
-[status table](/felix/getting-started/what-felix-is-for/) says what is complete
+[Architecture](/architecture/system-design/). The
+[status table](/getting-started/what-felix-is-for/) says what is complete
 and what is partial.
 
 Two local gaps are worth knowing while reading the code:
@@ -1168,11 +1181,11 @@ Read in this order and follow each symbol with editor "go to definition":
 
 ## Related guides
 
-- [System Design](/felix/architecture/system-design/)
-- [Component Architecture](/felix/architecture/components/)
-- [Wire Protocol](/felix/architecture/wire-protocol/)
-- [Internals: The Publish Path](/felix/development/internals-publish/)
-- [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
-- [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/)
-- [Graceful Shutdown](/felix/deployment/graceful-shutdown/)
-- [Performance Tuning](/felix/features/performance/)
+- [System Design](/architecture/system-design/)
+- [Component Architecture](/architecture/components/)
+- [Wire Protocol](/architecture/wire-protocol/)
+- [Internals: The Publish Path](/development/internals-publish/)
+- [Internals: Subscribe & Fanout](/development/internals-subscribe/)
+- [Internals: Backpressure & Core Sharding](/development/internals-concurrency/)
+- [Graceful Shutdown](/deployment/graceful-shutdown/)
+- [Performance Tuning](/features/performance/)

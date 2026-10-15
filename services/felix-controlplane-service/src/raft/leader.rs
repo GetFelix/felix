@@ -57,7 +57,12 @@ impl RaftHandle {
         let mut last = anyhow::anyhow!("no raft leader is known");
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
+            // A stopped member's metrics still name the leader they last saw,
+            // often itself. Refuse at once so the caller tries another member.
+            if self.is_stopped() {
+                last = anyhow::anyhow!("this raft member has stopped");
+            }
+            if remaining.is_zero() || self.is_stopped() {
                 return Err(AskLeaderError::Failed(anyhow::Error::new(
                     super::NoQuorum::new(self.write_timeout, &last),
                 )));
@@ -138,9 +143,14 @@ impl RaftHandle {
         self.raft.metrics().borrow().current_term
     }
 
-    /// Whether this member believes it leads. Local and unconfirmed.
+    /// Whether this member believes it leads. Local and unconfirmed; false
+    /// once [`RaftHandle::shutdown`] has been called.
     pub fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().current_leader == Some(self.id)
+        !self.is_stopped() && self.raft.metrics().borrow().current_leader == Some(self.id)
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The peer route's half: answer only while leading.

@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: felix

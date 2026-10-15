@@ -4,9 +4,11 @@
 mod ack;
 mod ack_on_enqueue;
 mod admission;
+mod commit_ack;
 mod control_batch;
 mod control_binary;
 mod control_message;
+mod declared_width;
 mod group_commit;
 mod idempotent_acks;
 mod ingress;
@@ -28,7 +30,7 @@ use felix_authz::PermissionMatcher;
 use felix_broker::Broker;
 use felix_storage::EphemeralCache;
 use felix_wire::{Frame, Message};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::sync::{mpsc, watch};
 
 use super::ingress::enqueue_publish;
@@ -64,6 +66,7 @@ fn make_publish_context(buffer: usize) -> (PublishContext, TestReceiver, TestSen
 /// A context with no cluster and no budgets, feeding `scheduler`.
 pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
     PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,
@@ -75,14 +78,14 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         wait_timeout: Duration::from_millis(100),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
+        identity: IdentityLimits::unlimited(),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     }
 }
 
@@ -98,6 +101,7 @@ fn make_job() -> PublishJob {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 
@@ -106,9 +110,18 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
     let matcher = PermissionMatcher::from_strings(&patterns).expect("parse perms");
     AuthContext {
         subject: "test-principal".to_string(),
+        actor: None,
+        publisher: Some(bytes::Bytes::from_static(b"test-principal")),
         tenant_id: tenant_id.to_string(),
         matcher,
         token: "test-token".to_string(),
+        revocable: crate::serving::revocation::Revocable::new(
+            Default::default(),
+            tenant_id.to_string(),
+            "test-principal".to_string(),
+            None,
+            0,
+        ),
     }
 }
 

@@ -16,6 +16,15 @@ pub enum Decision {
     Move(MoveStep, ShardAssignment),
     /// A move is in progress and this pass can do nothing for it yet.
     Waiting(Blocked),
+    /// A new shard waits for more brokers to register before it is placed:
+    /// `live` are, fewer than its replication factor, and the cluster is
+    /// within `MovePolicy::settle_millis` of its first broker registering.
+    /// Placed on what is live at `until_millis`, on the store's clock, if no
+    /// more have come.
+    Settling {
+        live: u32,
+        until_millis: u64,
+    },
     Unplaceable(Unplaceable),
 }
 
@@ -41,6 +50,10 @@ pub enum MoveStep {
     /// close enough within `MovePolicy::timeout_millis` and is dropped, giving
     /// its slot to the next move.
     TimedOut { successor: String },
+    /// A restore's new copy went `MovePolicy::restore_stall_millis` without
+    /// its reported position moving. Dropped as for `TimedOut`, and the shard
+    /// waits behind every other one for its next slot.
+    Stalled { successor: String },
     /// A follower on a draining node starts being replaced: `to` joins the
     /// replica set beside it.
     Reseat { from: String, to: String },
@@ -75,6 +88,7 @@ impl MoveStep {
             Self::Abandon { .. } => "abandon",
             Self::Halted { .. } => "halted",
             Self::TimedOut { .. } => "timed_out",
+            Self::Stalled { .. } => "stalled",
             Self::Reseat { .. } => "reseat",
             Self::Restore { .. } => "restore",
             Self::Seat { .. } => "seat",

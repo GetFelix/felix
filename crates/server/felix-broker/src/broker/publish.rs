@@ -73,7 +73,7 @@ impl Broker {
         payloads: &[Bytes],
     ) -> Result<usize> {
         Ok(self
-            .publish_batch_with_outcome(handle, payloads)
+            .publish_batch_with_outcome(handle, payloads, None)
             .await?
             .subscribers)
     }
@@ -91,8 +91,9 @@ impl Broker {
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
+        publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
-        let claimed = self.claim_publish(handle, payloads).await?;
+        let claimed = self.claim_publish(handle, payloads, publisher).await?;
         self.complete_publish(claimed).await
     }
 
@@ -108,15 +109,62 @@ impl Broker {
     /// Offsets are consumed here, so the order calls return in *is* the order
     /// records land on disk. Complete every claim: dropping one releases its
     /// commit range, but the offsets it consumed stay consumed.
+    ///
+    /// `publisher` is the principal publishing the batch. Subscribers of an
+    /// in-memory stream are told it; a durable stream stores it with each
+    /// record only when [`Broker::records_publishers`] says so, and its
+    /// subscribers are told only what was stored.
     pub async fn claim_publish(
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
+        publisher: Option<&Bytes>,
     ) -> Result<ClaimedPublish> {
         Ok(self
-            .claim(handle, payloads, Append::Plain)
+            .claim(handle, payloads, Append::Plain, publisher)
             .await?
             .expect("a plain append always claims"))
+    }
+
+    /// [`Broker::claim_publish`], only if the batch would start at exactly
+    /// `expected`: the shard's next offset when it is written.
+    ///
+    /// The check is made where the offsets are assigned, under the log's
+    /// append lock, so of two claims expecting the same offset exactly one is
+    /// written. A refusal is [`BrokerError::OffsetMismatch`] with the tail it
+    /// was checked against; it writes nothing, consumes no offset and claims
+    /// no place in the commit order, so it holds up nothing behind it. A
+    /// stream with no log has no offsets to compare, and is refused with
+    /// [`BrokerError::ExpectedOffsetNeedsDurableStream`].
+    pub async fn claim_publish_at(
+        &self,
+        handle: &StreamHandle,
+        payloads: &[Bytes],
+        expected: u64,
+        publisher: Option<&Bytes>,
+    ) -> Result<ClaimedPublish> {
+        if payloads.is_empty() {
+            return Err(BrokerError::EmptyConditionalPublish);
+        }
+        Ok(self
+            .claim(handle, payloads, Append::At(expected), publisher)
+            .await?
+            .expect("a conditional append claims or is refused"))
+    }
+
+    /// [`Broker::claim_publish_at`] and [`Broker::complete_publish`] back to
+    /// back.
+    pub async fn publish_batch_at(
+        &self,
+        handle: &StreamHandle,
+        payloads: &[Bytes],
+        expected: u64,
+        publisher: Option<&Bytes>,
+    ) -> Result<PublishOutcome> {
+        let claimed = self
+            .claim_publish_at(handle, payloads, expected, publisher)
+            .await?;
+        self.complete_publish(claimed).await
     }
 
     /// [`Broker::claim_publish`], writing the records as `append` says. `None`
@@ -126,21 +174,33 @@ impl Broker {
         handle: &StreamHandle,
         payloads: &[Bytes],
         append: Append<'_>,
+        publisher: Option<&Bytes>,
     ) -> Result<Option<ClaimedPublish>> {
         if !handle.state.active.load(Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
         }
 
+        // What subscribers are told is what replay will find: on a durable
+        // stream, only a publisher the log stores.
+        let publisher = match handle.state.durable {
+            Some(_) => publisher.filter(|_| self.records_publishers()),
+            None => publisher,
+        };
         let sample = t_should_sample();
         let mut claimed = ClaimedPublish {
             handle: handle.clone(),
             payloads: payloads.to_vec(),
+            publisher: publisher.cloned(),
+            timestamp_micros: None,
             commit: None,
             durable: None,
             sample,
         };
         if payloads.is_empty() {
             return Ok(Some(claimed));
+        }
+        if handle.state.durable.is_none() && append.expected().is_some() {
+            return Err(BrokerError::ExpectedOffsetNeedsDurableStream);
         }
 
         if let Some(durable) = &handle.state.durable {
@@ -151,30 +211,86 @@ impl Broker {
             // behind them queues on this range. Claiming it only after a
             // *successful* wait stranded the stream: a failed or cancelled
             // publish abandoned its range, and every later publish waited
-            // on a turn that could never arrive.
-            let pending = match append {
-                Append::Plain => durable.begin_append(payloads).await?,
-                Append::Marked(marks) => durable.begin_append_marked(payloads, marks).await?,
-                Append::Commit(record) => {
+            // on a turn that could never arrive. The log claims it where it
+            // assigns the offsets, so a publish cancelled before this returns
+            // still releases it.
+            let order = &handle.state.commit_sequencer;
+            // Taken here rather than in the log so live delivery reports the
+            // time replay will read back.
+            let timestamp_micros = crate::durable::append_time_now();
+            claimed.timestamp_micros = Some(timestamp_micros);
+            let publishers = match publisher {
+                Some(publisher) => vec![Some(publisher.clone()); payloads.len()],
+                None => Vec::new(),
+            };
+            let (pending, turn) = match append {
+                Append::Plain => {
                     durable
-                        .begin_append_marked(std::slice::from_ref(record), &[RecordMark::Commit])
+                        .begin_append(payloads, &publishers, timestamp_micros, order)
                         .await?
                 }
+                Append::Marked(marks) => {
+                    durable
+                        .begin_append_marked(payloads, marks, &publishers, timestamp_micros, order)
+                        .await?
+                }
+                Append::At(expected) => durable
+                    .begin_append_if(
+                        expected,
+                        payloads,
+                        &[],
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
+                    .await?
+                    .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
+                Append::Commit {
+                    record,
+                    expected: None,
+                } => {
+                    durable
+                        .begin_append_marked(
+                            std::slice::from_ref(record),
+                            &[RecordMark::Commit],
+                            &publishers,
+                            timestamp_micros,
+                            order,
+                        )
+                        .await?
+                }
+                Append::Commit {
+                    record,
+                    expected: Some(expected),
+                } => durable
+                    .begin_append_if(
+                        expected,
+                        std::slice::from_ref(record),
+                        &[RecordMark::Commit],
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
+                    .await?
+                    .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
                 Append::Continuing {
                     producer_id,
                     sequence,
                 } => match durable
-                    .continue_batch(producer_id, sequence, payloads)
+                    .continue_batch(
+                        producer_id,
+                        sequence,
+                        payloads,
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
                     .await?
                 {
-                    Some(pending) => pending,
+                    Some(claimed) => claimed,
                     None => return Ok(None),
                 },
             };
-            let turn = handle
-                .state
-                .commit_sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             claimed.durable = Some(ClaimedDurable {
                 pending,
                 turn,
@@ -257,7 +373,7 @@ impl Broker {
         reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
         let claimed = self
-            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse)
+            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse, None)
             .await?;
         self.complete_idempotent(claimed).await
     }
@@ -276,10 +392,18 @@ impl Broker {
         sequence: u64,
         payloads: &[Bytes],
         reuse: SequenceReuse,
+        publisher: Option<&Bytes>,
     ) -> Result<IdempotentClaim> {
         let Some(log) = &handle.state.durable else {
             return self
-                .publish_idempotent_in_memory(handle, producer_id, sequence, payloads, reuse)
+                .publish_idempotent_in_memory(
+                    handle,
+                    producer_id,
+                    sequence,
+                    payloads,
+                    reuse,
+                    publisher,
+                )
                 .await
                 .map(IdempotentClaim::Done);
         };
@@ -309,7 +433,7 @@ impl Broker {
                     let marks: Vec<RecordMark> =
                         RecordMark::for_batch(producer_id, sequence, payloads.len()).collect();
                     let claimed = self
-                        .claim(handle, payloads, Append::Marked(&marks))
+                        .claim(handle, payloads, Append::Marked(&marks), publisher)
                         .await?
                         .expect("a marked append always claims");
                     return Ok(IdempotentClaim::Appended {
@@ -337,7 +461,7 @@ impl Broker {
                         sequence,
                     };
                     let Some(claimed) = self
-                        .claim(handle, &payloads[held as usize..], append)
+                        .claim(handle, &payloads[held as usize..], append, publisher)
                         .await?
                     else {
                         // Something landed after it since it was classified,
@@ -406,6 +530,7 @@ impl Broker {
         sequence: u64,
         payloads: &[Bytes],
         reuse: SequenceReuse,
+        publisher: Option<&Bytes>,
     ) -> Result<IdempotentOutcome> {
         let producers = &handle.state.producers;
         let turn = producers.turn(producer_id, sequence)?;
@@ -420,7 +545,9 @@ impl Broker {
             }
             Sequenced::Append => {
                 let digest = PayloadDigest::of(payloads);
-                let outcome = self.publish_batch_with_outcome(handle, payloads).await?;
+                let outcome = self
+                    .publish_batch_with_outcome(handle, payloads, publisher)
+                    .await?;
                 producers.remember(producer_id, sequence, outcome, digest);
                 Ok(IdempotentOutcome {
                     outcome,
@@ -434,15 +561,32 @@ impl Broker {
 /// How [`Broker::claim`] writes a batch to a durable log.
 pub(super) enum Append<'a> {
     Plain,
+    /// Only if the batch starts at exactly this offset.
+    At(u64),
     /// With a producer mark per record.
     Marked(&'a [RecordMark]),
-    /// One commit record holding the batch's single event.
-    Commit(&'a Bytes),
+    /// One commit record holding the batch's single event, only at
+    /// `expected` when there is one.
+    Commit {
+        record: &'a Bytes,
+        expected: Option<u64>,
+    },
     /// The rest of a producer batch the log holds the start of.
     Continuing {
         producer_id: u64,
         sequence: u64,
     },
+}
+
+impl Append<'_> {
+    /// The offset this append must start at, if it is conditional.
+    fn expected(&self) -> Option<u64> {
+        match self {
+            Self::At(expected) => Some(*expected),
+            Self::Commit { expected, .. } => *expected,
+            Self::Plain | Self::Marked(_) | Self::Continuing { .. } => None,
+        }
+    }
 }
 
 /// What a publish did.
@@ -490,6 +634,10 @@ pub enum IdempotentClaim {
 pub struct ClaimedPublish {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    /// Who published the batch, as its subscribers are told.
+    publisher: Option<Bytes>,
+    /// When a durable batch was appended. `None` on an in-memory stream.
+    timestamp_micros: Option<u64>,
     /// A commit's state updates; `payloads` is then its one event.
     commit: Option<Arc<[crate::commit::StateOp]>>,
     durable: Option<ClaimedDurable>,

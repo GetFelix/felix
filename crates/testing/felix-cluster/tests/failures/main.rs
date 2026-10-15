@@ -9,7 +9,9 @@
 mod clocks;
 mod failover;
 mod faults;
+mod fenced_caches;
 mod fencing;
+mod followers_word;
 mod fsync;
 mod halted;
 mod kafka_produce;
@@ -20,4 +22,5 @@ mod majority_ack;
 mod membership;
 mod partition;
 mod promotion_fence;
+mod retention_floor;
 mod writes;

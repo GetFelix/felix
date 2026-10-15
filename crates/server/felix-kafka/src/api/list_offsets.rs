@@ -85,42 +85,19 @@ async fn offset_for(
             Ok(last.map_or((-1, -1), |(time, offset)| (time, offset as i64)))
         }
         at if at >= 0 => {
-            // The first record at or after `at`. Timestamps are append times,
-            // so they rise with the offset and a binary search finds it.
-            let (mut low, mut high) = (base, tail);
-            while low < high {
-                let mid = low + (high - low) / 2;
-                match record_at(log, mid, tail).await.map_err(storage)? {
-                    Some((time, _)) if time < at => low = mid + 1,
-                    _ => high = mid,
-                }
-            }
-            if low == tail {
-                // Nothing that recent: Kafka answers "no offset".
-                return Ok((-1, -1));
-            }
-            let found = record_at(log, low, tail).await.map_err(storage)?;
-            Ok(found.map_or((-1, -1), |(time, offset)| (time, offset as i64)))
+            // Kafka asks in milliseconds; the first record at or after `at`
+            // ms is the first at or after `at * 1000` µs.
+            let found = log
+                .offset_for_time((at as u64).saturating_mul(1_000), tail)
+                .await
+                .map_err(storage)?;
+            // Nothing that recent: Kafka answers "no offset".
+            Ok(found.map_or((-1, -1), |(offset, micros)| {
+                ((micros / 1_000) as i64, offset as i64)
+            }))
         }
         _ => Err(ResponseError::InvalidRequest),
     }
-}
-
-/// The client record at or just after `offset` and below `until`: its time
-/// and its offset. Past a generation-start record the next one can sit above
-/// the high watermark, and that is not an answer a consumer may be given.
-async fn record_at(
-    log: &StreamLog,
-    offset: u64,
-    until: u64,
-) -> felix_broker::Result<Option<(i64, u64)>> {
-    // One byte asks for a single record; the log returns the first whatever
-    // its size.
-    let records = log.read_from(offset, 1).await?;
-    Ok(records
-        .first()
-        .filter(|record| record.offset < until)
-        .map(|record| (crate::records::timestamp_ms(record), record.offset)))
 }
 
 /// The last client record below `tail`, stepping back over any

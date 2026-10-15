@@ -55,7 +55,7 @@ pub(crate) struct WatchResponder<'a> {
     pub(crate) out_ack_tx: &'a mpsc::Sender<Outgoing>,
     pub(crate) out_ack_depth: &'a Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) ack_throttle_tx: &'a tokio::sync::watch::Sender<bool>,
-    pub(crate) ack_timeout_state: &'a Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    pub(crate) ack_timeout_state: &'a Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     pub(crate) cancel_tx: &'a tokio::sync::watch::Sender<bool>,
 }
 
@@ -98,11 +98,11 @@ pub(crate) struct WatchRequest {
 pub(crate) async fn handle_cache_watch_message(
     broker: Arc<Broker>,
     connection: felix_transport::QuicConnection,
-    config: crate::config::BrokerConfig,
     publish_ctx: &PublishContext,
     responder: WatchResponder<'_>,
     request: WatchRequest,
     peer_features: u32,
+    owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
     // Exactly one of key/prefix. Refused rather than guessed at: "both" has
     // two defensible readings and a client relying on either would silently
@@ -223,21 +223,15 @@ pub(crate) async fn handle_cache_watch_message(
         return Ok(true);
     };
 
-    if !publish_ctx
-        .subscriptions
-        .try_reserve(config.max_subscriptions_per_conn)
-    {
+    if let Err(cap) = publish_ctx.identity.try_reserve() {
         responder
-            .send(
-                ClientError::limit_exceeded("max subscriptions per connection exceeded")
-                    .into_message(),
-            )
+            .send(ClientError::limit_exceeded(cap.message()).into_message())
             .await?;
         return Ok(true);
     }
     // Reserved; every exit below must release exactly once — failure paths do
     // it inline, the delivery task does it on the success path.
-    let subscriptions = Arc::clone(&publish_ctx.subscriptions);
+    let subscriptions = Arc::clone(&publish_ctx.identity);
 
     // Register *before* reading the tail: this pins the live edge. Every
     // change applied from here on is queued (or reported as lag), so the
@@ -250,6 +244,24 @@ pub(crate) async fn handle_cache_watch_message(
         filter.clone(),
         WATCH_QUEUE_CAPACITY,
     );
+
+    // Checked again now that it is registered: an ending that landed since
+    // the first check would otherwise have missed it.
+    let shard_key = crate::shards::ShardKey {
+        tenant_id: request.tenant_id.clone(),
+        namespace: request.namespace.clone(),
+        stream: request.cache.clone(),
+        shard,
+        kind: crate::shards::ShardKind::Cache,
+    };
+    if let Some(refusal) =
+        super::redirect::stopped_serving(publish_ctx.ingress.as_deref(), &shard_key)
+    {
+        drop(watch);
+        subscriptions.release();
+        responder.send(refusal).await?;
+        return Ok(true);
+    }
 
     let Some(log) = broker
         .cache()
@@ -274,9 +286,21 @@ pub(crate) async fn handle_cache_watch_message(
             .await?;
         return Ok(true);
     };
-    let tail = match log.tail_offset().await {
-        Ok(tail) => tail,
-        Err(err) => {
+    // The applied frontier where the cache reports one: a write already in
+    // the log but not yet applied is in no snapshot, and with the log's tail
+    // its change would arrive below the live edge and be dropped.
+    let applied = broker
+        .cache()
+        .applied_through(
+            &request.tenant_id,
+            &request.namespace,
+            &request.cache,
+            shard,
+        )
+        .await;
+    let tail = match (log.tail_offset().await, applied) {
+        (Ok(tail), Ok(applied)) => applied.map_or(tail, |applied| applied.min(tail)),
+        (Err(err), _) | (_, Err(err)) => {
             subscriptions.release();
             responder
                 .send(
@@ -297,13 +321,7 @@ pub(crate) async fn handle_cache_watch_message(
     // cache it waits for the mark to get there first.
     let gate = CommitGate {
         broker: Arc::clone(&broker),
-        key: crate::shards::ShardKey {
-            tenant_id: request.tenant_id.clone(),
-            namespace: request.namespace.clone(),
-            stream: request.cache.clone(),
-            shard,
-            kind: crate::shards::ShardKind::Cache,
-        },
+        key: shard_key,
         marks: publish_ctx.marks.clone(),
         ingress: publish_ctx.ingress.clone(),
         timeout: publish_ctx.quorum_timeout,
@@ -454,6 +472,16 @@ pub(crate) async fn handle_cache_watch_message(
     // watch laps its queue.
     let shard_moved = felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SHARD_MOVED)
         .then_some(subscription_id);
+    let revoked = owner.map(|auth| {
+        let message = ClientError::revoked().into_message();
+        let message =
+            if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
+                message
+            } else {
+                message.without_error_code()
+            };
+        (auth.revocable.clone(), message)
+    });
     tokio::spawn(run_watch_delivery(
         watch,
         event_send,
@@ -461,6 +489,7 @@ pub(crate) async fn handle_cache_watch_message(
         subscriptions,
         shard_moved,
         gate,
+        revoked,
     ));
     Ok(true)
 }
@@ -554,6 +583,7 @@ async fn write_replayed_changes(
                     key,
                     value,
                     expires_at_millis,
+                    ..
                 } => Message::CacheEvent {
                     key,
                     value: Some(value),
@@ -626,13 +656,33 @@ async fn run_watch_delivery(
     mut watch: CacheWatchSubscription,
     mut event_send: quinn::SendStream,
     resume_offset: u64,
-    subscriptions: Arc<super::publish::SubscriptionLimiter>,
+    subscriptions: Arc<super::publish::IdentityLimits>,
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
     gate: CommitGate,
+    // The credential the watch was opened with, and the last frame to send
+    // when it is revoked.
+    revoked: Option<(crate::serving::revocation::Revocable, Message)>,
 ) {
+    let (revocable, mut revoked_message) = revoked.unzip();
+    let mut revocation = Box::pin(async move {
+        match revocable {
+            Some(revocable) => revocable.revoked().await,
+            None => std::future::pending().await,
+        }
+    });
     loop {
-        match watch.recv().await {
+        let next = tokio::select! {
+            next = watch.recv() => next,
+            () = &mut revocation => {
+                tracing::info!("ending a cache watch: its credential was revoked");
+                if let Some(message) = revoked_message.take() {
+                    let _ = write_message(&mut event_send, message).await;
+                }
+                break;
+            }
+        };
+        match next {
             Some(event) => {
                 if event.offset < resume_offset {
                     // Applied before the tail was read, so the catch-up already
@@ -704,3 +754,6 @@ async fn run_watch_delivery(
     let _ = event_send.finish();
     subscriptions.release();
 }
+
+#[cfg(test)]
+mod tests;

@@ -140,6 +140,34 @@ async fn the_refresh_task_invalidates_the_cached_flag() {
     let _ = task.await;
 }
 
+/// The refresh keeps pace with the lease the control plane hands out, not the
+/// placeholder the broker started on. Paced by the 10s placeholder, a 1s lease
+/// would be noticed lapsed up to 470ms late.
+#[tokio::test(start_paused = true)]
+async fn the_refresh_follows_an_adopted_shorter_lease() {
+    let lease = Arc::new(LeaseState::on_tokio_clock(Duration::from_secs(10)));
+    let shutdown = CancellationToken::new();
+    let task = Arc::clone(&lease).spawn_refresh(shutdown.clone());
+
+    lease.adopt(Duration::from_secs(1));
+    lease.renew();
+    // Past the 750ms usable life by two refresh periods of the adopted lease,
+    // in small steps so every tick due runs at its own time.
+    for _ in 0..85 {
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(!lease.is_valid_now());
+    assert!(
+        !lease.looks_valid(),
+        "a lapsed lease should leave the admission path within a refresh period",
+    );
+
+    shutdown.cancel();
+    let _ = task.await;
+}
+
 /// A stall between sending a heartbeat and handling its answer must not
 /// lengthen the lease. Anchored at arrival, a stalled broker holds authority
 /// for the lease *plus* the stall — past what the control plane granted.

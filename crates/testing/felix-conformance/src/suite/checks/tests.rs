@@ -10,6 +10,7 @@ fn parse_subscribe_response_variants() {
             subscription_id: 7,
             start_offset: None,
             live_offset: None,
+            queue_capacity: None,
         }))
         .expect("ok"),
         7
@@ -46,7 +47,8 @@ fn parse_cache_get_response_variants() {
             cache: "primary".into(),
             key: "k".into(),
             value: Some(value.clone()),
-            request_id: None
+            request_id: None,
+            version: None,
         }))
         .expect("ok"),
         Some(value)
@@ -90,6 +92,7 @@ fn ensure_flag_advertised_variants() {
         Some(Message::AuthOk {
             server_flags,
             server_features: None,
+            server_features_hi: None,
             listener_ports: None,
             publish_window: None,
         })

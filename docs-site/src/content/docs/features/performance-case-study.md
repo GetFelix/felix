@@ -10,8 +10,8 @@ were diagnosed, and what fixed them. It also covers the investigative
 method, which carries over to other problems better than either fix does.
 
 The mechanisms and the code that implements them are described in
-[Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime).
-Current numbers are in [Benchmarks](/felix/features/benchmarks/).
+[Concurrency internals](/development/internals-concurrency/#the-quic-io-runtime).
+Current numbers are in [Benchmarks](/features/benchmarks/).
 
 :::note[Scope: these are macOS findings]
 Every measurement here is macOS on loopback, and the first defect turns out

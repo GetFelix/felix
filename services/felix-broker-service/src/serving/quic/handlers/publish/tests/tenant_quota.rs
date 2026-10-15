@@ -157,3 +157,118 @@ async fn with_no_quota_every_publish_is_admitted() {
         );
     }
 }
+
+/// A durable broker with stream `match` under tenants `t1` and `t2`.
+async fn durable_broker(dir: &std::path::Path) -> Arc<Broker> {
+    let config = felix_storage::log::LogConfig {
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        ..Default::default()
+    };
+    let broker = Broker::new(felix_storage::EphemeralCache::new().into())
+        .with_durable_storage(felix_broker::DurableStorage::open(dir, config).expect("storage"));
+    for tenant in ["t1", "t2"] {
+        broker.register_tenant(tenant).await.expect("tenant");
+        broker
+            .register_namespace(tenant, "ns")
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                tenant,
+                "ns",
+                "match",
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+    }
+    Arc::new(broker)
+}
+
+async fn publish_if(
+    broker: &Broker,
+    ctx: &PublishContext,
+    tenant: &str,
+    expected: u64,
+) -> Result<u64, crate::serving::commit_ops::NotWritten> {
+    crate::serving::commit_ops::publish_at(
+        broker,
+        ctx,
+        tenant,
+        "ns",
+        "match",
+        None,
+        vec![Bytes::from_static(b"tick")],
+        expected,
+        None,
+    )
+    .await
+}
+
+/// `publish_if` is not queued, but it draws on the same bucket as a publish
+/// and is refused over it the same way, before anything is written. Another
+/// tenant is not throttled by it.
+#[tokio::test]
+async fn a_conditional_publish_over_quota_is_refused_like_a_publish() {
+    let dir = tempfile::tempdir().expect("dir");
+    let broker = durable_broker(dir.path()).await;
+    let (mut ctx, _rx, _tx) = make_publish_context(8);
+    one_per_second(&mut ctx);
+
+    // The first takes the bucket to zero, the second into debt.
+    for expected in 0..2 {
+        assert_eq!(
+            publish_if(&broker, &ctx, "t1", expected)
+                .await
+                .expect("within quota"),
+            expected
+        );
+    }
+    let refusal = match publish_if(&broker, &ctx, "t1", 2).await {
+        Err(crate::serving::commit_ops::NotWritten::Refused(refusal)) => refusal,
+        other => panic!("expected a quota refusal, got {other:?}"),
+    };
+    assert_eq!(refusal.code(), &felix_wire::ErrorCode::Overloaded);
+    assert_eq!(refusal.retry(), felix_wire::RetryClass::RetryAfter);
+    let detail = refusal.detail().expect("detail");
+    assert_eq!(detail.reason.as_deref(), Some(TENANT_QUOTA_REASON));
+    assert!(detail.retry_after_ms.is_some());
+
+    // The same bucket refuses a queued publish too.
+    let err = enqueue_tenant_publish(&ctx, "t1", make_job(), EnqueuePolicy::Fail, None)
+        .await
+        .expect_err("over quota");
+    assert_eq!(
+        ClientError::not_enqueued(&err)
+            .detail()
+            .and_then(|d| d.reason.clone())
+            .as_deref(),
+        Some(TENANT_QUOTA_REASON)
+    );
+
+    // Refused before the claim: offset 2 is still free.
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "match", 0)
+        .await
+        .expect("handle");
+    assert_eq!(
+        handle
+            .log()
+            .expect("log")
+            .tail_offset()
+            .await
+            .expect("tail"),
+        2
+    );
+
+    assert_eq!(
+        publish_if(&broker, &ctx, "t2", 0)
+            .await
+            .expect("t2 is not throttled by t1"),
+        0
+    );
+}

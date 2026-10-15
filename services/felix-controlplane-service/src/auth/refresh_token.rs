@@ -56,6 +56,18 @@ pub struct RefreshToken {
     /// written before it was recorded, which refresh to full RBAC rights.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrowing: Option<Narrowing>,
+    /// Set when a refresh spent this token: when, and the token that
+    /// replaced it. What lets a retry within the reuse grace window be told
+    /// apart from a replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotated: Option<Rotation>,
+}
+
+/// How a spent refresh token was replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rotation {
+    pub at_secs: i64,
+    pub successor_id: String,
 }
 
 /// What an exchange asked for, kept with its refresh chain.
@@ -67,8 +79,17 @@ pub struct Narrowing {
     /// Resource hints the token was limited to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Vec<String>>,
+    /// `action:object` pairs the token was limited to, if any. When set, it
+    /// replaces `requested` and `resources`, and `requested` is stored as
+    /// `[]` so a control plane that predates this field refreshes to nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
     /// The audience the exchange minted for. A refresh keeps it.
     pub audience: String,
+    /// The actor the exchange named, carried as `may_act` on every token the
+    /// chain mints so the same caller can delegate them after a refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may_act: Option<String>,
 }
 
 impl RefreshToken {

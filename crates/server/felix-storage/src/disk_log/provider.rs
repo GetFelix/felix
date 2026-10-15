@@ -2,8 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+
 use super::{DiskLog, layout};
-use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, ShardKey};
+use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, Retention, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -18,6 +20,12 @@ pub struct DiskLogProvider {
     root: PathBuf,
     config: LogConfig,
     open_logs: ShardSlots<ShardKey, DiskLog>,
+    /// Retention set for one stream, keyed by tenant, namespace and stream.
+    /// A bound a stream leaves unset comes from `config`.
+    stream_retention: parking_lot::RwLock<HashMap<(String, String, String), Retention>>,
+    /// Whether each stream's logs are held at the commit offset, as set by
+    /// [`Self::set_stream_retention_hold`].
+    stream_hold: parking_lot::RwLock<HashMap<(String, String, String), bool>>,
     /// Runs inside every open, under the shard's lock, so tests can make an
     /// open slow and watch what waits on it.
     #[cfg(test)]
@@ -44,6 +52,8 @@ impl DiskLogProvider {
             root,
             config,
             open_logs: ShardSlots::new(),
+            stream_retention: parking_lot::RwLock::new(HashMap::new()),
+            stream_hold: parking_lot::RwLock::new(HashMap::new()),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })
@@ -63,6 +73,13 @@ impl DiskLogProvider {
     /// closing it.
     pub fn open_shard(&self, shard: &ShardKey) -> Result<DiskLog> {
         self.open_with(shard, None)
+    }
+
+    /// The log for `shard` if it is open already. Unlike [`Self::open_shard`]
+    /// this never creates or recovers anything, so a read-only caller can
+    /// look without leaving a directory behind.
+    pub fn opened_shard(&self, shard: &ShardKey) -> Option<DiskLog> {
+        self.open_logs.get_open(shard)
     }
 
     /// Open or return the cached log for `shard`, creating it to begin at
@@ -85,6 +102,71 @@ impl DiskLogProvider {
         self.open_logs
             .close(shard, |log: DiskLog| async move { log.close().await })
             .await
+    }
+
+    /// Bound one stream's logs by `retention`, falling back to this
+    /// provider's configuration for a bound it leaves unset. Applies to the
+    /// stream's shards already open and to every one opened later.
+    pub fn set_stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        retention: Retention,
+    ) -> Result<()> {
+        let effective = retention.or(self.config.retention());
+        self.config.check_retention(effective)?;
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        self.stream_retention.write().insert(scope, retention);
+        for (key, log) in self.open_logs.open_entries() {
+            if key.tenant != tenant || key.namespace != namespace || key.stream != stream {
+                continue;
+            }
+            match log.set_retention(effective) {
+                // Closing because the shard moved away; the next open reads
+                // the map.
+                Err(StorageError::Closed(_)) => {}
+                other => other?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Hold one stream's logs at the commit offset, or lift the hold: for a
+    /// stream whose consistency became `Quorum`, or stopped being it. Applies
+    /// to the stream's shards already open, written through before this
+    /// returns, and to every one opened later, before its retention first
+    /// runs. Ignored when this provider's configuration lifts every hold.
+    pub async fn set_stream_retention_hold(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        hold: bool,
+    ) -> Result<()> {
+        if self.config.retention_hold == RetentionHold::Lifted {
+            return Ok(());
+        }
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        self.stream_hold.write().insert(scope, hold);
+        for (key, log) in self.open_logs.open_entries() {
+            if key.tenant != tenant || key.namespace != namespace || key.stream != stream {
+                continue;
+            }
+            match log.hold_retention_at_commit(hold).await {
+                Err(StorageError::Closed(_)) => {}
+                other => other?,
+            }
+        }
+        Ok(())
     }
 
     /// Shard keys this provider currently has open.
@@ -130,13 +212,42 @@ impl DiskLogProvider {
                 }
                 let dir = layout::shard_dir(&self.root, shard);
                 let label = layout::shard_label(shard);
+                let config = self.config_for(shard);
                 match base_offset {
-                    Some(base) => DiskLog::open_at(dir, label, self.config.clone(), base),
-                    None => DiskLog::open(dir, label, self.config.clone()),
+                    Some(base) => DiskLog::open_at(dir, label, config, base),
+                    None => DiskLog::open(dir, label, config),
                 }
             },
             || StorageError::Closed(layout::shard_label(shard)),
         )
+    }
+}
+
+impl DiskLogProvider {
+    /// The configuration `shard` opens with: this provider's, with its
+    /// stream's retention and retention hold.
+    fn config_for(&self, shard: &ShardKey) -> LogConfig {
+        let scope = (
+            shard.tenant.clone(),
+            shard.namespace.clone(),
+            shard.stream.clone(),
+        );
+        let mut config = self.config.clone();
+        if let Some(retention) = self.stream_retention.read().get(&scope) {
+            let effective = retention.or(self.config.retention());
+            config.retention_bytes = effective.bytes;
+            config.retention_age = effective.age;
+        }
+        if self.config.retention_hold != RetentionHold::Lifted
+            && let Some(hold) = self.stream_hold.read().get(&scope)
+        {
+            config.retention_hold = if *hold {
+                RetentionHold::Held
+            } else {
+                RetentionHold::Lifted
+            };
+        }
+        config
     }
 }
 

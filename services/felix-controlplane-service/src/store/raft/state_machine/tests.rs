@@ -140,6 +140,7 @@ fn replica_report(
     reported_at_millis: u64,
 ) -> crate::model::ReplicaReport {
     crate::model::ReplicaReport {
+        counter_offsets: Default::default(),
         key: shard_assignment(tenant_id, namespace, stream, "broker-0").key,
         generation: 0,
         caught_up: ["broker-1".to_string()].into(),
@@ -333,6 +334,7 @@ fn script() -> Vec<MetaCommand> {
                 used: false,
                 revoked: false,
                 narrowing: None,
+                rotated: None,
             },
         });
     }

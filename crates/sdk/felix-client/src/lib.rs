@@ -40,8 +40,8 @@
 //! - `cache`: the cache workers and [`CacheWatch`].
 //! - `cluster`: [`ClusterClient`] and the sharded views built on it.
 //! - `config`: [`ClientConfig`], its defaults, and the env and YAML overrides.
-//! - `tls`: [`quic_client_config`], the QUIC TLS setup, and whether it offers
-//!   the `felix/1` ALPN.
+//! - `tls`: [`quic_client_config`], the QUIC TLS setup, whether it offers
+//!   the `felix/1` ALPN, and a client certificate ([`ClientIdentity`]).
 //! - `telemetry` and [`timings`]: counters and sampled timings, mostly
 //!   compiled out unless the `telemetry` feature is on.
 
@@ -69,25 +69,37 @@ mod tls;
 pub mod timings;
 
 pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
-pub use cache::{CacheChange, CacheWatch, CacheWatchFilter, CacheWatchItem};
-pub use client::Client;
+pub use cache::{
+    CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
+};
+pub use client::{
+    Client, ConditionalWrite, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, StreamPage,
+    SubscriptionsPage,
+};
 pub use cluster::{
-    ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
+    ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, Seed, ShardEvent,
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,
     ShardedSubscription,
 };
 pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
-    BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLost,
+    BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLagged,
+    SubscriptionLost,
 };
 pub use publish::{IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};
 pub use telemetry::{
     FrameCountersSnapshot, frame_counters_snapshot, publishes_forwarded, reset_frame_counters,
 };
-pub use tls::quic_client_config;
+pub use tls::{
+    ClientIdentity, quic_client_config, quic_client_config_with_identity, root_store_from_pem_file,
+};
 
+pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
-    CursorErrorReason, ErrorCode, ErrorDetail, PublishRefusalReason, RetryClass, StartPosition,
+    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
+    GroupRecord, InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica,
+    InspectedSubscription, PublishRefusalReason, RetryClass, ShardInspection, ShardKind,
+    ShardOwner, StartPosition, StreamRecord, SubscriptionCursor, SubscriptionFilter,
 };

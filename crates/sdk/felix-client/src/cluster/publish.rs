@@ -4,14 +4,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use felix_wire::AckMode;
 
-use super::{
-    Attempt, ClusterClient, Next, Retrying, ShardKey, StreamKey, next_step, wants_reconnect,
-};
+use super::{Attempt, ClusterClient, Next, Retrying, ShardKey, next_step, wants_reconnect};
 use crate::client::Client;
-use crate::publish::{AckOutcome, IdempotentProducer};
+use crate::publish::{AckOutcome, IdempotentProducer, Width};
 
 impl ClusterClient {
     /// Publish, reconnecting if the broker in use has gone.
@@ -29,6 +27,14 @@ impl ClusterClient {
     /// Returns the record's log offset. `None` when the broker acknowledged
     /// before writing it, the stream has no log, the broker predates
     /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
+    ///
+    /// A broker acknowledges before writing only when it owns the shard of a
+    /// `Leader` stream and runs with `ack_on_commit` off; every other ack comes
+    /// after the write. A publish forwarded through another broker is one of
+    /// those, so the same stream can give an offset for one record and `None`
+    /// for the next, depending on which broker answered. An offset is never
+    /// reported before the write, and is as durable as the broker's fsync
+    /// policy makes the write.
     pub async fn publish(
         &self,
         tenant_id: &str,
@@ -45,7 +51,7 @@ impl ClusterClient {
             stream.to_string(),
             0,
         );
-        self.publish_to_shard(shard, payload, None, ack).await
+        self.publish_to_shard(shard, payload, None, ack, None).await
     }
 
     /// Publish with a routing key, which decides the shard.
@@ -66,17 +72,26 @@ impl ClusterClient {
         key: bytes::Bytes,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        let stream_key: StreamKey = (
+        // The key decides the shard, and the shard decides the owner. Computed
+        // with the same function the broker routes with, so the cache is
+        // bounded by shard count rather than by distinct keys. The width goes
+        // with the batch, so the broker that takes it checks the width that
+        // chose it.
+        let (shard, width) = self
+            .widths
+            .shard_of(tenant_id, namespace, stream, key.as_ref())
+            .await;
+        let shard: ShardKey = (
             tenant_id.to_string(),
             namespace.to_string(),
             stream.to_string(),
+            shard,
         );
-        // The key decides the shard, and the shard decides the owner. Computed
-        // with the same function the broker routes with, so the cache is
-        // bounded by shard count rather than by distinct keys.
-        let shard = self.shard_of(&stream_key, Some(key.as_ref())).await;
-        let shard: ShardKey = (stream_key.0, stream_key.1, stream_key.2, shard);
-        self.publish_to_shard(shard, payload, Some(key), ack).await
+        let outcome = self
+            .publish_to_shard(shard, payload, Some(key), ack, Some(width))
+            .await;
+        self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
+        outcome
     }
 
     /// Publish, reconnecting *and sending the record again* if the broker in
@@ -102,6 +117,7 @@ impl ClusterClient {
         let mut last: Option<anyhow::Error> = None;
         let mut retrying = Retrying::default();
         let mut at_least = Duration::ZERO;
+        let mut client = self.client().await;
 
         for attempt in 0..self.policy.attempts.max(1) {
             if attempt > 0 {
@@ -115,12 +131,12 @@ impl ClusterClient {
                     break;
                 }
                 tokio::time::sleep(delay).await;
-                if let Err(err) = self.reconnect().await {
+                if let Err(err) = self.reconnect(&client).await {
                     last = Some(err.context("no broker answered"));
                     continue;
                 }
+                client = self.client().await;
             }
-            let client = self.client().await;
             match publish_once(&client, tenant_id, namespace, stream, payload.clone(), ack).await {
                 Ok(acked) => return Ok(acked.offset),
                 Err(err) => {
@@ -152,9 +168,45 @@ impl ClusterClient {
     /// A producer whose publishes land once, however many times they are
     /// sent, re-sent across reconnects like [`Self::publish_at_least_once`]
     /// and without the duplicate. See [`crate::IdempotentProducer`].
-    pub async fn idempotent_producer(&self) -> Result<IdempotentProducer<'_>> {
+    ///
+    /// The producer keeps a handle on this client, so it can be stored or
+    /// moved into a task of its own.
+    pub async fn idempotent_producer(self: &Arc<Self>) -> Result<IdempotentProducer> {
         let producer_id = self.client().await.producer_init().await?;
-        Ok(IdempotentProducer::for_cluster(self, producer_id))
+        Ok(IdempotentProducer::for_cluster(
+            Arc::clone(self),
+            producer_id,
+        ))
+    }
+
+    /// Wait until every publish already handed to this client has been
+    /// written and, if it asked for one, acknowledged, then close the publish
+    /// streams.
+    ///
+    /// Call it before exiting after `AckMode::None` publishes, which return
+    /// once queued: without it, records still queued are lost with the
+    /// process. It covers every broker this client holds a connection to, and
+    /// on each both the pooled streams and the per-shard streams, so
+    /// publishes that went straight to a shard's owner are flushed as well as
+    /// those sent through the entry broker.
+    ///
+    /// This ends publishing through this client, as [`Publisher::finish`]
+    /// does for one broker: later publishes fail. Every broker is finished
+    /// even when one fails, and the first failure is returned.
+    ///
+    /// [`Publisher::finish`]: crate::Publisher::finish
+    pub async fn finish(&self) -> Result<()> {
+        let mut first: Option<anyhow::Error> = None;
+        for client in self.nodes.clients().await {
+            // The shard publisher finishes the pooled streams and the shard
+            // streams this client's publishes go on.
+            let finished = client.publisher_handle().finish().await;
+            if let Err(err) = finished {
+                let err = err.context(format!("finish publishing to {}", client.dialled()));
+                first.get_or_insert(err);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// One publish to one shard: through its cached owner when there is one,
@@ -165,38 +217,45 @@ impl ClusterClient {
         payload: Vec<u8>,
         key: Option<bytes::Bytes>,
         ack: AckMode,
+        width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
-        let (tenant_id, namespace, stream) = (&shard.0, &shard.1, &shard.2);
-        let routed = self
-            .owners
-            .read()
-            .await
-            .get(&shard)
-            .map(|owner| (Arc::clone(&owner.client), owner.node_id.clone()));
+        let routed = self.owners.read().await.get(&shard).map(|owner| {
+            (
+                Arc::clone(&owner.client),
+                owner.node_id.clone(),
+                owner.width,
+            )
+        });
+        // An owner learned under another width owns a shard of the stream as
+        // it was, not as it is: dropped, and the batch goes through the entry
+        // broker.
+        let routed = match (routed, &width) {
+            (Some((_, _, Some(learned))), Some(width))
+                if learned != (width.shards, width.routing) =>
+            {
+                self.owners.write().await.remove(&shard);
+                None
+            }
+            (routed, _) => routed.map(|(client, node_id, _)| (client, node_id)),
+        };
+        let learned = width.as_ref().map(|width| (width.shards, width.routing));
         let payload = match routed {
             None => payload,
             Some((owner, node_id)) => {
                 // Kept only so a refusal that applied nothing can be sent on.
                 let retained = payload.clone();
-                let err = match publish_once_keyed(
-                    &owner,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    payload,
-                    key.clone(),
-                    ack,
-                )
-                .await
-                {
-                    Ok(acked) => {
-                        if let Some(owner) = acked.forwarded_to {
-                            self.remember_owner(shard, owner).await;
+                let err =
+                    match publish_once_to(&owner, &shard, payload, key.clone(), ack, width.clone())
+                        .await
+                    {
+                        Ok(acked) => {
+                            if let Some(owner) = acked.forwarded_to {
+                                self.remember_owner(shard, owner, learned).await;
+                            }
+                            return Ok(acked.offset);
                         }
-                        return Ok(acked.offset);
-                    }
-                    Err(err) => err,
-                };
+                        Err(err) => err,
+                    };
                 let attempt = Attempt {
                     routed: true,
                     ..Attempt::default()
@@ -215,10 +274,10 @@ impl ClusterClient {
         };
 
         let client = self.client().await;
-        match publish_once_keyed(&client, tenant_id, namespace, stream, payload, key, ack).await {
+        match publish_once_to(&client, &shard, payload, key, ack, width).await {
             Ok(acked) => {
                 if let Some(owner) = acked.forwarded_to {
-                    self.remember_owner(shard, owner).await;
+                    self.remember_owner(shard, owner, learned).await;
                 }
                 Ok(acked.offset)
             }
@@ -226,7 +285,7 @@ impl ClusterClient {
             Err(err) => {
                 // Reconnect before returning, so the caller's next publish does
                 // not repeat this failure against the same dead broker.
-                match self.reconnect().await {
+                match self.reconnect(&client).await {
                     Ok(()) => Err(err.context("publish failed; reconnected to another broker")),
                     Err(reconnect_err) => Err(err.context(format!(
                         "publish failed and no other broker answered: {reconnect_err:#}"
@@ -245,25 +304,33 @@ async fn publish_once(
     payload: Vec<u8>,
     ack: AckMode,
 ) -> AckOutcome {
-    publish_once_keyed(client, tenant_id, namespace, stream, payload, None, ack).await
+    let publisher = client.publisher_handle();
+    publisher
+        .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)
+        .await
 }
 
-async fn publish_once_keyed(
+/// One publish to `shard`, on that shard's own stream when the client has
+/// room for one.
+async fn publish_once_to(
     client: &Client,
-    tenant_id: &str,
-    namespace: &str,
-    stream: &str,
+    shard: &ShardKey,
     payload: Vec<u8>,
     key: Option<bytes::Bytes>,
     ack: AckMode,
+    width: Option<Arc<Width>>,
 ) -> AckOutcome {
-    let publisher = client.publisher().await.context("open publisher")?;
+    let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
+    let publisher = client.publisher_handle();
     match key {
         Some(key) => {
             publisher
-                .publish_keyed_reporting_owner(tenant_id, namespace, stream, key, payload, ack)
+                .publish_keyed_reporting_owner(
+                    tenant_id, namespace, stream, key, shard, width, payload, ack,
+                )
                 .await
         }
+        // Unkeyed is shard 0, which is what the publisher assumes.
         None => {
             publisher
                 .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)

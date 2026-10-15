@@ -32,6 +32,11 @@ impl Broker {
         self.tenants.read().await.contains_key(tenant_id)
     }
 
+    /// Every registered tenant, in no particular order.
+    pub async fn tenant_ids(&self) -> Vec<String> {
+        self.tenants.read().await.keys().cloned().collect()
+    }
+
     /// Remove a tenant. `false` if it was not registered.
     pub async fn remove_tenant(&self, tenant_id: &str) -> Result<bool> {
         let mut guard = self.tenants.write().await;
@@ -115,6 +120,39 @@ impl Broker {
         }
         let key = StreamKey::new(tenant_id, namespace, stream);
 
+        // Before any shard opens, so each opens under its stream's bounds; on
+        // an update it also reaches the shards already open.
+        if metadata.durable
+            && let Some(storage) = &self.durable_storage
+        {
+            storage.set_stream_retention(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                metadata.retention,
+            )?;
+            // Held before anything is acknowledged under `Quorum`, and before
+            // a shard opens. Only on a change: a shard with no follower has
+            // its hold lifted by replication, and a resync must not put it
+            // back.
+            let previous = self
+                .streams
+                .read()
+                .await
+                .get(&key)
+                .map(|existing| existing.consistency);
+            if previous != Some(metadata.consistency) {
+                storage
+                    .set_stream_retention_hold(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        metadata.consistency == ConsistencyLevel::Quorum,
+                    )
+                    .await?;
+            }
+        }
+
         // Cursor sequence numbers and durable offsets share one identity. An
         // existing ephemeral stream may already have cursor history that was
         // never written to disk, so toggling durability in place would make
@@ -170,6 +208,7 @@ impl Broker {
                 handle_id,
                 self.topic_capacity,
                 self.subscriber_queue_policy,
+                self.subscriber_queue_bytes.clone(),
                 durable,
                 metadata.consistency,
             ));
@@ -198,7 +237,8 @@ impl Broker {
     }
 
     /// Remove a stream and every shard of it this broker holds. Handles to it
-    /// stop working.
+    /// stop working, and its subscriptions end, each told the stream was
+    /// deleted.
     pub async fn remove_stream(
         &self,
         tenant_id: &str,
@@ -223,6 +263,7 @@ impl Broker {
                     && topic.stream == key.stream;
                 if same_stream {
                     state.deactivate();
+                    state.end_subscribers(Some(crate::handoff::Ending::Deleted));
                 }
                 !same_stream
             });
@@ -273,6 +314,25 @@ impl Broker {
             });
         }
         let key = CacheKey::new(tenant_id, namespace, cache);
+        // Held before a write is acknowledged under `Quorum`; only on a
+        // change, as for a stream.
+        let previous = self
+            .caches
+            .read()
+            .await
+            .get(&key)
+            .map(|existing| existing.consistency);
+        if previous != Some(metadata.consistency) {
+            self.cache
+                .set_retention_hold(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.cache,
+                    metadata.consistency == ConsistencyLevel::Quorum,
+                )
+                .await
+                .map_err(BrokerError::from)?;
+        }
         self.caches.write().await.insert(key, metadata);
         Ok(())
     }

@@ -19,8 +19,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
-felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview", features = ["lifecycle", "openapi", "tls"] }
-felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview" }
+felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview.7", features = ["lifecycle", "openapi", "tls", "yaml"] }
+felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-preview.7" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true }
@@ -28,7 +28,6 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml_ng = { workspace = true }
 tokio = { workspace = true }
 # `CancellationToken` coordinates the graceful drain in `src/server/drain.rs`.
 tokio-util = { workspace = true }

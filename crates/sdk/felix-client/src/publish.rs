@@ -13,12 +13,19 @@ mod admission;
 mod idempotent;
 mod routing;
 mod send;
+mod shard_streams;
+mod widths;
 mod writer;
 
 pub use idempotent::IdempotentProducer;
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
+pub(crate) use routing::width_went_stale;
+pub(crate) use shard_streams::{OpenWorker, ShardStreams};
+#[cfg(test)]
+pub(crate) use widths::REVALIDATE_TIMEOUT;
+pub(crate) use widths::{LearnWidth, StreamWidths, Width};
 pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,7 +41,7 @@ use crate::telemetry::frame_counters;
 use crate::telemetry::maybe_append_publish_ts_batch;
 #[cfg(feature = "telemetry")]
 use crate::timings;
-use routing::{STREAM_SHARD_CACHE_CAPACITY, StreamShardCache};
+use routing::{Routed, STREAM_SHARD_CACHE_CAPACITY, StreamShardCache};
 use send::CancelledAfterEnqueue;
 use writer::PublishRequest;
 
@@ -66,6 +73,14 @@ impl Publisher {
     /// Returns the record's log offset. `None` when the broker acknowledged
     /// before writing it, the stream has no log, the broker predates
     /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
+    ///
+    /// A broker acknowledges before writing only when it owns the shard of a
+    /// `Leader` stream and runs with `ack_on_commit` off; every other ack comes
+    /// after the write. A publish forwarded through another broker is one of
+    /// those, so the same stream can give an offset for one record and `None`
+    /// for the next, depending on which broker answered. An offset is never
+    /// reported before the write, and is as durable as the broker's fsync
+    /// policy makes the write.
     ///
     /// **Not cancel-safe.** Dropping this future — a `timeout`, a losing
     /// `select!` branch — after the record reaches the worker does not stop the
@@ -134,6 +149,14 @@ impl Publisher {
     /// contiguously. `None` when the broker acknowledged before writing the
     /// batch, the stream has no log, the broker predates
     /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
+    ///
+    /// A broker acknowledges before writing only when it owns the shard of a
+    /// `Leader` stream and runs with `ack_on_commit` off; every other ack comes
+    /// after the write. A publish forwarded through another broker is one of
+    /// those, so the same stream can give an offset for one record and `None`
+    /// for the next, depending on which broker answered. An offset is never
+    /// reported before the write, and is as durable as the broker's fsync
+    /// policy makes the write.
     pub async fn publish_batch(
         &self,
         tenant_id: &str,
@@ -188,7 +211,15 @@ impl Publisher {
         }
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(Some(&key), tenant_id, namespace, stream, &payloads)
+                .publish_batch_binary_inner(
+                    Some(&key),
+                    None,
+                    None,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &payloads,
+                )
                 .await
                 .map(|_| None);
         }
@@ -201,6 +232,8 @@ impl Publisher {
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
+            None,
+            None,
             tenant_id,
             namespace,
             stream,
@@ -219,7 +252,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> Result<()> {
-        self.publish_batch_binary_inner(None, tenant_id, namespace, stream, payloads)
+        self.publish_batch_binary_inner(None, None, None, tenant_id, namespace, stream, payloads)
             .await
             .map(|_| ())
     }
@@ -232,7 +265,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Bytes],
     ) -> Result<()> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self.route(tenant_id, namespace, stream, None, None).await?;
         #[cfg(feature = "telemetry")]
         let sample = crate::telemetry::t_should_sample();
         #[cfg(not(feature = "telemetry"))]
@@ -270,6 +303,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::None,
                 request_id: None,
                 _permit: permit,
@@ -309,9 +343,11 @@ impl Publisher {
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        self.publish_batch_binary_acked_inner(None, tenant_id, namespace, stream, payloads, ack)
-            .await
-            .map(|acked| acked.offset)
+        self.publish_batch_binary_acked_inner(
+            None, None, None, tenant_id, namespace, stream, payloads, ack,
+        )
+        .await
+        .map(|acked| acked.offset)
     }
 
     /// One batch under a producer's sequence, appended once however many
@@ -333,41 +369,94 @@ impl Publisher {
         producer_id: u64,
         sequence: u64,
     ) -> Result<Option<u64>> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
-        if self.supports_binary_idempotent() {
-            let response_rx = self
-                .enqueue_idempotent_binary(
-                    worker,
+        self.publish_idempotent_batch_routed(
+            tenant_id,
+            namespace,
+            stream,
+            None,
+            0,
+            None,
+            payloads,
+            producer_id,
+            sequence,
+        )
+        .await
+    }
+
+    /// [`Self::publish_idempotent_batch`] with an optional routing key, which
+    /// decides the shard and so whose sequence `sequence` is. `shard` is the
+    /// one the key resolves to (0 without one), which puts the batch on that
+    /// shard's stream when this publisher has shard streams. `width` is the
+    /// width `shard` was worked out by; see [`Self::route_by`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_idempotent_batch_routed(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&bytes::Bytes>,
+        shard: u32,
+        width: Option<Arc<Width>>,
+        payloads: Vec<Vec<u8>>,
+        producer_id: u64,
+        sequence: u64,
+    ) -> Result<Option<u64>> {
+        let outcome = async {
+            let worker = self
+                .route_by(
                     tenant_id,
                     namespace,
                     stream,
-                    payloads,
-                    producer_id,
-                    sequence,
+                    key.map(|key| key.as_ref()),
+                    Some(shard),
+                    width,
                 )
                 .await?;
-            let cancelled = CancelledAfterEnqueue::armed();
-            let answer = response_rx
+            if self.supports_binary_idempotent_for(key) {
+                let response_rx = self
+                    .enqueue_idempotent_binary(
+                        &worker,
+                        tenant_id,
+                        namespace,
+                        stream,
+                        key,
+                        payloads,
+                        producer_id,
+                        sequence,
+                    )
+                    .await?;
+                let cancelled = CancelledAfterEnqueue::armed();
+                let answer = response_rx
+                    .await
+                    .context("idempotent binary batch response dropped")?;
+                cancelled.answered();
+                return answer.map(|acked| acked.offset);
+            }
+            let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
+            let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
+            let message = Message::PublishIdempotent {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+                payloads,
+                key: key.cloned(),
+                request_id,
+                producer_id,
+                sequence,
+            };
+            self.send_message(&worker, message, AckMode::PerBatch, Some(request_id))
                 .await
-                .context("idempotent binary batch response dropped")?;
-            cancelled.answered();
-            return answer.map(|acked| acked.offset);
+                .map(|acked| acked.offset)
         }
-        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
-        let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
-        let message = Message::PublishIdempotent {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            payloads,
-            key: None,
-            request_id,
-            producer_id,
-            sequence,
-        };
-        self.send_message(worker, message, AckMode::PerBatch, Some(request_id))
-            .await
-            .map(|acked| acked.offset)
+        .await;
+        self.forget_width_if_gone(
+            tenant_id,
+            namespace,
+            stream,
+            key.map(|key| key.as_ref()),
+            &outcome,
+        );
+        outcome
     }
 
     /// Consecutive batches under consecutive sequences from `first_sequence`,
@@ -381,21 +470,38 @@ impl Publisher {
     ///
     /// Without a window, or against a broker that cannot take a binary
     /// idempotent batch, this sends one batch at a time.
+    ///
+    /// `shard` is the shard whose sequences these are: `key`'s, or 0 without
+    /// one, under `width`. A publisher with shard streams sends them on that
+    /// shard's stream, so a shard's sequences only ever go out on one writer.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_idempotent_pipelined(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        key: Option<&bytes::Bytes>,
+        shard: u32,
+        width: Option<Arc<Width>>,
         batches: &[Vec<Vec<u8>>],
         producer_id: u64,
         first_sequence: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        let worker = match self.select_worker(tenant_id, namespace, stream) {
+        let worker = match self
+            .route_by(
+                tenant_id,
+                namespace,
+                stream,
+                key.map(|key| key.as_ref()),
+                Some(shard),
+                width.clone(),
+            )
+            .await
+        {
             Ok(worker) => worker,
             Err(err) => return (Vec::new(), Err(err)),
         };
-        let window = if self.supports_binary_idempotent() {
+        let window = if self.supports_binary_idempotent_for(key) {
             (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX)
         } else {
             0
@@ -404,10 +510,13 @@ impl Publisher {
         if window <= 1 {
             for (index, payloads) in batches.iter().enumerate() {
                 match self
-                    .publish_idempotent_batch(
+                    .publish_idempotent_batch_routed(
                         tenant_id,
                         namespace,
                         stream,
+                        key,
+                        shard,
+                        width.clone(),
                         payloads.clone(),
                         producer_id,
                         first_sequence + index as u64,
@@ -426,10 +535,11 @@ impl Publisher {
             while sent < batches.len() && in_flight.len() < window {
                 match self
                     .enqueue_idempotent_binary(
-                        worker,
+                        &worker,
                         tenant_id,
                         namespace,
                         stream,
+                        key,
                         batches[sent].clone(),
                         producer_id,
                         first_sequence + sent as u64,
@@ -485,10 +595,11 @@ impl Publisher {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_idempotent_binary(
         &self,
-        worker: &PublishWorker,
+        worker: &Routed<'_>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        key: Option<&bytes::Bytes>,
         payloads: Vec<Vec<u8>>,
         producer_id: u64,
         sequence: u64,
@@ -501,7 +612,7 @@ impl Publisher {
                 producer_id,
                 sequence,
             },
-            None,
+            key.map(bytes::Bytes::as_ref),
             tenant_id,
             namespace,
             stream,
@@ -515,6 +626,7 @@ impl Publisher {
                 bytes,
                 item_count: payloads.len(),
                 sample: false,
+                declaration: worker.declaration.clone(),
                 ack: AckMode::PerBatch,
                 request_id: Some(request_id),
                 _permit: permit,
@@ -531,8 +643,19 @@ impl Publisher {
     /// The streams are shared by every publisher from the same client, so this
     /// ends publishing for all of them.
     pub async fn finish(&self) -> Result<()> {
+        let own = self
+            .inner
+            .shard_streams
+            .as_ref()
+            .map(|streams| streams.close())
+            .unwrap_or_default();
         let mut handles = Vec::new();
-        for worker in self.inner.workers.iter() {
+        for worker in self
+            .inner
+            .workers
+            .iter()
+            .chain(own.iter().map(|worker| &**worker))
+        {
             let handle = {
                 let mut guard = worker.handle.lock().await;
                 guard.take()
@@ -576,10 +699,20 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(None, tenant_id, namespace, stream, &[payload])
+                .publish_batch_binary_inner(
+                    None,
+                    None,
+                    None,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &[payload],
+                )
                 .await;
         }
         self.publish_batch_binary_acked_inner(
+            None,
+            None,
             None,
             tenant_id,
             namespace,
@@ -591,23 +724,38 @@ impl Publisher {
     }
 
     /// [`Publisher::publish_keyed`], reporting the shard's owner when this
-    /// broker forwarded the batch rather than owning it.
+    /// broker forwarded the batch rather than owning it. `shard` is the one
+    /// the key resolves to under `width`, the `ClusterClient`'s, which the
+    /// batch is routed and declared by (see [`Self::route_by`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_keyed_reporting_owner(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         key: bytes::Bytes,
+        shard: u32,
+        width: Option<Arc<Width>>,
         payload: Vec<u8>,
         ack: AckMode,
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(Some(&key), tenant_id, namespace, stream, &[payload])
+                .publish_batch_binary_inner(
+                    Some(&key),
+                    Some(shard),
+                    width.clone(),
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &[payload],
+                )
                 .await;
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
+            Some(shard),
+            width,
             tenant_id,
             namespace,
             stream,
@@ -665,6 +813,12 @@ pub(crate) struct PublisherInner {
     admission: Arc<PublishAdmission>,
     stream_cache: Mutex<StreamShardCache>,
     stream_hasher: ahash::RandomState,
+    /// Streams of their own for shards, shared by every publisher from the
+    /// client. `None` routes everything through `workers`.
+    shard_streams: Option<Arc<ShardStreams>>,
+    /// What a keyed publish with no shard named looks its shard up in.
+    /// `None` sends such publishes to the pool.
+    widths: Option<Arc<StreamWidths>>,
     bench_embed_ts: bool,
     /// Intersection of every worker's advertised flags.
     ///
@@ -704,6 +858,8 @@ impl PublisherInner {
             admission,
             stream_cache: Mutex::new(StreamShardCache::new(STREAM_SHARD_CACHE_CAPACITY)),
             stream_hasher,
+            shard_streams: None,
+            widths: None,
             bench_embed_ts: false,
             server_flags,
         }
@@ -714,10 +870,50 @@ impl PublisherInner {
         sharding: PublishSharding,
         admission: Arc<PublishAdmission>,
         stream_hasher: ahash::RandomState,
+        shard_streams: Arc<ShardStreams>,
+        widths: Arc<StreamWidths>,
         bench_embed_ts: bool,
     ) -> Self {
         let mut inner = Self::with_admission(workers, sharding, admission, stream_hasher);
+        inner.shard_streams = Some(shard_streams);
+        inner.widths = Some(widths);
         inner.bench_embed_ts = bench_embed_ts;
+        inner
+    }
+
+    /// [`Self::new`] with per-shard streams opened by `open`, up to `cap`.
+    #[cfg(test)]
+    pub(crate) fn with_shard_streams(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+    ) -> Self {
+        let mut inner = Self::new(workers, PublishSharding::HashStream);
+        inner.shard_streams = Some(Arc::new(ShardStreams::new(cap, open)));
+        inner
+    }
+
+    /// [`Self::with_shard_streams`] that learns stream widths with `learn`.
+    #[cfg(test)]
+    pub(crate) fn with_widths(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+        learn: LearnWidth,
+    ) -> Self {
+        Self::with_stream_widths(workers, cap, open, StreamWidths::new(learn, true))
+    }
+
+    /// [`Self::with_shard_streams`] that keeps stream widths in `widths`.
+    #[cfg(test)]
+    pub(crate) fn with_stream_widths(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+        widths: StreamWidths,
+    ) -> Self {
+        let mut inner = Self::with_shard_streams(workers, cap, open);
+        inner.widths = Some(Arc::new(widths));
         inner
     }
 }

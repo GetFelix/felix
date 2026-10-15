@@ -24,8 +24,8 @@
 //!      into publish handlers so they can adjust behavior.
 //!
 //!   5) Ack-on-commit mode: when `config.ack_on_commit` is enabled, publish handlers may defer the
-//!      ack until the publish worker commits. `ack_waiters` bounds in-flight waiters and
-//!      `ack_waiter_tx` delivers waiter work to the background ack-waiter task.
+//!      ack until the publish commits. `commit_acks` lets whoever settles the publish send
+//!      that ack itself, and runs its timeout.
 //!
 //! Return value convention:
 //!   Ok(true)  => graceful close / stream should be considered "done" (no error)
@@ -38,9 +38,12 @@ mod commit;
 mod counter;
 mod discovery;
 mod group;
+mod inspect;
 mod publish;
+mod record_time;
 mod responder;
 mod session;
+mod stream_read;
 mod subscribe;
 mod unsupported;
 
@@ -48,13 +51,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use crate::serving::quic::codec::FrameScratch;
 use anyhow::{Context, Result};
 use felix_broker::Broker;
 use felix_wire::Message;
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 
 use super::frame_source::FrameSource;
 use crate::config::BrokerConfig;
@@ -62,8 +64,8 @@ use crate::observability::timings;
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::quic::client_error::{ClientError, ErrorCodeSupport};
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, AckWaiterMessage, Outgoing, PublishContext, StreamHandleCache,
-    handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
+    AckOrder, AckTimeoutState, CommitAcks, DeclaredWidth, Outgoing, PublishContext,
+    StreamHandleCache, handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
     handle_binary_publish_batch_control, send_outgoing_critical,
 };
 use crate::serving::quic::telemetry::{t_histogram, t_now_if, t_should_sample};
@@ -82,7 +84,7 @@ use responder::{Responder, send_control_error};
 ///   - `ack_throttle_rx/tx`: shared throttling state; this loop reads current state, handlers/writer
 ///     update it.
 ///   - `ack_timeout_state`: shared state used to detect/report ack enqueue timeouts.
-///   - `ack_waiters` / `ack_waiter_tx`: bounds and routes "ack when commit finishes" work.
+///   - `commit_acks`: answers for publishes acknowledged on commit.
 ///   - `frame_scratch`: bytes read past the current frame, kept for the next read.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
@@ -91,19 +93,17 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     connection: felix_transport::QuicConnection,
     config: BrokerConfig,
     auth: Arc<BrokerAuth>,
-    publish_ctx: PublishContext,
+    mut publish_ctx: PublishContext,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
     out_ack_tx: mpsc::Sender<Outgoing>,
     out_ack_depth: Arc<AtomicUsize>,
     ack_throttle_rx: watch::Receiver<bool>,
     ack_throttle_tx: watch::Sender<bool>,
-    ack_timeout_state: Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: watch::Sender<bool>,
     mut cancel_rx_read: watch::Receiver<bool>,
-    ack_waiters: Arc<Semaphore>,
-    ack_waiter_tx: mpsc::Sender<AckWaiterMessage>,
-    ack_wait_timeout: Duration,
+    commit_acks: CommitAcks,
     frame_scratch: &mut FrameScratch,
     error_codes: Arc<ErrorCodeSupport>,
     ack_order: Arc<AckOrder>,
@@ -115,8 +115,12 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         auth_ctx: None,
         peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
         peer_features: 0,
+        peer_features_hi: 0,
+        commit_ack: false,
         error_codes,
         ack_order,
+        publish_window: None,
+        publish_width: None,
         stream_cache,
         stream_cache_key,
     };
@@ -129,6 +133,10 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     };
     // Held until this stream authenticates; see `preauth`.
     let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
+    // Set once the stream authenticates. Made once and polled between frames,
+    // so the frame path pays nothing for it.
+    let mut revoked: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        Box::pin(std::future::pending());
     loop {
         if *cancel_rx_read.borrow() {
             break;
@@ -146,6 +154,19 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     break;
                 }
                 continue;
+            }
+            () = &mut revoked => {
+                tracing::info!("ending a control stream: its credential was revoked");
+                send_control_error(
+                    &out_ack_tx,
+                    &out_ack_depth,
+                    &ack_throttle_tx,
+                    &ack_timeout_state,
+                    &cancel_tx,
+                    ClientError::revoked(),
+                )
+                .await?;
+                return Ok(false);
             }
             frame = source.next_frame(
                 publish_ctx
@@ -206,7 +227,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 && ack != felix_wire::AckMode::None
                 && !admit_pipelined(
                     &session.ack_order,
-                    publish_ctx.publish_window.as_ref(),
+                    session.publish_window.as_ref(),
                     &mut cancel_rx_read,
                     request_id,
                 )
@@ -222,16 +243,16 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &publish_ctx,
                     &frame,
                     session.auth_ctx.as_ref(),
+                    session.publish_width.as_ref(),
                     throttled,
-                    config.ack_on_commit,
+                    session.commit_ack,
                     sample,
                     &out_ack_tx,
                     &out_ack_depth,
                     &ack_throttle_tx,
                     &ack_timeout_state,
                     &cancel_tx,
-                    &ack_waiters,
-                    &ack_waiter_tx,
+                    &commit_acks,
                     session.peer_flags,
                     session.peer_features,
                 )
@@ -244,6 +265,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &publish_ctx,
                     &frame,
                     session.auth_ctx.as_ref(),
+                    session.publish_width.as_ref(),
                     sample,
                     &cancel_tx,
                 )
@@ -277,7 +299,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             && let Some(request_id) = pipelined_request(&message)
             && !admit_pipelined(
                 &session.ack_order,
-                publish_ctx.publish_window.as_ref(),
+                session.publish_window.as_ref(),
                 &mut cancel_rx_read,
                 request_id,
             )
@@ -297,9 +319,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             ack_throttle_tx: &ack_throttle_tx,
             ack_timeout_state: &ack_timeout_state,
             cancel_tx: &cancel_tx,
-            ack_waiters: &ack_waiters,
-            ack_waiter_tx: &ack_waiter_tx,
-            ack_wait_timeout,
+            commit_acks: &commit_acks,
             throttled,
             sample,
             read_ns,
@@ -317,6 +337,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 token,
                 client_flags,
                 client_features,
+                client_features_hi,
             } => {
                 session::authenticate(
                     &cx,
@@ -325,6 +346,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     token,
                     client_flags,
                     client_features,
+                    client_features_hi,
                 )
                 .await?
             }
@@ -396,6 +418,26 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::PublishWidth {
+                tenant_id,
+                namespace,
+                stream,
+                shards,
+                routing,
+            } => {
+                publish::publish_width(
+                    &cx,
+                    &mut session,
+                    DeclaredWidth {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shards,
+                        routing: routing.unwrap_or_default(),
+                    },
+                )
+                .await?
+            }
             Message::ProducerInit { request_id } => {
                 publish::producer_init(&cx, &mut session, request_id).await?
             }
@@ -425,6 +467,44 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 discovery::cache_shards(&cx, &mut session, tenant_id, namespace, cache, request_id)
                     .await?
             }
+            Message::ShardOwners {
+                tenant_id,
+                namespace,
+                name,
+                kind,
+                request_id,
+            } => {
+                discovery::shard_owners(
+                    &cx,
+                    &mut session,
+                    tenant_id,
+                    namespace,
+                    name,
+                    kind,
+                    request_id,
+                )
+                .await?
+            }
+            Message::ShardInspect {
+                tenant_id,
+                namespace,
+                name,
+                kind,
+                shard,
+                request_id,
+            } => {
+                let key = inspect::target(tenant_id, namespace, name, kind, shard);
+                inspect::shard_inspect(&cx, &mut session, key, request_id).await?
+            }
+            Message::SubscriptionsList {
+                filter,
+                limit,
+                cursor,
+                request_id,
+            } => {
+                inspect::subscriptions_list(&cx, &mut session, filter, limit, cursor, request_id)
+                    .await?
+            }
             Message::Subscribe {
                 tenant_id,
                 namespace,
@@ -432,6 +512,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 subscription_id,
                 start,
                 shard,
+                queue_capacity,
             } => {
                 subscribe::subscribe(
                     &cx,
@@ -442,6 +523,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     subscription_id,
                     start,
                     shard,
+                    queue_capacity,
                 )
                 .await?
             }
@@ -562,6 +644,9 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 max_records,
                 wait_ms,
                 request_id,
+                consumer,
+                reclaim,
+                visibility_ms,
             } => {
                 group::group_poll(
                     &cx,
@@ -574,6 +659,9 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     max_records,
                     wait_ms,
                     request_id,
+                    consumer,
+                    reclaim,
+                    visibility_ms,
                 )
                 .await?
             }
@@ -586,15 +674,18 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 offset,
                 request_id,
             } => {
-                group::group_ack(
+                group::group_settle(
                     &cx,
                     &mut session,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    shard,
-                    group,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
                     offset,
+                    crate::serving::group_ops::Settle::Ack,
                     request_id,
                 )
                 .await?
@@ -607,16 +698,78 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 group,
                 offset,
                 request_id,
+                delay_ms,
+                attempts,
             } => {
-                group::group_nack(
+                group::group_settle(
                     &cx,
                     &mut session,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    shard,
-                    group,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
                     offset,
+                    crate::serving::group_ops::Settle::Nack {
+                        delay: std::time::Duration::from_millis(delay_ms),
+                        // Zero is a client that did not name the delivery.
+                        attempts: (attempts != 0).then_some(attempts),
+                    },
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDeadLetter {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                offset,
+                request_id,
+            } => {
+                group::group_settle(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    offset,
+                    crate::serving::group_ops::Settle::DeadLetter,
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupExtend {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                offset,
+                attempts,
+                extend_ms,
+                request_id,
+            } => {
+                group::group_extend(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    offset,
+                    attempts,
+                    extend_ms,
                     request_id,
                 )
                 .await?
@@ -685,6 +838,135 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::GroupSeek {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                start,
+                if_new,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Seek { start, if_new },
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDescribe {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Describe,
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDelete {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Delete,
+                    request_id,
+                )
+                .await?
+            }
+            Message::CachePutIf {
+                tenant_id,
+                namespace,
+                cache,
+                key,
+                value,
+                ttl_ms,
+                condition,
+                request_id,
+            } => {
+                cache::cache_conditional(
+                    &cx,
+                    &mut session,
+                    cache::ConditionalRequest {
+                        tenant_id,
+                        namespace,
+                        cache,
+                        key,
+                        request_id,
+                        request: crate::serving::forward::CacheRequest::PutIf {
+                            value,
+                            // Zero is "no expiry" on the forward, as for a put.
+                            ttl_ms: ttl_ms.unwrap_or(0),
+                            condition: match condition {
+                                felix_wire::CacheCondition::Absent => {
+                                    felix_storage::CacheCondition::Absent
+                                }
+                                felix_wire::CacheCondition::Version(version) => {
+                                    felix_storage::CacheCondition::Version(version)
+                                }
+                            },
+                        },
+                    },
+                )
+                .await?
+            }
+            Message::CacheDeleteIf {
+                tenant_id,
+                namespace,
+                cache,
+                key,
+                version,
+                request_id,
+            } => {
+                cache::cache_conditional(
+                    &cx,
+                    &mut session,
+                    cache::ConditionalRequest {
+                        tenant_id,
+                        namespace,
+                        cache,
+                        key,
+                        request_id,
+                        request: crate::serving::forward::CacheRequest::DeleteIf { version },
+                    },
+                )
+                .await?
+            }
             Message::CacheDelete {
                 tenant_id,
                 namespace,
@@ -711,6 +993,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 event,
                 changes,
                 request_id,
+                expected_offset,
             } => {
                 commit::commit(
                     &cx,
@@ -719,10 +1002,35 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     event,
                     changes,
+                    expected_offset,
+                    request_id,
+                )
+                .await?
+            }
+            Message::PublishIf {
+                tenant_id,
+                namespace,
+                stream,
+                payloads,
+                key,
+                expected_offset,
+                request_id,
+            } => {
+                commit::publish_if(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key: key,
+                    },
+                    payloads,
+                    expected_offset,
                     request_id,
                 )
                 .await?
@@ -742,20 +1050,79 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         tenant_id,
                         namespace,
                         stream,
-                        entity_key,
+                        entity_key: Some(entity_key),
                     },
                     key,
                     request_id,
                 )
                 .await?
             }
+            Message::OffsetForTime {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                at_micros,
+                request_id,
+            } => {
+                record_time::offset_for_time(
+                    &cx,
+                    &mut session,
+                    record_time::ShardTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                    },
+                    at_micros,
+                    request_id,
+                )
+                .await?
+            }
+            Message::StreamRead {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                from,
+                end,
+                max_records,
+                max_bytes,
+                request_id,
+            } => {
+                stream_read::stream_read(
+                    &cx,
+                    &mut session,
+                    record_time::ShardTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                    },
+                    stream_read::ReadBounds {
+                        from,
+                        end,
+                        max_records,
+                        max_bytes,
+                    },
+                    request_id,
+                )
+                .await?
+            }
             Message::GroupRecords { .. }
+            | Message::StreamRecords { .. }
+            | Message::OffsetValue { .. }
             | Message::CommitOk { .. }
             | Message::StateValue { .. }
             | Message::Unsupported { .. }
             | Message::GroupDeadLetterList { .. }
+            | Message::GroupPosition { .. }
+            | Message::GroupInfo { .. }
+            | Message::GroupDeleted { .. }
+            | Message::GroupExtended { .. }
             | Message::CacheValue { .. }
             | Message::CacheOk { .. }
+            | Message::CacheConditionResult { .. }
             | Message::CounterValue { .. }
             | Message::CacheWatchStarted { .. }
             | Message::CacheEvent { .. }
@@ -765,6 +1132,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::Subscribed { .. }
             | Message::EventStreamHello { .. }
             | Message::ShardMoved { .. }
+            | Message::StreamDeleted { .. }
+            | Message::SubscriptionLagged { .. }
             | Message::PublishOk { .. }
             | Message::PublishError { .. }
             | Message::PublishRefused { .. }
@@ -773,6 +1142,9 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::TopologyView { .. }
             | Message::StreamShardsView { .. }
             | Message::CacheShardsView { .. }
+            | Message::ShardOwnersView { .. }
+            | Message::ShardInspectInfo { .. }
+            | Message::SubscriptionsListInfo { .. }
             | Message::NotLeader { .. }
             | Message::Ok => {
                 // Protocol hygiene: these message types should never arrive on the control stream
@@ -800,9 +1172,14 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         if let Step::Close(graceful) = step {
             return Ok(graceful);
         }
-        if preauth_permit.is_some() && session.auth_ctx.is_some() {
+        if preauth_permit.is_some()
+            && let Some(auth_ctx) = &session.auth_ctx
+        {
             preauth_permit = None;
             publish_ctx.preauth.mark_authenticated();
+            publish_ctx.bind_identity(auth_ctx);
+            let revocable = auth_ctx.revocable.clone();
+            revoked = Box::pin(async move { revocable.revoked().await });
         }
     }
     // `graceful_close` only tracks EOF from the peer. Any other early-exit path returns false
@@ -827,11 +1204,22 @@ struct Session {
     /// Optional messages this client understands. Nothing until an `Auth` says
     /// otherwise.
     peer_features: u32,
+    /// The extended word of the same, read only when `peer_features` carries
+    /// `FEATURE_EXTENDED`.
+    peer_features_hi: u32,
+    /// Acknowledged publishes are answered after the write: the broker-wide
+    /// `ack_on_commit`, or `FEATURE_ACK_ON_COMMIT` from this client.
+    commit_ack: bool,
     /// Shared with the writer, which shapes every error to what `Auth` offered.
     error_codes: Arc<ErrorCodeSupport>,
     /// Shared with the writer, which holds answers back into request order
     /// once `Auth` asks for pipelining.
     ack_order: Arc<AckOrder>,
+    /// This stream's publish window, once `Auth` grants one.
+    publish_window: Option<Arc<Semaphore>>,
+    /// The width the client said its keyed publishes to one stream follow,
+    /// from its last `publish_width`.
+    publish_width: Option<DeclaredWidth>,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
 }
@@ -854,7 +1242,7 @@ fn pipelined_request(message: &Message) -> Option<u64> {
     }
 }
 
-/// Take a slot in the connection's publish window and register the publish
+/// Take a slot in the stream's publish window and register the publish
 /// for an in-order answer. False when the stream was cancelled while it
 /// waited.
 ///
@@ -908,11 +1296,9 @@ struct Ctx<'a> {
     out_ack_tx: &'a mpsc::Sender<Outgoing>,
     out_ack_depth: &'a Arc<AtomicUsize>,
     ack_throttle_tx: &'a watch::Sender<bool>,
-    ack_timeout_state: &'a Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &'a Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &'a watch::Sender<bool>,
-    ack_waiters: &'a Arc<Semaphore>,
-    ack_waiter_tx: &'a mpsc::Sender<AckWaiterMessage>,
-    ack_wait_timeout: Duration,
+    commit_acks: &'a CommitAcks,
     throttled: bool,
     sample: bool,
     read_ns: Option<u64>,

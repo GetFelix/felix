@@ -44,9 +44,12 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     // showing: an application is configured with one endpoint far more often
     // than with a correct list of every broker.
     let seed = cluster.broker_addrs()[0];
-    let client =
-        felix_cluster::client::connect_cluster(&[seed], &cluster.tenant_id, &cluster.client_token)
-            .await?;
+    let client = felix_cluster::client::connect_cluster(
+        &[seed],
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await?;
     println!("  Configured with exactly one address: {seed}");
     let known = client.endpoints().await;
     println!(

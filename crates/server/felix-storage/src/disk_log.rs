@@ -9,8 +9,11 @@
 //! * `sync`      — fsync policy and group commit.
 //! * `durable_mark` — how far the active segment is known to be synced.
 //! * `retention` — deleting the oldest segments once a bound is exceeded.
+//! * `offload`   — copying sealed segments to an object store first.
 //! * `epochs`    — where each leadership generation began.
 //! * `replica_state` — the highest generation accepted, and the commit offset.
+//! * `ballot`    — which leader that generation was accepted from, and
+//!   accepting one.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -38,14 +41,17 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod inspect;
 pub mod layout;
 
 mod append;
+mod ballot;
 mod durable_mark;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
 pub(crate) mod fuzzing;
+mod offload;
 mod producers;
 mod provider;
 mod recovery;
@@ -70,12 +76,17 @@ use self::producers::ProducerState;
 use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
+use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
     Offset, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
 };
 use crate::segment::ReadBudget;
-use crate::{Result, StorageError, metrics_names};
+use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
+
+/// How long an append thread and a lone appender poll before parking. A
+/// wake-up on each side costs more than the `write` being handed over.
+const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 
 /// How often an advancing commit offset is written behind when the log is not
 /// fsynced on commit. Its records are written behind too, so an offset that
@@ -83,14 +94,18 @@ use crate::{Result, StorageError, metrics_names};
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What [`DiskLog::accept_generation`] found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationCheck {
-    /// The generation already accepted.
+    /// The generation already accepted, from this leader or with no leader
+    /// named.
     Current,
     /// Newer than any accepted before; it is now on disk.
     Raised,
     /// Older than one already accepted. The sender has been replaced.
     Superseded { accepted: u64 },
+    /// The generation already accepted, from another leader. Two nodes claim
+    /// one generation, and this replica answered the other.
+    Promised { leader: String },
 }
 
 /// A durable, segmented, append-only log for one shard.
@@ -223,21 +238,71 @@ impl DiskLog {
     ///
     /// Split out of [`AppendOnlyLog::append`] so a caller can learn the offsets
     /// the moment they are consumed, rather than only once the batch is
-    /// durable. Anything that has to stay consistent with the log's offset
-    /// order — the broker's commit sequencer, for one — has to claim its place
-    /// at *assignment* time: after this returns, the records exist on disk and
-    /// hold their offsets whether or not the durability wait that follows
-    /// succeeds, fails, or is cancelled.
+    /// durable. After this returns, the records exist on disk and hold their
+    /// offsets whether or not the durability wait that follows succeeds,
+    /// fails, or is cancelled. A caller dropped before it returns may still
+    /// have its batch written; one that must claim a place in the log's offset
+    /// order uses [`Self::append_claimed`] instead.
     ///
     /// The returned [`PendingAppend`] must be passed to [`DiskLog::commit`] for
     /// the configured fsync policy to be honoured. Dropping it does not undo
     /// the write.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
-        let records = records.to_vec();
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records, append::WriteIf::Always)
+        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
             .await
-            .map(|pending| pending.expect("an unconditional write is always written"))
+            .map(|written| {
+                written
+                    .expect("an unconditional write is always written")
+                    .pending
+            })
+    }
+
+    /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
+    /// as soon as its offsets are assigned. A caller dropped before this
+    /// returns still releases the range, so the writers behind it are not
+    /// stranded, but the batch may still be written: run this to completion
+    /// if what follows it must happen.
+    pub async fn append_claimed(
+        &self,
+        records: &[AppendRecord],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            Some(order),
+        )
+        .await?
+        .expect("an unconditional write is always written");
+        Ok(written.claimed())
+    }
+
+    /// [`DiskLog::append_claimed`], only if the batch would start at exactly
+    /// `first_offset`. `Err` with the log's tail, and nothing written or
+    /// claimed, when it would start anywhere else.
+    ///
+    /// The check is made where offsets are assigned, under the same lock, so
+    /// two writers expecting the same offset cannot both pass it. A refused
+    /// batch consumes no offset and claims no range, so it holds up no later
+    /// append.
+    pub async fn append_claimed_at(
+        &self,
+        first_offset: Offset,
+        records: &[AppendRecord],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            Some(order),
+        )
+        .await?;
+        Ok(written.map(append::Written::claimed))
     }
 
     /// [`DiskLog::append_pending`], only if the batch would start at exactly
@@ -254,33 +319,44 @@ impl DiskLog {
         records: &[AppendRecord],
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::At(first_offset)).await
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            None,
+        )
+        .await?;
+        Ok(written.ok().map(|written| written.pending))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
     /// only part of ([`ProducerSequence::Partial`]), without waiting for
-    /// durability. `records` must be marked [`RecordMark::Continues`].
+    /// durability, claimed in `order` as [`Self::append_claimed`] does.
+    /// `records` must be marked [`RecordMark::Continues`].
     ///
     /// `None`, and nothing written, when the batch is no longer open at the
     /// tail: something else was appended after its first part, so its rest can
     /// never follow it.
-    pub async fn continue_pending(
+    pub async fn continue_claimed(
         &self,
         producer_id: u64,
         sequence: u64,
         records: &[AppendRecord],
-    ) -> Result<Option<PendingAppend>> {
+        order: &Arc<CommitSequencer>,
+    ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         debug_assert!(records.iter().all(|r| r.mark == RecordMark::Continues));
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(
+        let written = Self::write_batch(
             inner,
             records.to_vec(),
             append::WriteIf::Continuing {
                 producer_id,
                 sequence,
             },
+            Some(order),
         )
-        .await
+        .await?;
+        Ok(written.ok().map(append::Written::claimed))
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync
@@ -306,6 +382,21 @@ impl DiskLog {
         self.inner.check_healthy()
     }
 
+    /// The tail once every append already handed to the append thread has
+    /// been written or skipped.
+    ///
+    /// An append whose caller was cancelled still lands if the thread had
+    /// started on it, so a plain tail read taken after the cancellation can
+    /// name a position below that record. This read queues behind it instead.
+    pub async fn settled_tail_offset(&self) -> Result<Offset> {
+        let inner = Arc::clone(&self.inner);
+        self.inner
+            .appender
+            .run(move || Ok(inner.segments.read().tail_offset()))
+            .await
+            .map_err(StorageError::Io)
+    }
+
     /// Force a flush regardless of the configured policy.
     pub async fn sync(&self) -> Result<()> {
         self.inner
@@ -322,6 +413,24 @@ impl DiskLog {
     /// what the pass reclaimed; a no-op when no bound is configured.
     pub async fn enforce_retention_now(&self) -> Result<segments::RetentionOutcome> {
         Arc::clone(&self.inner).sweep_retention().await
+    }
+
+    /// Enforce `retention` from the next pass on, in place of the bounds the
+    /// log opened with. Starts the retention timer if it was not running,
+    /// which needs a Tokio runtime.
+    pub fn set_retention(&self, retention: crate::log::Retention) -> Result<()> {
+        self.inner.segments.read().check_open()?;
+        self.inner.config.check_retention(retention)?;
+        *self.inner.retention_bounds.lock() = retention;
+        if retention.is_set() {
+            self.inner.start_retention()?;
+        }
+        Ok(())
+    }
+
+    /// The bounds retention enforces now.
+    pub fn retention(&self) -> crate::log::Retention {
+        *self.inner.retention_bounds.lock()
     }
 
     /// Seal the active segment and start a new one, returning the new
@@ -353,9 +462,13 @@ impl DiskLog {
     /// loss this log can prevent.
     pub async fn reset_to(&self, base_offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _fence = fence;
+            let mut manifest = operation.manifest.lock();
+            let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             let commit = operation.commit_offset.load(Ordering::Acquire);
             let discarded_from = segments.base_offset().max(base_offset);
@@ -366,6 +479,7 @@ impl DiskLog {
                 });
             }
             segments.check_open()?;
+            operation.forget_all_offloaded(&mut manifest)?;
             let rewound = (|| {
                 segments.reset_to(base_offset)?;
                 segments.active_mut().sync()?;
@@ -395,9 +509,13 @@ impl DiskLog {
     /// it again is a no-op.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _fence = fence;
+            let mut manifest = operation.manifest.lock();
+            let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             segments.check_open()?;
             let (base, tail) = (segments.base_offset(), segments.tail_offset());
@@ -412,6 +530,7 @@ impl DiskLog {
                     let state = replica_state::ReplicaState {
                         accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
                         commit_offset: offset,
+                        hold_at_commit: operation.hold_at_commit.load(Ordering::Acquire),
                     };
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
@@ -421,55 +540,9 @@ impl DiskLog {
             if offset == tail {
                 return Ok(());
             }
+            operation.forget_offloaded_from(&mut manifest, offset)?;
             let rewound = operation.cut_suffix(&mut segments, offset);
             operation.poison_after_rewind(rewound)
-        })
-        .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
-    }
-
-    /// The highest leadership generation a leader of this shard was accepted
-    /// at here, as a follower or as the leader itself. Zero if none.
-    pub fn accepted_generation(&self) -> u64 {
-        self.inner.accepted_generation.load(Ordering::Acquire)
-    }
-
-    /// Accept a leader at `generation`, persisting it first if it is new.
-    ///
-    /// Returns once a raised generation is on disk, so a caller that
-    /// acknowledges afterwards has made a promise that survives a restart: a
-    /// leader older than this one is refused from here on, whatever the
-    /// routing view says after the restart.
-    pub async fn accept_generation(&self, generation: u64) -> Result<GenerationCheck> {
-        let accepted = self.accepted_generation();
-        if generation < accepted {
-            return Ok(GenerationCheck::Superseded { accepted });
-        }
-        if generation == accepted {
-            return Ok(GenerationCheck::Current);
-        }
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            let mut persisted = inner.replica_persisted.lock();
-            // Re-read under the writer's lock: a concurrent batch may have
-            // raised it past this one while this waited.
-            let accepted = inner.accepted_generation.load(Ordering::Acquire);
-            if generation < accepted {
-                return Ok(GenerationCheck::Superseded { accepted });
-            }
-            if generation == accepted {
-                return Ok(GenerationCheck::Current);
-            }
-            let state = replica_state::ReplicaState {
-                accepted_generation: generation,
-                commit_offset: inner.commit_offset.load(Ordering::Acquire),
-            };
-            replica_state::store(&inner.dir, &state)?;
-            *persisted = (state, Some(std::time::Instant::now()));
-            inner
-                .accepted_generation
-                .store(generation, Ordering::Release);
-            Ok(GenerationCheck::Raised)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -532,6 +605,35 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Keep retention and compaction's head trims below the commit offset.
+    ///
+    /// For a log replicated under `Quorum`, where a record above the commit
+    /// offset may still be waiting for a majority. Deleting it there would let
+    /// a follower rebuilt at the new base be counted as holding it. Off for a
+    /// new log, since a log nobody advances the commit offset on would never
+    /// trim. [`LogConfig::retention_hold`] sets it at open.
+    ///
+    /// Takes effect in memory at once, from the next pass. A change is then
+    /// written to the replica state, and the log reopens with it, so a
+    /// restarted log is held before replication has touched it. If that write
+    /// fails the error is returned and the hold stays in effect in memory.
+    pub async fn hold_retention_at_commit(&self, hold: bool) -> Result<()> {
+        // A closed log's directory may already be another log's.
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.inner.label.clone()));
+        }
+        if self.inner.hold_at_commit.swap(hold, Ordering::AcqRel) == hold {
+            return Ok(());
+        }
+        self.persist_replica_state().await
+    }
+
+    /// Whether retention is held at the commit offset. See
+    /// [`Self::hold_retention_at_commit`].
+    pub fn retention_held_at_commit(&self) -> bool {
+        self.inner.hold_at_commit.load(Ordering::Acquire)
+    }
+
     /// Write the replica state if memory is ahead of disk.
     async fn persist_replica_state(&self) -> Result<()> {
         let inner = Arc::clone(&self.inner);
@@ -540,6 +642,7 @@ impl DiskLog {
             let state = replica_state::ReplicaState {
                 accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
                 commit_offset: inner.commit_offset.load(Ordering::Acquire),
+                hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
             };
             if state == persisted.0 {
                 return Ok(());
@@ -567,7 +670,13 @@ impl DiskLog {
         // First, so nothing written from here on can race the flush below or
         // a log opened after this returns. Every file change checks it under
         // the lock taken here.
-        self.inner.segments.write().close();
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let _appends = inner.append_lock.lock();
+            inner.segments.write().close();
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
         let stopped = self.stop_background().await;
         let flushed = match stopped {
             Ok(()) => match self.persist_replica_state().await {
@@ -608,6 +717,9 @@ impl DiskLog {
     async fn stop_background(&self) -> Result<()> {
         // Retention first: it must not start deleting while the rest of
         // shutdown is flushing, and it has nothing to finish on the way out.
+        if let Some(offloader) = &self.inner.offloader {
+            offloader.halt();
+        }
         let retention = self.inner.retention.lock().take();
         if let Some(retention) = retention {
             retention.shutdown().await;
@@ -640,9 +752,19 @@ impl DiskLog {
         config.validate()?;
 
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
-            recovery::place_empty_shard(&dir, &config, base_offset)?;
+            recovery::place_empty_shard(&dir, &label, &config, base_offset)?;
         }
-        let recovered = recovery::recover_shard(&dir, &label, &config)?;
+        // Before recovery, which needs it to tell a segment that was
+        // offloaded from one that was lost.
+        let manifest = offload::manifest::load(&dir)?;
+        let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
+        // Does not touch the archive: an unreachable one must not stop the
+        // log from serving. The first pass opens it.
+        let offloader = config
+            .offload
+            .as_ref()
+            .map(|target| offload::Offloader::open(target, &dir))
+            .transpose()?;
         if recovered.truncated_bytes > 0 {
             tracing::warn!(
                 shard = %label,
@@ -664,7 +786,18 @@ impl DiskLog {
         crate::io::sync_dir(&dir).map_err(StorageError::Io)?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
-        let replica = replica_state::load(&dir)?;
+        let mut replica = replica_state::load(&dir)?;
+        // Before retention starts below, so its first sweep sees the hold.
+        let hold = match config.retention_hold {
+            crate::log::RetentionHold::AsSaved => replica.hold_at_commit,
+            crate::log::RetentionHold::Held => true,
+            crate::log::RetentionHold::Lifted => false,
+        };
+        if hold != replica.hold_at_commit {
+            replica.hold_at_commit = hold;
+            replica_state::store(&dir, &replica)?;
+        }
+        let (accepted_generation, accepted_leader) = ballot::reconcile(&dir, &replica)?;
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
             dir,
@@ -686,13 +819,22 @@ impl DiskLog {
             label,
             config: config.clone(),
             segments: RwLock::new(segments),
-            roll_gate: tokio::sync::RwLock::new(()),
+            append_lock: Mutex::new(()),
+            records_written: AtomicU64::new(0),
+            records_flushed: AtomicU64::new(0),
             durability: Durability::new(config.fsync_mode, durable_upto),
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
+            retention_bounds: Mutex::new(config.retention()),
+            manifest: Mutex::new(manifest),
+            offloader,
             epochs: Mutex::new(epochs),
-            accepted_generation: AtomicU64::new(replica.accepted_generation),
+            accepted_generation: AtomicU64::new(accepted_generation),
+            ballot: RwLock::new((accepted_generation, accepted_leader)),
             commit_offset: AtomicU64::new(replica.commit_offset),
+            // Set before retention starts below, so a sweep after a restart
+            // is held before any replication pass or batch has run.
+            hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -705,6 +847,12 @@ impl DiskLog {
             #[cfg(test)]
             hold_next_seal: Mutex::new(None),
             #[cfg(test)]
+            hold_next_extension: Mutex::new(None),
+            #[cfg(test)]
+            fail_extensions: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            extensions_done: AtomicU64::new(0),
+            #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
@@ -716,10 +864,15 @@ impl DiskLog {
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            hold_next_append: Mutex::new(None),
+            #[cfg(test)]
+            append_held: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
             mark,
-            flusher: crate::io::flusher::Flusher::new("felix-flush"),
+            appender: LogThread::spinning("felix-append", APPEND_SPIN),
+            flusher: LogThread::new("felix-flush"),
         });
 
         if let FsyncMode::Periodic { interval } = config.fsync_mode {
@@ -747,19 +900,8 @@ impl DiskLog {
             *inner.syncer.lock() = Some(syncer);
         }
 
-        if config.retention_bytes.is_some() || config.retention_age.is_some() {
-            let weak = Arc::downgrade(&inner);
-            let task =
-                retention::RetentionTask::spawn(config.retention_check_interval, move || {
-                    let weak = weak.clone();
-                    async move {
-                        match weak.upgrade() {
-                            None => Ok(segments::RetentionOutcome::default()),
-                            Some(inner) => inner.sweep_retention().await,
-                        }
-                    }
-                })?;
-            *inner.retention.lock() = Some(task);
+        if config.retention().is_set() || inner.offloader.is_some() {
+            inner.start_retention()?;
         }
 
         Ok(Self { inner })
@@ -774,9 +916,11 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending = Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always)
-                .await?
-                .expect("an unconditional write is always written");
+            let pending =
+                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
+                    .await?
+                    .expect("an unconditional write is always written")
+                    .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
@@ -876,15 +1020,24 @@ impl AppendOnlyLog for DiskLog {
     fn truncate(&self, offset: Offset) -> BoxFuture<'_, Result<()>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            let fence = inner.fence_rolls().await;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {
+                let _fence = fence;
+                // Before the append lock: an offload pass takes it before
+                // the segment lock, and so must everything else.
+                let mut manifest = operation.manifest.lock();
+                let _appends = operation.append_lock.lock();
                 let mut segments = operation.segments.write();
                 let commit = operation.commit_offset.load(Ordering::Acquire);
                 if offset < commit.min(segments.tail_offset()) {
                     return Err(StorageError::BelowCommit { offset, commit });
                 }
                 segments.check_open()?;
+                // The copies go first: one that outlived a crash would
+                // describe records the log no longer has.
+                operation.forget_offloaded_from(&mut manifest, offset)?;
                 let rewound = operation.cut_suffix(&mut segments, offset);
                 operation.poison_after_rewind(rewound)
             })
@@ -897,6 +1050,7 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
+                let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 inner.sync_pending_seal()?;
                 let (descriptor, checksum) = match segments.seal_active() {
@@ -946,21 +1100,33 @@ struct LogInner {
     label: String,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
-    /// under the read lock and does its I/O after releasing it, and a write
-    /// lock serialises appends, which must assign offsets in order anyway.
+    /// under the read lock and does its I/O after releasing it, and an append
+    /// writes its batch after releasing it.
     segments: RwLock<SegmentSet>,
-    /// Held shared by appends, exclusively by an inline rollover.
-    ///
-    /// `segments` is synchronous, so a publisher queued on it parks a Tokio
-    /// worker instead of yielding it — for the two device flushes a rollover
-    /// holds it across, that stalls the whole runtime. Waiting on this gate
-    /// instead yields. Layered above `segments` rather than replacing it so
-    /// the uncontended append stays a `try_read`.
-    roll_gate: tokio::sync::RwLock<()>,
+    /// Held by an append from placing its batch to taking it in, and by
+    /// anything else that changes the active segment: a background roll's
+    /// install, truncation, reset, restore, seal and close. Taken only off the
+    /// reactor.
+    append_lock: Mutex<()>,
+    /// Records written, and how many of them the last flush covered, for
+    /// reporting group-commit fan-in.
+    records_written: AtomicU64,
+    records_flushed: AtomicU64,
     durability: Durability,
     /// `None` unless the fsync policy is `Periodic`. Taken on shutdown.
     syncer: Mutex<Option<PeriodicSyncer>>,
     retention: Mutex<Option<retention::RetentionTask>>,
+    /// The bounds retention enforces, which [`DiskLog::set_retention`] may
+    /// change after the log opens.
+    retention_bounds: Mutex<crate::log::Retention>,
+    /// Which sealed segments have a verified copy in the object store.
+    ///
+    /// Lock order: this, then `append_lock`, then `segments`. Held by
+    /// whatever unlinks or cuts segments, so a copy cannot be recorded for a
+    /// segment on its way out, or forgotten for one about to be unlinked.
+    manifest: Mutex<offload::Manifest>,
+    /// `None` unless `LogConfig::offload` is set.
+    offloader: Option<offload::Offloader>,
     /// Where each leadership generation began, for repairing a divergence.
     ///
     /// Its own lock rather than living under `segments`: it is read and written
@@ -970,10 +1136,17 @@ struct LogInner {
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
+    /// The accepted generation with the leader it was accepted from, when one
+    /// was named. Read together on every replicated batch, so a raise is seen
+    /// with its own leader. Written only under `replica_persisted`.
+    ballot: RwLock<(u64, Option<Arc<str>>)>,
     /// One past the last record known committed. Raised in memory at once and
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
+    /// Retention and head trims stop at `commit_offset`; see
+    /// [`DiskLog::hold_retention_at_commit`].
+    hold_at_commit: std::sync::atomic::AtomicBool,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
@@ -1005,8 +1178,10 @@ struct LogInner {
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
     pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    /// Where this log's appends run.
+    appender: LogThread,
     /// Where this log's device flushes run.
-    flusher: crate::io::flusher::Flusher,
+    flusher: LogThread,
     /// How far the active segment is known to be synced, for recovery after
     /// a power loss. Written after every flush.
     mark: durable_mark::MarkFile,
@@ -1030,6 +1205,16 @@ struct LogInner {
     /// until the sender is used or dropped. Taking it is the sign it got there.
     #[cfg(test)]
     hold_next_seal: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Stops the next reservation extension before it reserves anything,
+    /// until the sender is used or dropped.
+    #[cfg(test)]
+    hold_next_extension: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Makes every reservation extension fail as if the disk were full.
+    #[cfg(test)]
+    fail_extensions: std::sync::atomic::AtomicBool,
+    /// Reservation extensions that have finished, whether or not they reserved.
+    #[cfg(test)]
+    extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,
@@ -1046,6 +1231,12 @@ struct LogInner {
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
+    /// Holds the next append at a point, until the sender is used or dropped.
+    #[cfg(test)]
+    hold_next_append: Mutex<Option<(append::HoldAt, std::sync::mpsc::Receiver<()>)>>,
+    /// Set while an append is held there.
+    #[cfg(test)]
+    append_held: std::sync::atomic::AtomicBool,
     /// Device flushes performed, so tests can assert group-commit fan-in —
     /// per instance, where the global `SYNC_TOTAL` counter cannot isolate one
     /// log from the rest of a parallel test run.
@@ -1064,6 +1255,27 @@ impl std::fmt::Debug for LogInner {
 
 /// Micros since the Unix epoch, matching `AppendRecord::timestamp_micros`.
 impl LogInner {
+    /// Run retention on its timer from now on, unless it already runs.
+    fn start_retention(self: &Arc<Self>) -> Result<()> {
+        let mut running = self.retention.lock();
+        if running.is_some() {
+            return Ok(());
+        }
+        let weak = Arc::downgrade(self);
+        let task =
+            retention::RetentionTask::spawn(self.config.retention_check_interval, move || {
+                let weak = weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        None => Ok(segments::RetentionOutcome::default()),
+                        Some(inner) => inner.sweep_retention().await,
+                    }
+                }
+            })?;
+        *running = Some(task);
+        Ok(())
+    }
+
     /// Account for a batch just written at `first_offset`. Called holding the
     /// `segments` write lock the batch was written under.
     ///
@@ -1139,12 +1351,14 @@ impl LogInner {
         }
     }
 
-    /// Rebuild producer state after the log was cut back. The snapshot may
-    /// describe records that are gone, so it is removed first, durably: one
-    /// that came back after a crash would be read as describing the records
-    /// that replaced them.
+    /// Rebuild producer state after the log was cut back. The producer
+    /// snapshot, and a cache's key index snapshot when this log backs a
+    /// cache, may describe records that are gone, so both are removed first,
+    /// durably: one that came back after a crash would be read as describing
+    /// the records that replaced them.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
+        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
         let state = producers::rebuild(&self.dir, segments, None)?;
         self.batch_open

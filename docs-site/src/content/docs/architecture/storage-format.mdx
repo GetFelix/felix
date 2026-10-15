@@ -16,12 +16,12 @@ framing is allowed to change shape for latency reasons, while bytes already on
 disk must stay readable by every later build.
 
 Implementation:
-[`crates/server/felix-storage/src/segment/format.rs`](https://github.com/gabloe/felix/blob/main/crates/server/felix-storage/src/segment/format.rs).
+[`crates/server/felix-storage/src/segment/format.rs`](https://github.com/GetFelix/felix/blob/main/crates/server/felix-storage/src/segment/format.rs).
 The two must move together; a change to one without the other is a bug.
 
 This page is the byte layout. For how those bytes are produced and consumed over
 time (appending, the sparse index, sealing, rollover and retention), see
-[Durable Storage](/felix/architecture/durable-storage/#on-disk-layout), which
+[Durable Storage](/architecture/durable-storage/#on-disk-layout), which
 walks both through animated diagrams.
 
 ## Goals
@@ -63,6 +63,7 @@ a segment) should be rejected on its first four bytes rather than misparsed.
 
 ```text
 <root>/
+  node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
@@ -70,7 +71,10 @@ a segment) should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.index
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
+    ballot                                   ← the leader that generation was accepted from
     producers                                ← producer snapshot, when any producer wrote here
+    offload.manifest                         ← segments copied to the object store, once offload has run
+    keys.idx                                 ← a cache shard's key index, once compaction has run
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -275,14 +279,24 @@ because only there can a record have been mid-write when the process died:
 - A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
-- Segment-header damage is never repairable.
+- Segment-header damage is never repairable, with one exception below: a
+  blank first segment.
+- **A blank first segment.** When segment 0 is the log's only segment, it is
+  no longer than a header, its header is missing or all zeros, and the durable
+  mark vouches for nothing past the header, its creation failed (on a full
+  disk, say) before it could hold a record. Recovery deletes it and the log
+  starts again empty, or at its placed base. Creation syncs the header before
+  anything can append, and preallocation does not change the file size, so a
+  first segment longer than a header had a durable header. A zeroed header
+  there is damage to acknowledged records and stays fatal, even when every
+  byte after it is zero too.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose
 between "unfinished" and "rotted" and fails loudly instead.
 
 The full rules live in `is_repairable_tail` in
-[`segment/scan.rs`](https://github.com/gabloe/felix/blob/main/crates/server/felix-storage/src/segment/scan.rs).
+[`segment/scan.rs`](https://github.com/GetFelix/felix/blob/main/crates/server/felix-storage/src/segment/scan.rs).
 
 ## Golden vectors
 
@@ -418,6 +432,71 @@ A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see
 `docs/replication-design.md`, "Divergence and truncation".
 
+## `ballot`: whom the generation was accepted from
+
+Beside `replica`, once a broker that keeps ballots has accepted a generation
+from a named leader: that generation and the leader's node id.
+
+```text
+ 0   4  magic        u32  "FLBL"
+ 4   2  version      u16
+ 6   2  leader_len   u16  at most 1024
+ 8   8  generation   u64  the generation the leader was accepted at
+16   n  leader       utf-8 node id, leader_len bytes
+16+n 4  crc          u32  crc32 over bytes 0..16+n
+```
+
+Written the same way as `replica`, and before it when a generation is raised,
+so the ballot is on disk before anything from that leader is stored or
+acknowledged. At the accepted generation only that leader is answered; see
+`docs/replication-design.md`, "Ballots". On open, a ballot at the generation
+in `replica` names its leader, one ahead of it is a raise that crashed between
+the two writes and its generation is taken, and one behind it, or none, names
+no leader. A file that is present and does not decode fails the open, as
+`replica` does. A separate file so that a build that predates ballots ignores
+it and still opens the shard.
+
+## `offload.manifest`: segments with a copy in the object store
+
+A stream shard whose broker runs with offload on (see `docs/durable-storage.md`,
+"Tiered storage: offload") holds an `offload.manifest`: one entry per sealed
+segment with a verified copy in the object store, ordered by base offset.
+
+```text
+ 0   4  magic        u32  "FLOF"
+ 4   2  version      u16
+ 6   2  reserved     u16
+ 8   4  count        u32  entries that follow
+12      entries, each:
+         0   8  segment id      u64
+         8   8  base offset     u64
+        16   8  last offset     u64  inclusive
+        24   8  size            u64  bytes in the object, the segment's valid bytes
+        32   8  oldest          u64  timestamp_micros of the first record
+        40   8  newest          u64  timestamp_micros of the last record
+        48   4  checksum        u32  crc32 over the object's bytes
+        52   2  key length      u16
+        54   n  key             UTF-8 object key
+ end-4   4  crc          u32  crc32 over every byte before it
+```
+
+A key is `<node id>/<shard directory name>/<base offset>-<segment id>.segment`,
+with both numbers zero-padded to 20 digits. The node id keeps replicas of one
+shard apart when brokers share an offload directory. Entries written by
+0.6.0-preview.3 have keys without it and are read as they are: an entry names
+its object by the full key, never by recomputing it.
+
+Entries never overlap. Gaps between them are allowed: a segment retention
+deleted while offload was off was never copied. Written through a temporary,
+an fsync, a rename and a directory sync, and always before the local segment it
+records is unlinked.
+
+**This file is authoritative.** Once a segment's local file is gone, the entry
+is the only record that its records still exist, so a manifest that is present
+and does not decode fails the open. Absent reads as empty. A truncation drops
+the entries holding offsets at or after the cut, and a reset drops them all,
+both before any segment is touched.
+
 ## `producers`: the producer snapshot
 
 Each idempotent producer's place in the log is derived from the marks: for
@@ -454,3 +533,59 @@ its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
+## `keys.idx`: a cache's key index
+
+A cache shard maps each key to the record that currently defines it. That index
+lives in memory and is otherwise rebuilt by replaying the whole log when the
+shard opens. At the end of each compaction pass, after the trim, it is written
+here, and an open loads it and replays only the records past it. Only cache
+shards have one.
+
+```text
+ 0   4  magic            u32  "FXIX"
+ 4   2  format           u16  1
+ 6   1  store            u8   0 for a cache (1 is reserved for collections)
+ 7   8  covered_through  u64  every record below this offset is reflected, none at or past it
+15   8  entry_count      u64
+23   8  log_bytes        u64  payload bytes of every record below covered_through, live or not
+31   4  last_checksum    u32  checksum of the record at covered_through - 1; 0 when nothing is covered
+35   …  entry_count × { key_len u32, key, offset u64, version u64,
+                        expires_at_millis u64, bytes u32 }
+     4  crc              u32  CRC-32C over everything before it
+```
+
+Each `key` is a composite key, and entries are sorted by it, compared as bytes:
+
+```text
+kind u8 | key_len u32 | key | slot u8 | field
+```
+
+Kind 0 is a cache value, which has no slot or field. Kinds 1, 2 and 3 are
+reserved for hashes, sets and lists, where slot 0 is the key's metadata and
+slot 1 a field. The 28 bytes after the key are the in-memory entry: where the
+record is, the version a conditional write compares against, the absolute
+expiry (0 for none), and the record's payload length. `log_bytes` carries
+compaction's garbage ratio across the restart.
+
+It is derived, so an open checks it against the log before using it, and a
+snapshot that fails any check is logged and ignored, and the whole log is
+replayed:
+
+- the length and the checksum match, and every key is a cache key;
+- `covered_through` lies between the log's oldest offset and its tail. Below
+  the oldest offset, a later pass trimmed records the snapshot never saw; past
+  the tail, records it did see are gone;
+- every entry points at an offset from the log's oldest up to
+  `covered_through`;
+- the record at `covered_through - 1` has `last_checksum`. Offsets alone cannot
+  tell this log from one replication cut back and refilled to the same length.
+
+A truncation removes it, durably, with the producer snapshot, and so does
+dropping the cache's index after replication cut its log. It is written to
+`keys.idx.tmp`, flushed, renamed over `keys.idx`, and the directory flushed;
+the log is flushed first, so the records it covers are on the device before it
+is. A temporary left by a crash is never read and is overwritten by the next
+pass. Unlike the producer snapshot it is flushed: losing it costs a replay of
+the whole log, which is what it exists to avoid.
+
+It shortens an open, not memory: the index is still held whole in memory.

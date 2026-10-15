@@ -58,6 +58,10 @@ fn broker_errors_map_to_codes() {
         code_of(felix_broker::BrokerError::Storage("disk".into()).into()),
         (ErrorCode::Storage, RetryClass::OutcomeUnknown)
     );
+    assert_eq!(
+        code_of(felix_broker::BrokerError::StorageFull("disk".into()).into()),
+        (ErrorCode::Overloaded, RetryClass::RetryAfter)
+    );
     // Context on top does not hide the cause.
     let wrapped = anyhow::Error::from(felix_broker::BrokerError::TenantNotFound("t".into()))
         .context("publish");

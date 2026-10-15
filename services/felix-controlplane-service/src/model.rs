@@ -18,7 +18,7 @@ pub(crate) use identifier::validate_identifier;
 pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey};
 pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
-    NodeStatus, NodeValidationError,
+    NodeStatus, NodeSuspicion, NodeValidationError,
 };
 pub use shard::{
     HaltedCopy, MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange,

@@ -270,6 +270,39 @@ async fn settling_waits_for_routes_to_reach_the_requested_generation() {
     );
 }
 
+/// The owner's side again, for the broker a move cut over to: its routes
+/// already name it, but it is still fencing the replicas. A forward that
+/// lands then waits for the fence instead of being refused as not ready,
+/// which the requester's few quick retries could not outlast.
+#[tokio::test]
+async fn settling_waits_for_a_shard_still_fencing() {
+    let mut b = Broker::new("broker-b", hold(5_000, 16));
+    b.lifecycle.fence_promotions();
+    b.apply(draining(0, "broker-a", 2, "broker-b"));
+    b.apply(assignment(0, "broker-b", 3));
+    assert_eq!(b.ingress.fence().awaiting_promotion(&key(0)), Some(3));
+    assert_eq!(
+        b.ingress.dispatch(&key(0)),
+        Dispatch::Unavailable(Reason::NotReady)
+    );
+
+    let ingress = Arc::clone(&b.ingress);
+    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!settle.is_finished(), "still fencing, so it waits");
+
+    assert!(b.lifecycle.fenced(&key(0), 3));
+    b.publish();
+    tokio::time::timeout(Duration::from_secs(1), settle)
+        .await
+        .expect("settles once the shard serves")
+        .expect("settle");
+    assert_eq!(
+        b.ingress.dispatch(&key(0)),
+        Dispatch::Local { generation: 3 }
+    );
+}
+
 /// Nothing is held when nothing is moving.
 #[tokio::test]
 async fn a_shard_that_is_not_moving_is_dispatched_at_once() {
@@ -282,4 +315,67 @@ async fn a_shard_that_is_not_moving_is_dispatched_at_once() {
     assert!(fenced.is_some());
     a.ingress.settle(&key(0), 1).await;
     assert!(started.elapsed() < Duration::from_millis(100));
+}
+
+/// A write that reaches the broker that just took the shard, while it is
+/// still fencing its replicas, waits for the fence instead of failing the
+/// cut-over it arrived at.
+#[tokio::test]
+async fn a_write_to_a_shard_still_fencing_waits_for_the_fence() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    a.lifecycle.fence_promotions();
+    a.apply(assignment(0, "broker-a", 3));
+    assert_eq!(a.ingress.fence().awaiting_promotion(&key(0)), Some(3));
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(!write.is_finished(), "a write to a fencing shard is held");
+
+    assert!(a.lifecycle.fenced(&key(0), 3));
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 3 });
+    assert!(fenced, "a local write enters the fence");
+}
+
+/// A write that arrives after the fence has settled in the lifecycle but
+/// before the servable set saying so is published waits for it, rather than
+/// being told the shard is still opening.
+#[tokio::test]
+async fn a_write_between_the_fence_and_the_servable_set_waits() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    a.lifecycle.fence_promotions();
+    a.apply(assignment(0, "broker-a", 3));
+    assert!(a.lifecycle.fenced(&key(0), 3));
+    assert_eq!(a.ingress.fence().awaiting_promotion(&key(0)), None);
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(
+        !write.is_finished(),
+        "a write to a shard whose fence just settled is held"
+    );
+
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 3 });
+    assert!(fenced, "a local write enters the fence");
+}
+
+/// The same while the log is still opening: routes already name this broker,
+/// the lifecycle has not finished the open.
+#[tokio::test]
+async fn a_write_to_a_shard_still_opening_waits_for_the_open() {
+    let mut a = Broker::new("broker-a", hold(5_000, 16));
+    let assignment = assignment(0, "broker-a", 1);
+    a.lifecycle.observe(&key(0), Some(&assignment));
+    a.assignments.insert(key(0), assignment);
+    a.publish();
+
+    let write = dispatch_in_background(&a.ingress).await;
+    assert!(!write.is_finished(), "a write to an opening shard is held");
+
+    a.lifecycle.opened(&key(0), 1);
+    a.publish();
+    let (dispatch, fenced) = write.await.expect("dispatch");
+    assert_eq!(dispatch, Dispatch::Local { generation: 1 });
+    assert!(fenced, "a local write enters the fence");
 }

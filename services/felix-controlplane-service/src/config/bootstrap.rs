@@ -16,6 +16,10 @@ pub struct BootstrapConfig {
     /// When set, the bootstrap listener terminates TLS and refuses any client
     /// that does not present a certificate signed by `client_ca_path`.
     pub tls: Option<BootstrapTlsConfig>,
+    /// Serve `POST .../dev-token`, which mints a token for any principal of an
+    /// initialized tenant with no identity provider. For local development
+    /// only: refused unless the bootstrap listener is on loopback.
+    pub dev_tokens: bool,
 }
 
 /// Whether each token is set, never the token.
@@ -28,6 +32,7 @@ impl std::fmt::Debug for BootstrapConfig {
             .field("token", &shown(&self.token))
             .field("previous_token", &shown(&self.previous_token))
             .field("tls", &self.tls)
+            .field("dev_tokens", &self.dev_tokens)
             .finish()
     }
 }

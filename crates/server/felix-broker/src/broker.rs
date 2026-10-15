@@ -8,9 +8,11 @@
 
 mod backup;
 mod commit;
+mod inspect;
 mod keys;
 mod metadata;
 mod publish;
+mod read;
 mod registry;
 mod shard_logs;
 mod shards;
@@ -18,14 +20,16 @@ mod subscribe;
 
 pub use backup::CommittedOffsets;
 pub use commit::StateRead;
+pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,
     SequenceReuse,
 };
+pub use read::ReadPage;
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
-pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription};
+pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -39,13 +43,14 @@ use crate::cache::CacheWatchHub;
 use crate::durable::DurableStorage;
 use crate::error::{BrokerError, Result};
 use crate::queue::{ConsumerGroups, DeadLetters, GroupReader};
-use crate::stream::{StreamState, SubQueuePolicy};
+use crate::stream::{ByteBudget, QueueBytes, StreamState, SubQueuePolicy};
 use keys::{CacheKey, NamespaceKey, StreamKey, TopicKey};
 
 // Capacity defaults for streams this broker creates.
 const DEFAULT_TOPIC_CAPACITY: usize = 1024;
 const DEFAULT_LOG_CAPACITY: usize = 1024;
 const DEFAULT_SUB_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
+const DEFAULT_SUB_QUEUE_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// In-process broker for pub/sub messaging.
 ///
@@ -103,6 +108,8 @@ pub struct Broker {
     log_capacity: usize,
     // Subscriber queue backpressure policy.
     subscriber_queue_policy: SubQueuePolicy,
+    // Byte bounds on subscriber queues.
+    subscriber_queue_bytes: QueueBytes,
     next_stream_handle: AtomicU64,
     // Disk-backed storage for streams registered with `durable: true`. `None`
     // means the broker is in-memory only and durable streams are rejected at
@@ -141,6 +148,19 @@ pub struct Broker {
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
+    /// Whether a durable stream stores each record's publisher, once the
+    /// node says. Unset stores none.
+    record_publishers: std::sync::OnceLock<PublisherGate>,
+}
+
+/// Decides whether durable streams store publishers; see
+/// [`Broker::record_publishers_when`].
+struct PublisherGate(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl std::fmt::Debug for PublisherGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PublisherGate")
+    }
 }
 
 // `Broker` is `Send + Sync` from its fields alone: every field is an `RwLock`,
@@ -173,6 +193,10 @@ impl Broker {
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
             log_capacity: DEFAULT_LOG_CAPACITY,
             subscriber_queue_policy: DEFAULT_SUB_QUEUE_POLICY,
+            subscriber_queue_bytes: QueueBytes {
+                per_subscriber: DEFAULT_SUB_QUEUE_MAX_BYTES,
+                broker: None,
+            },
             next_stream_handle: AtomicU64::new(1),
             durable_storage: None,
             consumer_groups: None,
@@ -183,7 +207,23 @@ impl Broker {
             read_bounds: Arc::default(),
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
+            record_publishers: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Store each durable record's publisher whenever `gate` says so.
+    ///
+    /// Asked on every durable publish. A record with a publisher needs
+    /// storage format v6, which an older build refuses to open, so the node
+    /// turns this on only once that is acceptable: in a cluster when the
+    /// fleet has finalized `publisher_principal`. Only the first call counts.
+    pub fn record_publishers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.record_publishers.set(PublisherGate(Arc::new(gate)));
+    }
+
+    /// Whether a durable publish now stores its publisher.
+    pub fn records_publishers(&self) -> bool {
+        self.record_publishers.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Per-subscriber queue capacity. Zero is rejected.
@@ -208,6 +248,24 @@ impl Broker {
     /// What a publish does when a subscriber's queue is full.
     pub fn with_subscriber_queue_policy(mut self, policy: SubQueuePolicy) -> Self {
         self.subscriber_queue_policy = policy;
+        self
+    }
+
+    /// How many payload bytes one subscriber's queue may hold; zero for no
+    /// bound. When it is full the queue policy applies, as for a full count.
+    /// A batch larger than the bound is still queued into an empty queue.
+    /// Defaults to 256 MiB.
+    pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
+        self.subscriber_queue_bytes.per_subscriber = bytes;
+        self
+    }
+
+    /// How many payload bytes all subscriber queues together may hold; zero,
+    /// the default, for no bound. A hard ceiling on queued memory, at the
+    /// cost of isolation: once it is reached, a fast subscriber's batch is
+    /// handled by the queue policy because slow ones hold the budget.
+    pub fn with_subscriber_queue_max_bytes_total(mut self, bytes: usize) -> Self {
+        self.subscriber_queue_bytes.broker = ByteBudget::new(bytes);
         self
     }
 

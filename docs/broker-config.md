@@ -6,7 +6,10 @@ The broker attempts to load a YAML file from:
 - `FELIX_BROKER_CONFIG` if set
 - otherwise `/usr/local/felix/config.yml`
 
-All fields are optional. Omitted values fall back to defaults. Every field also
+All fields are optional. Omitted values fall back to defaults. Booleans are
+`true`/`false` only, a leading-zero integer is refused, and `<<` is not a merge
+key; the full rules are in
+[Configuration](../docs-site/src/content/docs/reference/configuration.md#how-the-file-is-read). Every field also
 has an environment variable override; see
 [Environment Variables](../docs-site/src/content/docs/reference/environment-variables.md)
 for the full `FELIX_*` mapping, including legacy aliases.
@@ -36,8 +39,8 @@ publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
 disable_timings: false
 control_stream_drain_timeout_ms: 50
-cache_conn_recv_window: 268435456
-cache_stream_recv_window: 67108864
+pub_conn_recv_window: 16777216
+pub_stream_recv_window: 16777216
 cache_send_window: 268435456
 event_batch_max_events: 64
 event_batch_max_bytes: 65536
@@ -47,10 +50,15 @@ pub_workers_per_conn: 4
 pub_queue_depth: 64
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
+pub_conn_total_inflight_bytes: 67108864
 pub_ingress_wait: false
 core_shards: 0
 subscriber_queue_capacity: 512
+subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
+max_subscriptions_per_conn_total: 16384
+subscriber_queue_max_bytes: 268435456
+subscriber_queue_max_bytes_total: 0
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
@@ -209,7 +217,7 @@ one certificate:
 | `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
 | `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
 | `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. The shipped clients offer `felix/1` only when configured to (see [ALPN](protocol.md#alpn)), so turn that on in every client first. |
-| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
+| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. A token the control plane minted by delegation (`/token/delegate`) also passes when the certificate is issued to its actor (`act.sub`), by the same rules: that is how a gateway presents its users' tokens over its own connections (`Client::with_identity`). Each token is still checked against its own grants. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
 | `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
 
 Without `FELIX_TLS_CERT` the broker generates a self-signed certificate for
@@ -273,11 +281,25 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 - `pub_inflight_bytes` bounds actual queued-or-processing publish *bytes*, independent of
   `pub_queue_depth`'s item count, so a handful of large batches can't blow past the ingress
   memory budget even with a small queue depth.
-- `pub_conn_inflight_bytes` is a per-connection share of `pub_inflight_bytes`: it bounds how
-  much of the shared budget a single connection can occupy, so one connection publishing large
-  batches can't starve every other connection's admission. Must be smaller than
-  `pub_inflight_bytes` to have any effect; a value equal to or larger than it degenerates to
-  "no per-connection cap."
+- `pub_conn_inflight_bytes` is what one identity (tenant and token subject) may have in flight
+  on one connection. A plain client authenticates every stream as one identity, so for it this
+  is the connection's share of `pub_inflight_bytes`, and one connection publishing large
+  batches can't starve every other connection's admission. A client acting for many users over
+  one connection (`Client::with_identity`) gets this much per user, so one user's unanswered
+  publishes cannot take the whole connection. The users still share
+  `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a
+  fifth is refused or slowed. Must be smaller than `pub_inflight_bytes` to have any effect.
+- `pub_conn_total_inflight_bytes` bounds one connection across all its identities. Unset, it is
+  four times `pub_conn_inflight_bytes`, capped at `pub_inflight_bytes`. Startup refuses a value
+  below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.
+- `pub_conn_recv_window` and `pub_stream_recv_window` are the QUIC receive windows of the
+  client listeners, which carry publishes and cache requests alike. Unset, both follow
+  `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. When ingress is full
+  and `pub_ingress_wait` is on, the broker stops reading publishes, and the window is how much
+  more a client can park in the broker before QUIC flow control holds it back. Bigger windows
+  cost broker memory and delay backpressure; smaller ones can cap throughput on a path with a
+  large bandwidth-delay product. Startup refuses a window below `max_frame_bytes` or a stream
+  window above the connection window.
 - The pre-auth limits bound what a client costs before it proves who it is. Until a stream's
   `Auth` succeeds its frames are capped at `preauth_max_frame_bytes` (only an `Auth` has to
   fit), and at most `preauth_max_streams_per_conn` unauthenticated streams per connection are
@@ -286,14 +308,47 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   `max_client_connections` caps client QUIC connections across all client listeners; attempts
   past it are refused before the handshake. Frame buffers grow as payload bytes arrive, so a
   frame header alone never reserves `max_frame_bytes`.
-- `max_subscriptions_per_conn` bounds how many concurrent subscriptions a single QUIC connection
-  may hold, independent of `subscriber_queue_capacity`. It protects broker memory from a
-  connection that opens unbounded subscriptions rather than bounding any one subscription's
-  buffer size.
+- `max_subscriptions_per_conn` bounds how many concurrent subscriptions and cache watches one
+  identity may hold on a QUIC connection, independent of `subscriber_queue_capacity`. For a
+  plain client, which is one identity, that is the connection's cap. It protects broker memory
+  from a connection that opens unbounded subscriptions rather than bounding any one
+  subscription's buffer size. `max_subscriptions_per_conn_total` bounds the connection across
+  all its identities: unset, four times `max_subscriptions_per_conn`, and startup refuses a
+  value below it. A user at their cap is refused without taking room from the other users on
+  the same connection.
 - `subscriber_queue_capacity` and `subscriber_queue_policy` control broker-core per-subscriber
   buffering and drop behavior (the fanout enqueue path); `subscriber_lane_queue_depth` and
   `subscriber_lane_queue_policy` control the writer-lane stage one hop later (the actual QUIC
-  write). Both default to `drop_new`.
+  write). Both default to `drop_new`. `drop_old` is accepted at both stages but behaves as
+  `drop_new`: the arriving batch is dropped, not the oldest.
+- `subscriber_queue_capacity_max` (env: `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`, default `4096`)
+  bounds the `queue_capacity` a subscriber may ask for on `subscribe`. A larger request is
+  granted the maximum, and the subscriber is told what it got. Each queued batch stays in
+  memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
+  chooses only the size, never the policy: under `block` one slow reader would stall every
+  publisher on the shard.
+- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 256 MiB) bounds the
+  payload bytes one subscriber's broker-core queue holds, since one entry can be a whole frame.
+  A batch keeps counting until the frame carrying it has been written to the subscriber's QUIC
+  stream, so frames waiting in the writer lanes are inside the bound too. The queue policy
+  applies when either bound is full; under `block` the batch goes to every subscriber with
+  room before the fanout waits on the full ones. A batch larger than the bound still goes
+  into an empty queue. `0` turns it off. Because the bound reaches the writer lanes, it has to
+  fit what a subscriber that is keeping up has in flight: at 64 MiB, a subscriber reading 4 MiB
+  batches (64 x 64 KiB) at fanout 10 was throttled.
+- `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
+  bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
+  once slow subscribers fill it, fast ones drop too. Without it, each subscriber can hold up to
+  `subscriber_queue_max_bytes` or its largest single batch, whichever is larger (an oversize batch
+  still enters an empty queue), so worst-case queued memory is the number of subscribers times
+  that. With `subscriber_queue_max_bytes` at `0`, only queue capacity times batch size limits a
+  subscriber. Set the total in production. Totals above 4 GiB are honoured: the budget then
+  counts in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
+  batch rounded up to a whole unit.
+- Under `block`, a subscriber that stops reading holds the shard's publishers with no timeout
+  until it reads or disconnects. Order and gap-freedom are kept.
+- The replay ring (1024 records per stream shard) and each cache watch queue (1024 changes) are
+  bounded by entry count, not bytes, and do not count toward either byte bound.
 - `subscriber_writer_lanes` and `subscriber_lane_shard` control outbound event write parallelism.
 - `subscriber_lane_shard: auto` is the default and is usually the best starting point.
 - Lanes often help high fanout + large payload workloads, but gains can plateau; do not assume

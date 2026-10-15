@@ -1,0 +1,51 @@
+name: Mirror BuildKit
+
+# Copies the BuildKit image that `docker/setup-buildx-action` runs into this
+# organisation's GHCR, so image builds don't depend on Docker Hub being up or
+# on its anonymous pull limit. Moby publishes BuildKit only to Docker Hub.
+#
+# Run by hand when moving to a new BuildKit version, then update the image
+# that the workflows' `setup-buildx-action` steps name. The digest pins exactly
+# what was reviewed; the copy keeps it, so the GHCR tag is byte-identical.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "BuildKit tag, e.g. v0.33.1"
+        required: true
+        default: v0.33.1
+      digest:
+        description: "Its manifest-list digest on Docker Hub (sha256:...)"
+        required: true
+        default: sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Copy moby/buildkit to GHCR
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          src="docker.io/moby/buildkit:${VERSION}@${DIGEST}"
+          dst="ghcr.io/${owner}/buildkit:${VERSION}"
+          docker buildx imagetools create --tag "$dst" "$src"
+          copied=$(docker buildx imagetools inspect "$dst" --format '{{json .Manifest}}' | jq -r .digest)
+          if [ "$copied" != "$DIGEST" ]; then
+            echo "::error::copied digest $copied does not match $DIGEST"
+            exit 1
+          fi
+          echo "Mirrored $src to $dst" >> "$GITHUB_STEP_SUMMARY"

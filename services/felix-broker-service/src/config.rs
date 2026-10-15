@@ -85,6 +85,29 @@ pub struct BrokerConfig {
     pub controlplane_ca: Option<String>,
     /// The certificate the client-facing listeners present.
     pub client_tls: ClientTlsConfig,
+    /// Where this broker's refresh token lives, when it has one.
+    ///
+    /// A path rather than a value, and that is forced by rotation: refreshing
+    /// spends the token and mints a replacement, so whatever the broker was
+    /// given at startup stops working the first time it refreshes. It has to
+    /// write the replacement somewhere it will read on restart, or a restart
+    /// presents a spent token — which the control plane correctly reads as a
+    /// replay and answers by revoking the whole chain, locking the broker out
+    /// for good.
+    ///
+    /// `None` means no refresh: the broker runs on the token it was given and
+    /// stops being able to call the control plane when that expires, which is the behaviour every
+    /// deployment had before refresh existed.
+    pub node_refresh_token_file: Option<std::path::PathBuf>,
+    /// Where the *access* token was read from, when it came from a file.
+    ///
+    /// Two jobs. It is the path re-read when something outside the broker
+    /// rotates the credential -- a Vault agent, SPIRE, a sidecar -- so that
+    /// rotation takes effect without a restart, the way the refresh token file
+    /// already does. And it is what makes an expiring credential legitimate
+    /// without `node_refresh_token_file`: a file is a seam something else can write,
+    /// where a token passed by value is not.
+    pub node_token_file: Option<std::path::PathBuf>,
     /// Cluster membership identity, when this broker joins one.
     pub membership: Option<MembershipConfig>,
     /// Broker-internal transport, present only when this broker joins a cluster.
@@ -92,6 +115,10 @@ pub struct BrokerConfig {
     pub peer_transport: Option<felix_replication::peer::PeerTransportConfig>,
     /// If true, publish acks are sent after commit.
     pub ack_on_commit: bool,
+    /// Store the publishing principal with each durable record, on a broker
+    /// outside a cluster. In a cluster the fleet decides: see
+    /// `felix_common::fleet::PUBLISHER_PRINCIPAL`.
+    pub record_publishers: bool,
     /// Max frame size accepted on QUIC streams.
     pub max_frame_bytes: usize,
     /// Max frame size a stream may send before it has authenticated. Only an
@@ -131,6 +158,12 @@ pub struct BrokerConfig {
     /// shorter wait gets one. It exists so a client cannot hold a broker stream
     /// open indefinitely.
     pub group_max_wait_ms: u64,
+    /// Longest a consumer may ask a claim to stand, whether for a poll's
+    /// `visibility_ms` or a `group_extend`, and longest it may delay a nack.
+    ///
+    /// Never below `group_visibility_timeout_ms`. A claim and a delayed nack
+    /// are the leader's memory, so a failover hands the record out sooner.
+    pub group_max_visibility_ms: u64,
     /// Most records one consumer group may have handed out and unsettled at
     /// once, per shard. A poll past it answers empty until acknowledgements or
     /// lapsed claims free room, so one consumer that polls and never answers
@@ -149,10 +182,13 @@ pub struct BrokerConfig {
     /// How long a clustered broker waits for its shards to move to other
     /// brokers before it stops. `0` skips the handoff.
     pub shutdown_handoff_timeout_ms: u64,
-    /// Cache connection flow-control window.
-    pub cache_conn_recv_window: u64,
-    /// Cache stream flow-control window.
-    pub cache_stream_recv_window: u64,
+    /// QUIC connection receive window of the client listeners: how many bytes
+    /// one client connection may send that the broker has not read yet. `None`
+    /// follows the publish budget; see [`BrokerConfig::pub_recv_windows`].
+    pub pub_conn_recv_window: Option<u64>,
+    /// QUIC per-stream receive window of the client listeners. `None` follows
+    /// the publish budget; see [`BrokerConfig::pub_recv_windows`].
+    pub pub_stream_recv_window: Option<u64>,
     /// Cache connection send window.
     pub cache_send_window: u64,
     /// Max events per batched subscription frame.
@@ -176,10 +212,15 @@ pub struct BrokerConfig {
     pub pub_queue_depth: usize,
     /// Shared in-flight publish byte budget across all publishes (process-wide).
     pub pub_inflight_bytes: usize,
-    /// Per-connection share of the in-flight publish byte budget. Bounds how much of the
-    /// process-wide `pub_inflight_bytes` budget a single connection can occupy at once, so one
-    /// connection can't starve every other connection's publishes under load.
+    /// In-flight publish bytes one identity (tenant and token subject) may hold on a
+    /// connection. A plain client authenticates every stream as one identity, so this is
+    /// its connection's budget. A client acting for many users gets this per user, so one
+    /// user cannot starve the others.
     pub pub_conn_inflight_bytes: usize,
+    /// In-flight publish bytes one connection may hold across all its identities. Unset,
+    /// four identities' worth, capped at `pub_inflight_bytes`. See
+    /// [`Self::conn_publish_ceiling`].
+    pub pub_conn_total_inflight_bytes: Option<usize>,
     /// Most acknowledged publishes one connection may have unanswered when its
     /// client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker stops
     /// reading that connection's publishes at this depth. `0` refuses to
@@ -194,10 +235,24 @@ pub struct BrokerConfig {
     pub core_shards: usize,
     /// Per-subscriber queue capacity in broker core.
     pub subscriber_queue_capacity: usize,
-    /// Max concurrent subscriptions a single QUIC connection may hold. Prevents a single
-    /// connection from unboundedly growing broker memory via subscriber queues/writer-lane
-    /// registrations.
+    /// The largest queue capacity a subscriber may ask for on `subscribe`.
+    /// A larger request is granted this.
+    pub subscriber_queue_capacity_max: usize,
+    /// Max concurrent subscriptions (and cache watches) one identity may hold on a QUIC
+    /// connection. For a plain client, which authenticates as one identity, this is the
+    /// connection's cap.
     pub max_subscriptions_per_conn: usize,
+    /// Max concurrent subscriptions one connection may hold across all its identities, so
+    /// a client acting for many users cannot grow broker memory without bound. Unset, four
+    /// identities' worth. See [`Self::conn_subscription_ceiling`].
+    pub max_subscriptions_per_conn_total: Option<usize>,
+    /// Payload bytes one subscriber's queue may hold before the queue policy
+    /// applies, as it does for a full count. Zero for no byte bound.
+    pub subscriber_queue_max_bytes: usize,
+    /// Payload bytes all subscriber queues together may hold. Zero, the
+    /// default, for no bound. Caps queued memory, but a slow subscriber can
+    /// then cost a fast one records.
+    pub subscriber_queue_max_bytes_total: usize,
     /// Subscriber queue policy for publish->fanout enqueue.
     #[serde(serialize_with = "print::queue_policy")]
     pub subscriber_queue_policy: SubQueuePolicy,
@@ -275,6 +330,50 @@ impl BrokerConfig {
             .collect()
     }
 
+    /// The `(connection, stream)` QUIC receive windows the client listeners
+    /// are built with.
+    ///
+    /// An explicit setting wins. Unset, both follow `pub_conn_inflight_bytes`:
+    /// a client whose publishes are waiting on ingress can then park at most
+    /// one more budget's worth in the broker's receive buffers before QUIC
+    /// flow control holds it back. The 16 MiB default still covers the
+    /// bandwidth-delay product of a 10 Gbit/s path up to about 13 ms of round
+    /// trip. Neither goes below `max_frame_bytes`, so one frame always fits in
+    /// a window; `validate` refuses explicit values that break that.
+    pub fn pub_recv_windows(&self) -> (u64, u64) {
+        let budget = (self.pub_conn_inflight_bytes as u64).max(self.max_frame_bytes as u64);
+        let conn = self.pub_conn_recv_window.unwrap_or(budget);
+        let stream = self.pub_stream_recv_window.unwrap_or(conn.min(budget));
+        (conn, stream)
+    }
+
+    /// In-flight publish bytes one connection may hold across every identity
+    /// its streams authenticate as.
+    ///
+    /// Never below `pub_conn_inflight_bytes`, so a connection with one
+    /// identity is limited by that alone, as before identities had their own
+    /// budgets.
+    pub fn conn_publish_ceiling(&self) -> usize {
+        self.pub_conn_total_inflight_bytes
+            .unwrap_or_else(|| {
+                self.pub_conn_inflight_bytes
+                    .saturating_mul(IDENTITIES_PER_CONN)
+                    .min(self.pub_inflight_bytes)
+            })
+            .max(self.pub_conn_inflight_bytes)
+    }
+
+    /// Subscriptions one connection may hold across every identity its
+    /// streams authenticate as. Never below `max_subscriptions_per_conn`.
+    pub fn conn_subscription_ceiling(&self) -> usize {
+        self.max_subscriptions_per_conn_total
+            .unwrap_or_else(|| {
+                self.max_subscriptions_per_conn
+                    .saturating_mul(IDENTITIES_PER_CONN)
+            })
+            .max(self.max_subscriptions_per_conn)
+    }
+
     /// Server endpoints this broker binds: the client listeners, plus the
     /// internal one when it is part of a cluster.
     ///
@@ -338,12 +437,15 @@ impl Default for BrokerConfig {
             metrics_bind: SocketAddr::from(([0, 0, 0, 0], 8080)),
             controlplane_url: None,
             controlplane_token: String::new(),
+            node_refresh_token_file: None,
+            node_token_file: None,
             controlplane_sync_interval_ms: 2000,
             controlplane_ca: None,
             client_tls: ClientTlsConfig::default(),
             membership: None,
             peer_transport: None,
             ack_on_commit: false,
+            record_publishers: false,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             preauth_max_frame_bytes: DEFAULT_PREAUTH_MAX_FRAME_BYTES,
             preauth_max_streams_per_conn: DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN,
@@ -354,14 +456,15 @@ impl Default for BrokerConfig {
             group_visibility_timeout_ms: DEFAULT_GROUP_VISIBILITY_TIMEOUT_MS,
             group_max_attempts: DEFAULT_GROUP_MAX_ATTEMPTS,
             group_max_wait_ms: DEFAULT_GROUP_MAX_WAIT_MS,
+            group_max_visibility_ms: DEFAULT_GROUP_MAX_VISIBILITY_MS,
             group_max_in_flight: DEFAULT_GROUP_MAX_IN_FLIGHT,
             disable_timings: DEFAULT_DISABLE_TIMINGS,
             control_stream_drain_timeout_ms: DEFAULT_CONTROL_STREAM_DRAIN_TIMEOUT_MS,
             shutdown_drain_timeout_ms: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
             shutdown_predrain_ms: DEFAULT_SHUTDOWN_PREDRAIN_MS,
             shutdown_handoff_timeout_ms: DEFAULT_SHUTDOWN_HANDOFF_TIMEOUT_MS,
-            cache_conn_recv_window: DEFAULT_CACHE_CONN_RECV_WINDOW,
-            cache_stream_recv_window: DEFAULT_CACHE_STREAM_RECV_WINDOW,
+            pub_conn_recv_window: None,
+            pub_stream_recv_window: None,
             cache_send_window: DEFAULT_CACHE_SEND_WINDOW,
             event_batch_max_events: 64,
             event_batch_max_bytes: 64 * 1024,
@@ -372,11 +475,16 @@ impl Default for BrokerConfig {
             pub_queue_depth: DEFAULT_PUB_QUEUE_DEPTH,
             pub_inflight_bytes: DEFAULT_PUB_INFLIGHT_BYTES,
             pub_conn_inflight_bytes: DEFAULT_PUB_CONN_INFLIGHT_BYTES,
+            pub_conn_total_inflight_bytes: None,
             publish_window: DEFAULT_PUBLISH_WINDOW,
             pub_ingress_wait: false,
             core_shards: 0,
             subscriber_queue_capacity: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY,
+            subscriber_queue_capacity_max: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX,
             max_subscriptions_per_conn: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN,
+            max_subscriptions_per_conn_total: None,
+            subscriber_queue_max_bytes: DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES,
+            subscriber_queue_max_bytes_total: 0,
             subscriber_queue_policy: DEFAULT_SUBSCRIBER_QUEUE_POLICY,
             subscriber_writer_lanes: DEFAULT_SUBSCRIBER_WRITER_LANES,
             subscriber_lane_queue_depth: DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH,

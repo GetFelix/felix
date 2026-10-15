@@ -89,6 +89,7 @@ impl TokenCheckingServer {
                         subscription_id: 7,
                         start_offset: None,
                         live_offset: None,
+                        queue_capacity: None,
                     },
                 )
                 .await?;

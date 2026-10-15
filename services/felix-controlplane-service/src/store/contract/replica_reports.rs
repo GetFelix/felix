@@ -287,6 +287,7 @@ async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
 
 fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
+        counter_offsets: Default::default(),
         key: key(shard),
         generation,
         caught_up: caught_up.iter().map(|n| n.to_string()).collect(),

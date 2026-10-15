@@ -88,6 +88,7 @@ fn subscribed_without_join_offsets_is_unchanged() {
         subscription_id: 42,
         start_offset: None,
         live_offset: None,
+        queue_capacity: None,
     };
     assert_eq!(
         serde_json::to_string(&plain).expect("serialize"),
@@ -101,9 +102,59 @@ fn subscribed_without_join_offsets_is_unchanged() {
         subscription_id: 42,
         start_offset: Some(10),
         live_offset: Some(25),
+        queue_capacity: None,
     };
     let frame = joined.encode().expect("encode");
     assert_eq!(Message::decode(frame).expect("decode"), joined);
+}
+
+/// A subscribe that does not ask for a queue capacity, and the answer to it,
+/// are the frames every peer sent before the field existed. One that asks
+/// round-trips the request and the granted value.
+#[test]
+fn subscribe_queue_capacity_is_absent_unless_asked_for() {
+    let plain = Message::Subscribe {
+        tenant_id: "t".to_string(),
+        namespace: "ns".to_string(),
+        stream: "s".to_string(),
+        subscription_id: None,
+        start: None,
+        shard: None,
+        queue_capacity: None,
+    };
+    let legacy = r#"{"type":"subscribe","tenant_id":"t","namespace":"ns","stream":"s"}"#;
+    assert_eq!(serde_json::to_string(&plain).expect("serialize"), legacy);
+    assert_eq!(
+        serde_json::from_str::<Message>(legacy).expect("decode"),
+        plain
+    );
+
+    let sized = Message::Subscribe {
+        tenant_id: "t".to_string(),
+        namespace: "ns".to_string(),
+        stream: "s".to_string(),
+        subscription_id: None,
+        start: None,
+        shard: None,
+        queue_capacity: Some(4096),
+    };
+    let json = serde_json::to_string(&sized).expect("serialize");
+    assert!(json.ends_with(r#","queue_capacity":4096}"#), "{json}");
+    let frame = sized.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), sized);
+
+    let granted = Message::Subscribed {
+        subscription_id: 1,
+        start_offset: None,
+        live_offset: None,
+        queue_capacity: Some(2048),
+    };
+    assert_eq!(
+        serde_json::to_string(&granted).expect("serialize"),
+        r#"{"type":"subscribed","subscription_id":1,"queue_capacity":2048}"#
+    );
+    let frame = granted.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), granted);
 }
 
 /// `shard_moved` round-trips, and its optional fields stay off the wire when
@@ -140,4 +191,125 @@ fn shard_moved_round_trips_and_omits_absent_hints() {
         r#"{"type":"shard_moved","subscription_id":7,"generation":9}"#
     );
     assert_eq!(Message::decode(frame).expect("decode"), bare);
+}
+
+/// `subscription_lagged` is a plain JSON frame naming where to resume.
+#[test]
+fn subscription_lagged_round_trips() {
+    let lagged = Message::SubscriptionLagged {
+        subscription_id: 7,
+        resume_from: 1234,
+    };
+    let frame = lagged.encode().expect("encode");
+    assert_eq!(frame.header.flags, 0, "a JSON frame carries no flag bits");
+    assert_eq!(
+        std::str::from_utf8(&frame.payload).expect("utf8"),
+        r#"{"type":"subscription_lagged","subscription_id":7,"resume_from":1234}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), lagged);
+}
+
+#[test]
+fn a_stream_read_round_trips() {
+    let request = Message::StreamRead {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "matches".to_string(),
+        shard: 2,
+        from: 10,
+        end: Some(20),
+        max_records: 5,
+        max_bytes: 4096,
+        request_id: 7,
+    };
+    let decoded = Message::decode(request.encode().expect("encode")).expect("decode");
+    assert_eq!(request, decoded);
+
+    let answer = Message::StreamRecords {
+        records: vec![
+            crate::StreamRecord {
+                offset: 10,
+                payload: bytes::Bytes::from_static(b"one"),
+                publisher: Some("alice".to_string()),
+                timestamp_micros: 1_700_000_000_000_000,
+            },
+            crate::StreamRecord {
+                offset: 12,
+                payload: bytes::Bytes::from_static(b"two"),
+                publisher: None,
+                timestamp_micros: 1_700_000_000_000_001,
+            },
+        ],
+        next_offset: 13,
+        request_id: 7,
+    };
+    let decoded = Message::decode(answer.encode().expect("encode")).expect("decode");
+    assert_eq!(answer, decoded);
+}
+
+/// The optional fields stay off the wire when unset, so the shortest request
+/// is just the shard and where to start.
+#[test]
+fn a_stream_read_leaves_unset_bounds_out() {
+    let request = Message::StreamRead {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "s".to_string(),
+        shard: 0,
+        from: 3,
+        end: None,
+        max_records: 0,
+        max_bytes: 0,
+        request_id: 1,
+    };
+    assert_eq!(
+        serde_json::to_string(&request).expect("encode"),
+        r#"{"type":"stream_read","tenant_id":"t1","namespace":"ns","stream":"s","shard":0,"from":3,"request_id":1}"#
+    );
+    let decoded: Message = serde_json::from_str(
+        r#"{"type":"stream_read","tenant_id":"t1","namespace":"ns","stream":"s","shard":0,"from":3,"request_id":1}"#,
+    )
+    .expect("decode");
+    assert_eq!(decoded, request);
+}
+
+/// `stream_deleted` is a plain JSON frame naming only the subscription.
+#[test]
+fn stream_deleted_round_trips() {
+    let deleted = Message::StreamDeleted { subscription_id: 7 };
+    let frame = deleted.encode().expect("encode");
+    assert_eq!(frame.header.flags, 0, "a JSON frame carries no flag bits");
+    assert_eq!(
+        std::str::from_utf8(&frame.payload).expect("utf8"),
+        r#"{"type":"stream_deleted","subscription_id":7}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), deleted);
+}
+
+#[test]
+fn publish_width_round_trips_and_omits_modulo() {
+    let modulo = Message::PublishWidth {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shards: 4,
+        routing: None,
+    };
+    let frame = modulo.encode().expect("encode");
+    let text = std::str::from_utf8(&frame.payload).expect("utf8");
+    assert_eq!(
+        text,
+        r#"{"type":"publish_width","tenant_id":"t1","namespace":"ns","stream":"orders","shards":4}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), modulo);
+
+    let jump = Message::PublishWidth {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shards: 8,
+        routing: Some(crate::routing::ShardRouting::JumpHash),
+    };
+    let frame = jump.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), jump);
 }

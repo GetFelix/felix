@@ -23,6 +23,12 @@ metrics_url() {
   if [ -n "$bind" ]; then echo "http://$bind/metrics"; fi
 }
 
+# The MTU of the interface the default route uses.
+nic_mtu() {
+  dev=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+  cat "/sys/class/net/${dev:-eth0}/mtu" 2>/dev/null || echo unknown
+}
+
 felix_pid() {
   pidof -s felix-broker 2>/dev/null || pidof -s felix-controlplane 2>/dev/null || true
 }
@@ -224,6 +230,7 @@ cmd_snapshot() {
       print "port." p ".pkts=" $1; print "port." p ".bytes=" $2 }'
   fi
   if [ "${1:-}" = "--env" ]; then
+    echo "nic.mtu=$(nic_mtu)"
     ports=$(ss -Huanp 2>/dev/null | awk '/felix-broker/ { n = split($4, a, ":"); p = a[n]; if (p >= 5000 && p < 5064) printf "%s%s", s, p; s = "," }')
     echo "listen.ports=$ports"
     for kind in broker controlplane; do
@@ -258,13 +265,19 @@ series_ports() {
 # byte counters, UDP InDatagrams/RcvbufErrors and the per-port byte counters.
 # Armed before the load: run-command dispatch takes seconds, so a sample taken
 # "during" the load from the operator often lands after it.
+#
+# Optional <proc> and <stats> point it at another system on the same VMs (the
+# NATS comparison): <proc> is the process name whose CPU is sampled, and
+# <stats> "nats" reads stored and received bytes from nats-server's
+# monitoring port instead of Felix's metrics. Without them it samples Felix.
 cmd_sampler_start() {
-  tag="$1"
+  tag="$1"; proc="${2:-}"; stats="${3:-felix}"
   mkdir -p "$SAMPLES"
   rm -f "$SAMPLES/$tag.txt" "$SAMPLES/$tag.stop" "$SAMPLES/$tag.series.tsv" "$SAMPLES/$tag.series.gz.b64"
-  url=$(metrics_url || true)
-  nohup "$0" _sample "$tag" "$url" >/dev/null 2>&1 &
-  echo "sampler=$tag"
+  if [ "$stats" = nats ]; then url=http://127.0.0.1:8222; else url=$(metrics_url || true); fi
+  echo "$stats" > "$SAMPLES/$tag.stats"
+  nohup "$0" _sample "$tag" "$url" "$proc" "$stats" >/dev/null 2>&1 &
+  echo "sampler=$tag${proc:+ proc=$proc}"
 }
 
 # Columns: t, cpu user+nice sys idle iowait irq softirq steal, proc ticks,
@@ -272,23 +285,44 @@ cmd_sampler_start() {
 # per port in series_ports order. Each line costs one scrape, one iptables
 # list and a few small /proc reads.
 cmd__sample() {
-  tag="$1"; url="${2:-}"; f="$SAMPLES/$tag.txt"; i=0
+  tag="$1"; url="${2:-}"; proc="${3:-}"; stats="${4:-felix}"; f="$SAMPLES/$tag.txt"; i=0
   ports=$(series_ports)
   ipt=0
   if command -v iptables >/dev/null && iptables -w -nL FELIX_PORTS >/dev/null 2>&1; then ipt=1; fi
   while [ "$i" -lt 3600 ] && [ ! -e "$SAMPLES/$tag.stop" ]; do
     t=$(date +%s.%N)
-    pid=$(pidof -s felix-broker 2>/dev/null || pidof -s felix-loadgen 2>/dev/null || true)
     pt=0
-    if [ -n "$pid" ]; then pt=$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0); fi
+    if [ -n "$proc" ]; then
+      # Every process of that name: a generator may run several.
+      for pid in $(pidof "$proc" 2>/dev/null || true); do
+        pt=$((pt + $(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0)))
+      done
+    else
+      pid=$(pidof -s felix-broker 2>/dev/null || pidof -s felix-loadgen 2>/dev/null || true)
+      if [ -n "$pid" ]; then pt=$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0); fi
+    fi
     m="0 0"
-    if [ -n "$url" ]; then
-      m=$(curl -s -m 1 "$url" | awk '
+    if [ "$stats" = nats ]; then
+      # Appended bytes: records appended (the streams' last sequences)
+      # times the mean stored record size. Unlike the stored total it keeps
+      # counting when a memory stream discards at its limit. Then the
+      # server's received bytes. Top-level keys sit at a two-space indent.
+      # A failed scrape is NA, never 0, so it cannot read as a stall.
+      a=$(curl -fs -m 1 "$url/jsz?streams=true" | awk '
+        /"last_seq":/ { v = $2; gsub(/[^0-9]/, "", v); s += v }
+        /^  "bytes":/ { b = $2; gsub(/[^0-9]/, "", b) }
+        /^  "messages":/ { n = $2; gsub(/[^0-9]/, "", n) }
+        END { if (NR == 0) printf "NA"; else if (n > 0) printf "%.0f", s * b / n; else printf "0" }')
+      b=$(curl -fs -m 1 "$url/varz" | sed -n 's/^  "in_bytes": *\([0-9]*\).*/\1/p' | head -1)
+      m="${a:-NA} ${b:-NA}"
+    elif [ -n "$url" ]; then
+      # A failed scrape is NA, so summarize.py can skip and count it.
+      m=$(curl -fs -m 1 "$url" | awk '
         /^#/ { next }
         { n = $1; sub(/\{.*/, "", n)
           if (n == "felix_storage_append_bytes_total") a += $NF
           else if (n == "felix_publish_bytes_total") p += $NF }
-        END { printf "%.0f %.0f", a, p }')
+        END { if (NR == 0) printf "NA NA"; else printf "%.0f %.0f", a, p }')
     fi
     pb=""
     if [ "$ipt" = 1 ]; then
@@ -327,7 +361,8 @@ cmd_sampler_stop() {
   echo "__SAMPLE_BEGIN__"
   echo "s.nproc=$(nproc)"
   awk -v hz="$(getconf CLK_TCK)" '
-    { t[NR] = $1; u[NR] = $2; s[NR] = $3; id[NR] = $4; w[NR] = $5; iq[NR] = $6; si[NR] = $7; sl[NR] = $8; pt[NR] = $9; ab[NR] = $10 }
+    { t[NR] = $1; u[NR] = $2; s[NR] = $3; id[NR] = $4; w[NR] = $5; iq[NR] = $6; si[NR] = $7; sl[NR] = $8; pt[NR] = $9
+      ab[NR] = ($10 ~ /^[0-9]/) ? $10 : ab[NR-1] }
     END {
       for (i = 2; i <= NR; i++) {
         du = u[i] - u[i-1]; ds = s[i] - s[i-1]; di = id[i] - id[i-1]; dw = w[i] - w[i-1]
@@ -357,7 +392,7 @@ cmd_sampler_stop() {
     }' "$f"
   series="$SAMPLES/$tag.series.tsv"
   {
-    echo "# hz=$(getconf CLK_TCK) nproc=$(nproc) host=$(hostname)"
+    echo "# hz=$(getconf CLK_TCK) nproc=$(nproc) host=$(hostname) stats=$(cat "$SAMPLES/$tag.stats" 2>/dev/null || echo felix)"
     printf 't\tproc_ticks\tappend_bytes\tpublish_bytes\tudp_in\tudp_rcvbuf_errors'
     for p in $(series_ports); do printf '\tport.%s.bytes' "$p"; done
     echo
@@ -407,6 +442,7 @@ for x in d.get("dataDisks", []):
       net.core.netdev_max_backlog net.core.netdev_budget kernel.io_uring_disabled; do
     echo "sysctl.$k=$(sysctl -n "$k" 2>/dev/null || echo n/a)"
   done
+  echo "nic.mtu=$(nic_mtu)"
   if command -v ethtool >/dev/null; then
     echo "nic.channels=$(ethtool -l eth0 2>/dev/null | awk '/^Current/ { c = 1 } c && /Combined/ { print $2; exit }')"
     echo "nic.offloads=$(ethtool -k eth0 2>/dev/null | grep -E 'gro|gso|rx-udp' | tr -d ' ' | tr '\n' ',')"

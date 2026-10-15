@@ -33,7 +33,7 @@ jobs:
           # PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: ".github/cla-signatures/cla.json"
-          path-to-document: "https://github.com/gabloe/felix/blob/main/CLA.md"
+          path-to-document: "https://github.com/GetFelix/felix/blob/main/CLA.md"
           # NOT `main`: the bot commits the updated signatures file directly
           # (no PR), which GitHub's own branch-protection rules on `main`
           # correctly reject ("Repository rule violations found... Changes

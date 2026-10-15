@@ -7,7 +7,7 @@
 use super::*;
 
 fn parse(yaml: &str) -> BrokerConfigOverride {
-    serde_yaml_ng::from_str(yaml).expect("parse the override")
+    felix_common::yaml::from_str(yaml).expect("parse the override")
 }
 
 /// **A key nobody reads is refused, not ignored.**
@@ -19,7 +19,7 @@ fn parse(yaml: &str) -> BrokerConfigOverride {
 /// they are looking at says otherwise.
 #[test]
 fn a_key_the_broker_does_not_know_is_refused() {
-    let err = serde_yaml_ng::from_str::<BrokerConfigOverride>("metrics_bnid: \"0.0.0.0:1\"")
+    let err = felix_common::yaml::from_str::<BrokerConfigOverride>("metrics_bnid: \"0.0.0.0:1\"")
         .expect_err("a misspelled key must not be accepted");
     assert!(
         err.to_string().contains("metrics_bnid"),
@@ -56,8 +56,8 @@ fn every_key_in_the_file_reaches_the_config() {
             disable_timings: true
             control_stream_drain_timeout_ms: 1010
             shutdown_drain_timeout_ms: 1011
-            cache_conn_recv_window: 1012
-            cache_stream_recv_window: 1013
+            pub_conn_recv_window: 1012
+            pub_stream_recv_window: 1013
             cache_send_window: 1014
             event_batch_max_events: 1015
             event_batch_max_bytes: 1016
@@ -71,6 +71,8 @@ fn every_key_in_the_file_reaches_the_config() {
             core_shards: 1024
             subscriber_queue_capacity: 1025
             max_subscriptions_per_conn: 1026
+            subscriber_queue_max_bytes: 1100
+            subscriber_queue_max_bytes_total: 1101
             subscriber_queue_policy: "drop_old"
             subscriber_writer_lanes: 1028
             subscriber_lane_queue_depth: 1029
@@ -101,8 +103,8 @@ fn every_key_in_the_file_reaches_the_config() {
     assert!(config.disable_timings);
     assert_eq!(config.control_stream_drain_timeout_ms, 1010);
     assert_eq!(config.shutdown_drain_timeout_ms, 1011);
-    assert_eq!(config.cache_conn_recv_window, 1012);
-    assert_eq!(config.cache_stream_recv_window, 1013);
+    assert_eq!(config.pub_conn_recv_window, Some(1012));
+    assert_eq!(config.pub_stream_recv_window, Some(1013));
     assert_eq!(config.cache_send_window, 1014);
     assert_eq!(config.event_batch_max_events, 1015);
     assert_eq!(config.event_batch_max_bytes, 1016);
@@ -116,6 +118,8 @@ fn every_key_in_the_file_reaches_the_config() {
     assert_eq!(config.core_shards, 1024);
     assert_eq!(config.subscriber_queue_capacity, 1025);
     assert_eq!(config.max_subscriptions_per_conn, 1026);
+    assert_eq!(config.subscriber_queue_max_bytes, 1100);
+    assert_eq!(config.subscriber_queue_max_bytes_total, 1101);
     assert_eq!(config.subscriber_queue_policy, SubQueuePolicy::DropOld);
     assert_eq!(config.subscriber_writer_lanes, 1028);
     assert_eq!(config.subscriber_lane_queue_depth, 1029);
@@ -165,17 +169,17 @@ fn a_zero_is_ignored_where_zero_would_mean_off() {
     config
         .apply(parse(
             r#"
-            cache_conn_recv_window: 0
             cache_send_window: 0
-            cache_stream_recv_window: 0
             event_batch_max_bytes: 0
             event_batch_max_events: 0
             fanout_batch_size: 0
             max_subscriber_writer_lanes: 0
             max_subscriptions_per_conn: 0
             pub_conn_inflight_bytes: 0
+            pub_conn_recv_window: 0
             pub_inflight_bytes: 0
             pub_queue_depth: 0
+            pub_stream_recv_window: 0
             pub_workers_per_conn: 0
             shutdown_drain_timeout_ms: 0
             sub_streams_per_conn: 0
@@ -189,16 +193,16 @@ fn a_zero_is_ignored_where_zero_would_mean_off() {
         .expect("apply");
 
     assert_eq!(
-        config.cache_conn_recv_window, defaults.cache_conn_recv_window,
-        "cache_conn_recv_window was disabled by a zero"
+        config.pub_conn_recv_window, defaults.pub_conn_recv_window,
+        "pub_conn_recv_window was disabled by a zero"
     );
     assert_eq!(
         config.cache_send_window, defaults.cache_send_window,
         "cache_send_window was disabled by a zero"
     );
     assert_eq!(
-        config.cache_stream_recv_window, defaults.cache_stream_recv_window,
-        "cache_stream_recv_window was disabled by a zero"
+        config.pub_stream_recv_window, defaults.pub_stream_recv_window,
+        "pub_stream_recv_window was disabled by a zero"
     );
     assert_eq!(
         config.event_batch_max_bytes, defaults.event_batch_max_bytes,
@@ -299,4 +303,42 @@ fn an_unknown_queue_policy_leaves_the_configured_one() {
         .expect("apply");
 
     assert_eq!(config.subscriber_queue_policy, SubQueuePolicy::DropOld);
+}
+
+/// A YAML 1.1 boolean spelling is refused rather than guessed at, and `<<`
+/// is an unknown key rather than a merge, as they were before the parser
+/// changed.
+#[test]
+fn yaml_1_1_spellings_and_merge_keys_are_refused() {
+    for text in [
+        "ack_on_commit: yes",
+        "ack_on_commit: off",
+        "max_frame_bytes: 0777",
+        "<<: {ack_on_commit: true}",
+        "ack_on_commit: true\nack_on_commit: false",
+    ] {
+        assert!(
+            felix_common::yaml::from_str::<BrokerConfigOverride>(text).is_err(),
+            "{text} was accepted"
+        );
+    }
+    let mut config = BrokerConfig {
+        ack_on_commit: false,
+        ..Default::default()
+    };
+    let max_frame_bytes = config.max_frame_bytes;
+    config
+        .apply(parse(
+            "ack_on_commit: True\nmax_frame_bytes: ~\nsubscriber_lane_shard: round_robin_pin\n",
+        ))
+        .expect("apply");
+    assert!(config.ack_on_commit);
+    assert_eq!(config.max_frame_bytes, max_frame_bytes);
+    assert_eq!(
+        config.subscriber_lane_shard,
+        SubscriberLaneShard::RoundRobinPin
+    );
+    // An empty file changes nothing.
+    config.apply(parse("# nothing\n")).expect("apply");
+    assert!(config.ack_on_commit);
 }

@@ -6,8 +6,8 @@ What Felix promises about delivery, ordering, durability, and consistency, and w
 
 :::note[What is built and what is not]
 This page describes behaviour that exists and behaviour that is planned. Where
-they differ it says which. The [status table](/felix/getting-started/what-felix-is-for/)
-is the authority per capability, and [Projections](/felix/architecture/projections/)
+they differ it says which. The [status table](/getting-started/what-felix-is-for/)
+is the authority per capability, and [Projections](/architecture/projections/)
 carries the test behind each claim about a semantic.
 :::
 ## Pub/Sub Delivery Semantics
@@ -21,7 +21,8 @@ A stream's guarantee follows from how it is registered.
 - Messages are delivered to subscribers zero or one time
 - No retries or redelivery
 - No acknowledgements from subscribers
-- Slow subscribers may drop messages without notification
+- Slow subscribers may drop messages without notification. A durable stream's
+  subscription is told: it ends at the first drop with the offset to resume from
 
 **A durable stream is at-least-once.** Every record is written to disk before
 the publish is acknowledged, and a subscriber replays from any retained offset,
@@ -31,7 +32,7 @@ record also survives losing the broker that accepted it.
 
 **A consumer group is at-least-once, and redelivers.** A record handed to a
 consumer that does not answer is handed to another once the visibility timeout
-lapses. See [Projections](/felix/architecture/projections/).
+lapses. See [Projections](/architecture/projections/).
 
 At-most-once is appropriate for:
 - Real-time signals where latest value matters most
@@ -46,7 +47,7 @@ Messages can be lost when:
 - Subscriber disconnects without draining buffer
 - Broker restarts, for **ephemeral** streams. A stream registered with
   `durable: true` persists each record before acknowledging it, and replays it
-  after a restart; see [Durable Storage](/felix/architecture/durable-storage/).
+  after a restart; see [Durable Storage](/architecture/durable-storage/).
 :::
 **Example at-most-once workload**:
 
@@ -101,7 +102,7 @@ A durable stream is replicated to a set of brokers: one leader and its
 replicas. `consistency` on the stream decides **how many of them must hold a
 record before the publisher is told it is safe.**
 
-![The same publish under two consistency levels. Under Leader, the shard's leader writes the record durably and acknowledges immediately; the replicas receive their copies afterwards, and the acknowledgement did not wait for them. Under Quorum, the leader writes durably, ships the record to both replicas, and acknowledges only once a majority of the replica set holds it, so the acknowledgement arrives later. A bar beneath each row shows the time until the client is told, and the Quorum bar is more than twice as long.](/felix/diagrams/quorum-ack.svg)
+![The same publish under two consistency levels. Under Leader, the shard's leader writes the record durably and acknowledges immediately; the replicas receive their copies afterwards, and the acknowledgement did not wait for them. Under Quorum, the leader writes durably, ships the record to both replicas, and acknowledges only once a majority of the replica set holds it, so the acknowledgement arrives later. A bar beneath each row shows the time until the client is told, and the Quorum bar is more than twice as long.](/diagrams/quorum-ack.svg)
 
 **`Leader`** is the default. The leader writes the record to its own log,
 durably, and answers. Replication still happens; the acknowledgement simply
@@ -115,6 +116,12 @@ Near the end of the lease the broker waits for the write anyway, so a lapse
 comes back as `shard_unavailable`, and a loss after an ack is counted in
 `felix_broker_acked_publishes_dropped_total`. For an acknowledgement that
 means the record is on disk, set `ack_on_commit: true` or use `Quorum`.
+
+An ack sent on enqueue does not make the record readable yet either. A history
+read, a replay or a consumer-group poll sent right after it can miss the record
+until it is written. A client that has to read what it was told is acknowledged
+can ask for commit acks on its own connections (`ack_on_commit: true` in its
+`ClientConfig`) without changing the broker's default.
 
 Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
@@ -131,7 +138,7 @@ same log, with the same fsync policy. What changes is what the acknowledgement
 #### How `Quorum` is enforced
 
 The rule depends on which fleet features an operator has finalized (see
-[Upgrades](/felix/deployment/upgrades/) for the runbooks).
+[Upgrades](/deployment/upgrades/) for the runbooks).
 
 **By default**, the replication driver reports to the control plane which
 replicas hold each record, and the quorum mark that releases an acknowledgement
@@ -146,8 +153,9 @@ in a second.
 **With `majority_ack` finalized** (it needs `generation_start` too), a `Quorum`
 stream acknowledges a write once a majority of its replicas has answered that
 it holds it at the leader's generation. Neither the report nor the lease is on
-the path, and a promoted leader fences a majority and takes the furthest log
-before it serves. A leader cut off from the control plane keeps acknowledging
+the path, and every new leader, promoted or taking over at a move's
+cut-over or hand-back, fences a majority and takes the furthest log before it
+serves. A leader cut off from the control plane keeps acknowledging
 what its followers hold. `Leader` streams and caches keep the report and the
 lease.
 
@@ -167,12 +175,18 @@ was told succeeded.
 #### What each one costs
 
 `Quorum` costs latency, and it costs availability at the other end: a stream
-that cannot reach a majority **stops accepting writes** rather than accepting
-ones it might not keep. A publish with no reachable majority is refused, and a
-refusal means *"this cannot be vouched for"* rather than *"this did not
-happen"*: the record may well have landed on the leader. Retry through an
+that cannot reach a majority **stops acknowledging writes** rather than
+acknowledging ones it might not keep. A publish with no reachable majority
+waits up to `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s by default), then fails
+with `quorum_timeout`, and that error means *"this cannot be vouched for"*
+rather than *"this did not happen"*: the record may well have landed on the
+leader. Retry through an
 idempotent producer, which re-sends under the same sequence and cannot land
 it twice.
+
+While it waits, retention does not reach those records. On a `Quorum` stream
+retention never deletes past the last acknowledged record, so a long outage
+can hold a stream's log above its size bound until a majority is back.
 
 Losing the leader does not stop a `Quorum` stream the same way. A follower that
 holds every record up to the quorum mark holds everything a client was told is
@@ -192,7 +206,7 @@ on); they differ in **when you learn there is a problem**:
 `Quorum` at publish time, while you still hold the record, or `Leader` at
 failover time, when the only copy is on a broker that is gone.
 
-[`task cluster:consistency`](/felix/demos/cluster-consistency/) runs
+[`task cluster:consistency`](/demos/cluster-consistency/) runs
 this: the same fault put to both, on a real three-node cluster.
 
 **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
@@ -246,7 +260,7 @@ graph LR
 
 ```rust
 // Publish to two streams
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish("acme", "prod", "user-login", login_event, AckMode::None)
@@ -262,7 +276,7 @@ publisher
 
 ```rust
 // Batch publish preserves order within the batch
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 let messages = vec![msg1, msg2, msg3];
 publisher
@@ -299,15 +313,21 @@ Each subscription has its own bounded queue and its own QUIC stream.
 **Buffer behavior**:
 
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
-- When buffer fills, new events are **dropped for that subscriber only**
+  and holds at most `subscriber_queue_max_bytes` of payload in them (default:
+  256 MiB), since one slot can hold a whole batch. Frames taken from the queue
+  but not yet written to the subscription's QUIC stream count toward the
+  bytes too
+- When either fills, new events are **dropped for that subscriber only**
 - Other subscribers continue receiving events normally
-- A drop is not announced. For a durable stream a subscriber can *detect* one, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
+- On a durable stream a drop ends the subscription. The broker delivers what was queued before it, then sends `subscription_lagged` with the first dropped offset, without waiting for another publish; felix-client returns it from `next_event` as a `SubscriptionLagged` error, and does the same for drops in its own queue. A client that did not offer `FEATURE_SUBSCRIPTION_LAGGED` keeps its subscription and can still *detect* a drop, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
+- An in-memory stream's drops are not announced: it has no offsets to resume from.
 
 **Configuration**:
 
 ```yaml
 # Broker config
 subscriber_queue_capacity: 512  # Per-subscriber buffer size
+subscriber_queue_max_bytes: 268435456  # Per-subscriber payload bytes
 subscriber_writer_lanes: 4
 subscriber_lane_shard: auto
 ```
@@ -540,7 +560,7 @@ sequenceDiagram
 **Behavior**: Last write wins, in the order the owner applies the writes,
 which the clients do not control. For a value many clients update, use a
 counter (`counter_add`), which the owner adds atomically. To react to changes,
-watch the key (`watch_cache`); see [Cache](/felix/features/cache/).
+watch the key (`watch_cache`); see [Cache](/features/cache/).
 
 ## Tenant and Namespace Model
 
@@ -644,7 +664,7 @@ In a clustered deployment:
   under `majority_ack` acknowledges on its followers' answers instead, and a
   `Quorum` cache read under `lease_free_reads` confirms with a round (see
   [How `Quorum` is enforced](#how-quorum-is-enforced))
-- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/felix/architecture/metadata-raft/))
+- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
 - **Cross-shard ordering**: Not guaranteed. Ordering is per key, because a key
   always resolves to the same shard and a shard is one log on one leader
 - **Cache consistency**: One owner per key, with `Leader` or `Quorum`
@@ -673,6 +693,12 @@ In a clustered deployment:
 - Its lease lapses after the control plane's expiry window. From then on it
   refuses writes to `Leader` streams and caches, and ends their readers, since
   another broker may lead those shards by now
+- A `Leader` shard's single writer rests on that lease. A deposed leader
+  suspended past the lease margins, or one whose monotonic clock runs slow
+  against the control plane's, can acknowledge a write its successor never
+  sees. A clock step cannot, since neither side reads a wall clock. A
+  `Quorum` stream with `majority_ack`, or cache with `fenced_caches` as well,
+  acknowledges only what a majority holds, so it is not exposed
 - With `majority_ack` finalized, a replicated `Quorum` stream keeps taking
   writes, acknowledged by its followers. With `lease_free_reads` as well, its
   subscribers, cache watches and consumer groups keep going: they end only
@@ -700,7 +726,8 @@ and clients see less of it than of one:
 
 - **Publishes are held, not refused.** Between the fence and the cut-over
   nobody serves the shard; a publish arriving then waits and is forwarded to
-  the new owner. Only a switch-over longer than `FELIX_SHARD_MOVE_HOLD_MS`
+  the new owner, which also holds it while it fences its replicas, usually a
+  round trip. Only a switch-over longer than `FELIX_SHARD_MOVE_HOLD_MS`
   (2 s) refuses one, as `shard_unavailable` with reason `moving`, unwritten.
 - **Cache and counter operations are held and forwarded** the same way.
   Consumer-group operations are held and then redirected to the new owner,
@@ -714,7 +741,7 @@ and clients see less of it than of one:
 - **Nothing acknowledged is lost.** Group positions, dead letters, counters
   and idempotent producers' sequences move with the shard.
 
-See [Adding, draining and removing brokers](/felix/deployment/scaling/#what-clients-see).
+See [Adding, draining and removing brokers](/deployment/scaling/#what-clients-see).
 
 ### Slow Subscriber Behavior
 
@@ -732,9 +759,10 @@ room in its queue, so a slow reader slows the replay instead.
 
 **Detection, today**: the broker counts drops per subscriber queue
 (`felix_sub_queue_dropped_total`) and logs when a subscriber falls behind.
-On a durable stream the subscriber itself can detect loss from an offset gap
-and resume. There is no per-subscription lag API and no automatic disconnect
-of chronically slow subscribers.
+On a durable stream the subscription ends at its first drop with
+`subscription_lagged`, and the subscriber resumes from the offset it names;
+`ClusterSubscription` does that itself, catching up from the log. An
+in-memory stream's subscriber is not told and is not disconnected.
 
 ## Testing Semantics
 
@@ -747,7 +775,7 @@ Applications can test semantic guarantees:
 ```rust
 // Publish ordered batch
 let messages = vec!["msg1", "msg2", "msg3"];
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish_batch("test", "default", "orders", messages, AckMode::PerBatch)
@@ -781,7 +809,8 @@ assert!(fast_count >= expected_count);
 | **Consumer groups** | At-least-once, bounded redelivery, dead letters | Shard assignment across a group's consumers |
 | **Message ordering** | Per shard | Configurable cross-shard |
 | **Subscriber isolation** | Yes | None |
-| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads` | Conditional put, multi-key transactions |
+| **Single-writer fencing** | `publish_if`, and `commit` with `expected_offset`: written only at the shard's next offset, atomic with the claim | Per-key version preconditions on a commit; writer epochs |
+| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads`; conditional put and delete by version | Multi-key transactions |
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | None |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | None |

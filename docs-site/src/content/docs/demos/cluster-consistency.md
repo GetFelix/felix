@@ -5,7 +5,7 @@ description: "The same fault put to both consistency levels on a real three-node
 
 ## What this shows
 
-[`Quorum` and `Leader`](/felix/architecture/semantics/#consistency-how-many-brokers-must-hold-it)
+[`Quorum` and `Leader`](/architecture/semantics/#consistency-how-many-brokers-must-hold-it)
 are one field on a stream. This demo puts the **same fault** to both and shows
 what that field actually bought.
 
@@ -80,7 +80,7 @@ ones that would rather be refused.
 
 ## Its counterpart
 
-[`task cluster:failover`](/felix/architecture/testing/#the-cluster-harness) is the other half:
+[`task cluster:failover`](/architecture/testing/#the-cluster-harness) is the other half:
 a quorum-acknowledged record **surviving** the loss of the broker that
 acknowledged it, read back from the replica promoted in its place. That one
 shows the guarantee working; this one shows what it costs and what happens
@@ -100,5 +100,5 @@ without it.
 
 ## See also
 
-- [Semantics: consistency](/felix/architecture/semantics/#consistency-how-many-brokers-must-hold-it)
-- [Cross-broker Publishing](/felix/demos/cross-broker-cluster/)
+- [Semantics: consistency](/architecture/semantics/#consistency-how-many-brokers-must-hold-it)
+- [Cross-broker Publishing](/demos/cross-broker-cluster/)

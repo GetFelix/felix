@@ -116,6 +116,7 @@ impl SegmentReader {
                 checksum: decoded.header.checksum,
                 payload: decoded.payload,
                 mark: decoded.mark,
+                publisher: decoded.publisher,
             });
             position += total_len;
         }

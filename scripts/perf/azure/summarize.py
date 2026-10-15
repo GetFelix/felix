@@ -40,17 +40,24 @@ BASE_KNOBS = {
     "FELIX_PUB_INGRESS_WAIT": "ingress_wait",
 }
 CLIENT_PORTS = range(5000, 5064)
+NA_FLAG_PCT = 5.0
 TRIM = 0.10
 
 
 def read_series(path):
-    """(hz, rows): rows are dicts of floats keyed by the header's columns."""
-    hz, cols, rows = 100.0, None, []
+    """(hz, rows, na): rows are dicts of floats keyed by the header's columns;
+    na counts samples dropped for a failed scrape (NA).
+
+    A NATS series (stats=nats) carries the server's received bytes in the
+    publish column; it becomes the row's in_bytes, the ingress figure, since
+    NATS clients use TCP and the per-port UDP counters stay at zero."""
+    hz, cols, rows, nats, na = 100.0, None, [], False, 0
     for line in path.read_text(errors="replace").splitlines():
         if line.startswith("#"):
             m = re.search(r"\bhz=(\d+)", line)
             if m:
                 hz = float(m.group(1))
+            nats = nats or "stats=nats" in line
             continue
         parts = line.split("\t")
         if cols is None:
@@ -58,11 +65,17 @@ def read_series(path):
             continue
         if len(parts) != len(cols):
             continue
+        if "NA" in parts:
+            na += 1
+            continue
         try:
-            rows.append({c: float(v) for c, v in zip(cols, parts)})
+            row = {c: float(v) for c, v in zip(cols, parts)}
         except ValueError:
             continue
-    return hz, rows
+        if nats:
+            row["in_bytes"] = row.get("publish_bytes", 0.0)
+        rows.append(row)
+    return hz, rows, na
 
 
 def at(rows, key, x):
@@ -97,6 +110,8 @@ def moving_window(series):
 
 
 def ingress(row):
+    if "in_bytes" in row:
+        return row["in_bytes"]
     return sum(v for k, v in row.items() if (m := re.match(r"^port\.(\d+)\.bytes$", k)) and int(m.group(1)) in CLIENT_PORTS)
 
 
@@ -158,6 +173,8 @@ def steady_state(series, gen_times):
 
 
 def ingress_at(rows, x):
+    if "in_bytes" in rows[0]:
+        return at(rows, "in_bytes", x) or 0.0
     keys = [k for k in rows[0] if (m := re.match(r"^port\.(\d+)\.bytes$", k)) and int(m.group(1)) in CLIENT_PORTS]
     return sum(at(rows, k, x) or 0.0 for k in keys)
 
@@ -193,12 +210,16 @@ def delta(before, after, key):
 
 
 def loadgen_json(path):
+    """The instrument's result line: felix-loadgen's LOADGEN_JSON, or the
+    NATS_BENCH_JSON that nats-agent reduces `nats bench` CSVs to, which uses
+    the same key names (throughput_mb_s, throughput_msg_s, ack_latency_us)."""
     for line in reversed(path.read_text(errors="replace").splitlines()):
-        if line.startswith("LOADGEN_JSON "):
-            try:
-                return json.loads(line[len("LOADGEN_JSON "):])
-            except json.JSONDecodeError:
-                return None
+        for tag in ("LOADGEN_JSON ", "NATS_BENCH_JSON "):
+            if line.startswith(tag):
+                try:
+                    return json.loads(line[len(tag):])
+                except json.JSONDecodeError:
+                    return None
     return None
 
 
@@ -349,12 +370,18 @@ def cell_row(cdir):
     row["gen_start_skew_s"] = (max(s for s, _ in gen_times) - min(s for s, _ in gen_times)) if gen_times else None
     row["gen_end_skew_s"] = (max(e for _, e in gen_times) - min(e for _, e in gen_times)) if gen_times else None
     series = {}
+    na = total = 0
     for b in brokers:
         p = cdir / f"{b}.series.tsv"
         if p.exists():
-            hz, rows = read_series(p)
+            hz, rows, n = read_series(p)
+            na += n
+            total += n + len(rows)
             if len(rows) >= 2:
                 series[b] = (hz, rows)
+    # Rates interpolate across dropped samples; past a few percent a stall
+    # could hide in the gaps, so the cell is flagged.
+    row["ss_na_pct"] = 100 * na / total if total else None
     row["legacy"] = not series or len(series) < len(brokers)
     ss = {} if row["legacy"] else steady_state(series, gen_times if len(gen_times) == len(gens) else [])
     run_secs = max((e - st for st, e in gen_times), default=0)
@@ -363,8 +390,38 @@ def cell_row(cdir):
         ss = {"ss_window": f"publish {max(pub_secs):.0f}s of {run_secs:.0f}s run; use client rates"}
     for k in SS_COLS:
         row[k] = ss.get(k)
+    row["ss_records_s"], row["ss_payload_mb_s"] = records_rate(cdir, brokers, row)
     row["results"] = sum(1 for g in gens if (cdir / f"{g}.run.txt").exists() and loadgen_json(cdir / f"{g}.run.txt"))
     return row
+
+
+def records_rate(cdir, brokers, row):
+    """Steady-state records/s and payload MB/s: the steady append rate over
+    the cell's mean appended record size (snapshot deltas of bytes over
+    records), times the payload. Puts Felix and NATS on the same footing,
+    since their stored records carry different per-record overhead. A NATS
+    core cell appends nothing; its records come from what the server received."""
+    db = dr = 0.0
+    rate = row.get("ss_append_mb_s")
+    keys = ("m.append_bytes", "m.append_records")
+    if not rate and row.get("scenario", "").startswith("nats-core"):
+        rate, keys = row.get("ss_ingress_mb_s"), ("m.publish_bytes", "m.publish_requests")
+    for b in brokers:
+        before = kv_lines(cdir / f"{b}.before.txt")
+        after = kv_lines(cdir / f"{b}.after.txt")
+        x, y = delta(before, after, keys[0]), delta(before, after, keys[1])
+        if x is None or y is None:
+            return None, None
+        db += x
+        dr += y
+    try:
+        payload = float(row.get("payload_bytes") or 0)
+    except ValueError:
+        payload = 0.0
+    if not rate or not dr or not db:
+        return None, None
+    recs = rate * 1e6 / (db / dr)
+    return recs, (recs * payload / 1e6 if payload else None)
 
 
 SS_COLS = ("ss_window", "ss_all_gens_secs", "ss_secs", "ss_steps", "ss_append_mb_s", "ss_ingress_mb_s",
@@ -393,13 +450,16 @@ def cell_console_line(cdir):
         return ""
     old = f"sampler append {fmt(r['broker_append_mb_s'])}, snapshots {fmt(r['snap_append_mb_s'])}, client sum {fmt(r['client_mb_s'])} MB/s"
     fair = f"; gens {r['gen_mb_s']} (max/min {fmt(r['gen_fairness'], 2)})" if r["gen_mb_s"] else ""
+    if r["ss_na_pct"] and r["ss_na_pct"] > NA_FLAG_PCT:
+        fair += f"; !! {r['ss_na_pct']:.0f}% of samples were failed scrapes"
     if r["legacy"] or r["ss_append_mb_s"] is None:
         why = "legacy, no series" if r["legacy"] else f"no steady window ({r['ss_window']})"
         if not r["legacy"] and r["client_msg_s"]:
             why += f": client {fmt(r['client_msg_s'], 0)} msg/s"
         return f"{why}: {old}{fair}"
     return (
-        f"steady append {fmt(r['ss_append_mb_s'])} MB/s, ingress {fmt(r['ss_ingress_mb_s'])} MB/s, "
+        f"steady append {fmt(r['ss_append_mb_s'])} MB/s ({fmt(r['ss_records_s'], 0)} records/s, "
+        f"payload {fmt(r['ss_payload_mb_s'])} MB/s), ingress {fmt(r['ss_ingress_mb_s'])} MB/s, "
         f"drops {fmt(r['ss_drops_s'], 0)}/s, cores {fmt(r['ss_cores'], 2)} "
         f"over {fmt(r['ss_secs'], 0)}s of {fmt(r['ss_all_gens_secs'], 0)}s all-gens ({r['ss_window']}){fair}; "
         f"old: {old}"
@@ -471,13 +531,18 @@ def main():
         "over the window every generator was running less its first and last 10%. Append counts "
         "record bytes (header included); ingress counts UDP bytes (IP/UDP headers included) on the "
         "client listener ports. Drops/s is UDP RcvbufErrors averaged over that window; cores is "
-        "broker process CPU. Fair is the fastest generator's MB/s over the slowest's. The old "
+        "broker process CPU. Records/s and payload MB/s divide the steady append rate by the mean "
+        "appended record size and multiply by the payload, so per-record overhead (Felix's record header, "
+        "NATS's subject and metadata) does not count as throughput; compare systems on these. Fair is the fastest generator's MB/s over the slowest's. The old "
         "columns are the sampler's moving-counter append rate and the sum of client averages. "
+        "MB/s is the stream's own rate, append when durable and ingress when in memory; `of` says which. "
+        "`!! N% failed scrapes` marks a cell where over 5% of the broker samples were failed "
+        "scrapes, so a stall could hide in the interpolation. "
         "`legacy` marks cells recorded without a series; `client only` marks pubsub cells that published for under "
         "half the run, where the client rate is the number. Spread is (max-min)/mean over trials.",
         "",
-        "| cell | n | ref | knobs | MB/s (spread) | of | append MB/s | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| cell | n | ref | knobs | MB/s (spread) | of | append MB/s | records/s | payload MB/s | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for g, rs in groups.items():
         ok = [r for r in rs if r["done"]]
@@ -491,6 +556,8 @@ def main():
         durable = "durable" in str(use[0].get("stream") or "")
         metric = "append" if durable else "ingress"
         sh, shs = spread([r["ss_append_mb_s" if durable else "ss_ingress_mb_s"] for r in use])
+        rr, _ = spread([r["ss_records_s"] for r in use])
+        rp, _ = spread([r["ss_payload_mb_s"] for r in use])
         si, _ = spread([r["ss_ingress_mb_s"] for r in use])
         sd, _ = spread([r["ss_drops_s"] for r in use])
         sc, _ = spread([r["ss_cores"] for r in use])
@@ -504,6 +571,8 @@ def main():
         lcpu, _ = spread([r["loadgen_cpu_busy_max"] for r in use])
         rb = fsum([r["udp_rcvbuf_errors"] for r in use])
         r0 = use[0]
+        na_max = fmax([r["ss_na_pct"] for r in use])
+        na_note = f" !! {na_max:.0f}% failed scrapes" if na_max and na_max > NA_FLAG_PCT else ""
         knobs = " ".join(
             f"{c}={r0[c]}" for c in ("listeners", "io_threads", "fsync", "ack_on_commit", "io_uring", "ingress_wait") if r0[c]
         )
@@ -512,8 +581,8 @@ def main():
         if r0["loadgen_env"]:
             knobs += " client:" + r0["loadgen_env"]
         lines.append(
-            f"| {g} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
-            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sh)} ({fmt(shs, 0)}%)'} | {metric} | {fmt(sa)} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
+            f"| {g}{na_note} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
+            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sh)} ({fmt(shs, 0)}%)'} | {metric} | {fmt(sa)} | {fmt(rr, 0)} | {fmt(rp)} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
             f"{fmt(bm)} / {fmt(cm)} | {fmt(p50, 0)} / {fmt(p99, 0)} | {fmt(sm, 2)} | {fmt(fi)} | "
             f"{fmt(cpu, 0)} | {fmt(lcpu, 0)} | {fmt(rb, 0)} | {r0['port_share']} |"
         )

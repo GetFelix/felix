@@ -101,6 +101,11 @@ struct NodeStatusView {
 #[derive(Debug, Serialize)]
 struct HeartbeatRequest {
     incarnation: u64,
+    /// Leaders of shards this broker follows that have stopped answering it.
+    /// Left out when there are none, so the request is what an older control
+    /// plane always read.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    suspects: BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +275,7 @@ pub enum HeartbeatEnd {
 /// broker that is otherwise serving fine. If it stays unreachable past the
 /// expiry timeout the control plane marks this node down on its own, and the
 /// next answer says so.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_heartbeat(
     client: reqwest::Client,
     base_url: String,
@@ -278,7 +284,9 @@ pub async fn run_heartbeat(
     consecutive_failures: Arc<AtomicU64>,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> HeartbeatEnd {
+    let mut suspected = suspects.subscribe();
     let base_url = base_url.trim_end_matches('/').to_string();
     let url = format!("{base_url}/v1/nodes/{}/heartbeat", registration.node_id);
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
@@ -295,7 +303,11 @@ pub async fn run_heartbeat(
         tokio::select! {
             _ = shutdown.cancelled() => return HeartbeatEnd::Shutdown,
             _ = tokio::time::sleep(jittered(delay)) => {}
+            // A new suspicion goes now rather than an interval later: the
+            // control plane promotes on it. Not while backing off.
+            Ok(()) = suspected.changed(), if failures == 0 => {}
         }
+        let suspects = suspected.borrow_and_update().clone();
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
         let sent = lease.now();
@@ -305,7 +317,10 @@ pub async fn run_heartbeat(
             &client,
             &url,
             &registration.token.bearer(),
-            registration.incarnation,
+            HeartbeatRequest {
+                incarnation: registration.incarnation,
+                suspects,
+            },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
         .await
@@ -428,6 +443,7 @@ pub fn spawn(
     shutdown: CancellationToken,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
@@ -487,6 +503,7 @@ pub fn spawn(
                     Arc::clone(&consecutive_failures),
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
+                    Arc::clone(&suspects),
                 )
                 .await
                 {
@@ -562,14 +579,14 @@ async fn send_heartbeat(
     client: &reqwest::Client,
     url: &str,
     token: &str,
-    incarnation: u64,
+    request: HeartbeatRequest,
     timeout: Duration,
 ) -> std::result::Result<HeartbeatResponse, MembershipError> {
     let response = client
         .post(url)
         .timeout(timeout)
         .bearer_auth(token)
-        .json(&HeartbeatRequest { incarnation })
+        .json(&request)
         .send()
         .await
         .context("send heartbeat")

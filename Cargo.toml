@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-# Grouped by role; see the README in each directory under crates/. The binding
-# crates (crates/sdk/felix-python, crates/sdk/felix-typescript) and the demos
-# with their own [workspace] are deliberately not members.
+# Grouped by role; see the README in each directory under crates/. The Python
+# and Node binding crates (crates/sdk/felix-python, crates/sdk/felix-typescript)
+# and the demos with their own [workspace] are deliberately not members.
 members = [
   # How peers talk: the frame codec and the QUIC layer under it.
   "crates/protocol/felix-wire",
@@ -17,10 +17,14 @@ members = [
   "crates/server/felix-replication",
   # What applications link.
   "crates/sdk/felix-client",
+  # The C ABI over it, for the Go and C# SDKs.
+  "crates/sdk/felix-capi",
   # Harnesses, kits and load tools.
   "crates/testing/felix-cluster",
   "crates/testing/felix-conformance",
   "crates/testing/felix-loadgen",
+  # Command-line tools.
+  "crates/tools/felixctl",
   # The deployables.
   "services/felix-broker-service",
   "services/felix-controlplane-service",
@@ -67,7 +71,7 @@ edition = "2024"
 # This line is not the whole bump: intra-workspace path dependencies also pin a
 # `version`, which Cargo requires to match, so they move with it. The standalone
 # demos under demos/ keep their own literal version and are independent.
-version = "0.6.0-preview"
+version = "0.6.0-preview.7"
 # Fail-closed default: a new crate inherits the *restrictive* licence unless it
 # deliberately opts into Apache-2.0. The permissive crates (felix-wire,
 # felix-common, felix-transport, felix-client, felix-conformance) set
@@ -75,8 +79,8 @@ version = "0.6.0-preview"
 # table; `task publish:check` fails CI if a crate drifts from it.
 license = "AGPL-3.0-only"
 rust-version = "1.97"
-repository = "https://github.com/gabloe/felix"
-homepage = "https://github.com/gabloe/felix"
+repository = "https://github.com/GetFelix/felix"
+homepage = "https://github.com/GetFelix/felix"
 readme = "README.md"
 
 [workspace.lints.rust]
@@ -93,9 +97,11 @@ mod_module_files = "warn"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 utoipa = "6.0.0"
-serde_yaml_ng = "0.10"
+# `~1.3`: parsing defaults can change in a minor release, and they decide what
+# a config file means. Moving to 1.4 should be a deliberate bump.
+serde-saphyr = { version = "~1.3", default-features = false }
 bytes = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.
@@ -108,6 +114,9 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
 casbin = { version = "2.20.0", default-features = false, features = ["runtime-tokio", "incremental"] }
+clap = { version = "4.6", features = ["derive"] }
+clap_complete = "4.6"
+clap_mangen = "0.3"
 crc = "3"
 crc32fast = "1.5"
 dashmap = "6"
@@ -123,6 +132,9 @@ libc = "0.2"
 io-uring = "0.7"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
+# Tiered storage offload. Only the local filesystem backend so far; cloud
+# backends are features added when they are wired up.
+object_store = { version = "0.14", default-features = false, features = ["fs"] }
 opentelemetry = "0.33.0"
 opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["grpc-tonic", "trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.33.0", features = ["rt-tokio"] }
@@ -138,6 +150,7 @@ serial_test = "4"
 socket2 = "0.6"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "json"] }
 tempfile = "3"
+toml = "1.1.6"
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-rustls = { version = "0.26", default-features = false }
 tracing-opentelemetry = "0.34.0"

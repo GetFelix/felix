@@ -7,12 +7,12 @@ use anyhow::{Context, Result, bail};
 use super::connect::client;
 use super::framing::{payload, read_header};
 use super::{Common, scope};
-use crate::stats::{Samples, emit_json, fmt_us};
+use crate::stats::{Samples, fmt_us, report};
 
 /// Keyed watch: `fanout` watchers on one key, a writer putting `total` values
 /// through it, and the latency from each put landing to each watcher seeing
 /// it — the composed-semantics fanout claim, measured.
-pub(crate) async fn watch(common: &Common, cache: &str) -> Result<()> {
+pub(crate) async fn watch(common: &Common, cache: &str) -> Result<serde_json::Value> {
     let epoch = Instant::now();
     let (tenant, namespace, name) = scope(common, cache);
     let key = "watched";
@@ -105,14 +105,15 @@ pub(crate) async fn watch(common: &Common, cache: &str) -> Result<()> {
     }
     let expected_total = expected * common.fanout.max(1) as u64;
     let percentiles = all.percentiles();
-    println!(
+    report!(
+        common,
         "watch delivery: watchers = {}, puts = {expected}, delivered = {received_total}/{expected_total}, p50 = {}, p99 = {}, p999 = {}",
         common.fanout.max(1),
         fmt_us(percentiles.p50_us),
         fmt_us(percentiles.p99_us),
         fmt_us(percentiles.p999_us),
     );
-    emit_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "scenario": "watch",
         "environment": common.environment,
         "cache": name,
@@ -123,6 +124,5 @@ pub(crate) async fn watch(common: &Common, cache: &str) -> Result<()> {
         "expected": expected_total,
         "delivery_latency_us": { "p50": percentiles.p50_us, "p99": percentiles.p99_us,
                                   "p999": percentiles.p999_us, "max": percentiles.max_us },
-    }));
-    Ok(())
+    }))
 }

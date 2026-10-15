@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use felix_controlplane_service::model::{Node, NodeCapacity, NodeLifecycle, NodeSpec, NodeStatus};
@@ -125,44 +124,54 @@ fn broker(node_id: &str, port: u16, now: u64) -> Node {
     }
 }
 
-/// Heartbeats for `alive` always, and for `dies` until `dead` is set, through
-/// whichever of `stores` answers: a broker retries the next instance when
-/// one has no leader.
-fn heartbeat(
-    stores: Vec<Arc<RaftStore>>,
-    dead: Arc<AtomicBool>,
+/// A background task and the token that stops it.
+struct Task {
     stop: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Task {
+    /// Stop it and wait for the round in flight to finish.
+    async fn finish(self) {
+        self.stop.cancel();
+        self.handle.await.expect("task");
+    }
+}
+
+/// Heartbeats for broker `id` every 100 ms through whichever of `stores`
+/// answers: a broker retries the next instance when one has no leader.
+///
+/// `per_try` bounds each attempt so a stopped member cannot hold up the
+/// others. Unbounded, a finished task leaves no heartbeat in flight.
+fn heartbeat(stores: Vec<Arc<RaftStore>>, id: &'static str, per_try: Option<Duration>) -> Task {
+    let stop = CancellationToken::new();
+    let token = stop.clone();
+    let handle = tokio::spawn(async move {
         let mut turn = 0;
-        while !stop.is_cancelled() {
-            let mut ids = vec!["alive"];
-            if !dead.load(Ordering::Acquire) {
-                ids.push("dies");
-            }
-            for id in ids {
-                for _ in 0..stores.len() {
-                    turn += 1;
-                    let store = &stores[turn % stores.len()];
-                    // Bounded: a stopped member must not hold up the others.
-                    let beat = tokio::time::timeout(
-                        Duration::from_millis(300),
-                        store.record_node_heartbeat(id, 0, 0),
-                    );
-                    if matches!(beat.await, Ok(Ok(_))) {
-                        break;
-                    }
+        while !token.is_cancelled() {
+            for _ in 0..stores.len() {
+                turn += 1;
+                let beat = stores[turn % stores.len()].record_node_heartbeat(id, 0, 0);
+                let ok = match per_try {
+                    Some(bound) => matches!(tokio::time::timeout(bound, beat).await, Ok(Ok(_))),
+                    None => beat.await.is_ok(),
+                };
+                if ok {
+                    break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    })
+    });
+    Task { stop, handle }
 }
 
-/// The expiry sweep, every 50 ms, through whichever store answers.
-fn sweep(stores: Vec<Arc<RaftStore>>, stop: CancellationToken) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while !stop.is_cancelled() {
+/// The expiry sweep, every 50 ms, through whichever of `stores` answers.
+fn sweep(stores: Vec<Arc<RaftStore>>) -> Task {
+    let stop = CancellationToken::new();
+    let token = stop.clone();
+    let handle = tokio::spawn(async move {
+        while !token.is_cancelled() {
             for store in &stores {
                 let Ok(now) = store.now_millis().await else {
                     continue;
@@ -178,25 +187,60 @@ fn sweep(stores: Vec<Arc<RaftStore>>, stop: CancellationToken) -> tokio::task::J
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    })
+    });
+    Task { stop, handle }
+}
+
+/// Heartbeats for `alive` and `dies`, and the sweep, through every member.
+struct Load {
+    alive: Task,
+    dies: Task,
+    sweeper: Task,
+}
+
+impl Load {
+    fn start(members: &[Member]) -> Self {
+        let stores: Vec<Arc<RaftStore>> = members.iter().map(|m| Arc::clone(&m.store)).collect();
+        Self {
+            alive: heartbeat(stores.clone(), "alive", Some(Duration::from_millis(300))),
+            dies: heartbeat(stores.clone(), "dies", None),
+            sweeper: sweep(stores),
+        }
+    }
 }
 
 async fn lifecycle(store: &RaftStore, node_id: &str) -> NodeLifecycle {
     store.get_node(node_id).await.expect("get").status.lifecycle
 }
 
-/// Kill the leader, then watch until `dies` goes down: never before a full
-/// window after the old leader stopped, and `alive` never at all.
-async fn move_leadership_and_watch(members: &[Member], dead: &AtomicBool) {
+/// Silence `dies`, kill the leader, then watch until `dies` goes down: never
+/// before a full window after the old leader stopped, within 5 s of the new
+/// leader's election, and `alive` never at all.
+async fn move_leadership_and_watch(members: &[Member], load: Load) {
     let old = leader_of(members, &[0, 1, 2]).await;
     let survivors: Vec<usize> = (0..3).filter(|&i| i != old).collect();
     let reader = &members[survivors[0]].store;
-    dead.store(true, Ordering::Release);
+    // `dies` goes silent first, with no beat left in flight to restart its
+    // window, and the sweep moves to the survivors before the leader stops.
+    let Load {
+        alive,
+        dies,
+        sweeper,
+    } = load;
+    dies.finish().await;
+    sweeper.finish().await;
+    let sweeper = sweep(
+        survivors
+            .iter()
+            .map(|&i| Arc::clone(&members[i].store))
+            .collect(),
+    );
     members[old].stop().await;
     let stopped = Instant::now();
     leader_of(members, &survivors).await;
+    let elected = Instant::now();
 
-    let deadline = stopped + Duration::from_secs(5);
+    let deadline = elected + Duration::from_secs(5);
     loop {
         let down = lifecycle(reader, "dies").await == NodeLifecycle::Down;
         assert_eq!(
@@ -214,7 +258,7 @@ async fn move_leadership_and_watch(members: &[Member], dead: &AtomicBool) {
         }
         assert!(
             Instant::now() < deadline,
-            "a silent broker was still live 5s after leadership moved",
+            "a silent broker was still live 5s after the new leader was elected",
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -224,6 +268,8 @@ async fn move_leadership_and_watch(members: &[Member], dead: &AtomicBool) {
         assert_eq!(lifecycle(reader, "alive").await, NodeLifecycle::Live);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    alive.finish().await;
+    sweeper.finish().await;
 }
 
 /// Stamps taken on a clock a minute fast are a minute in the future once it
@@ -254,11 +300,7 @@ async fn a_leader_elected_after_a_clock_step_back_expires_a_dead_broker_within_a
             .expect("register");
     }
 
-    let stop = CancellationToken::new();
-    let dead = Arc::new(AtomicBool::new(false));
-    let stores: Vec<Arc<RaftStore>> = members.iter().map(|m| Arc::clone(&m.store)).collect();
-    let beats = heartbeat(stores.clone(), Arc::clone(&dead), stop.clone());
-    let sweeper = sweep(stores, stop.clone());
+    let load = Load::start(&members);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let true_now = SystemTime::now()
@@ -279,11 +321,8 @@ async fn a_leader_elected_after_a_clock_step_back_expires_a_dead_broker_within_a
     std::fs::remove_file(&fault).expect("step back");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    move_leadership_and_watch(&members, &dead).await;
+    move_leadership_and_watch(&members, load).await;
 
-    stop.cancel();
-    beats.await.expect("heartbeats");
-    sweeper.await.expect("sweep");
     for member in &members {
         member.stop().await;
     }
@@ -309,18 +348,11 @@ async fn a_live_broker_survives_a_leadership_change() {
             .expect("register");
     }
 
-    let stop = CancellationToken::new();
-    let dead = Arc::new(AtomicBool::new(false));
-    let stores: Vec<Arc<RaftStore>> = members.iter().map(|m| Arc::clone(&m.store)).collect();
-    let beats = heartbeat(stores.clone(), Arc::clone(&dead), stop.clone());
-    let sweeper = sweep(stores, stop.clone());
+    let load = Load::start(&members);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    move_leadership_and_watch(&members, &dead).await;
+    move_leadership_and_watch(&members, load).await;
 
-    stop.cancel();
-    beats.await.expect("heartbeats");
-    sweeper.await.expect("sweep");
     for member in &members {
         member.stop().await;
     }

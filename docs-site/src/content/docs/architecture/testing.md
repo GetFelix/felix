@@ -3,7 +3,7 @@ title: "How Felix Is Tested"
 description: "The history checker, fault injection on a real cluster, and the TLA+ models behind the replication claims."
 ---
 
-The replication rows on [What Felix Is For](/felix/getting-started/what-felix-is-for/)
+The replication rows on [What Felix Is For](/getting-started/what-felix-is-for/)
 rest on three kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
@@ -100,8 +100,8 @@ stuck in.
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
-mode it finalizes `generation_start`, `majority_ack` and `lease_free_reads`
-after start-up and fails at once if any broker does not turn them on. The
+mode it finalizes `generation_start`, `majority_ack`, `lease_free_reads` and
+`fenced_caches` after start-up and fails at once if any broker does not turn them on. The
 nightly run and the per-PR main campaign use `lease-free`; the per-PR
 every-family campaign uses `lease`, so each pull request covers both.
 
@@ -126,7 +126,7 @@ interleaving, so a failing seed makes the failure likely to recur, not certain.
 Run it a few times.
 
 Detail, including how to read a violation and how to add a fault:
-[`docs/history-checker.md`](https://github.com/gabloe/felix/blob/main/docs/history-checker.md).
+[`docs/history-checker.md`](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md).
 
 ## The cluster harness
 
@@ -152,7 +152,12 @@ Cluster tests are `#[serial]`, since each starts several brokers. Start-up
 returns only once every shard has a leader, a publish has succeeded and every
 leader has a caught-up replica, so a test can fail over straight away.
 `FELIX_TEST_TIMEOUT_SCALE` multiplies every harness deadline for slow machines;
-CI sets it to 3.
+CI sets it to 3. With `FELIX_TEST_CLUSTER_LOG_DIR` set, each cluster copies its
+broker logs there when it is torn down, and the in-process control plane logs
+to a file there too. That control plane runs on its own runtime, so a test
+that keeps its own runtime busy can't delay heartbeat answers and lapse a
+broker's lease. CI sets it and uploads the logs of the tests that failed
+as the `failed-cluster-logs` artifact, kept for a week.
 
 ### Faults
 
@@ -190,7 +195,7 @@ The same crate holds a conformance suite that runs one set of assertions
 against a single broker and a three-node cluster: a client must not be able to
 tell how many brokers there are or which one it reached.
 
-Detail: [`docs/cluster-harness.md`](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md).
+Detail: [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md).
 
 ## TLA+ models
 
@@ -199,7 +204,8 @@ and discrete time, with clocks that may drift. TLC explores every interleaving
 within the configured bounds.
 
 - `FelixShard.tla` models the lease, replication to a majority, promotion, the
-  promotion fence, planned moves and cancelled moves. Its invariants include
+  promotion fence, planned moves and cancelled moves, fenced or not, and
+  replicas electing themselves under ballots. Its invariants include
   that no two brokers serve the shard at once, that whoever serves holds every
   acknowledged record, that two brokers never disagree on an acknowledged
   record, and that no log holds a re-sent write twice.
@@ -217,7 +223,7 @@ start record or the read round, and exist to show that piece is load-bearing.
 If one of them stopped finding its violation, the check would fail.
 
 CI runs TLC over every configuration on each code change (`task tla:check`,
-about half an hour on a four-core runner; it needs Java or Docker). Model
+about half an hour on a four-core runner; it needs Java, Docker or Podman). Model
 checking shows the spec is consistent, not that it still describes the code,
 so CI also runs
 `scripts/check_spec_pairing.py`: a change to code the model covers must change
@@ -226,13 +232,20 @@ description saying why not. `task tla:pairing` runs that check locally, and
 `scripts/check_spec_evidence.py`, part of `task docs:evidence`, checks that
 every test the spec cites still exists.
 
+The exhaustive configurations stop at a move or two and a promotion or two.
+A nightly job (`tla-walk.yml`, `task tla:walk`) runs TLC in simulation mode
+over `FelixShardWalk*.cfg`, which lift those bounds and sample behaviours a
+few hundred steps long that grow the set, replace followers, move the shard
+and fail over many times. That is sampling, not proof. Each walk has a
+negative twin that must find its violation within the same budget.
+
 Detail, with every configuration and its state count:
-[`docs/formal/README.md`](https://github.com/gabloe/felix/blob/main/docs/formal/README.md).
+[`docs/formal/README.md`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md).
 
 ## Elsewhere
 
 The decoders that parse input from outside the process are fuzzed; see
-[Fuzzing](/felix/development/fuzzing/). The wire-protocol conformance runner
+[Fuzzing](/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
 Python and TypeScript clients' results against it.
 
@@ -240,4 +253,4 @@ The storage power-loss suite rebuilds the directory a reboot could find after
 each flush and checks that recovery keeps every acknowledged record. Pull
 requests run eight workload seeds per scenario plus pinned ones that once caught
 a bug the eight missed; `power-loss-nightly.yml` runs 110 per scenario from a
-random base. See [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md).
+random base. See [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md).

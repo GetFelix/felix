@@ -204,3 +204,19 @@ def test_a_subscription_can_start_at_the_oldest_retained_record(client, fixture,
     # History, not just the live tail: the record was published before the
     # subscription existed.
     assert len(payloads) > 1
+
+
+def test_an_identity_publishes_and_subscribes_over_shared_connections(
+    client, fixture, key
+):
+    """A client made by `with_identity` publishes and subscribes on its own
+    token, over the parent's connections."""
+    stream = fixture["durable_stream"]
+    payload = f"identity-{key}".encode()
+    identity = client.with_identity(fixture["tenant_id"], fixture["token"])
+
+    with identity.subscribe(fixture["tenant_id"], fixture["namespace"], stream) as events:
+        identity.publish(fixture["tenant_id"], fixture["namespace"], stream, payload)
+        received = drain(events, 1)
+
+    assert payload in [event.payload for event in received], "nothing arrived"

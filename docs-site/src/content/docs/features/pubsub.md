@@ -45,7 +45,7 @@ graph LR
 A publish is encoded **once** and the encoded frame is shared by every
 subscriber, so adding subscribers adds delivery work but not re-encoding
 work. Latency at fanout 1 and 10 is measured on
-[Benchmarks](/felix/features/benchmarks/), with the methodology. Fanout above
+[Benchmarks](/features/benchmarks/), with the methodology. Fanout above
 10 has not been benchmarked, so treat behaviour at hundreds or thousands of
 subscribers as unmeasured.
 
@@ -56,7 +56,7 @@ subscribers as unmeasured.
 Send several payloads in one request:
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 let mut batch = Vec::new();
 for i in 0..64 {
@@ -72,7 +72,7 @@ publisher
 Batching amortizes per-request overhead (framing, syscalls, one ack for the
 whole batch), and it is the single biggest throughput lever on the publish
 path. Measured batch throughput is in
-[Benchmarks](/felix/features/benchmarks/). A batched run measures a
+[Benchmarks](/features/benchmarks/). A batched run measures a
 throughput profile, not request latency.
 
 ### Acked publishes are pipelined
@@ -88,8 +88,23 @@ merely until the frame is written.
 
 A client that negotiates `FEATURE_PUBLISH_PIPELINE` also gets a publish window
 from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
-acked publishes may be unanswered on a connection, and their acks come back in
-the order the stream sent them.
+acked publishes may be unanswered on each stream, and their acks come back in
+the order the stream sent them. Every stream has its own window, so publishes
+stuck behind a stalled shard do not hold up the other streams on the same
+connection. The Rust client also gives each shard a stream of its own, so a
+stalled shard holds up only its own publishes, not the stream's other shards,
+and one busy stream's shards spread over the client's connections and the
+broker's listeners. It keeps up to 16 such streams per broker
+(`publish_shard_streams`); shards past that share the pooled streams.
+
+Spreading never reorders a shard. Every publish one client makes to one shard
+goes through one writer on one QUIC stream, so the shard's log holds them in
+the order the client issued them. Different shards of a stream may travel on
+different connections, which costs nothing: their order relative to each
+other was never defined. Unkeyed publishes all go to shard 0, so a stream
+published without keys, or a single-shard stream, stays on one stream and one
+connection per client. That is the price of total order; spread such a
+stream's load over several clients, or give it shards and keys.
 
 A single caller that awaits each publish before issuing the next still
 pays one round trip per publish. Batch, or publish concurrently, to amortize
@@ -98,17 +113,19 @@ it.
 ### Broker side
 
 The broker coalesces events into delivery batches per subscription. A batch
-flushes when **any** bound is hit:
+takes every event already queued for the subscriber and flushes as soon as
+nothing more is waiting, or when a bound is hit:
 
 ```yaml
 event_batch_max_events: 64      # this many events, or
 event_batch_max_bytes: 262144   # this many bytes, or
-event_batch_max_delay_us: 250   # this much time since the first event
+event_batch_max_delay_us: 250   # under load, this much time since the first event
 ```
 
-Small events under a steady load flush on the count bound; big events flush
-on bytes; a trickle flushes on the delay, which is therefore the latency
-floor batching adds. Delivery uses binary `EventBatch` framing by default.
+A trickle is sent event by event with no added delay. Once events arrive
+faster than the broker drains them, so a batch finds others queued behind its
+first, the next batch waits up to the delay to fill. Small events under a
+steady load then flush on the count bound and big events on bytes. Delivery uses binary `EventBatch` framing by default.
 
 ## Ordering
 
@@ -118,7 +135,47 @@ to different streams may be observed in either order.
 On a multi-shard stream, ordering is per routing key. A stream maps a key to a
 shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
 by jump consistent hashing of the same hash; an unkeyed publish goes to shard
-0. See the [wire protocol](/felix/architecture/wire-protocol/) page.
+0. See the [wire protocol](/architecture/wire-protocol/) page.
+
+## Conditional publishes
+
+A single writer, such as the process that owns a match's state, can publish
+only if the stream has not moved since it last wrote. `publish_if` carries the
+offset the writer expects the batch to start at, the shard's next. The broker
+checks it where it assigns offsets, so of two writers expecting the same
+offset exactly one is written. The other is refused with the tail and writes
+nothing.
+
+```rust
+use felix_client::ConditionalWrite;
+
+let mut next = 0;
+match cluster
+    .publish_if("acme", "games", "match-7", None, vec![b"tick 120".to_vec()], next)
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    // Another writer got there first, or a failover moved the tail.
+    ConditionalWrite::Refused { tail } => return Err(anyhow::anyhow!("lost the stream at {tail}")),
+}
+```
+
+A few things to know:
+
+- The tail counts every record on the shard, including the one a new leader
+  writes when it takes over. After a failover the expected offset is stale
+  even with no rival, and the refusal says where the shard is now.
+- A refused publish consumes no offset, so the next write is not held up and
+  leaves no gap.
+- If the answer is lost, do not resend: the retry would be refused by your own
+  write. Read the shard at the expected offset to see whether it landed.
+- The broker leading the shard answers it; it is never forwarded. On a
+  `Leader` stream the fence is only as strong as the leader's lease.
+- It needs a durable stream. Negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
+- `commit_if` is the same check on an [atomic commit](/features/atomic-commits/).
+
+See [Conditional writes](https://github.com/GetFelix/felix/blob/main/docs/semantics.md#conditional-writes)
+for the guarantees and the tests behind them.
 
 ## Isolation and backpressure
 
@@ -132,15 +189,27 @@ at each level:
   publishes; when full, new publishes wait up to
   `publish_queue_wait_timeout_ms`, then fail. That failure means the broker
   is overloaded, and it is deliberately visible.
-- **The subscriber queue** (`subscriber_queue_capacity`) bounds what one
-  subscription can have pending. What happens when it fills is set by the
-  overflow policy:
+- **The subscriber queue** bounds what one subscription can have pending, by
+  entries (`subscriber_queue_capacity`) and by payload bytes
+  (`subscriber_queue_max_bytes`, 256 MiB by default). The byte bound also
+  covers frames already taken from the queue and waiting to be written, so it
+  bounds the subscription's memory all the way to the network. What happens
+  when either fills is set by the overflow policy:
 
-![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/felix/diagrams/slow-consumer.svg)
+![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/diagrams/slow-consumer.svg)
 
 Under the default a publisher never waits on a subscriber. That is why one
 stalled consumer cannot degrade the rest, and also why a subscriber can
 silently miss records.
+
+Under `block`, a batch reaches every subscriber with room before the publish
+waits on the full ones. The next batch on the shard waits behind it, though,
+so over time the fast subscribers still move at the slow one's pace. The wait
+has no timeout: one subscriber that stops reading without disconnecting holds
+every publisher on the shard until it reads again or goes away. Nothing is
+dropped and nothing is reordered while it waits, which is what `block` is for,
+but on a durable stream a resumable subscriber under `drop_new` usually gets
+the same no-gap result without that risk.
 
 The overflow policy covers live records only. A subscription resumed from an
 earlier offset reads history the broker pages off disk for it alone, with no
@@ -148,9 +217,67 @@ publisher to protect, so history below the subscription's `live_offset` is
 never dropped: the client waits for room in its queue, and a slow reader slows
 the replay instead of losing part of it.
 
+The byte bound exists because an entry is a whole published batch, and a
+batch can be as large as a frame: 4096 queued 16 MiB batches would be 64 GiB
+held for one slow reader. Each queued batch counts its records' payload bytes.
+The batch is shared between subscribers, so the same bytes count once in every
+queue that holds them, which is what each of those queues is keeping alive. A
+batch larger than the bound still goes into an empty queue, so an oversize
+record waits for the queue to drain instead of never being delivered. A drop
+caused by the byte bound is the same drop as one caused by the count: the same
+offset gap, the same `subscription_lagged` on a durable stream, the same
+counters, plus `felix_sub_queue_byte_dropped_total`.
+
+Because the bound reaches the writer lanes, it also has to fit what a
+subscriber that is keeping up has in flight. At 64 MiB, a subscriber reading
+4 MiB batches (64 records of 64 KiB) at fanout 10 was throttled and its p99
+latency grew; 256 MiB, the default, was enough.
+
+`subscriber_queue_max_bytes_total` adds a ceiling across all subscriber queues
+on the broker. It is off by default because it gives up isolation: once slow
+subscribers hold the shared budget, a fast subscriber's batch meets the
+overflow policy too. Without it, each subscriber can hold up to
+`subscriber_queue_max_bytes` or its largest single batch, whichever is larger,
+since an oversize batch still enters an empty queue: 1,000 slow subscribers at
+the 256 MiB default could pin 250 GiB. With `subscriber_queue_max_bytes` set to
+`0` there is no per-subscriber byte term at all, and only queue capacity times
+batch size limits a subscriber. In production, set the total to what the broker
+can afford for queued payloads. Any size works, including totals above 4 GiB.
+
+Two other in-memory buffers are bounded by entry count only. A stream shard's
+replay ring keeps its most recent 1024 records for cursor replay and fanout,
+however large those records are. A cache watch's queue holds up to 1024
+changes, each with its value. Neither counts toward the byte bounds above.
+
 `DropOld` is accepted in configuration and counted separately, but it currently
 behaves as `DropNew`: the arriving record is the one discarded. The metric
 `felix_sub_queue_drop_old_emulated_total` is what tells you that happened.
+
+### Choosing a queue size
+
+A subscriber can ask for its own queue capacity when it subscribes, instead of
+the stream's `subscriber_queue_capacity`. A reader with bursty processing asks
+for more room so a burst does not overflow it; a reader that only cares about
+recent records can ask for less. The capacity counts published batches, not
+records.
+
+The broker clamps the request to between 1 and
+`FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX` (default 4096) and answers with the
+capacity it granted, so the client knows what it got. Each queued batch stays
+in broker memory until the subscriber reads it; the maximum and the byte bound
+are what limit that per subscriber. In the Rust client, set
+`ClientConfig::broker_sub_queue_capacity` and read the grant from
+`Subscription::queue_capacity`. A broker that predates the option does not
+advertise `FEATURE_SUBSCRIBE_QUEUE`; the client does not ask it, and the
+subscription gets the stream's default.
+
+A subscriber picks only the size. The overflow policy stays the stream's,
+because a subscriber that could pick `Block` could stall every publisher on the
+shard just by reading slowly, and anyone allowed to subscribe could do it. A
+reader that must not miss records uses a durable stream: when its queue drops,
+the subscription ends with `subscription_lagged` and the offset to resume from,
+and `ClusterClient` resubscribes there and replays the gap from the log. A
+larger queue only makes that rarer.
 
 :::caution[At-Most-Once Semantics]
 A dropped event is not redelivered. A subscriber that falls behind its queue
@@ -163,7 +290,7 @@ ephemeral stream there is nothing to resume from.
 
 If you need redelivery rather than detection, use a **consumer group**: it
 acknowledges each record and hands back anything unanswered once the visibility
-timeout lapses. See [Projections](/felix/architecture/projections/).
+timeout lapses. See [Projections](/architecture/projections/).
 :::
 
 ## Delivery semantics
@@ -202,7 +329,7 @@ for record in records {
     match process_order(&record.payload) {
         Ok(()) => client.group_ack("tenant", "ns", "orders", shard, "fulfilment", record.offset).await?,
         // Hand it back for immediate redelivery instead of waiting out the timeout.
-        Err(_) => client.group_nack("tenant", "ns", "orders", shard, "fulfilment", record.offset).await?,
+        Err(_) => client.group_nack("tenant", "ns", "orders", shard, "fulfilment", &record).await?,
     }
 }
 ```
@@ -210,8 +337,21 @@ for record in records {
 `record.attempts` carries how many times this record has been delivered, so a
 consumer can treat a retry differently from a first attempt.
 
-See [Queues](/felix/features/queues/) for dead letters, redrive, and the
+See [Queues](/features/queues/) for dead letters, redrive, and the
 ordering rules that make the cursor safe.
+
+### Reading a range, without subscribing
+
+A subscription has no end. Replay from an offset runs on into live delivery
+until the client unsubscribes. To read a fixed slice of a durable stream, such
+as one match's events or a page of history in a UI, use a range read
+(`stream_read` on the wire, `Client::read` in Rust). It returns one page of
+committed records from a start offset, stopping before an end offset, with the
+offset to read the next page from. Nothing is registered with the stream's
+fanout, so the broker does no live work for it. A page is capped in records and
+bytes, and it never waits: once it reaches what is committed it comes back short.
+It is a request and response over JSON, one round trip per page. For bulk
+export, a subscription is still the faster path.
 
 ### Exactly-once delivery is not offered
 
@@ -224,7 +364,7 @@ carries.
 ## Tuning
 
 Start with the defaults and change things only off a measurement. The
-defaults are what [Benchmarks](/felix/features/benchmarks/) measures. The
+defaults are what [Benchmarks](/features/benchmarks/) measures. The
 knobs pull in two directions:
 
 Toward latency, use smaller batches, shorter delays and shallower queues:
@@ -278,4 +418,4 @@ system that ships one.
 A durable stream can also be written and read with Kafka clients: producers,
 and consumers that assign their own partitions. That makes it possible to put
 Felix behind services that already speak Kafka; see
-[Kafka compatibility](/felix/features/kafka/).
+[Kafka compatibility](/features/kafka/).

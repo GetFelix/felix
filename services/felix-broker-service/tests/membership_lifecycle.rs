@@ -148,8 +148,6 @@ impl Cluster {
 
 fn config(node_id: &str, port: u16) -> MembershipConfig {
     MembershipConfig {
-        node_token_file: None,
-        refresh_token_file: None,
         node_id: node_id.to_string(),
         advertise_addr: format!("10.0.0.4:{port}"),
         client_advertise_addr: None,
@@ -318,6 +316,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
             Duration::from_secs(30),
         )),
         std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        std::sync::Arc::default(),
     );
 
     // Wait for registration to land.

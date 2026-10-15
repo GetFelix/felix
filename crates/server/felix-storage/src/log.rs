@@ -3,7 +3,7 @@
 
 mod config;
 
-pub use config::{FsyncMode, LogConfig};
+pub use config::{FsyncMode, LogConfig, OffloadTarget, Retention, RetentionHold};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -64,6 +64,10 @@ pub struct AppendRecord {
     pub payload: Bytes,
     pub timestamp_micros: u64,
     pub mark: RecordMark,
+    /// The principal that published the record, stored with it. At most
+    /// [`crate::segment::format::MAX_PUBLISHER_BYTES`]; a record with one
+    /// needs storage format v6, so a log moves onto it only when it writes one.
+    pub publisher: Option<Bytes>,
 }
 
 /// Which idempotent producer's batch a record belongs to, if any.
@@ -198,6 +202,8 @@ pub struct LogRecord {
     pub checksum: u32,
     pub payload: Bytes,
     pub mark: RecordMark,
+    /// The principal that published the record, when it was stored with one.
+    pub publisher: Option<Bytes>,
 }
 
 /// One leadership generation, and the offset its first record took.
@@ -215,7 +221,7 @@ pub struct SealedSegment {
 }
 
 /// The offset and byte range one segment covers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentDescriptor {
     pub id: SegmentId,
     pub base_offset: Offset,

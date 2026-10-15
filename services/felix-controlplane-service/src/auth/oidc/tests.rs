@@ -154,6 +154,32 @@ async fn rejects_non_allowed_header_algorithms() {
     assert!(matches!(err, OidcError::UnsupportedAlgorithm));
 }
 
+/// Most providers sign ID tokens with RS256, the algorithm OIDC requires
+/// every provider to support, so it is accepted without configuration.
+#[tokio::test]
+async fn the_default_allowlist_accepts_rs256() {
+    let kid = "kid-default-rs256";
+    let jwks = json!({
+        "keys": [{
+            "kty": "RSA",
+            "kid": kid,
+            "alg": "RS256",
+            "use": "sig",
+            "n": TEST_JWK_N,
+            "e": TEST_JWK_E
+        }]
+    });
+    let (addr, _handle) = spawn_jwks_server(jwks).await;
+    let issuer = format!("http://{addr}");
+    let token = mint_upstream_token(Algorithm::RS256, &issuer, "aud1", kid);
+    let validated = validator_with_algorithms(Vec::new())
+        .validate(&token, &[issuer_cfg(&issuer, "aud1")])
+        .await
+        .expect("an RS256 token under the default allowlist");
+    assert_eq!(validated.subject, "user-1");
+}
+
+/// An explicit allowlist still narrows the default.
 #[tokio::test]
 async fn rejects_rs256_when_not_allowlisted() {
     let header = json!({ "alg": "RS256", "typ": "JWT", "kid": "kid-1" });
@@ -170,7 +196,7 @@ async fn rejects_rs256_when_not_allowlisted() {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
     );
 
-    let validator = UpstreamOidcValidator::default();
+    let validator = validator_with_algorithms(vec![Algorithm::ES256]);
     let err = validator.validate(&token, &[]).await.unwrap_err();
     assert!(matches!(err, OidcError::UnsupportedAlgorithm));
 }
@@ -270,7 +296,7 @@ async fn rejects_rsa_and_ps_when_not_allowlisted() {
         let (addr, _handle) = spawn_jwks_server(jwks).await;
         let issuer = format!("http://{addr}");
         let token = mint_upstream_token(alg, &issuer, "aud1", &kid);
-        let validator = UpstreamOidcValidator::default();
+        let validator = validator_with_algorithms(vec![Algorithm::ES256]);
         let err = validator
             .validate(&token, &[issuer_cfg(&issuer, "aud1")])
             .await

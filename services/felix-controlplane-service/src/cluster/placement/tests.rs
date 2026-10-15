@@ -14,6 +14,9 @@ mod regions;
 mod rendezvous;
 mod replicas;
 mod restore;
+mod stalled;
+mod startup;
+mod suspicion;
 mod wakes;
 mod zones;
 

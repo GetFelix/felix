@@ -152,7 +152,16 @@ impl Running {
         let mut config = build_client_config(self.cert.clone())?;
         config.auth_tenant_id = Some("t1".to_string());
         config.auth_token = self.tokens.get(token).cloned();
-        Client::connect(self.addr, "localhost", config).await
+        // The group tests poll straight after an acked publish. By default the
+        // broker acks a publish once it is queued, before the write, and a poll
+        // that lands first misses it. Commit acks make the ack mean written.
+        config.ack_on_commit = true;
+        let client = Client::connect(self.addr, "localhost", config).await?;
+        anyhow::ensure!(
+            client.supports_ack_on_commit(),
+            "the broker did not take commit acks"
+        );
+        Ok(client)
     }
 
     /// Stop serving, the way a process going away does.
@@ -509,6 +518,76 @@ async fn a_commit_is_seen_by_the_queue_and_the_state_together() -> Result<()> {
     Ok(())
 }
 
+/// **Two writers at one offset, over QUIC: one lands, one is told the
+/// tail.** A conditional commit is the same check on the whole shard.
+#[tokio::test]
+async fn a_conditional_publish_lands_once_and_names_the_tail() -> Result<()> {
+    use felix_client::{CommitOp, ConditionalWrite};
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let first = running.client().await?;
+    let second = running.client().await?;
+
+    let opened = first
+        .publish_if("t1", "default", QUEUE, None, vec![b"open".to_vec()], 0)
+        .await?;
+    assert_eq!(opened, ConditionalWrite::Written { offset: 0 });
+
+    let (a, b) = tokio::join!(
+        first.publish_if("t1", "default", QUEUE, None, vec![b"a".to_vec()], 1),
+        second.publish_if("t1", "default", QUEUE, None, vec![b"b".to_vec()], 1),
+    );
+    let mut answers = [a?, b?];
+    answers.sort_by_key(|answer| matches!(answer, ConditionalWrite::Refused { .. }));
+    assert_eq!(
+        answers,
+        [
+            ConditionalWrite::Written { offset: 1 },
+            ConditionalWrite::Refused { tail: 2 },
+        ]
+    );
+
+    let stale = first
+        .commit_if(
+            "t1",
+            "default",
+            b"match",
+            vec![
+                CommitOp::publish(QUEUE, "score"),
+                CommitOp::put(QUEUE, "score", "1"),
+            ],
+            1,
+        )
+        .await?;
+    assert_eq!(stale, ConditionalWrite::Refused { tail: 2 });
+    let state = first
+        .state_get("t1", "default", QUEUE, b"match", "score")
+        .await?;
+    assert_eq!(state.value, None, "a refused commit wrote state");
+
+    let landed = first
+        .commit_if(
+            "t1",
+            "default",
+            b"match",
+            vec![
+                CommitOp::publish(QUEUE, "score"),
+                CommitOp::put(QUEUE, "score", "1"),
+            ],
+            2,
+        )
+        .await?;
+    assert_eq!(landed, ConditionalWrite::Written { offset: 2 });
+    let claimed = first
+        .group_poll("t1", "default", QUEUE, 0, "readers", 10)
+        .await?;
+    let payloads: Vec<_> = claimed.iter().map(|r| r.payload.clone()).collect();
+    assert_eq!(payloads.len(), 3, "{payloads:?}");
+    running.stop().await;
+    Ok(())
+}
+
 /// **A client consuming a queue, end to end.** Until the wire carried group
 /// operations this could not be written at all: the machinery was reachable
 /// only from inside the broker.
@@ -598,7 +677,7 @@ async fn a_nacked_record_is_polled_again() -> Result<()> {
     assert_eq!(first.len(), 1);
 
     client
-        .group_nack("t1", "default", QUEUE, 0, "workers", first[0].offset)
+        .group_nack("t1", "default", QUEUE, 0, "workers", &first[0])
         .await?;
 
     let again = client
@@ -670,7 +749,7 @@ async fn a_dead_letter_can_be_listed_and_redriven() -> Result<()> {
             .await?;
         assert_eq!(claimed.len(), 1);
         client
-            .group_nack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+            .group_nack("t1", "default", QUEUE, 0, "workers", &claimed[0])
             .await?;
     }
 
@@ -732,7 +811,7 @@ async fn a_dead_letter_can_be_discarded() -> Result<()> {
             .group_poll("t1", "default", QUEUE, 0, "workers", 10)
             .await?;
         client
-            .group_nack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+            .group_nack("t1", "default", QUEUE, 0, "workers", &claimed[0])
             .await?;
     }
     client
@@ -980,6 +1059,291 @@ async fn an_ack_past_the_tail_is_refused() -> Result<()> {
         refused.contains("not handed out"),
         "refused for the wrong reason: {refused}",
     );
+
+    running.stop().await;
+    Ok(())
+}
+
+/// **A group's lifecycle, end to end.** Created at the tail it skips what came
+/// before, a seek replays, describe reports where it stands, and a deleted
+/// group starts again from the beginning.
+#[tokio::test]
+async fn a_group_is_created_moved_described_and_deleted() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    assert!(client.supports_group_admin());
+    let publisher = client.publisher().await?;
+    let publish = |payload: &'static [u8]| {
+        publisher.publish(
+            "t1",
+            "default",
+            QUEUE,
+            payload.to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+    };
+    publish(b"before").await?;
+
+    let created = client
+        .group_create(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Latest,
+        )
+        .await?;
+    assert_eq!(
+        created,
+        felix_client::GroupPosition {
+            offset: 1,
+            moved: true
+        }
+    );
+    publish(b"after").await?;
+    let claimed = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].payload.as_ref(), b"after");
+
+    let info = client
+        .group_describe("t1", "default", QUEUE, 0, "workers")
+        .await?;
+    assert_eq!(info.committed, Some(1));
+    assert_eq!((info.tail, info.in_flight, info.lag()), (2, 1, 1));
+
+    // Created again on a restart of the consumer: left where it is.
+    let again = client
+        .group_create(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Earliest,
+        )
+        .await?;
+    assert!(!again.moved);
+
+    client
+        .group_seek(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Earliest,
+        )
+        .await?;
+    let replayed = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(replayed.len(), 2, "a seek to the start did not replay");
+
+    assert!(
+        client
+            .group_delete("t1", "default", QUEUE, 0, "workers")
+            .await?
+    );
+    let info = client
+        .group_describe("t1", "default", QUEUE, 0, "workers")
+        .await?;
+    assert_eq!((info.committed, info.in_flight), (None, 0));
+    running.stop().await;
+    Ok(())
+}
+
+/// **A lease taken with a conditional put holds across a restart.** The client
+/// reads a version, swaps on it, and the version it was given is still the
+/// one the broker compares against after the log is replayed.
+#[tokio::test]
+async fn a_conditional_put_and_its_version_survive_a_restart() -> Result<()> {
+    use felix_client::CacheCondition;
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    let taken = client
+        .cache_put_if(
+            "t1",
+            "default",
+            CACHE,
+            "lease:7",
+            b"worker-1".to_vec().into(),
+            None,
+            CacheCondition::Absent,
+        )
+        .await?;
+    assert!(taken.applied);
+    let version = taken.version.expect("an applied put has a version");
+
+    let contended = client
+        .cache_put_if(
+            "t1",
+            "default",
+            CACHE,
+            "lease:7",
+            b"worker-2".to_vec().into(),
+            None,
+            CacheCondition::Absent,
+        )
+        .await?;
+    assert!(!contended.applied, "a second taker won the same lease");
+    assert_eq!(contended.version, Some(version));
+    drop(client);
+    running.stop().await;
+
+    let restarted = start(dir.path()).await?;
+    let client = restarted.client().await?;
+    let found = client
+        .cache_get_versioned("t1", "default", CACHE, "lease:7")
+        .await?
+        .expect("the lease is still held");
+    assert_eq!(found.value.as_ref(), b"worker-1");
+    assert_eq!(found.version, version);
+
+    let released = client
+        .cache_delete_if("t1", "default", CACHE, "lease:7", version)
+        .await?;
+    assert!(released.applied);
+    assert_eq!(
+        client.cache_get("t1", "default", CACHE, "lease:7").await?,
+        None
+    );
+    drop(client);
+    restarted.stop().await;
+    Ok(())
+}
+
+/// A consumer extends a claim it is still working on, backs off a retry,
+/// and gives up on a record itself, each through the broker.
+#[tokio::test]
+async fn a_consumer_extends_delays_and_dead_letters_its_claims() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    assert!(client.supports_group_claim_control());
+    let publisher = client.publisher().await?;
+    for payload in [&b"slow"[..], b"retry", b"poison"] {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                QUEUE,
+                payload.to_vec(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+    }
+    let short = felix_client::GroupPollOptions {
+        visibility: Some(Duration::from_millis(300)),
+        ..Default::default()
+    };
+    let claimed = client
+        .group_poll_with("t1", "default", QUEUE, 0, "workers", 10, &short)
+        .await?;
+    assert_eq!(claimed.len(), 3);
+    let (slow, retry, poison) = (&claimed[0], &claimed[1], &claimed[2]);
+
+    let stands = client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            slow,
+            Duration::from_secs(60),
+        )
+        .await?;
+    assert_eq!(stands, Duration::from_secs(60));
+    client
+        .group_nack_after(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry,
+            Duration::from_millis(600),
+        )
+        .await?;
+    client
+        .group_dead_letter("t1", "default", QUEUE, 0, "workers", poison.offset)
+        .await?;
+
+    // Past the poll's own visibility: the extended claim stands and the
+    // nacked record is still waiting out its delay.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        client
+            .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+            .await?
+            .is_empty()
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let again = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].offset, retry.offset);
+    assert_eq!(again[0].attempts, 2);
+
+    assert_eq!(
+        client
+            .group_dead_letters("t1", "default", QUEUE, 0, "workers")
+            .await?,
+        vec![poison.offset]
+    );
+    // The first delivery of the retried record no longer holds it.
+    let stale = client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect_err("extended a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // Nor can it nack the record away from the second delivery.
+    let stale = client
+        .group_nack_after(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            retry,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect_err("nacked a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // A plain nack names its delivery too.
+    let stale = client
+        .group_nack("t1", "default", QUEUE, 0, "workers", retry)
+        .await
+        .expect_err("a plain nack took a claim that was handed out again");
+    assert!(stale.to_string().contains("no longer stands"), "{stale:#}");
+    // The second delivery's claim still stands.
+    client
+        .group_extend(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            &again[0],
+            Duration::from_secs(60),
+        )
+        .await?;
 
     running.stop().await;
     Ok(())

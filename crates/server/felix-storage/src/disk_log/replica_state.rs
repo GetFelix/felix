@@ -9,6 +9,10 @@
 //! from discarding records a majority acknowledged. See
 //! `docs/replication-design.md`, "Divergence and truncation".
 //!
+//! It also records whether retention is held at the commit offset, so a log
+//! under `Quorum` replication is held from the moment it opens rather than
+//! from its first replication pass or batch.
+//!
 //! Unlike the generation history this is not derived and cannot be rebuilt, so
 //! a file that is present but does not decode fails the open instead of
 //! reading as empty.
@@ -22,18 +26,23 @@ use crate::{Result, StorageError};
 /// `"FLRS"`.
 const MAGIC: u32 = 0x464C_5253;
 const VERSION: u16 = 1;
-/// magic(4) + version(2) + reserved(2) + generation(8) + commit(8) + crc(4)
+/// magic(4) + version(2) + flags(2) + generation(8) + commit(8) + crc(4)
 pub(super) const ENCODED_LEN: usize = 28;
 const FILE_NAME: &str = "replica";
+/// Retention is held at the commit offset. The flags were a reserved zero
+/// that no build checked, so an older build reads this file unchanged.
+const FLAG_HOLD_AT_COMMIT: u16 = 1;
 
-/// The persisted state. Both fields only ever rise, except that an offline
-/// restore to a backup point lowers the commit offset.
+/// The persisted state. The generation and the commit offset only ever rise,
+/// except that an offline restore to a backup point lowers the commit offset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ReplicaState {
     pub(super) accepted_generation: u64,
     /// One past the last record known committed. Records below it that this
     /// log holds must not be cut.
     pub(super) commit_offset: Offset,
+    /// See `DiskLog::hold_retention_at_commit`.
+    pub(super) hold_at_commit: bool,
 }
 
 impl ReplicaState {
@@ -41,6 +50,12 @@ impl ReplicaState {
         let mut out = [0u8; ENCODED_LEN];
         out[0..4].copy_from_slice(&MAGIC.to_be_bytes());
         out[4..6].copy_from_slice(&VERSION.to_be_bytes());
+        let flags = if self.hold_at_commit {
+            FLAG_HOLD_AT_COMMIT
+        } else {
+            0
+        };
+        out[6..8].copy_from_slice(&flags.to_be_bytes());
         out[8..16].copy_from_slice(&self.accepted_generation.to_be_bytes());
         out[16..24].copy_from_slice(&self.commit_offset.to_be_bytes());
         let crc = crate::segment::format::crc32(&[&out[0..24]]);
@@ -54,6 +69,7 @@ impl ReplicaState {
         }
         let magic = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
         let version = u16::from_be_bytes(bytes[4..6].try_into().ok()?);
+        let flags = u16::from_be_bytes(bytes[6..8].try_into().ok()?);
         let crc = u32::from_be_bytes(bytes[24..28].try_into().ok()?);
         if magic != MAGIC || version != VERSION {
             return None;
@@ -64,6 +80,7 @@ impl ReplicaState {
         Some(Self {
             accepted_generation: u64::from_be_bytes(bytes[8..16].try_into().ok()?),
             commit_offset: u64::from_be_bytes(bytes[16..24].try_into().ok()?),
+            hold_at_commit: flags & FLAG_HOLD_AT_COMMIT != 0,
         })
     }
 }

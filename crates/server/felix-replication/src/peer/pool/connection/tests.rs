@@ -38,6 +38,8 @@ mod correlation {
             InternalMessage::Fence(m) => m.correlation_id,
             InternalMessage::FenceOk(m) => m.correlation_id,
             InternalMessage::ReplicateFetch(m) => m.correlation_id,
+            InternalMessage::Ping(m) => m.correlation_id,
+            InternalMessage::Pong(m) => m.correlation_id,
         }
     }
 
@@ -54,6 +56,8 @@ mod correlation {
     /// Every variant, each carrying the caller's id.
     fn every_variant() -> Vec<InternalMessage> {
         vec![
+            InternalMessage::Ping(Ping { correlation_id: 7 }),
+            InternalMessage::Pong(Pong { correlation_id: 7 }),
             InternalMessage::ForwardPublish(ForwardPublish {
                 correlation_id: 7,
                 shard: shard(),
@@ -88,6 +92,7 @@ mod correlation {
                 capabilities: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
+                times: None,
                 correlation_id: 7,
                 shard: shard(),
                 first_offset: 12,
@@ -96,6 +101,7 @@ mod correlation {
                 marks: Vec::new(),
                 commit_offset: None,
                 generations: None,
+                publishers: Vec::new(),
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
@@ -130,6 +136,7 @@ mod correlation {
                 last_generation: 1,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
+                timed: false,
                 correlation_id: 7,
                 shard: shard(),
                 log: ReplicaLog::Stream,
@@ -138,6 +145,7 @@ mod correlation {
                 labelled: false,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+                times: None,
                 correlation_id: 7,
                 shard: shard(),
                 first_offset: 12,
@@ -146,6 +154,7 @@ mod correlation {
                 marks: vec![felix_wire::internal::ProducerMark::Continues],
                 commit_offset: None,
                 generations: None,
+                publishers: Vec::new(),
             }),
         ]
     }

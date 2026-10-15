@@ -42,8 +42,9 @@ pub enum Phase {
     /// Ours, but the local log is not ready. Not serving.
     Opening,
     /// Ours and recovered, and waiting for a majority of the replicas to
-    /// take this broker's generation before it serves. Only after a
-    /// promotion, and only when every replica offers the fence.
+    /// take this broker's generation before it serves. After every change
+    /// of leadership on a broker that fences; the shard opens on the lease
+    /// instead when some replica does not offer the fence.
     Fencing,
     /// Ours and ready.
     Active,
@@ -97,7 +98,7 @@ pub struct LocalShard {
 pub enum Opened {
     /// Serving.
     Activated,
-    /// Recovered, and waiting for the promotion fence before it serves.
+    /// Recovered, and waiting for the fence before it serves.
     Fencing,
     /// Recovered but not serving: the assignment is draining.
     Draining,
@@ -116,8 +117,8 @@ pub enum Action {
         /// arrived, so another may have led it since. What it remembers from
         /// serving it before is stale and has to go before it serves again.
         new_term: bool,
-        /// A promotion: the shard waits in `Fencing` once open, and where
-        /// this generation begins is recorded when it serves, not here.
+        /// The shard waits in `Fencing` once open, and where this
+        /// generation begins is recorded when it serves, not here.
         fence: bool,
     },
     /// Stop writes, drain, flush, and close.
@@ -127,7 +128,12 @@ pub enum Action {
     Prepare { key: ShardKey },
     /// This broker is no longer the shard's leader, a replica, or a move's
     /// destination. Close what it holds open for it.
-    Close { key: ShardKey },
+    Close {
+        key: ShardKey,
+        /// Where the shard is now, when it still has an assignment, for any
+        /// reader still attached.
+        handoff: Option<felix_broker::ShardHandoff>,
+    },
     /// Nothing to do.
     None,
 }
@@ -149,10 +155,10 @@ pub struct ShardLifecycle {
     /// this set is what closes a shard's logs: until then a replica or a
     /// move's destination still needs them.
     held: std::collections::HashSet<ShardKey>,
-    /// Whether a promoted shard waits for the fence before it serves. Set
-    /// when a replication driver is there to fence it.
+    /// Whether a shard this broker starts leading waits for the fence
+    /// before it serves. Set when a replication driver is there to fence it.
     fence_promotions: bool,
-    /// Shards opening for a promotion, which go to `Fencing` once open.
+    /// Shards opening to be fenced, which go to `Fencing` once open.
     promoting: std::collections::HashSet<ShardKey>,
 }
 
@@ -177,21 +183,35 @@ impl ShardLifecycle {
         }
     }
 
-    /// Hold a promoted stream shard in `Fencing` until [`Self::fenced`]. For a
-    /// broker whose replication driver fences promotions.
+    /// Hold every shard, stream or cache, that this broker starts leading at
+    /// a new generation in `Fencing` until [`Self::fenced`]: a promotion, a
+    /// move's cut-over, a cancelled move's hand-back, and a generation of a
+    /// shard it serves that skips one. The generation right after the one it
+    /// serves opens at once. For a broker whose replication driver fences.
     pub fn fence_promotions(&mut self) {
         self.fence_promotions = true;
     }
 
-    /// The promotion fence for `key` is done at `generation`, or the shard
-    /// opens on the lease: serve it. False if the shard has moved on.
+    /// The fence for `key` is done at `generation`, or the shard opens on
+    /// the lease: serve it. False if the shard has moved on.
     pub fn fenced(&mut self, key: &ShardKey, generation: u64) -> bool {
         match self.shards.get(key) {
             Some(shard) if shard.phase == Phase::Fencing && shard.generation == generation => {
                 self.set(key, Phase::Active, generation, false);
+                self.arrived(key);
                 true
             }
             _ => false,
+        }
+    }
+
+    /// A move toward this broker ends when the shard serves here.
+    fn arrived(&mut self, key: &ShardKey) {
+        if let Some(incoming) = self.incoming.remove(key) {
+            mm::record_move_arrived(
+                incoming.named.elapsed(),
+                incoming.fenced.map(|at| at.elapsed()),
+            );
         }
     }
 
@@ -430,13 +450,23 @@ impl ShardLifecycle {
             if has_role {
                 self.held.insert(key.clone());
             } else if self.held.remove(key) {
-                closes.push(Action::Close { key: key.clone() });
+                closes.push(Action::Close {
+                    key: key.clone(),
+                    handoff: Some(felix_broker::ShardHandoff {
+                        node_id: Some(assignment.leader.clone()),
+                        addr: None,
+                        generation: assignment.generation,
+                    }),
+                });
             }
         }
         self.held.retain(|key| {
             let assigned = assignments.contains_key(key);
             if !assigned {
-                closes.push(Action::Close { key: key.clone() });
+                closes.push(Action::Close {
+                    key: key.clone(),
+                    handoff: None,
+                });
             }
             assigned
         });
@@ -481,12 +511,7 @@ impl ShardLifecycle {
                     Opened::Fencing
                 } else {
                     self.set(key, Phase::Active, generation, false);
-                    if let Some(incoming) = self.incoming.remove(key) {
-                        mm::record_move_arrived(
-                            incoming.named.elapsed(),
-                            incoming.fenced.map(|at| at.elapsed()),
-                        );
-                    }
+                    self.arrived(key);
                     Opened::Activated
                 }
             }
@@ -497,13 +522,14 @@ impl ShardLifecycle {
         }
     }
 
-    /// Record that the driver could not open the log.
-    pub fn open_failed(&mut self, key: &ShardKey, generation: u64) {
+    /// Record that the driver could not open the log, and why.
+    pub fn open_failed(&mut self, key: &ShardKey, generation: u64, error: String) {
         if let Some(shard) = self.shards.get(key)
             && shard.phase == Phase::Opening
             && shard.generation == generation
         {
             self.set(key, Phase::Failed, generation, shard.draining);
+            self.fence.record_open_error(key, error);
         }
     }
 
@@ -544,15 +570,21 @@ impl ShardLifecycle {
         // in between, and a generation gap cannot rule that out: assignments
         // arrive as a coalesced set, not one write at a time.
         let new_term = self.phase(key) != Phase::Active;
-        // A promotion is the one new term the model fences (`FenceOnPromote`):
-        // a move's destination takes over from a leader that drained into it,
-        // and a cancelled move hands the shard back to the leader that had it.
-        let fence = self.fence_promotions
-            && new_term
-            && !draining
-            && key.kind == ShardKind::Stream
-            && !self.incoming.contains_key(key)
-            && !self.shards.get(key).is_some_and(|shard| shard.draining);
+        // The generation right after one this broker is serving continues its
+        // leadership: each assignment write raises the generation by one, so
+        // nobody led in between. It opens unfenced, as `Regenerate` does in the
+        // model. Fencing it would close a serving shard at every follower
+        // replacement step, and one that cannot reach a majority of the new
+        // set would stop reporting, which placement needs to finish the step.
+        let continues = self.shards.get(key).is_some_and(|shard| {
+            shard.phase == Phase::Active && !shard.draining && generation == shard.generation + 1
+        });
+        // Every other generation this broker starts leading at is fenced, not
+        // only a promotion (`FenceEveryChange` in the model). A cut-over, a
+        // hand-back or a later generation of a shard it serves is still a
+        // generation the control plane picked from its own view, and a leader
+        // this broker never heard of may have written in between.
+        let fence = self.fence_promotions && !draining && !continues;
         if fence {
             self.promoting.insert(key.clone());
         } else {
@@ -586,6 +618,7 @@ impl ShardLifecycle {
         } else if phase != Phase::Opening {
             self.fence.promotion_settled(key);
         }
+        self.fence.record_phase(key, phase, generation);
         let previous = self.shards.get(key).map(|shard| shard.phase);
         self.shards.insert(
             key.clone(),
@@ -616,7 +649,7 @@ pub trait ShardStore: Send + Sync {
     /// where this leadership begins — the one moment that is true, since the
     /// next thing to touch the log is a write under this generation.
     ///
-    /// `begins_here` is false for a promotion that will be fenced: the
+    /// `begins_here` is false for a leadership that will be fenced: the
     /// fence may take a replica's tail first, so where this generation
     /// begins is recorded when the shard serves ([`record_term_start`]).
     async fn open(&self, key: &ShardKey, generation: u64, begins_here: bool) -> anyhow::Result<()>;
@@ -653,7 +686,13 @@ pub trait ShardStore: Send + Sync {
     fn prepare(&self, _key: &ShardKey) {}
     /// Close the logs and drop the in-memory state held for a shard this
     /// broker has no role in any more. A later open recovers it from disk.
-    async fn close(&self, _key: &ShardKey) -> anyhow::Result<()> {
+    /// A reader still attached is told the shard moved when there is a
+    /// `handoff`.
+    async fn close(
+        &self,
+        _key: &ShardKey,
+        _handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -852,11 +891,21 @@ impl ShardReaders {
     }
 
     /// Close everything the broker holds open for the shard.
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         let closed = match key.kind {
             ShardKind::Stream => {
                 self.broker
-                    .close_stream_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .close_stream_shard(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        handoff.map(|to| self.with_addr(to)),
+                    )
                     .await
             }
             ShardKind::Cache => {
@@ -890,15 +939,19 @@ impl ShardReaders {
         }
     }
 
+    /// `to` with the next owner's client address filled in, when the cluster
+    /// publishes one.
+    fn with_addr(&self, mut to: felix_broker::ShardHandoff) -> felix_broker::ShardHandoff {
+        if to.addr.is_none()
+            && let (Some(node_id), Some(endpoints)) = (&to.node_id, &self.endpoints)
+        {
+            to.addr = endpoints.redirect_addr(node_id);
+        }
+        to
+    }
+
     async fn end(&self, key: &ShardKey, handoff: Option<felix_broker::ShardHandoff>, quiet: bool) {
-        let handoff = handoff.map(|mut to| {
-            if to.addr.is_none()
-                && let (Some(node_id), Some(endpoints)) = (&to.node_id, &self.endpoints)
-            {
-                to.addr = endpoints.redirect_addr(node_id);
-            }
-            to
-        });
+        let handoff = handoff.map(|to| self.with_addr(to));
         let ended = match key.kind {
             ShardKind::Stream => {
                 self.broker
@@ -968,6 +1021,9 @@ pub struct DurableShardStore {
     storage: std::sync::Arc<felix_broker::DurableStorage>,
     readers: Option<ShardReaders>,
     generation_starts: Option<GenerationStarts>,
+    /// This broker's node id, when it keeps ballots: leading a generation is
+    /// accepting it from itself.
+    ballot: Option<String>,
 }
 
 /// What a leader needs to write its generation-start record: the broker it
@@ -991,10 +1047,18 @@ impl DurableShardStore {
             storage,
             readers: None,
             generation_starts: None,
+            ballot: None,
         }
     }
 
-    /// Write a generation-start record whenever a stream leadership begins
+    /// Accept each generation this broker leads as a ballot naming `node_id`,
+    /// so no other node is answered at it here.
+    pub fn with_ballots(mut self, node_id: impl Into<String>) -> Self {
+        self.ballot = Some(node_id.into());
+        self
+    }
+
+    /// Write a generation-start record whenever a leadership begins
     /// here, once the fleet has finalized `generation_start`.
     pub fn with_generation_starts(mut self, starts: GenerationStarts) -> Self {
         self.generation_starts = Some(starts);
@@ -1017,9 +1081,43 @@ impl DurableShardStore {
     /// divergence at its tail cannot be told apart from one reaching further
     /// back and the replica halts instead of dropping the suffix (#863).
     ///
-    /// Caches never write a generation-start record, since their quorum mark
-    /// does not count from one, so a failure to record the start is logged
-    /// rather than fatal, as it is for a stream before `generation_start`.
+    /// Once the fleet finalized `generation_start` each log also gets its
+    /// generation-start record, as a stream's does, since the cache and
+    /// counter marks then count only past it. A fenced leadership's are written when
+    /// its fence opens the shard.
+    /// Label a stream shard's dead-letter and cursor logs with the generation
+    /// this broker leads, as its records are. Without it what it writes there
+    /// carries the generation before, and a promotion choosing the
+    /// furthest-ahead copy by generation would take a longer, older one over
+    /// it. They take no generation-start record: no mark counts on them.
+    async fn open_group_logs(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        begins_here: bool,
+    ) -> anyhow::Result<()> {
+        let Some(starts) = &self.generation_starts else {
+            return Ok(());
+        };
+        if starts.broker.group_reader().is_none() {
+            return Ok(());
+        }
+        for kind in GROUP_LOGS {
+            let Some(log) = starts
+                .broker
+                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+            else {
+                anyhow::bail!("open the shard's {kind:?} log");
+            };
+            if begins_here {
+                record_term_start(&log, key, generation, true).await?;
+            }
+            accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
+        }
+        Ok(())
+    }
+
     async fn open_cache(
         &self,
         key: &ShardKey,
@@ -1030,6 +1128,10 @@ impl DurableShardStore {
         let Some(broker) = self.generation_starts.as_ref().map(|starts| &starts.broker) else {
             return Ok(());
         };
+        let starts = self
+            .generation_starts
+            .as_ref()
+            .filter(|starts| starts.enabled());
         for kind in [
             felix_broker::LogKind::Cache,
             felix_broker::LogKind::Counters,
@@ -1045,9 +1147,12 @@ impl DurableShardStore {
                 continue;
             };
             if begins_here {
-                record_term_start(&log, key, generation, false).await?;
+                record_term_start(&log, key, generation, starts.is_some()).await?;
             }
-            accept_led_generation(&log, generation).await?;
+            accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
+            if begins_here && let Some(starts) = starts {
+                start_generation(&starts.broker, &log, key, generation).await?;
+            }
         }
         Ok(())
     }
@@ -1089,12 +1194,12 @@ impl ShardStore for DurableShardStore {
         // Leading at a generation accepts it, as following does: once this
         // broker has led at it, a leader older than it is not taken as a
         // follower, even after a restart.
-        accept_led_generation(&log, generation).await?;
-        // A promotion's record is written when its fence opens the shard.
+        accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
+        // A fenced leadership's record is written when its fence opens the shard.
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
         }
-        Ok(())
+        self.open_group_logs(key, generation, begins_here).await
     }
 
     async fn release(&self, key: &ShardKey) -> anyhow::Result<()> {
@@ -1133,9 +1238,13 @@ impl ShardStore for DurableShardStore {
         }
     }
 
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         match &self.readers {
-            Some(readers) => readers.close(key).await,
+            Some(readers) => readers.close(key, handoff).await,
             // Without the broker there is only the stream log to close; a
             // cache's lives in the cache store, which only the broker reaches.
             None if key.kind == ShardKind::Stream => self
@@ -1194,9 +1303,13 @@ impl ShardStore for EphemeralShardStore {
     }
 
     /// No logs, but the stream's in-memory state still goes.
-    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+    async fn close(
+        &self,
+        key: &ShardKey,
+        handoff: Option<felix_broker::ShardHandoff>,
+    ) -> anyhow::Result<()> {
         match &self.readers {
-            Some(readers) => readers.close(key).await,
+            Some(readers) => readers.close(key, handoff).await,
             None => Ok(()),
         }
     }
@@ -1211,7 +1324,7 @@ pub async fn apply(
     match action {
         Action::None => {}
         Action::Prepare { key } => store.prepare(&key),
-        Action::Close { key } => match store.close(&key).await {
+        Action::Close { key, handoff } => match store.close(&key, handoff).await {
             Ok(()) => tracing::info!(
                 kind = ?key.kind,
                 name = %key.stream,
@@ -1249,7 +1362,7 @@ pub async fn apply(
                         stream = %key.stream,
                         shard = key.shard,
                         generation,
-                        "shard opened after a promotion; fencing its replicas before it serves",
+                        "shard opened at a new leadership; fencing its replicas before it serves",
                     ),
                     // How a move usually reaches the old leader: every assignment
                     // write bumps the generation, so the fence arrives as a new,
@@ -1277,7 +1390,10 @@ pub async fn apply(
             }
             Err(err) => {
                 mm::record_open_failure();
-                lifecycle.lock().await.open_failed(&key, generation);
+                lifecycle
+                    .lock()
+                    .await
+                    .open_failed(&key, generation, format!("{err:#}"));
                 tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -1332,6 +1448,12 @@ async fn open(
 ///
 /// With `required`, a failure is returned rather than logged: the quorum mark
 /// counts from this start once the fleet finalized `generation_start`.
+/// A stream shard's group logs, dead letters first, as they are written.
+pub(crate) const GROUP_LOGS: [felix_broker::LogKind; 2] = [
+    felix_broker::LogKind::GroupDeadLetters,
+    felix_broker::LogKind::GroupCursors,
+];
+
 pub async fn record_term_start(
     log: &felix_broker::StreamLog,
     key: &ShardKey,
@@ -1360,16 +1482,23 @@ pub async fn record_term_start(
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
-/// log already took a newer leader's.
+/// log already took a newer leader's, or this generation from another node.
 async fn accept_led_generation(
     log: &felix_broker::StreamLog,
     generation: u64,
+    ballot: Option<&str>,
 ) -> anyhow::Result<()> {
-    match log.accept_generation(generation).await {
+    match log.accept_generation(generation, ballot).await {
         Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
             anyhow::bail!(
                 "this broker already accepted generation {accepted} for the shard, \
                  newer than the {generation} it was assigned to lead"
+            );
+        }
+        Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => {
+            anyhow::bail!(
+                "this broker already accepted generation {generation} for the shard \
+                 from {leader}, so it cannot lead it"
             );
         }
         Ok(_) => Ok(()),
@@ -1378,18 +1507,33 @@ async fn accept_led_generation(
 }
 
 /// Write this leader's generation-start record, unless the log already starts
-/// the generation with one (an earlier attempt to open got that far) or the
-/// generation already has records of its own.
+/// the generation with one (an earlier attempt to open got that far), the
+/// generation already has records of its own, or the stream is in-memory.
 ///
 /// It goes at the generation's recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
-/// holds it. See `docs/replication-design.md`.
+/// holds it. See `docs/replication-design.md`. For a cache shard `log` is its
+/// cache log or its counter log, each with a mark of its own.
 pub async fn write_generation_start(
     broker: &felix_broker::Broker,
     log: &felix_broker::StreamLog,
     key: &ShardKey,
     generation: u64,
 ) -> anyhow::Result<()> {
+    // An in-memory stream's publishes never reach the shard's log: they take
+    // no offsets, nothing ships, and no `Quorum` write waits on a mark. So
+    // there is no inherited record for a start record to cover, and the
+    // broker has no log to append one to.
+    if key.kind == ShardKind::Stream {
+        let durable = broker
+            .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
+            .is_durable();
+        if !durable {
+            return Ok(());
+        }
+    }
     if felix_replication::quorum::generation_start(log, generation)
         .await
         .is_some()
@@ -1414,25 +1558,31 @@ pub async fn write_generation_start(
         // generation's, and the mark would count them as if they were.
         _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
     }
-    // Through the broker, so the stream's commit order and its subscribers
-    // move past the record's offset too.
-    broker
-        .append_generation_start(
-            &key.tenant_id,
-            &key.namespace,
-            &key.stream,
-            key.shard,
-            generation,
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    match key.kind {
+        // Through the broker, so the stream's commit order and its
+        // subscribers move past the record's offset too.
+        ShardKind::Stream => broker
+            .append_generation_start(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                generation,
+            )
+            .await
+            .map(drop),
+        // Straight to the log. Nothing writes to the shard before it serves,
+        // and a cache's index and a counter shard's sums catch up with
+        // records that arrive underneath them, skipping this one.
+        ShardKind::Cache => log.append_generation_start(generation).await.map(drop),
+    }
+    .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
     Ok(())
 }
 
-/// Write the generation-start record for a leadership that begins without a
-/// promotion's fence: a fresh placement, either end of a move, a cancelled
-/// move handing the shard back, or a promotion on a broker that does not
-/// fence.
+/// Write the generation-start record for a leadership that begins without
+/// the fence: any leadership on a broker that does not fence, and the old
+/// leader's end of a move, which reopens its log only to ship it.
 ///
 /// Skipped when the log holds nothing (there is nothing to inherit) and when
 /// the generation already has records, which is a reopen after a restart or

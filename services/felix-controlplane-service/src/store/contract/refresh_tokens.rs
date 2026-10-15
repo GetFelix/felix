@@ -28,14 +28,20 @@ fn token(token_id: &str, family_id: &str) -> RefreshToken {
         used: false,
         revoked: false,
         narrowing: Some(narrowing()),
+        rotated: None,
     }
 }
 
 fn narrowing() -> Narrowing {
     Narrowing {
-        requested: Some(vec!["stream.publish".to_string()]),
-        resources: Some(vec!["stream:refresh-t/payments/orders".to_string()]),
+        requested: Some(Vec::new()),
+        resources: None,
+        permissions: Some(vec![
+            "stream.publish:stream:refresh-t/payments/orders".to_string(),
+            "stream.subscribe:stream:refresh-t/payments/audit".to_string(),
+        ]),
         audience: "felix-controlplane".to_string(),
+        may_act: Some("p:gateway".to_string()),
     }
 }
 
@@ -61,6 +67,71 @@ pub(crate) async fn run_refresh_contract(store: Arc<dyn crate::store::ControlPla
     revoking_a_principal_leaves_other_principals_alone(store).await;
     the_stored_record_carries_the_claims_a_refresh_needs(store).await;
     purging_removes_only_what_has_expired(store).await;
+    a_rotation_spends_and_stores_together(store).await;
+}
+
+async fn a_rotation_spends_and_stores_together(store: &dyn crate::store::ControlPlaneAuthStore) {
+    store
+        .insert_refresh_token(token("rotated", "family-rotated"))
+        .await
+        .expect("insert");
+    let peeked = store
+        .peek_refresh_token(TENANT, "rotated")
+        .await
+        .expect("peek")
+        .expect("stored");
+    assert!(!peeked.used, "a peek does not spend");
+
+    let first = store
+        .rotate_refresh_token(
+            TENANT,
+            "rotated",
+            NOW,
+            token("rotated-next", "family-rotated"),
+        )
+        .await
+        .expect("rotate");
+    assert!(matches!(first, RefreshTokenTake::Taken(_)), "{first:?}");
+    let spent = store
+        .peek_refresh_token(TENANT, "rotated")
+        .await
+        .expect("peek")
+        .expect("stored");
+    assert_eq!(
+        spent.rotated,
+        Some(crate::auth::refresh_token::Rotation {
+            at_secs: NOW,
+            successor_id: "rotated-next".to_string(),
+        }),
+        "a rotation records when and by what"
+    );
+    assert!(
+        store
+            .peek_refresh_token(TENANT, "rotated-next")
+            .await
+            .expect("peek")
+            .is_some(),
+        "the replacement is stored with the spend"
+    );
+
+    let again = store
+        .rotate_refresh_token(
+            TENANT,
+            "rotated",
+            NOW,
+            token("rotated-other", "family-rotated"),
+        )
+        .await
+        .expect("rotate");
+    assert!(matches!(again, RefreshTokenTake::Replayed(_)), "{again:?}");
+    assert!(
+        store
+            .peek_refresh_token(TENANT, "rotated-other")
+            .await
+            .expect("peek")
+            .is_none(),
+        "nothing is stored when nothing is spent"
+    );
 }
 
 async fn a_stored_token_can_be_spent_once(store: &dyn crate::store::ControlPlaneAuthStore) {

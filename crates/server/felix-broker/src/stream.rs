@@ -2,22 +2,27 @@
 //! batches fanned out to them.
 //!
 //! [`StreamState`] is the per-shard core the publish path appends to and
-//! subscribers register with. Each subscriber has its own bounded queue and
-//! [`SubQueuePolicy`] decides what a full one costs, so a slow subscriber
+//! subscribers register with. Each subscriber has its own queue, bounded by
+//! entries and by bytes, and [`SubQueuePolicy`] decides what a full one costs, so a slow subscriber
 //! never slows the publisher. A [`DeliveryEnvelope`] is shared by every
 //! subscriber and encodes its frame once.
 
+mod budget;
 mod committed;
 mod delivery;
 mod producers;
 mod state;
+mod stats;
 mod subscription;
 
 pub use committed::{ReadBound, ReadBounds};
-pub use delivery::{DeliveryEnvelope, SubQueuePolicy};
+pub use delivery::{DeliveryEnvelope, FrameShape, SubQueuePolicy};
+pub use stats::{SubscriberOwner, SubscriberStats};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
-pub(crate) use committed::{HeldBatch, ReadSource};
+pub use budget::HeldBytes;
+pub(crate) use budget::{ByteBudget, QueueBytes};
+pub(crate) use committed::{HeldBatch, Pass, ReadSource};
 pub(crate) use delivery::QueuedDelivery;
 pub(crate) use producers::Sequenced;
 pub(crate) use state::{StreamState, SubscriberEntry};

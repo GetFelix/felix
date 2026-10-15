@@ -84,6 +84,45 @@ the offset of the last commit the answer reflects. Every commit at or below
 `as_of` is reflected and no later one is, and the events of all of them can
 be read from the stream.
 
+## A commit at an expected offset
+
+`commit_if(tenant, namespace, entity_key, ops, expected_offset)` writes the
+commit only if it would land at exactly `expected_offset`, the shard's next
+offset. It is a compare-and-set on the whole shard: "commit only if nothing
+was appended since I read it". Refused, it writes neither the event nor the
+state, and answers `ConditionalWrite::Refused { tail }` with the shard's next
+offset. Written, it answers `ConditionalWrite::Written { offset }`.
+
+```rust
+use felix_client::{CommitOp, ConditionalWrite};
+
+match client
+    .commit_if(
+        "acme",
+        "games",
+        b"match-7",
+        vec![
+            CommitOp::publish("match-events", r#"{"tick":120}"#),
+            CommitOp::put("match-events", "score", r#"{"red":3,"blue":1}"#),
+        ],
+        next,
+    )
+    .await?
+{
+    ConditionalWrite::Written { offset } => next = offset + 1,
+    ConditionalWrite::Refused { tail } => { /* someone else wrote; re-read from `tail` */ }
+}
+```
+
+The check is the one `publish_if` makes, at the point the broker assigns the
+offset, so it is atomic with the write. It counts every record on the shard,
+plain publishes and a new leader's generation-start record included, which is
+what makes it a fence for a single writer. It does not compare one key's
+version; see below. `ClusterClient::commit_if` follows the leader the way
+`commit` does. The broker must advertise `FEATURE_PUBLISH_CONDITIONAL`, and
+the client refuses to send the request otherwise. See
+[Conditional writes](semantics.md#conditional-writes).
+
 ## What atomic covers
 
 A commit is one record. That one fact carries most of the guarantee, because
@@ -151,6 +190,11 @@ answer and sends it again may write it twice. The idempotent producer's
 batch mark and the commit mark are both kinds of record, and a record is one
 kind, so a commit cannot yet carry a producer sequence.
 
+**Per-key versions.** A commit can be made conditional on the shard's next
+offset, not on the version of a key it writes, so two writers updating
+different keys of one shard refuse each other. Per-key preconditions are
+tracked in [#1051](https://github.com/GetFelix/felix/issues/1051).
+
 **Retention.** State is rebuilt from the retained log. A stream whose
 retention trims its commit records loses the state they wrote. Keep entity
 streams' retention unbounded, or long enough to cover every live key.
@@ -176,8 +220,9 @@ because the state is the log.
 
 ## On the wire and on disk
 
-A commit is a `commit` request, answered with `commit_ok` or `error`; a state
-read is `state_get`, answered with `state_value`. A client sends either only
+A commit is a `commit` request, answered with `commit_ok` or `error`, and
+with `publish_refused` when it carried an `expected_offset` the shard has
+moved past; a state read is `state_get`, answered with `state_value`. A client sends either only
 to a broker that advertised `FEATURE_ATOMIC_COMMIT`. See
 [`protocol.md`](protocol.md).
 

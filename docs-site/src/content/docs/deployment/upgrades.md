@@ -77,6 +77,16 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
+**Catalog feeds on Postgres during a control-plane roll.** A control plane
+hands out each tenant, namespace, stream and cache change's `seq` in commit
+order only when every instance writing to the database takes the feed's lock.
+While older and newer control-plane instances share one database, a write
+through an older instance can still commit out of order, and a broker can skip
+that change until it restarts. The guarantee holds once
+every control-plane instance runs a release that has it, so finish the roll
+before relying on it, and keep catalog writes to a minimum while it is under
+way.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,
@@ -135,10 +145,15 @@ with, and nothing about them moves.
 
 Once finalized, a leader writes a generation-start record whenever it starts
 leading a stream shard (a promotion, either end of a move, a cancelled move
-handing the shard back), and its quorum mark counts only past that record.
+handing the shard back), and its quorum mark counts only past that record. A
+cache leader writes one on the shard's cache log and one on its counter log,
+and each mark counts only past its own log's record.
 That closes a way a promotion could lose an acknowledged record (Raft's
 Figure 8; see the replication design notes). Until it is finalized, brokers
-count as before and keep that exposure.
+count as before and keep that exposure. In-memory streams never write the
+record: their publishes take no log offsets and are not replicated, so there
+is nothing inherited for it to cover, and their shards open on promotion as
+before.
 
 - **Finalize it only after every broker runs a version that supports it.**
   The control plane refuses the finalize otherwise, and the dry run above
@@ -154,7 +169,7 @@ count as before and keep that exposure.
   change.
 - **Subscribers see a gap.** The record takes an offset that no reader
   delivers. A client that negotiated `FLAG_EVENT_BATCH_SKIPPED` (`0x0800`, see
-  [capability negotiation](/felix/architecture/wire-protocol/#capability-negotiation))
+  [capability negotiation](/architecture/wire-protocol/#capability-negotiation))
   is told about it as `skipped_before` on the next batch. An older client that
   treats every offset jump as a drop reports a drop of one at each leadership
   change.
@@ -167,7 +182,8 @@ it holds it at the leader's generation. Neither the control plane's replica
 report nor the leader's lease is on the write's path any more, so a leader
 that loses the control plane keeps acknowledging what its followers hold, and
 a promoted leader always fences a majority before it serves. `Leader`
-streams, caches and reads keep the lease.
+streams and reads keep the lease, and so do caches until `fenced_caches` is
+finalized.
 
 - **Finalize `generation_start` first, or in the same change window.**
   `majority_ack` has no effect until both are finalized.
@@ -229,6 +245,74 @@ by the same round before it is acknowledged.
   the lease after the finalize, the faster path that is only as safe as the
   clocks and the lease margins.
 
+#### `publisher_principal`
+
+Once finalized, a durable stream stores the principal that published each
+record, and subscribers and consumer groups that ask are told it (see
+[Who published an event](../../api/broker-api/#who-published-an-event)).
+
+- **It is the one-way step.** A record with its publisher is storage format
+  v6, which an older broker refuses to open, and the feature is what lets a
+  broker write one. Take a backup first.
+- **Replication carries it.** A follower that predates the feature refuses a
+  batch with publishers, which is why it waits for the whole fleet.
+- **Cost.** Each record grows by its publisher's length plus one byte: about
+  65 bytes for a 64-character principal id. A record from a connection with no
+  principal grows by nothing.
+- **A single broker** has no fleet; `FELIX_RECORD_PUBLISHERS=true` turns it on
+  there, with the same one-way step.
+- **What clients see.** Nothing unless they ask. A client that asked gets the
+  publisher on records written after the finalize, and none on older ones.
+
+#### `group_cursor_dependencies`
+
+Once finalized, each consumer-group cursor records the dead letters it passed
+records on, and a broker puts a cursor whose dead letters it no longer has
+back where one stands before it serves the shard. That closes a crash that
+keeps the cursor log's tail and loses the dead-letter log's, which otherwise
+skips a record.
+
+- **It is the one-way step for consumer groups.** A cursor written this way
+  is 33 bytes, and an older broker refuses to read it: its groups on that
+  shard fail until it is upgraded again. Take a backup first.
+- **A single broker** writes them from the start.
+- **What clients see.** Nothing, unless a crash or failover left a cursor
+  without its dead letter: the group then redelivers from where it last
+  stood instead of skipping.
+
+#### `fenced_caches`
+
+`majority_ack` for caches. Once finalized, together with `majority_ack` and
+`generation_start`, a replicated `Quorum` cache acknowledges a put, delete or
+counter add as soon as a majority of its replicas has answered that it holds
+it at the leader's generation, without the report or the lease. A promoted
+cache shard never opens on the lease: it fences a majority on its cache log
+and its counter log, and takes the furthest ahead of each, before it serves.
+
+Before the finalize, a broker of this build already fences a promoted cache
+shard whenever every replica offers the `CACHE_FENCE` capability, and opens
+it on the lease otherwise, but cache writes are still acknowledged on the
+report and the lease. A broker of an older build can be promoted to a cache
+shard without fencing it, which is why the lease stays until every broker
+fences caches.
+
+- **Finalize `generation_start` and `majority_ack` first, or in the same
+  change window.** `fenced_caches` has no effect until all three are
+  finalized.
+- **Upgrade every control-plane instance first.** An older control plane
+  rebuilds a failed-over `Quorum` cache's replica set instead of keeping it,
+  so the promoted leader's fence could open without a write the old set
+  acknowledged, as for `majority_ack` and streams.
+- **Every broker must fence on promotion.** A broker running with
+  `FELIX_INTERNAL_FENCE=false` does not report `fenced_caches`, so the dry run
+  names it and the finalize is refused until it runs with the fence.
+- **Nothing changes on the wire or on disk.** A cache shard's logs already
+  get their generation-start records once `generation_start` is finalized.
+- **What clients see.** A cache write to a leader that has been replaced but
+  has not heard yet times out as "unknown" rather than being refused for a
+  lapsed lease, as a `Quorum` publish does under `majority_ack`. A promoted
+  cache shard waits for a majority of its replicas rather than opening alone.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -256,13 +340,30 @@ Two things soften it, and neither is a rollback path:
   short, or fails its checksum reads as empty rather than failing, which costs
   automatic divergence repair and never a record.
 
+Shard state files beside the segments are not versioned with them. The
+`ballot` file a replica keeps from this release on, naming the leader it
+accepted its generation from, is new: an older build ignores it and opens the
+shard as before, so rolling back is safe. Rolling forward again, the first
+leader to reach a replica at its accepted generation is recorded as the one it
+accepted.
+
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 4 but writes 3, which the previous release
-reads, so upgrading to it is still reversible. It writes a v4 segment only
-for a generation-start record, and only once `generation_start` is finalized
-(see [`generation_start`](#generation_start) above), so that finalize is the one-way step.
+The current build reads format 6 but writes 3, which the previous release
+reads, so upgrading to it is still reversible. It moves a log to a newer
+version only to hold a record that needs it, and writes each such record only
+once something enables it: a v4 segment for a generation-start record, once
+`generation_start` is finalized (see [`generation_start`](#generation_start)
+above); v5 for an atomic commit, once `atomic_commit` is; and v6 for a record
+with its publisher, once `publisher_principal` is, or on a single broker with
+`FELIX_RECORD_PUBLISHERS=true` (see
+[`publisher_principal`](#publisher_principal)). Each of those is the one-way
+step. Consumer-group cursors are not in the segment format but have a layout
+of their own: a cluster moves to the newer one once
+[`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a
+single broker from the start, after which an older build cannot read that
+shard's groups.
 
 ## Upgrade order
 
@@ -303,9 +404,9 @@ finalize it. See the runbook above.
 ## What this does not cover
 
 Topology, install steps and replacing a persistent volume are on
-[Kubernetes Deployment](/felix/deployment/kubernetes/). Adding, draining and
+[Kubernetes Deployment](/deployment/kubernetes/). Adding, draining and
 removing a broker have their own page:
-[Adding, draining and removing brokers](/felix/deployment/scaling/).
+[Adding, draining and removing brokers](/deployment/scaling/).
 
 The two observable checks available during any upgrade:
 
@@ -317,7 +418,7 @@ curl -s http://broker:8080/replication/halted | jq
 felix-broker --print-config
 ```
 
-See [Observability](/felix/features/observability/) for what to watch while a
+See [Observability](/features/observability/) for what to watch while a
 rollout is in progress.
 
 ### A note on credentialed forwards

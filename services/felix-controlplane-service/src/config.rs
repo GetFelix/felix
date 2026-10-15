@@ -62,7 +62,6 @@ const DEFAULT_PG_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_PG_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_PG_ACQUIRE_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_BOOTSTRAP_BIND_ADDR: &str = "127.0.0.1:9095";
-const DEFAULT_OIDC_ALLOWED_ALGORITHMS: [Algorithm; 1] = [Algorithm::ES256];
 
 /// Everything the control plane is configured with.
 #[derive(Debug, Clone)]
@@ -112,7 +111,7 @@ impl ControlPlaneConfig {
         if let Ok(path) = std::env::var("FELIX_CONTROLPLANE_CONFIG") {
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("read FELIX_CONTROLPLANE_CONFIG: {path}"))?;
-            let override_cfg: ControlPlaneConfigOverride = serde_yaml_ng::from_str(&contents)
+            let override_cfg: ControlPlaneConfigOverride = felix_common::yaml::from_str(&contents)
                 .with_context(|| "parse control plane config yaml")?;
             config.apply(override_cfg)?;
         }
@@ -139,6 +138,16 @@ impl ControlPlaneConfig {
                 ));
             }
             raft.validate()?;
+        }
+        // Minting for any principal without an IdP is a development shortcut,
+        // and only a loopback listener keeps it on the developer's machine.
+        if self.bootstrap.dev_tokens
+            && !(self.bootstrap.enabled && self.bootstrap.bind_addr.ip().is_loopback())
+        {
+            return Err(anyhow!(
+                "FELIX_BOOTSTRAP_DEV_TOKENS needs FELIX_BOOTSTRAP_ENABLED and a loopback \
+                 FELIX_BOOTSTRAP_BIND_ADDR"
+            ));
         }
         if self.bootstrap.enabled && self.bootstrap.token.is_none() {
             return Err(anyhow!(

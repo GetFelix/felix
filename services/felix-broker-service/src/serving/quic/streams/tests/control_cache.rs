@@ -53,8 +53,10 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
     drop(out_ack_rx);
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -72,9 +74,7 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -250,8 +250,10 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         .expect("fill channel");
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -269,9 +271,7 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         Arc::clone(&ack_timeout_state),
         cancel_tx.clone(),
         cancel_rx.clone(),
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx.clone(),
-        Duration::from_millis(10),
+        commit_acks.clone(),
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -302,9 +302,7 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -371,8 +369,10 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -390,9 +390,7 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(8)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -468,8 +466,10 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -487,9 +487,7 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -538,8 +536,10 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -557,9 +557,7 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -610,8 +608,10 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
     tokio::spawn(async move { while out_ack_rx.recv().await.is_some() {} });
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
-    let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(8)));
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
@@ -629,9 +629,7 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
         ack_timeout_state,
         cancel_tx,
         cancel_rx,
-        Arc::new(Semaphore::new(1)),
-        ack_waiter_tx,
-        Duration::from_millis(10),
+        commit_acks,
         &mut scratch,
         Default::default(),
         Default::default(),
@@ -759,5 +757,212 @@ async fn control_loop_refuses_a_watch_with_an_ambiguous_filter() -> Result<()> {
         })
         .count();
     assert_eq!(refusals, 2, "both shapes must be refused");
+    Ok(())
+}
+
+/// **A `group_poll` naming a consumer longer than the cap is refused** with an
+/// error that says so, before it reaches the group. Each claim records its
+/// holder, so an uncapped name would cost its length per record handed out.
+#[tokio::test]
+async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let auth = auth_fixture("t1", vec!["group.consume:stream:t1/*/*".to_string()]);
+    let poll = |consumer: String, request_id| {
+        Ok(Some(frame_from_message(Message::GroupPoll {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            group: "workers".to_string(),
+            max_records: 10,
+            wait_ms: 0,
+            request_id,
+            consumer: Some(consumer),
+            reclaim: true,
+            visibility_ms: 0,
+        })))
+    };
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_message(&auth)))),
+        poll("w".repeat(129), 1),
+        poll(String::new(), 2),
+        Ok(None),
+    ];
+    let (result, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(result, "a refused poll leaves the stream open");
+    let refusals: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Outgoing::Message(Message::Error { message, .. }) => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refusals.len(), 2, "both polls are refused");
+    for (index, message) in refusals.iter().enumerate() {
+        assert!(
+            message.contains("group consumer name must be 1 to 128 bytes"),
+            "refusal {index} does not name the limit"
+        );
+    }
+    Ok(())
+}
+
+/// A conditional put applies once, a get reports the version only to a
+/// client that offered the bit, and a delete names the version it removes.
+#[tokio::test]
+async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_cache(
+            "t1",
+            "default",
+            "leases",
+            felix_broker::CacheMetadata::default(),
+        )
+        .await?;
+    // Versions start from the broker's start time, so learn where they are.
+    broker
+        .cache()
+        .put(
+            "t1",
+            "default",
+            "leases",
+            0,
+            "probe",
+            Bytes::from_static(b"p"),
+            None,
+        )
+        .await?;
+    let first = broker
+        .cache()
+        .get_versioned("t1", "default", "leases", 0, "probe")
+        .await?
+        .expect("probe written")
+        .version
+        + 1;
+    let auth = auth_fixture("t1", default_perms());
+    let put_if = |request_id| {
+        Ok(Some(frame_from_message(Message::CachePutIf {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            value: Bytes::from_static(b"worker-1"),
+            ttl_ms: None,
+            condition: felix_wire::CacheCondition::Absent,
+            request_id,
+        })))
+    };
+    let delete_if = |version, request_id| {
+        Ok(Some(frame_from_message(Message::CacheDeleteIf {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            version,
+            request_id,
+        })))
+    };
+    let get = Ok(Some(frame_from_message(Message::CacheGet {
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        cache: "leases".to_string(),
+        key: "endpoint-7".to_string(),
+        request_id: Some(3),
+    })));
+    let frames = vec![
+        Ok(Some(frame_from_message(Message::Auth {
+            tenant_id: auth.tenant_id.clone(),
+            token: auth.token.clone(),
+            client_flags: Some(0),
+            client_features: Some(felix_wire::FEATURE_CACHE_CONDITIONAL),
+            client_features_hi: None,
+        }))),
+        put_if(1),
+        put_if(2),
+        get,
+        delete_if(99, 4),
+        delete_if(first, 5),
+        Ok(None),
+    ];
+    let (result, messages) = run_control_loop_with_frames(
+        Arc::clone(&broker),
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(result);
+    let answers: Vec<&Message> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Outgoing::CacheMessage(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    let result = |applied, version, request_id| Message::CacheConditionResult {
+        applied,
+        version,
+        request_id,
+    };
+    assert_eq!(answers[0], &result(true, Some(first), 1));
+    assert_eq!(answers[1], &result(false, Some(first), 2));
+    assert!(matches!(
+        answers[2],
+        Message::CacheValue {
+            version: Some(version),
+            ..
+        } if *version == first
+    ));
+    assert_eq!(answers[3], &result(false, Some(first), 4));
+    assert_eq!(answers[4], &result(true, None, 5));
+
+    // A client that did not offer the bit gets the answer it always got.
+    broker
+        .cache()
+        .put(
+            "t1",
+            "default",
+            "leases",
+            0,
+            "endpoint-7",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await?;
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_message(&auth)))),
+        Ok(Some(frame_from_message(Message::CacheGet {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            request_id: Some(6),
+        }))),
+        Ok(None),
+    ];
+    let (_, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Outgoing::CacheMessage(Message::CacheValue {
+            value: Some(_),
+            version: None,
+            ..
+        })
+    )));
     Ok(())
 }

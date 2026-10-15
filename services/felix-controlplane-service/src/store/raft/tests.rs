@@ -52,7 +52,8 @@ async fn satisfies_the_node_store_contract() {
     let store = single_node_store(dir.path()).await;
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
-    crate::store::contract::nodes::run_fleet_contract(store).await;
+    crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
+    crate::store::contract::suspicions::run_suspicion_contract(store).await;
 }
 
 #[tokio::test]
@@ -69,6 +70,14 @@ async fn satisfies_the_signing_key_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     crate::store::contract::signing_keys::run_signing_key_contract(store).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_resources_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::resources::run_resources_contract(store.clone()).await;
+    crate::store::contract::resources::run_resources_race_contract(store, 20).await;
 }
 
 #[tokio::test]
@@ -108,6 +117,13 @@ async fn satisfies_the_refresh_token_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_revocation_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::revocations::run_revocation_contract(store).await;
 }
 
 /// A snapshot carries the token and holder, so a replica restored from one
@@ -194,28 +210,73 @@ async fn ensure_signing_keys_never_overwrites() {
     );
 }
 
-/// A peer that answers only `standing`, reporting `version` — or, at 0,
-/// nothing, as a build from before metadata versions does.
+/// A peer that answers `standing`, reporting `version` — or, at 0,
+/// nothing, as a build from before metadata versions does. It accepts every
+/// append so the leader has nothing to retry.
 async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr").to_string();
+    let app = axum::Router::new()
+        .route(
+            "/internal/raft/append-entries",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({ "Ok": "Success" })) }),
+        )
+        .route(
+            "/internal/raft/standing",
+            axum::routing::get(move || {
+                let version = version.load(std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    axum::Json(if version == 0 {
+                        serde_json::json!({ "last_log_index": null })
+                    } else {
+                        serde_json::json!({ "last_log_index": null, "version": version })
+                    })
+                }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    addr
+}
+
+/// A learner that answers every append with an error is retried with a
+/// backoff, not in a loop: a dead member must not cost the leader a busy
+/// stream of failed RPCs.
+#[tokio::test]
+async fn a_failing_learner_is_not_retried_in_a_loop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let appends = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let counted = Arc::clone(&appends);
     let app = axum::Router::new().route(
-        "/internal/raft/standing",
-        axum::routing::get(move || {
-            let version = version.load(std::sync::atomic::Ordering::SeqCst);
-            async move {
-                axum::Json(if version == 0 {
-                    serde_json::json!({ "last_log_index": null })
-                } else {
-                    serde_json::json!({ "last_log_index": null, "version": version })
-                })
-            }
+        "/internal/raft/append-entries",
+        axum::routing::post(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::NOT_FOUND }
         }),
     );
     tokio::spawn(async move { axum::serve(listener, app).await });
-    addr
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add learner");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let sent = appends.load(Ordering::SeqCst);
+    assert!(sent > 0, "the leader never tried the learner");
+    // About six with a 50 ms heartbeat; a loop without backoff sends
+    // hundreds.
+    assert!(
+        sent < 50,
+        "{sent} appends to a failing learner in one second"
+    );
 }
 
 /// With a member that predates the newer commands, the leader proposes
@@ -459,10 +520,10 @@ async fn a_zone_is_kept_only_once_every_member_has_zones() {
     }
 }
 
-/// A member before halted copies would drop them from a report it applies.
-/// So while one is in the group the report is recorded without them, and it
-/// is not refused: placement needs the rest of it. Once every member has the
-/// level, halts are kept.
+/// A member before halted copies would drop them from a report it applies,
+/// and the same for counter positions. So while one is in the group the
+/// report is recorded without them, and it is not refused: placement needs
+/// the rest of it. Once every member has the level, both are kept.
 #[tokio::test]
 async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     use crate::model::{
@@ -502,6 +563,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         .await
         .expect("assign");
     let report = ReplicaReport {
+        counter_offsets: [("broker-y".to_string(), 7)].into(),
         key: key.clone(),
         generation: assigned.generation,
         caught_up: Default::default(),
@@ -537,6 +599,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         crate::store::ReportWrite::Stored
     );
     assert!(held().await.halted.is_empty());
+    assert!(held().await.counter_offsets.is_empty());
 
     version.store(
         crate::store::raft::command::METADATA_VERSION,
@@ -548,7 +611,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             .record_replica_report(report.clone(), "broker-x")
             .await
             .expect("record");
-        if held().await.halted.contains_key("broker-y") {
+        let held = held().await;
+        if held.halted.contains_key("broker-y") && held.counter_offsets.contains_key("broker-y") {
             break;
         }
         assert!(
@@ -557,4 +621,211 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// A member before pair narrowing would drop `permissions` from a refresh
+/// record and refresh the chain by `requested: []` alone. The record is
+/// refused until every member has the level; one without pairs is not held up.
+#[tokio::test]
+async fn pair_narrowing_waits_for_every_member() {
+    use crate::auth::refresh_token::Narrowing;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 4).await;
+    let record = |permissions: Option<Vec<String>>| {
+        let (mut record, _) = crate::auth::refresh::issue(
+            "t1",
+            "p:dev",
+            Vec::new(),
+            None,
+            1,
+            Duration::from_secs(60),
+        );
+        record.narrowing = Some(Narrowing {
+            requested: Some(Vec::new()),
+            resources: None,
+            permissions,
+            audience: "felix-broker".to_string(),
+            may_act: None,
+        });
+        record
+    };
+    let pairs = Some(vec!["stream.publish:stream:t1/rooms/a".to_string()]);
+
+    let refused = store.insert_refresh_token(record(pairs.clone())).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .insert_refresh_token(record(None))
+        .await
+        .expect("a record without pairs");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .insert_refresh_token(record(pairs.clone()))
+        .await
+        .is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pairs still refused after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A member before `may_act` would drop it from a refresh record, and the
+/// chain's refreshed tokens could no longer be delegated by the gateway the
+/// exchange named. Refused until every member has the level.
+#[tokio::test]
+async fn a_may_act_record_waits_for_every_member() {
+    use crate::auth::refresh_token::Narrowing;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 5).await;
+    let record = |may_act: Option<&str>| {
+        let (mut record, _) = crate::auth::refresh::issue(
+            "t1",
+            "p:dev",
+            Vec::new(),
+            None,
+            1,
+            Duration::from_secs(60),
+        );
+        record.narrowing = Some(Narrowing {
+            requested: None,
+            resources: None,
+            permissions: None,
+            audience: "felix-broker".to_string(),
+            may_act: may_act.map(str::to_string),
+        });
+        record
+    };
+
+    let refused = store.insert_refresh_token(record(Some("p:gateway"))).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .insert_refresh_token(record(None))
+        .await
+        .expect("a record without may_act");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .insert_refresh_token(record(Some("p:gateway")))
+        .await
+        .is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "may_act still refused after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Revocation cutoffs are read on the leader, so a member that has not
+/// applied a revocation yet still sees it. Modelled with a second store over
+/// the same group whose own state is empty, as a lagging follower's would be.
+#[tokio::test]
+async fn revocation_cutoffs_are_read_on_the_leader() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leader = single_node_store(dir.path()).await;
+    leader
+        .revoke_principals("t1", vec!["p:gateway".to_string()], 1_000)
+        .await
+        .expect("revoke");
+    let empty = Arc::new(MetadataStateMachine::new(Arc::new(InMemoryStore::new(
+        StoreConfig {
+            changes_limit: 100,
+            change_retention_max_rows: Some(1_000),
+        },
+    ))));
+    let behind = RaftStore::new(leader.handle.clone(), empty);
+    assert_eq!(
+        behind
+            .principal_revoked_at("t1", "p:gateway")
+            .await
+            .expect("read"),
+        Some(1_000)
+    );
+}
+
+/// With a member that predates the combined entries, an auth change and its
+/// revocation, and a refresh rotation, still go through as the separate
+/// entries that member can apply.
+#[tokio::test]
+async fn combined_writes_fall_back_below_their_level() {
+    use crate::auth::rbac::policy_store::PolicyRule;
+    use crate::auth::refresh_token::RefreshTokenTake;
+    use crate::store::{AuthChange, Revocation};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, _version) = store_with_member_at(dir.path(), 8).await;
+    let policy = PolicyRule {
+        subject: "p:alice".to_string(),
+        object: "tenant:t1".to_string(),
+        action: "stream.publish".to_string(),
+    };
+    store
+        .add_rbac_policy("t1", policy.clone())
+        .await
+        .expect("policy");
+    store
+        .change_auth(
+            "t1",
+            AuthChange::RemovePolicy(policy),
+            Some(Revocation {
+                principal_ids: vec!["p:alice".to_string()],
+                revoked_at: 100,
+            }),
+        )
+        .await
+        .expect("change");
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "p:alice")
+            .await
+            .expect("read"),
+        Some(100)
+    );
+
+    let (token, _) =
+        crate::auth::refresh::issue("t1", "p:alice", vec![], None, 1, Duration::from_secs(60));
+    let (next, _) = crate::auth::refresh::issue(
+        "t1",
+        "p:alice",
+        vec![],
+        Some(token.family_id.clone()),
+        1,
+        Duration::from_secs(60),
+    );
+    let next_id = next.token_id.clone();
+    store
+        .insert_refresh_token(token.clone())
+        .await
+        .expect("insert");
+    let take = store
+        .rotate_refresh_token("t1", &token.token_id, 1, next)
+        .await
+        .expect("rotate");
+    assert!(matches!(take, RefreshTokenTake::Taken(_)), "{take:?}");
+    assert!(
+        store
+            .peek_refresh_token("t1", &next_id)
+            .await
+            .expect("peek")
+            .is_some()
+    );
 }

@@ -40,17 +40,41 @@ fn preallocate_leaves_the_logical_length_alone() {
     let mut file = File::create(&path).expect("create");
     file.write_all(b"hi").expect("write");
 
-    preallocate(&file, 1024 * 1024).expect("preallocate");
+    preallocate(&file, 0, 1024 * 1024).expect("preallocate");
     // Reserving blocks must not make the file look longer, or recovery would
     // read reserved space as a torn record tail.
     assert_eq!(file.metadata().expect("meta").len(), 2);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn extending_a_reservation_adds_blocks_but_not_length() {
+    use std::os::unix::fs::MetadataExt;
+
+    const MIB: u64 = 1024 * 1024;
+    let dir = tempdir().expect("dir");
+    let mut file = File::create(dir.path().join("f")).expect("create");
+    file.write_all(b"hi").expect("write");
+    let allocated = |file: &File| file.metadata().expect("meta").blocks() * 512;
+
+    preallocate(&file, 0, MIB).expect("preallocate");
+    let first = allocated(&file);
+    preallocate(&file, MIB, 3 * MIB).expect("extend");
+    let second = allocated(&file);
+
+    assert_eq!(file.metadata().expect("meta").len(), 2);
+    assert!(first >= MIB, "the first reservation took {first} bytes");
+    assert!(
+        second >= 4 * MIB,
+        "the extension took {second} bytes in all"
+    );
 }
 
 #[test]
 fn preallocate_of_zero_is_a_no_op() {
     let dir = tempdir().expect("dir");
     let file = File::create(dir.path().join("f")).expect("create");
-    preallocate(&file, 0).expect("preallocate");
+    preallocate(&file, 0, 0).expect("preallocate");
 }
 
 #[test]

@@ -17,6 +17,7 @@ impl Drop for EnvGuard {
         unsafe {
             std::env::remove_var("FELIX_PUB_CONN_POOL");
             std::env::remove_var("FELIX_PUB_STREAMS_PER_CONN");
+            std::env::remove_var("FELIX_PUB_SHARD_STREAMS");
             std::env::remove_var("FELIX_CACHE_CONN_POOL");
             std::env::remove_var("FELIX_CACHE_STREAMS_PER_CONN");
             std::env::remove_var("FELIX_EVENT_CONN_POOL");
@@ -31,6 +32,8 @@ pub(crate) fn set_client_env_with_event_pool(event_pool: usize) -> EnvGuard {
     unsafe {
         std::env::set_var("FELIX_PUB_CONN_POOL", "1");
         std::env::set_var("FELIX_PUB_STREAMS_PER_CONN", "1");
+        // The stub brokers serve one stream per connection: the pool's.
+        std::env::set_var("FELIX_PUB_SHARD_STREAMS", "0");
         std::env::set_var("FELIX_CACHE_CONN_POOL", "1");
         std::env::set_var("FELIX_CACHE_STREAMS_PER_CONN", "1");
         std::env::set_var("FELIX_EVENT_CONN_POOL", event_pool.to_string());

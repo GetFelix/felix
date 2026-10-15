@@ -24,6 +24,9 @@ pub async fn write_frame(send: &mut SendStream, message: &InternalMessage) -> Re
 }
 
 /// What arrived on the stream.
+// One per frame read and consumed at once, so boxing the message would only
+// add an allocation per frame.
+#[allow(clippy::large_enum_variant)]
 pub enum Incoming {
     Message(InternalMessage),
     /// A frame whose kind this build does not know, stepped over rather than

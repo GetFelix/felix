@@ -1,23 +1,25 @@
 //! One cache shard: its log, and the index that maps each key to the record
 //! currently defining it.
 //!
-//! The index is derived from the log and never trusted from disk, so it is
-//! rebuilt by replay on first use and caught up whenever records reach the log
-//! by another route.
+//! The index is derived from the log, so it is rebuilt by replay on first use
+//! (from a checked snapshot when compaction left one) and caught up whenever
+//! records reach the log by another route.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard, Notify};
 
 use super::CacheOp;
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::DiskLog;
+use crate::index_snapshot::IndexEntry;
 use crate::log::{AppendOnlyLog, Offset, ReadRange};
 use crate::{Result, StorageError};
 
@@ -25,17 +27,22 @@ use crate::{Result, StorageError};
 ///
 /// Bounds peak memory during a rebuild: a cache far larger than this costs many
 /// reads, not one enormous allocation.
-const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// One cache: its log, and the index derived from it.
 pub(super) struct CacheShard {
     pub(super) label: String,
+    /// The log's directory, where the key index snapshot lives beside it.
+    pub(super) dir: PathBuf,
     pub(super) compactor: Arc<Compactor>,
     /// Set while a background compaction pass runs, so only one does.
     pub(super) compacting: AtomicBool,
     /// Keys with a write staged but not yet applied, and how many. Compaction
     /// must not copy these forward; see `compaction::copy_forward`.
     pub(super) keys_in_flight: SyncMutex<HashMap<String, usize>>,
+    /// Woken whenever a key leaves `keys_in_flight`, for a conditional write
+    /// waiting to read the key's settled state.
+    pub(super) key_settled: Notify,
     /// Guards the log handle and the index. A write holds it twice, briefly —
     /// once to stage (claim an offset, no fsync) and once to apply — never
     /// across the fsync, which is what lets concurrent writers share one
@@ -57,9 +64,11 @@ impl CacheShard {
     /// Rebuild the index by replaying the log.
     ///
     /// Run once, lazily, the first time a cache is touched after opening. The
-    /// index is derived and never trusted from disk -- the same rule the segment
-    /// indexes follow, and for the same reason: anything recomputable from the
-    /// log must be, because then it cannot be stale in a way that matters.
+    /// index is derived -- the same rule the segment indexes follow, and for
+    /// the same reason: anything recomputable from the log must be, because
+    /// then it cannot be stale in a way that matters. A snapshot left by the
+    /// last compaction only moves where the replay starts, and only once it
+    /// has been checked against the log.
     pub(super) async fn ensure_index(&self, state: &mut ShardState) -> Result<()> {
         if state.closed {
             return Err(StorageError::Closed(self.label.clone()));
@@ -108,7 +117,10 @@ impl CacheShard {
         }
         let (mut offset, mut index) = match resume {
             Some(covered) => (covered, std::mem::take(&mut state.index)),
-            None => (state.log.base_offset(), Index::default()),
+            None => match self.restore(state, stop).await {
+                Some(index) => (index.covered_through.unwrap_or(stop), index),
+                None => (state.log.base_offset(), Index::default()),
+            },
         };
         'scan: while offset < stop {
             let records = state
@@ -141,23 +153,25 @@ impl CacheShard {
                     CacheOp::Put {
                         key,
                         expires_at_millis,
+                        version,
                         ..
                     } => {
                         if let Some(previous) = index.entries.insert(
                             key,
-                            Entry {
+                            IndexEntry {
                                 offset: record.offset,
+                                version: version.unwrap_or(record.offset),
                                 expires_at_millis,
-                                bytes,
+                                bytes: bytes as u32,
                             },
                         ) {
-                            index.live_bytes -= previous.bytes;
+                            index.live_bytes -= u64::from(previous.bytes);
                         }
                         index.live_bytes += bytes;
                     }
                     CacheOp::Delete { key } => {
                         if let Some(previous) = index.entries.remove(&key) {
-                            index.live_bytes -= previous.bytes;
+                            index.live_bytes -= u64::from(previous.bytes);
                         }
                     }
                 }
@@ -190,21 +204,23 @@ impl CacheShard {
             CacheOp::Put {
                 key,
                 expires_at_millis,
+                version,
                 ..
             } => {
-                let entry = Entry {
+                let entry = IndexEntry {
                     offset,
+                    version: version.unwrap_or(offset),
                     expires_at_millis: *expires_at_millis,
-                    bytes,
+                    bytes: bytes as u32,
                 };
                 if let Some(previous) = state.index.entries.insert(key.clone(), entry) {
-                    state.index.live_bytes -= previous.bytes;
+                    state.index.live_bytes -= u64::from(previous.bytes);
                 }
                 state.index.live_bytes += bytes;
             }
             CacheOp::Delete { key } => {
                 if let Some(previous) = state.index.entries.remove(key) {
-                    state.index.live_bytes -= previous.bytes;
+                    state.index.live_bytes -= u64::from(previous.bytes);
                 }
             }
         }
@@ -214,7 +230,7 @@ impl CacheShard {
     pub(super) async fn read_value(
         &self,
         state: &ShardState,
-        entry: Entry,
+        entry: IndexEntry,
     ) -> Result<Option<Bytes>> {
         Self::read_from(&state.log, &self.label, entry).await
     }
@@ -224,7 +240,7 @@ impl CacheShard {
     pub(super) async fn read_from(
         log: &DiskLog,
         label: &str,
-        entry: Entry,
+        entry: IndexEntry,
     ) -> Result<Option<Bytes>> {
         let records = log
             .read_range(ReadRange {
@@ -246,6 +262,30 @@ impl CacheShard {
             // The index only ever points at a put; a tombstone here means the
             // index and the log disagree, which is a bug rather than a miss.
             CacheOp::Delete { .. } => Err(StorageError::NotFound),
+        }
+    }
+
+    /// The state lock, taken once no write to `key` is staged but unapplied,
+    /// with the index caught up.
+    ///
+    /// The index lags a staged write until its fsync, so a condition checked
+    /// against it while one is in flight could pass for two racers. Writers
+    /// register in `keys_in_flight` under this same lock, so a key absent
+    /// there means the index entry is the latest word on it.
+    pub(super) async fn lock_settled(&self, key: &str) -> Result<MutexGuard<'_, ShardState>> {
+        loop {
+            let settled = self.key_settled.notified();
+            tokio::pin!(settled);
+            // Registered before the check, so a write settling in between
+            // still wakes this one.
+            settled.as_mut().enable();
+            let mut state = self.state.lock().await;
+            self.ensure_index(&mut state).await?;
+            if !self.keys_in_flight.lock().contains_key(key) {
+                return Ok(state);
+            }
+            drop(state);
+            settled.await;
         }
     }
 
@@ -276,6 +316,8 @@ impl Drop for KeyInFlight {
             *count -= 1;
             if *count == 0 {
                 keys.remove(&self.key);
+                drop(keys);
+                self.shard.key_settled.notify_waiters();
             }
         }
     }
@@ -301,12 +343,15 @@ pub(super) struct ShardState {
     /// Set by `LogCache::close_shard`. A caller that found this shard before
     /// the close must not touch the files: they may belong to a newer open.
     pub(super) closed: bool,
+    /// Bumped by `LogCache::forget_index`. A snapshot captured before the bump
+    /// describes records that may be gone, so it is not installed.
+    pub(super) index_epoch: u64,
 }
 
 /// The index over one cache's log, and the accounting compaction needs.
 #[derive(Debug, Default)]
 pub(super) struct Index {
-    pub(super) entries: HashMap<String, Entry>,
+    pub(super) entries: HashMap<String, IndexEntry>,
     /// Bytes held by records the index still points at.
     pub(super) live_bytes: u64,
     /// Payload bytes of every record still in the log, live or not.
@@ -318,22 +363,9 @@ pub(super) struct Index {
     /// an empty log: a shard whose log begins at a trimmed base has no offset
     /// zero to start from.
     pub(super) covered_through: Option<u64>,
-}
-
-/// Where one key's current value lives.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Entry {
-    pub(super) offset: Offset,
-    /// Absolute Unix milliseconds; zero means it never expires.
-    pub(super) expires_at_millis: u64,
-    /// What this record costs on disk, for deciding when to compact.
-    pub(super) bytes: u64,
-}
-
-impl Entry {
-    pub(super) fn is_expired(&self, now_millis: u64) -> bool {
-        self.expires_at_millis != 0 && self.expires_at_millis <= now_millis
-    }
+    /// Where replay started when this index was loaded from a snapshot.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) restored_through: Option<u64>,
 }
 
 pub(super) fn now_millis() -> u64 {

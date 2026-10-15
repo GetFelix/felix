@@ -205,15 +205,16 @@ impl LeaseState {
         self: Arc<Self>,
         shutdown: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
-        let period = (self.usable() / (SAFETY_MARGIN_FRACTION * REFRESH_FRACTION))
-            .max(Duration::from_millis(10));
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(period);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
+                // Re-derived every pass: the broker starts on a placeholder
+                // lease and adopts the control plane's, usually much shorter,
+                // on its first heartbeat.
+                let period = (self.usable() / (SAFETY_MARGIN_FRACTION * REFRESH_FRACTION))
+                    .max(Duration::from_millis(10));
                 tokio::select! {
                     _ = shutdown.cancelled() => return,
-                    _ = ticker.tick() => {}
+                    _ = tokio::time::sleep(period) => {}
                 }
                 if !self.is_valid_now() && self.looks_valid.swap(false, Ordering::AcqRel) {
                     tracing::warn!(

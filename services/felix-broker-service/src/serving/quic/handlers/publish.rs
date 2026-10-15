@@ -16,7 +16,7 @@
 //! - `ack_on_commit = false` → **enqueue-ack**: an ack means “accepted into the ingress queue”.
 //!   Lowest latency, but does not guarantee the publish ultimately commits.
 //! - `ack_on_commit = true` → **commit-ack**: an ack means “the publish job completed/committed”.
-//!   Higher latency; bounded by `ack_waiters` and `ack_waiter_tx` to avoid unbounded in-flight acks.
+//!   Answered by whoever settles the job (see `commit_ack`), bounded by a per-stream permit pool.
 //!
 //! Backpressure strategy:
 //! - The scheduler queue uses `EnqueuePolicy` (Drop/Fail/Wait/Backpressure) to shed load, wait
@@ -29,7 +29,8 @@
 //! Submodules:
 //! - `admission`: byte-budget admission control and the subscription cap.
 //! - `ingress`: bounded enqueue into the scheduler, and depth accounting.
-//! - `ack`: ack envelopes, waiter protocol, and the ack timeout window.
+//! - `ack`: ack envelopes, outbound queue helpers, and the ack timeout window.
+//! - `commit_ack`: commit acks sent by the task that settles the publish, and their timeouts.
 //! - `order`: request-order answers and the publish window for a pipelining stream.
 //! - `route`: whether a publish is served here, forwarded, or refused.
 //! - `stream_cache`: the per-connection cache of resolved stream handles.
@@ -43,6 +44,7 @@
 
 mod ack;
 mod admission;
+mod commit_ack;
 mod control;
 mod ingress;
 mod order;
@@ -53,17 +55,18 @@ mod uni;
 mod worker;
 
 pub(crate) use ack::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, AckWaiterResult, Outgoing,
-    handle_ack_enqueue_result, send_outgoing_best_effort, send_outgoing_critical,
+    AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_best_effort,
+    send_outgoing_critical,
 };
-pub(crate) use admission::{PublishAdmission, SubscriptionLimiter};
+pub(crate) use admission::{ConnLimits, IdentityKey, IdentityLimits, PublishAdmission};
+pub(crate) use commit_ack::CommitAcks;
 pub(crate) use control::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
     handle_publish_batch_message, handle_publish_message, sequence_reuse,
 };
-pub(crate) use ingress::{PublishTarget, decrement_depth, reset_local_depth_only};
+pub(crate) use ingress::{PublishTarget, admit_unqueued, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
-pub(crate) use route::resolve_shard;
+pub(crate) use route::{DeclaredWidth, resolve_shard};
 #[cfg(test)]
 pub(crate) use scheduler::test_channel;
 pub(crate) use stream_cache::StreamHandleCache;
@@ -79,7 +82,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::sync::{Semaphore, oneshot};
+#[cfg(test)]
+use tokio::sync::oneshot;
 
 use super::subscribe::WriterLaneManager;
 use crate::serving::quic::preauth::PreAuthGate;
@@ -99,6 +103,8 @@ use scheduler::PublishScheduler;
 ///   intentionally process-wide (see `build_tracked_publish_context`), but that means nothing
 ///   bounds how much of the shared budget one connection can occupy. `conn_admission` is
 ///   constructed fresh per connection (`handle_connection`) and closes that gap.
+/// - `identity`: the share of this connection's limits held by the identity the stream
+///   authenticated as (see [`IdentityLimits`]).
 #[derive(Clone)]
 pub(crate) struct PublishContext {
     /// Cluster ownership, when this broker is a member.
@@ -126,6 +132,10 @@ pub(crate) struct PublishContext {
     /// How far a majority of each shard's replica set has got, for a write
     /// that must not be acknowledged before it does. `None` off a cluster.
     pub(crate) marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    /// What replication last knew of each shard led here. Nothing on the
+    /// publish path reads it; it rides here with the rest of the cluster view
+    /// for `shard_inspect`.
+    pub(crate) shard_status: Option<Arc<felix_replication::status::ShardStatusBoard>>,
     /// How long such a write waits for its majority before saying it cannot
     /// confirm one.
     pub(crate) quorum_timeout: Duration,
@@ -133,10 +143,10 @@ pub(crate) struct PublishContext {
     pub(crate) wait_timeout: Duration,
     pub(crate) admission: Arc<PublishAdmission>,
     pub(crate) conn_admission: Arc<PublishAdmission>,
-    /// This connection's subscription-count limiter (see [`SubscriptionLimiter`]). Bundled here
-    /// because `PublishContext` is already the per-connection context threaded down to the
-    /// control-stream loop that handles `Subscribe` messages.
-    pub(crate) subscriptions: Arc<SubscriptionLimiter>,
+    /// The subscription cap and publish byte budget of the identity this stream authenticated
+    /// as, a share of the connection's. Until the stream authenticates it is the
+    /// connection's unauthenticated share; the stream loops rebind it on `Auth`.
+    pub(crate) identity: Arc<IdentityLimits>,
     /// This connection's writer-lane manager for subscription delivery (see
     /// [`WriterLaneManager`]). One instance per connection, constructed fresh in
     /// `handle_connection` — see that type's doc comment for why it's no longer a
@@ -159,17 +169,18 @@ pub(crate) struct PublishContext {
     /// Per-tenant publish quotas. Shared by every connection and listener of
     /// the broker; see `serve_with_shutdown`.
     pub(crate) tenant_rates: Arc<crate::serving::limits::TenantRates>,
-    /// This connection's publish window: one permit per acknowledged publish
-    /// a pipelining stream has unanswered. `None` when the broker does not
-    /// pipeline (`publish_window = 0`).
-    pub(crate) publish_window: Option<Arc<Semaphore>>,
+    /// The window each pipelining stream is granted: how many acknowledged
+    /// publishes it may have unanswered. `0` when the broker does not
+    /// pipeline. Every stream gets its own, so a stream stuck behind a stalled
+    /// shard cannot use up the slots the connection's other streams need.
+    pub(crate) publish_window: u32,
 }
 
 impl PublishContext {
     /// Derive this connection's context from the process-wide one.
     ///
     /// Only the per-connection limits are fresh: its slice of the publish byte
-    /// budget, its subscription limiter, and its writer lanes. Everything else —
+    /// budget, its per-identity limits, and its writer lanes. Everything else —
     /// the scheduler, the shared budget, and **the cluster view** — is
     /// carried through.
     ///
@@ -180,14 +191,22 @@ impl PublishContext {
     /// refuses or forwards a shard it does not own.
     pub(crate) fn for_connection(&self, config: &crate::config::BrokerConfig) -> Self {
         Self {
-            conn_admission: Arc::new(PublishAdmission::new(config.pub_conn_inflight_bytes)),
-            subscriptions: Arc::new(SubscriptionLimiter::new()),
+            conn_admission: Arc::new(PublishAdmission::new(config.conn_publish_ceiling())),
+            identity: ConnLimits::new(config).share(IdentityKey::default()),
             lane_manager: WriterLaneManager::new(config),
             preauth: Arc::new(PreAuthGate::new(config)),
-            publish_window: (config.publish_window > 0)
-                .then(|| Arc::new(Semaphore::new(config.publish_window as usize))),
+            publish_window: config.publish_window,
             ..self.clone()
         }
+    }
+
+    /// Move this stream onto the limits of the identity it authenticated as,
+    /// shared with every other stream of the connection that authenticated
+    /// as the same tenant and subject.
+    pub(crate) fn bind_identity(&mut self, auth: &crate::serving::auth::AuthContext) {
+        self.identity = self
+            .identity
+            .rebind(IdentityKey::new(&auth.tenant_id, &auth.subject));
     }
 
     /// Overflow policy for publishes that carry no ack (fire-and-forget).
@@ -245,7 +264,9 @@ pub(crate) type PublishResult = Result<Option<u64>>;
 pub(crate) struct PublishJob {
     pub(crate) target: PublishTarget,
     pub(crate) payloads: Vec<Bytes>,
-    pub(crate) response: Option<oneshot::Sender<PublishResult>>,
+    /// The authenticated principal publishing it.
+    pub(crate) publisher: Option<Bytes>,
+    pub(crate) response: Option<PublishReply>,
     /// The client was told this job succeeded when it was queued. If it then
     /// cannot be written, nobody hears, so it is counted instead.
     pub(crate) acked_on_enqueue: bool,
@@ -255,6 +276,50 @@ pub(crate) struct PublishJob {
     /// The shard's write fence, entered at admission when the publish is
     /// acknowledged before it is written. See `enqueue_publish`.
     pub(crate) fenced: Option<crate::shards::lifecycle::fence::FenceGuard>,
+}
+
+/// Where a settled publish's result goes.
+pub(crate) enum PublishReply {
+    /// Straight to the client, as its ack.
+    Ack(commit_ack::CommitReply),
+    #[cfg(test)]
+    Channel(oneshot::Sender<PublishResult>),
+}
+
+impl PublishReply {
+    pub(crate) fn send(self, result: PublishResult) {
+        match self {
+            PublishReply::Ack(reply) => reply.send(result),
+            #[cfg(test)]
+            PublishReply::Channel(tx) => {
+                let _ = tx.send(result);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<oneshot::Sender<PublishResult>> for PublishReply {
+    fn from(tx: oneshot::Sender<PublishResult>) -> Self {
+        PublishReply::Channel(tx)
+    }
+}
+
+/// Who is publishing: the token a forward carries for the owner to verify,
+/// and the principal a publish written here records.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PublishAs {
+    pub(crate) credential: String,
+    pub(crate) publisher: Option<Bytes>,
+}
+
+impl From<String> for PublishAs {
+    fn from(credential: String) -> Self {
+        Self {
+            credential,
+            publisher: None,
+        }
+    }
 }
 
 /// Count a publish that arrived on the JSON encoding.

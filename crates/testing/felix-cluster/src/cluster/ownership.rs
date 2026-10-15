@@ -307,7 +307,7 @@ impl Cluster {
         let response = self
             .http
             .get(url)
-            .bearer_auth(&self.admin_token)
+            .bearer_auth(self.admin_token())
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;

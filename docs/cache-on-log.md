@@ -69,15 +69,28 @@ this is a durable format and a reader years from now has only these bytes.
 - `key_len` bounds the key so the value needs no length of its own. It is
   simply the rest of the record, which the segment framing already delimits.
 
+A put written by compaction is version `2`: the same fields, with a `u64`
+entry version between `key_len` and the key. Every other record is version
+`1`, so a client's write is byte-for-byte what it always was. See
+[conditional writes](#conditional-writes) for why the copy carries it.
+
 An unknown version is refused rather than guessed at, for the same reason an
-unknown frame flag is: a misread record is worse than an unreadable one.
+unknown frame flag is: a misread record is worse than an unreadable one. That
+cuts both ways: a broker that predates version `2` refuses a log compaction has
+copied into, so a node cannot be downgraded past this once it has compacted.
 
 ## The index is derived, never trusted
 
-`key -> (offset, expires_at)`, held in memory and rebuilt by replaying the log
+`key -> (offset, version, expires_at)`, held in memory and rebuilt by replaying the log
 when the cache is opened. This is the same rule the segment indexes follow, and
 for the same reason: anything that can be recomputed from the log must be,
 because then it can never be stale in a way that matters.
+
+Each compaction pass writes the index to `keys.idx` beside the log, and an open
+loads it and replays only the records past it. It is checked against the log
+first (checksum, the offsets it covers, the last record it saw), and one that
+does not match is ignored for a full replay. See
+[storage-format.md](storage-format.md#keysidx-a-caches-key-index).
 
 **The index holds offsets, not values.** The log is the store; memory holds only
 where to look. This costs a read per `get` that a hash map would not pay, and it
@@ -88,10 +101,22 @@ not part of making the claim true.
 
 ## TTL
 
-Checked at read against the record's own `expires_at_millis`, which is lazy
-expiry, the same behaviour the in-memory cache always had. An expired entry is
-reported as absent immediately; the space it occupies is reclaimed by
-compaction.
+Checked at read against the record's own `expires_at_millis`, so an expired
+entry is reported as absent the moment it lapses. Separately, the shard's
+leader writes a delete for each entry whose TTL has passed
+(`LogCache::expire_due`), through the same fence a client's write takes and
+replicated like one. That delete is what tells a watch the entry is gone, and
+lets compaction drop it. It checks the expiry again where it is staged, after
+any write to the key that is staged but not yet applied has applied, so a put
+that refreshed the key after it was found due keeps its value. An in-memory cache still expires lazily only.
+
+The leader's expiry pass runs once a second and writes at most 1024 deletes per
+shard per pass, so under a mass expiry the deletes lag the TTLs by as many
+passes as it takes. The fence and lease are checked before each delete, and a
+pass stops once either says the shard is no longer this broker's to write.
+Expiry is decided by the leader's clock and is permanent once written: a leader
+whose clock jumps forward deletes entries early, and a later fix to the clock
+does not bring them back.
 
 ## Compaction
 
@@ -102,7 +127,7 @@ Compaction copies the live set (the newest surviving record for each key that
 is neither deleted nor expired) forward to the tail, then deletes the sealed
 segments that held only superseded records. **Records are never rewritten**,
 which is the invariant everything in the storage layer rests on: a copy is a new
-put of the same value, and whole segments are dropped from the head, the way
+put of the same value, carrying the original's version, and whole segments are dropped from the head, the way
 retention drops them.
 
 It runs when the log has grown past a multiple of its live bytes, so the cost is
@@ -170,6 +195,42 @@ The feature is advertised by a standalone broker as well as a clustered one.
 Only the cluster-shaped features, topology and redirect, depend on there being
 a cluster to describe.
 
+## Conditional writes
+
+`cache_put_if` writes only if the key is absent or at a given version, and
+`cache_delete_if` deletes only at a given version. Together they are what a
+lease, an idempotency key, or a read-modify-write needs: take the key if
+nobody has it, renew or edit it only if it is still the value you read, and
+release it only if it is still yours.
+
+**A version is the offset of the put that wrote the value.** It is unique in
+the shard and only grows, so a key deleted and written again never gets a
+version it had before, and seeing the same version twice means nothing was
+written in between. Offsets alone would not survive compaction, which copies a
+live value to a new offset, so a copy carries the original version in its
+record (version `2` above) and replay keeps it. A record of version `1` is its
+own offset's version. The in-memory cache keeps one counter for the whole
+store instead.
+
+**The check and the write are one step.** The condition is checked where the
+write is staged, under the shard lock that claims its offset. That alone is not
+enough: the index only learns of a write after its fsync, so a put staged and
+waiting on durability is invisible to it, and two `absent` puts racing on one
+key could both find it absent. So a conditional write first waits until no
+write to its key is staged and unapplied, then checks the index and stages
+under the same lock hold. A write staged after that check lands after it in
+the log, and replay applies them in that order.
+
+An expired entry counts as absent. A refusal reports the key's current version,
+so a caller can retry against it without a read. The answer waits on the same
+durability and, for a quorum cache, the same replication as a plain write,
+applied or not: the version a refusal reports must be one a failover keeps.
+
+It is negotiated (`FEATURE_CACHE_CONDITIONAL`). A forwarded conditional write
+travels as its own internal kind, which an owner that predates it refuses
+rather than serving as an unconditional put; see
+[internal-protocol.md](internal-protocol.md#forwarded-cache-operation).
+
 ## Watch
 
 A key or key prefix can be subscribed to, like etcd's watch, over the cache's own
@@ -191,13 +252,18 @@ log reads. The observer must not block there, so fanout is `try_send` against
 bounded queues, following the same publisher-never-blocks rule stream fanout follows.
 
 **The join is register-before-read.** A watch resuming from an offset registers
-its queue first, then reads the log's tail, then serves `[from_offset, tail)`
-from the log. Registration pins the live edge: every change below the tail is
-on disk and every change at or past it is queued, so the two halves cannot leak
-a write landing in between. It is the same discipline, for the same past defect,
-as the stream resume path. The registration race is closed by offsets: a change
-applied just before the tail was read can arrive both in the replay and on the
-queue, and the queued copy is dropped because its offset is below the tail.
+its queue first, then reads the shard's applied frontier (the log's tail, or
+lower while writes are in flight), then serves `[from_offset, frontier)` from
+the log. Registration pins the live edge: every change below the frontier is
+applied and on disk, and every change at or past it is still to be applied and
+will be queued, so the two halves cannot leak a write landing in between. The
+frontier and not the tail, because a write already in the log but not yet
+applied is in no snapshot, and with the tail as the edge its change would
+arrive below it and be dropped. It is the same discipline, for the same past
+defect, as the stream resume path. The registration race is closed by offsets:
+a change applied just before the frontier was read can arrive both in the
+replay and on the queue, and the queued copy is dropped because its offset is
+below the frontier.
 
 **Falling behind ends the watch, loudly.** A stream subscriber reads a queue
 drop out of a jump in delivered offsets. A *filtered* watch cannot: other
@@ -233,10 +299,12 @@ making the situation legible. Refused together with `from_offset`: the replay
 already reconstructs the state a retained start shortcuts, and serving both
 would deliver every value twice.
 
-**TTL expiry is not a change.** Expiry is lazy and appends nothing, so no event
-is delivered when an entry lapses; the put's `expires_at_millis` travels with
-the event for watchers that care. A watch replaying history also replays writes
-whose TTL has since lapsed, because they are the history.
+**TTL expiry is a change.** When an entry's TTL passes, the shard's leader
+writes a delete for it in its next expiry pass (see [TTL](#ttl): at most 1024
+per shard per pass, so a mass expiry lags), and a watch delivers it like any
+other delete (no value). The put's `expires_at_millis` still travels with the
+put's event. A watch replaying history also replays writes whose TTL has since
+lapsed, followed by their deletes, because they are the history.
 
 **Watches are served where writes are applied.** A watch belongs to the shard's
 owner, and a broker that does not own the shard redirects (`not_leader`) rather
@@ -281,6 +349,17 @@ version bump makes a rolling upgrade impossible.
 forward to the log's tail whenever it is behind, rather than building once and
 trusting itself; without that, a promoted follower answers misses for values it
 is holding on disk.
+
+**A promotion fences both logs.** A promoted cache leader fences a majority of
+the replica set on the cache log and then on the counter log, takes the
+furthest ahead of each, and writes a generation-start record on each before it
+serves, as a stream leader does with its one log. Dropping records from a log,
+whether a follower drops a divergent suffix or a promoted leader takes a longer
+log in place of its own, also drops the cache's index or the counter sums,
+which are rebuilt from the log as it now is; an index still pointing at a
+dropped offset would read whatever record replaced it. With `fenced_caches`
+finalized a `Quorum` cache acknowledges on its followers' answers without the
+lease. See [replication-design.md](replication-design.md#fencing-a-promotion).
 
 ## What this does not do yet
 
