@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792088387070,
+  "lastUpdate": 1792088960650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30264,6 +30264,58 @@ window.BENCHMARK_DATA = {
             "range": "48833.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 839260.06\nmean: 861734.02\nstdev: 48833.81\ncv: 5.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c18cd7e3b942db5fa1c6284409eef8e22673f99d",
+          "message": "fix(placement): fail over on suspicion only with generation_start too (#1247) (#1251)\n\n* fix(placement): fail over on suspicion only with generation_start too (#1247)\n\nPlacement let followers decide once majority_ack and lease_free_reads were\nfinalized, but brokers use both only alongside generation_start. A fleet\nwith the two and not generation_start had brokers on lease acks and lease\nreads while placement promoted a live leader's follower on suspicion.\n\nwith_suspicions now needs all three. The control plane refuses with 409 to\nfinalize majority_ack before generation_start, and lease_free_reads or\nfenced_caches before both (felix_common::fleet::prerequisites); the dry run\nlists them as `requires`. The check is in the REST handler, not the store\napply, so Raft members on different releases cannot apply a finalize\ndifferently; the enabled set only grows, so the check cannot go stale.\n\nSpec-Unaffected: FelixShardSuspicion.cfg already runs with StartRecord and AckByFollowers, and FelixShardSuspicionLease.cfg is the lease-path fleet this closes; only their comments and test citations change.\n\n* fix(placement): trust suspicion only against a leader reporting by round (#1247)\n\nThe enabled fleet set says what brokers may do, not what a given leader\ndoes. A broker started with FELIX_QUORUM_READS=lease still advertised\nlease_free_reads, and every broker learns a finalize only on its next\nheartbeat, so placement could replace a leader while it still served\ngroup writes and state reads on a valid lease.\n\nEach leader's replica report now carries by_round, true only while the\nshard is acknowledged by its followers and its Quorum reads go by a\nround. Placement acts on suspicion only when the leader's fresh report at\nthe assignment's generation says so; a missing field reads as the lease.\nThe field is serde-default on the wire and in the model, Postgres\nmigration 0029, and Raft metadata level 11, dropped by the proposer\nbelow that level. A lease-reads broker no longer reports\nlease_free_reads.\n\nSpec-Unaffected: FelixShardSuspicion.cfg already runs every leader on the\nfollower-acked, by-round path; this makes the implementation hold that\nassumption per leader. FelixShardSuspicionLease.cfg is the excluded case.\n\n* fix(placement): tie by_round to the leader's incarnation and its own report (#1247)\n\nA restarted leader serves on its lease until its first replication pass,\nwhile its last report still says by_round, so placement now trusts the flag\nonly from the node's current incarnation. Brokers send their registered\nincarnation with reports. Under Postgres the flag counts only with the\nreport that set it, so an older member's upsert cannot leave it behind. The\nregistration refusal for lease_free_reads names FELIX_QUORUM_READS.\n\n* fix(broker): refuse lease-only group writes before the first replication pass (#1247)\n\nA placement pass that loaded a leader's node incarnation before the leader\nrestarted and registered again could still promote on the old process's\nby_round report, while the new process held a lease and had not yet passed\nover the shard. Group writes were the one thing it acknowledged on the lease\nalone. In a fleet that reads by round they now wait for replication's first\npass at the generation.\n\n* fix(broker): count a replication pass only once registration set the fleet (#1247)\n\nReplication starts before the broker registers, so its first pass can see an\nempty fleet set and mark the shard passed. After registration adopts a fleet\nthat reads by round and the lease is granted, that pass let group writes\nthrough on the lease while placement could still promote on the previous\nprocess's report. A pass now reads the fleet once and counts as passed only\nwhen that read came after this process's registration answer.",
+          "timestamp": "2026-10-15T11:25:03-07:00",
+          "tree_id": "42057df46da133f52b31dd684ee4a2c007fcf913",
+          "url": "https://github.com/GetFelix/felix/commit/c18cd7e3b942db5fa1c6284409eef8e22673f99d"
+        },
+        "date": 1792088960115,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 336631.97,
+            "range": "6824.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336631.97\nmean: 337691.00\nstdev: 6824.32\ncv: 2.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 336631.97,
+            "range": "6824.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336631.97\nmean: 337691.00\nstdev: 6824.32\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80924.16,
+            "range": "692.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80924.16\nmean: 81155.68\nstdev: 692.74\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809241.57,
+            "range": "6927.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809241.57\nmean: 811556.75\nstdev: 6927.45\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
