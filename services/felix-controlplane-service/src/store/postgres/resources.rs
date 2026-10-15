@@ -1,7 +1,7 @@
 //! Streams and caches created together, in one transaction.
 use super::caches::insert_cache;
 use super::streams::insert_stream;
-use super::{PostgresStore, ensure_namespace};
+use super::{CatalogFeed, PostgresStore, begin_feed_write, ensure_namespace};
 use crate::model::{Cache, Stream};
 use crate::store::StoreResult;
 
@@ -12,7 +12,8 @@ pub(super) async fn create_resources(
     streams: Vec<Stream>,
     caches: Vec<Cache>,
 ) -> StoreResult<()> {
-    let mut tx = store.pool.begin().await?;
+    let (_gates, mut tx) =
+        begin_feed_write(store, &[CatalogFeed::Streams, CatalogFeed::Caches]).await?;
     let mut parents: Vec<(&str, &str)> = streams
         .iter()
         .map(|s| (s.tenant_id.as_str(), s.namespace.as_str()))

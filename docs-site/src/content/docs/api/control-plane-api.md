@@ -534,6 +534,14 @@ credential (`FELIX_NODE_TOKEN`), the same one that reads the shard-assignment
 watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
 
+A create, update or delete of a tenant, namespace, stream or cache can answer
+`503`. Code `busy` means other writes to the same feed held it for more than
+5 s, for example a large tenant delete, and nothing was written, so retry it.
+Code
+`unavailable` is Raft: no quorum committed the write in time and it may still
+land, so a retried create can answer `409` and a retried delete `404`.
+`felixctl` retries only `busy`, a few times before failing.
+
 #### Creating several at once
 
 `POST /v1/tenants/{t}/namespaces/{ns}/resources` creates up to 256 streams and
@@ -560,6 +568,8 @@ Content-Type: application/json
 | `404` | the tenant or namespace does not exist | nothing |
 | `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
+| `503` | `busy`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; safe to retry | nothing |
+| `503` | `unavailable`: on Raft, no quorum committed the write in time; it may still land | unknown |
 
 A success lists every item in request order with `"status": "created"` or
 `"unchanged"`, so a caller that failed part-way sends the same batch again.
@@ -704,10 +714,14 @@ Authorization: Bearer <FELIX_NODE_TOKEN>
   "next_seq": 43 }
 ```
 
-A broker loads each snapshot once, then asks for changes since the last `seq`
-it applied. It polls the tenant, namespace, stream and cache feeds every
-`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` (2 s by default), so a new stream can take
-that long to reach every broker. The shard-assignment feed is a long poll:
+A broker loads each snapshot once, then asks for changes from the snapshot's
+`next_seq`. The snapshot's items and `next_seq` are read at one point, so the
+two together describe every committed change exactly once. A page holds at
+most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by default); a full
+page's `next_seq` is the seq after its last change, and the broker keeps
+asking from `next_seq` until a page comes back empty. It polls the tenant,
+namespace, stream and cache feeds every `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
+(2 s by default), so a new stream can take that long to reach every broker. The shard-assignment feed is a long poll:
 `wait_ms` (at most 25000) holds the request open until a change lands, so a
 leadership change reaches brokers without waiting for the next poll.
 

@@ -438,7 +438,7 @@ pub(super) async fn shard_assignment_changes(
     .bind(store.limit())
     .fetch_all(&mut *tx)
     .await?;
-    let next_seq = sqlx::query_scalar::<_, i64>("SELECT next_seq FROM shard_assignment_change_seq")
+    let head = sqlx::query_scalar::<_, i64>("SELECT next_seq FROM shard_assignment_change_seq")
         .fetch_one(&mut *tx)
         .await? as u64;
     tx.commit().await?;
@@ -458,7 +458,12 @@ pub(super) async fn shard_assignment_changes(
             assignment: row.payload.map(serde_json::from_value).transpose()?,
         });
     }
-    Ok(ChangeSet { items, next_seq })
+    Ok(ChangeSet::page(
+        items,
+        store.changes_limit(),
+        head,
+        |change| change.seq,
+    ))
 }
 
 pub(super) async fn record_replica_report(

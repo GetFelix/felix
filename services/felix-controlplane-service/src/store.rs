@@ -732,6 +732,21 @@ pub struct ChangeSet<T> {
     pub next_seq: u64,
 }
 
+impl<T> ChangeSet<T> {
+    /// A page of at most `limit` changes, read at the same instant as `head`,
+    /// the first seq the feed has not handed out.
+    ///
+    /// A full page can stop short of `head`, so its cursor is the seq after its
+    /// last change. Resuming at `head` would skip everything past the page.
+    pub(crate) fn page(items: Vec<T>, limit: usize, head: u64, seq: impl Fn(&T) -> u64) -> Self {
+        let next_seq = match items.last() {
+            Some(last) if items.len() >= limit => seq(last) + 1,
+            _ => head,
+        };
+        Self { items, next_seq }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("not found: {0}")]

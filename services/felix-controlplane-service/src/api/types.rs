@@ -182,6 +182,8 @@ pub struct TenantSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct TenantChangesResponse {
     pub items: Vec<TenantChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -203,6 +205,8 @@ pub struct NamespaceSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct NamespaceChangesResponse {
     pub items: Vec<NamespaceChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -229,6 +233,8 @@ pub struct StreamSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct StreamChangesResponse {
     pub items: Vec<StreamChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 
@@ -250,6 +256,8 @@ pub struct CacheSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct CacheChangesResponse {
     pub items: Vec<CacheChange>,
+    /// Where to ask from next: the seq after the last item when the page is
+    /// full, otherwise the feed's tail.
     pub next_seq: u64,
 }
 

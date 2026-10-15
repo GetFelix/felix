@@ -57,7 +57,6 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
     }
     let mut namespaces = store.namespaces.write().await;
     let removed = namespaces.remove(key);
-    drop(namespaces);
     if removed.is_none() {
         return Err(StoreError::NotFound("namespace".into()));
     }
@@ -71,6 +70,7 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
             key: key.clone(),
             namespace: None,
         });
+    drop(namespaces);
     // Cascading delete: removing a namespace also removes its streams and caches.
     let mut streams = store.streams.write().await;
     let mut stream_keys: Vec<_> = streams
@@ -130,8 +130,12 @@ pub(super) async fn delete_namespace(store: &InMemoryStore, key: &NamespaceKey) 
 
 pub(super) async fn namespace_snapshot(store: &InMemoryStore) -> StoreResult<Snapshot<Namespace>> {
     // `next_seq` is the checkpoint a consumer should use as `since` on its first changes poll.
-    let items = store.namespaces.read().await.values().cloned().collect();
+    // The rows stay locked while `next_seq` is read: every writer records its
+    // change while holding them, so a change counted in `next_seq` is in `items`.
+    let rows = store.namespaces.read().await;
+    let items = rows.values().cloned().collect();
     let next_seq = store.namespace_changes.read().await.next_seq;
+    drop(rows);
     Ok(Snapshot { items, next_seq })
 }
 
@@ -139,21 +143,13 @@ pub(super) async fn namespace_changes(
     store: &InMemoryStore,
     since: u64,
 ) -> StoreResult<ChangeSet<NamespaceChange>> {
-    // We filter by `seq >= since` (inclusive) and apply a page limit.
-    // If the caller's `since` is older than the retained window, it will receive a partial
-    // history and should fall back to `*_snapshot()` to re-bootstrap.
-    let guard = store.namespace_changes.read().await;
-    let items = guard
-        .items
-        .iter()
-        .filter(|item| item.seq >= since)
-        .take(store.limit())
-        .cloned()
-        .collect();
-    Ok(ChangeSet {
-        items,
-        next_seq: guard.next_seq,
-    })
+    // A `since` older than the retained window gets a partial history; the
+    // caller has to re-bootstrap from the snapshot.
+    Ok(store
+        .namespace_changes
+        .read()
+        .await
+        .page(since, store.limit(), |change| change.seq))
 }
 
 pub(super) async fn namespace_exists(

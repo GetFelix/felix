@@ -4,6 +4,7 @@
 //! Parity is the point: a rule that holds only in memory is a rule the
 //! deployed system does not have. Each backend's tests call the `run_*`
 //! entry points with a store of its own.
+pub(crate) mod change_feeds;
 pub(crate) mod incarnations;
 pub(crate) mod nodes;
 pub(crate) mod pagination;

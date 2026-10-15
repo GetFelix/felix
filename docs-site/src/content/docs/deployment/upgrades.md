@@ -77,6 +77,16 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
+**Catalog feeds on Postgres during a control-plane roll.** A control plane
+hands out each tenant, namespace, stream and cache change's `seq` in commit
+order only when every instance writing to the database takes the feed's lock.
+While older and newer control-plane instances share one database, a write
+through an older instance can still commit out of order, and a broker can skip
+that change until it restarts. The guarantee holds once
+every control-plane instance runs a release that has it, so finish the roll
+before relying on it, and keep catalog writes to a minimum while it is under
+way.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,
