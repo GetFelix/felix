@@ -89,6 +89,13 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
 - A `ClusterClient` recovers when every broker changes IP at once, as in a
   rollout that restarts every pod (#1227). Reconnect dialled only the addresses
   it already held, and discovery needs one of them to answer, so the client

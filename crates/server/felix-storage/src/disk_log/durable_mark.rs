@@ -11,11 +11,16 @@
 //! its own, because a second device flush per group commit would halve the
 //! commit rate. So it can lag after a power loss by however long the
 //! filesystem holds a dirty page. It never runs ahead: it is written only
-//! after the sync it describes has returned. See `docs/storage-format.md`,
+//! after the sync it describes has returned. It never moves back either,
+//! except on a truncation or reset: a background seal can finish after a
+//! flush that covered more, and recording it would leave the mark behind for
+//! as long as the shard stays idle. See `docs/storage-format.md`,
 //! "`durable.mark`".
 
 use std::fs::File;
 use std::path::Path;
+
+use parking_lot::Mutex;
 
 use super::LogInner;
 use super::segments::SegmentSet;
@@ -31,7 +36,9 @@ const MARK_VERSION: u16 = 1;
 pub(super) const MARK_LEN: usize = 32;
 
 /// What the mark file says: segment `segment` was synced through `synced_bytes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordered by segment, then bytes, which is the order the log is synced in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DurableMark {
     pub(crate) segment: SegmentId,
     pub(crate) synced_bytes: u64,
@@ -112,6 +119,17 @@ pub(crate) fn mark_file_name() -> &'static str {
 #[derive(Debug)]
 pub(super) struct MarkFile {
     file: File,
+    /// Held across the write, so two writers cannot land out of order.
+    state: Mutex<MarkState>,
+}
+
+#[derive(Debug, Default)]
+struct MarkState {
+    /// The furthest mark written since the last rewind.
+    last: Option<DurableMark>,
+    /// Counts rewinds, so a writer that read the log before one can tell
+    /// its mark may describe records that are gone.
+    rewinds: u64,
 }
 
 impl MarkFile {
@@ -125,12 +143,36 @@ impl MarkFile {
         // The repair rule rests on the mark existing after a power loss, and a
         // created file's name is durable only once its directory is synced.
         crate::io::sync_dir(dir)?;
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            state: Mutex::new(MarkState::default()),
+        })
     }
 
     /// Record that `mark` has been synced. Called only after the sync returned.
+    /// A mark behind the one already recorded is ignored.
     pub(super) fn record(&self, mark: DurableMark) -> std::io::Result<()> {
-        crate::io::write_at(&self.file, &mark.encode(), 0)
+        self.advance(mark, None)
+    }
+
+    /// [`Self::record`], unless the log was rewound since [`Self::rewinds`]
+    /// returned `seen`.
+    pub(super) fn record_since(&self, mark: DurableMark, seen: u64) -> std::io::Result<()> {
+        self.advance(mark, Some(seen))
+    }
+
+    pub(super) fn rewinds(&self) -> u64 {
+        self.state.lock().rewinds
+    }
+
+    fn advance(&self, mark: DurableMark, seen: Option<u64>) -> std::io::Result<()> {
+        let mut state = self.state.lock();
+        if seen.is_some_and(|seen| seen != state.rewinds) || state.last >= Some(mark) {
+            return Ok(());
+        }
+        crate::io::write_at(&self.file, &mark.encode(), 0)?;
+        state.last = Some(mark);
+        Ok(())
     }
 
     /// Sync whatever the mark last recorded. For a clean shutdown, so the
@@ -139,12 +181,20 @@ impl MarkFile {
         crate::io::sync_data(&self.file)
     }
 
-    /// [`Self::record`], then sync the mark itself. For the rare operations
-    /// that move it backwards (truncation, a reset), where a stale mark left
-    /// ahead of the log would make recovery refuse a repairable tail.
+    /// Write `mark` wherever it falls, then sync it. For opening the log and
+    /// for the rare operations that move it backwards (truncation, a reset),
+    /// where a stale mark left ahead of the log would make recovery refuse a
+    /// repairable tail.
     pub(super) fn record_durably(&self, mark: DurableMark) -> std::io::Result<()> {
-        self.record(mark)?;
-        self.sync()
+        let mut state = self.state.lock();
+        // Counted first: a writer that read the log before this must not
+        // move the mark past it, even if this write fails.
+        state.rewinds += 1;
+        state.last = None;
+        crate::io::write_at(&self.file, &mark.encode(), 0)?;
+        self.sync()?;
+        state.last = Some(mark);
+        Ok(())
     }
 }
 
@@ -155,19 +205,38 @@ impl LogInner {
     /// what recovery may repair after a power loss but never loses a record
     /// that the log still has.
     pub(super) fn note_synced(&self, segment: SegmentId, synced_bytes: u64) {
-        if let Err(err) = self.mark.record(DurableMark {
+        self.warn_unmarked(self.mark.record(DurableMark {
             segment,
             synced_bytes,
-        }) {
-            tracing::warn!(shard = %self.label, error = %err, "could not update the durable mark");
-        }
+        }));
     }
 
     /// Record that every segment before `active` is sealed, and so synced
     /// whole. Keeps a sealed segment out of the repairable range when the mark
-    /// last pointed into it.
+    /// last pointed into it. For a caller holding the append lock, which
+    /// keeps a rewind out.
     pub(super) fn note_sealed_before(&self, active: SegmentId) {
         self.note_synced(active, SEGMENT_HEADER_LEN);
+    }
+
+    /// [`Self::note_sealed_before`] for a background seal, which runs without
+    /// the append lock: skipped if the log was rewound after `rewinds` was
+    /// read, since `active` may be gone and the mark would claim the segment
+    /// a truncation reopened is synced whole.
+    pub(super) fn note_sealed_before_since(&self, active: SegmentId, rewinds: u64) {
+        self.warn_unmarked(self.mark.record_since(
+            DurableMark {
+                segment: active,
+                synced_bytes: SEGMENT_HEADER_LEN,
+            },
+            rewinds,
+        ));
+    }
+
+    fn warn_unmarked(&self, written: std::io::Result<()>) {
+        if let Err(err) = written {
+            tracing::warn!(shard = %self.label, error = %err, "could not update the durable mark");
+        }
     }
 
     /// Move the mark back to the active segment's current end after a
