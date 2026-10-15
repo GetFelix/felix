@@ -314,9 +314,12 @@ Each subscription has its own bounded queue and its own QUIC stream.
 
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
   and holds at most `subscriber_queue_max_bytes` of payload in them (default:
-  256 MiB), since one slot can hold a whole batch. Frames taken from the queue
-  but not yet written to the subscription's QUIC stream count toward the
-  bytes too
+  128 MiB), since one slot can hold a whole batch. Frames taken from the queue
+  but not yet written to the subscription's QUIC stream count against the
+  subscription's share of its connection's `subscriber_egress_max_bytes`
+  (default: 256 MiB per connection, split equally). A subscription whose
+  share is full stops taking from its queue, so the queue fills and drops for
+  that subscriber only
 - When either fills, new events are **dropped for that subscriber only**
 - Other subscribers continue receiving events normally
 - On a durable stream a drop ends the subscription. The broker delivers what was queued before it, then sends `subscription_lagged` with the first dropped offset, without waiting for another publish; felix-client returns it from `next_event` as a `SubscriptionLagged` error, and does the same for drops in its own queue. A client that did not offer `FEATURE_SUBSCRIPTION_LAGGED` keeps its subscription and can still *detect* a drop, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
@@ -327,7 +330,8 @@ Each subscription has its own bounded queue and its own QUIC stream.
 ```yaml
 # Broker config
 subscriber_queue_capacity: 512  # Per-subscriber buffer size
-subscriber_queue_max_bytes: 268435456  # Per-subscriber payload bytes
+subscriber_queue_max_bytes: 134217728  # Per-subscriber payload bytes
+subscriber_egress_max_bytes: 268435456  # Per-connection bytes in the writer lanes
 subscriber_writer_lanes: 4
 subscriber_lane_shard: auto
 ```

@@ -88,10 +88,17 @@ pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY: usize = 512;
 // batch in memory, so this bounds what one reader can hold.
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX: usize = 4096;
 // One entry can be a whole frame, so the count alone lets a slow reader pin
-// gigabytes of large records. The bound also covers the writer lanes, so it
-// has to fit a subscriber that is keeping up with large batches: 64 MiB
-// throttled 4 MiB batches at fanout 10.
-pub(super) const DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES: usize = 256 * 1024 * 1024;
+// gigabytes of large records. Counts only what waits in the broker queue;
+// the writer lanes have their own per-connection bound below.
+pub(super) const DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
+// Shared out equally among a connection's subscriptions, so one that stalls
+// holds at most its share. Large enough that a share still fits several
+// 4 MiB batches with ten subscriptions on a connection, so a feeder is not
+// left waiting for one batch to finish writing before it starts the next.
+pub(super) const DEFAULT_SUBSCRIBER_EGRESS_MAX_BYTES: usize = 256 * 1024 * 1024;
+// Replay rings keep 1024 records each, which at 16 MiB records is 16 GiB.
+pub(super) const DEFAULT_REPLAY_RING_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const DEFAULT_CACHE_WATCH_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN: usize = 4096;
 // How many identities' worth of publish budget and subscriptions one
 // connection may hold in all, unless set. A plain client is one identity and

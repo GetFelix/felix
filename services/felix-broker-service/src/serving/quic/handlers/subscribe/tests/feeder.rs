@@ -9,6 +9,11 @@ use super::*;
 /// A manager with one lane whose commands the test reads directly, so nothing
 /// but the feeder decides when a batch goes out.
 fn capture_lane() -> (Arc<WriterLaneManager>, mpsc::Receiver<LaneCommand>) {
+    capture_lane_bounded(0)
+}
+
+/// [`capture_lane`] with a byte bound on the connection's lanes.
+fn capture_lane_bounded(egress: usize) -> (Arc<WriterLaneManager>, mpsc::Receiver<LaneCommand>) {
     let (tx, rx) = mpsc::channel(1024);
     let manager = WriterLaneManager {
         lanes: vec![tx],
@@ -24,6 +29,9 @@ fn capture_lane() -> (Arc<WriterLaneManager>, mpsc::Receiver<LaneCommand>) {
         shard: crate::config::SubscriberLaneShard::Auto,
         single_writer_per_conn: true,
         rr_counter: AtomicUsize::new(0),
+        egress: Arc::new(
+            crate::serving::quic::handlers::subscribe::egress::EgressBudget::new(egress),
+        ),
     };
     (Arc::new(manager), rx)
 }
@@ -66,20 +74,38 @@ async fn spawn_feeder_on(
     let broker = Arc::new(broker);
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
+    let (manager, lane_rx) = capture_lane();
+    let (feeder, guard) = feed(&broker, "orders", &manager, flush_delay, max_bytes).await?;
+    Ok(Harness {
+        broker,
+        lane_rx,
+        feeder,
+        _manager: manager,
+        _guard: guard,
+    })
+}
+
+/// Register `stream` and run a feeder for a new subscription to it into
+/// `manager`'s lane.
+async fn feed(
+    broker: &Arc<Broker>,
+    stream: &str,
+    manager: &Arc<WriterLaneManager>,
+    flush_delay: Duration,
+    max_bytes: usize,
+) -> Result<(tokio::task::JoinHandle<()>, felix_broker::SubscriptionGuard)> {
     broker
         .register_stream(
             "t1",
             "default",
-            "orders",
+            stream,
             felix_broker::StreamMetadata::default(),
         )
         .await?;
     let (event_rx, guard) = broker
-        .subscribe("t1", "default", "orders", 0)
+        .subscribe("t1", "default", stream, 0)
         .await?
         .into_parts();
-
-    let (manager, lane_rx) = capture_lane();
     let config = EventWriterConfig {
         offsets_enabled: false,
         skip_enabled: false,
@@ -98,7 +124,7 @@ async fn spawn_feeder_on(
     };
     let feeder = tokio::spawn(run_lane_feeder(
         event_rx,
-        Arc::downgrade(&manager),
+        Arc::downgrade(manager),
         0,
         None,
         config,
@@ -106,13 +132,7 @@ async fn spawn_feeder_on(
         TenantDelivery::for_tenant("t1"),
         None,
     ));
-    Ok(Harness {
-        broker,
-        lane_rx,
-        feeder,
-        _manager: manager,
-        _guard: guard,
-    })
+    Ok((feeder, guard))
 }
 
 async fn publish(broker: &Broker) -> Result<()> {
@@ -128,11 +148,16 @@ async fn publish_len(broker: &Broker, len: usize) -> Result<usize> {
         .await?)
 }
 
-/// A frame waiting in the writer lanes still counts against its
-/// subscriber's byte bound, so the broker queue sheds instead of the lanes
-/// piling up frames behind a slow subscriber.
+async fn publish_to(broker: &Broker, stream: &str, len: usize) -> Result<usize> {
+    Ok(broker
+        .publish("t1", "default", stream, Bytes::from(vec![7u8; len]))
+        .await?)
+}
+
+/// A frame in the writer lanes no longer counts against its subscriber's
+/// queue bound: that bound is for what waits in the broker queue.
 #[tokio::test]
-async fn lane_feeder_keeps_a_frames_bytes_held_until_it_leaves_the_lanes() -> Result<()> {
+async fn a_frame_in_the_lanes_leaves_the_subscriber_queue_bound() -> Result<()> {
     let broker = Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100);
     let Harness {
         broker,
@@ -145,16 +170,88 @@ async fn lane_feeder_keeps_a_frames_bytes_held_until_it_leaves_the_lanes() -> Re
 
     assert_eq!(publish_len(&broker, 60).await?, 1);
     settle().await;
-    let frame = lane_rx.try_recv().expect("the feeder sent the batch on");
+    let _frame = lane_rx.try_recv().expect("the feeder sent the batch on");
     assert_eq!(
         publish_len(&broker, 60).await?,
+        1,
+        "the frame in the lane still counts against the queue bound"
+    );
+    feeder.abort();
+    Ok(())
+}
+
+/// A frame keeps holding its subscription's share of the connection's lane
+/// budget until it is written. With the share full the feeder stops taking
+/// batches, so they wait in the broker queue and its bound sheds them.
+#[tokio::test]
+async fn a_full_lane_share_leaves_batches_in_the_broker_queue() -> Result<()> {
+    let broker =
+        Arc::new(Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    let (manager, mut lane_rx) = capture_lane_bounded(100);
+    let (feeder, _guard) = feed(&broker, "orders", &manager, Duration::ZERO, 64 * 1024).await?;
+    settle().await;
+
+    assert_eq!(publish_to(&broker, "orders", 60).await?, 1);
+    settle().await;
+    let first = lane_rx.try_recv().expect("the first batch went on");
+    assert_eq!(publish_to(&broker, "orders", 60).await?, 1);
+    settle().await;
+    assert!(lane_rx.try_recv().is_err(), "the share has no room for it");
+    assert_eq!(
+        publish_to(&broker, "orders", 60).await?,
         0,
-        "the frame in the lane still holds 60 of the 100 bytes"
+        "the waiting batch still counts against the queue bound"
     );
 
-    drop(frame);
-    assert_eq!(publish_len(&broker, 60).await?, 1, "room once it is gone");
+    drop(first);
+    settle().await;
+    assert_eq!(item_count(lane_rx.try_recv().expect("room again")), 1);
     feeder.abort();
+    Ok(())
+}
+
+/// Each subscription has its own share of the connection's budget, so one
+/// whose frames are not being written stops at its share and the others on
+/// the connection keep going.
+#[tokio::test]
+async fn a_stalled_subscription_does_not_hold_up_its_connection_mates() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    let (manager, mut lane_rx) = capture_lane_bounded(100);
+    let (stalled, _stalled_guard) =
+        feed(&broker, "stalled", &manager, Duration::ZERO, 64 * 1024).await?;
+    let (healthy, _healthy_guard) =
+        feed(&broker, "healthy", &manager, Duration::ZERO, 64 * 1024).await?;
+    settle().await;
+
+    // Never written: the stalled subscription keeps these frames.
+    let mut kept = Vec::new();
+    for _ in 0..4 {
+        publish_to(&broker, "stalled", 40).await?;
+        settle().await;
+        while let Ok(frame) = lane_rx.try_recv() {
+            kept.push(frame);
+        }
+    }
+
+    for _ in 0..8 {
+        assert_eq!(publish_to(&broker, "healthy", 40).await?, 1);
+        settle().await;
+        let frame = lane_rx
+            .try_recv()
+            .expect("the healthy subscription keeps going");
+        drop(frame);
+    }
+    assert_eq!(
+        kept.len(),
+        1,
+        "the stalled subscription stopped at its share"
+    );
+    stalled.abort();
+    healthy.abort();
     Ok(())
 }
 

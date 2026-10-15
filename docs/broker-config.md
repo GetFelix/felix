@@ -57,8 +57,13 @@ subscriber_queue_capacity: 512
 subscriber_queue_capacity_max: 4096
 max_subscriptions_per_conn: 4096
 max_subscriptions_per_conn_total: 16384
-subscriber_queue_max_bytes: 268435456
+subscriber_queue_max_bytes: 134217728
 subscriber_queue_max_bytes_total: 0
+subscriber_egress_max_bytes: 268435456
+replay_ring_max_bytes: 67108864
+replay_ring_max_bytes_total: 0
+cache_watch_max_bytes: 67108864
+cache_watch_max_bytes_total: 0
 subscriber_queue_policy: drop_new
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64
@@ -327,28 +332,48 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   memory until the subscriber reads it, so this is what bounds one reader's share. A subscriber
   chooses only the size, never the policy: under `block` one slow reader would stall every
   publisher on the shard.
-- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 256 MiB) bounds the
-  payload bytes one subscriber's broker-core queue holds, since one entry can be a whole frame.
-  A batch keeps counting until the frame carrying it has been written to the subscriber's QUIC
-  stream, so frames waiting in the writer lanes are inside the bound too. The queue policy
-  applies when either bound is full; under `block` the batch goes to every subscriber with
-  room before the fanout waits on the full ones. A batch larger than the bound still goes
-  into an empty queue. `0` turns it off. Because the bound reaches the writer lanes, it has to
-  fit what a subscriber that is keeping up has in flight: at 64 MiB, a subscriber reading 4 MiB
-  batches (64 x 64 KiB) at fanout 10 was throttled.
+- `subscriber_queue_max_bytes` (env: `FELIX_SUB_QUEUE_MAX_BYTES`, default 128 MiB) bounds the
+  payload bytes waiting in one subscriber's broker-core queue, since one entry can be a whole
+  frame. A batch stops counting here once the subscriber's feeder has moved it into the writer
+  lanes, which have their own bound (below), so a batch being written never looks like the
+  subscriber falling behind. The queue policy applies when either bound is full; under `block`
+  the batch goes to every subscriber with room before the fanout waits on the full ones. A batch
+  larger than the bound still goes into an empty queue. `0` turns it off.
+- `subscriber_egress_max_bytes` (env: `FELIX_SUB_EGRESS_MAX_BYTES`, default 256 MiB) bounds the
+  payload bytes one connection's subscriptions have in the writer lanes and the connection
+  writer, from the feeder taking a batch until its frame is written. Each subscription gets an
+  equal share (the bound divided by the subscriptions on the connection), and a feeder waits only
+  for its own subscription's frames. A subscription whose QUIC stream stalls stops at its share,
+  its broker queue then fills and the queue policy applies, and the other subscriptions on the
+  connection carry on. A batch larger than the share still goes once the subscription has nothing
+  else in the lanes. This is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
-  bounds the bytes all subscriber queues hold together. It caps memory but gives up isolation:
-  once slow subscribers fill it, fast ones drop too. Without it, each subscriber can hold up to
-  `subscriber_queue_max_bytes` or its largest single batch, whichever is larger (an oversize batch
-  still enters an empty queue), so worst-case queued memory is the number of subscribers times
-  that. With `subscriber_queue_max_bytes` at `0`, only queue capacity times batch size limits a
-  subscriber. Set the total in production. Totals above 4 GiB are honoured: the budget then
-  counts in units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each
-  batch rounded up to a whole unit.
+  bounds the bytes all subscriber queues hold together, including batches in the writer lanes
+  until they are written. It caps memory but gives up isolation: once slow subscribers fill it,
+  fast ones drop too. Without it, a stalled subscriber holds up to `subscriber_queue_max_bytes`
+  in its queue plus its share of `subscriber_egress_max_bytes` in the lanes (or one oversize
+  batch in each), so worst-case memory is the number of subscribers times
+  `subscriber_queue_max_bytes`, plus `subscriber_egress_max_bytes` per connection. With
+  `subscriber_queue_max_bytes` at `0`, only queue capacity times batch size limits a subscriber's
+  queue. Set the total in production. Totals above 4 GiB are honoured: the budget then counts in
+  units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each batch
+  rounded up to a whole unit.
 - Under `block`, a subscriber that stops reading holds the shard's publishers with no timeout
   until it reads or disconnects. Order and gap-freedom are kept.
-- The replay ring (1024 records per stream shard) and each cache watch queue (1024 changes) are
-  bounded by entry count, not bytes, and do not count toward either byte bound.
+- `replay_ring_max_bytes` (env: `FELIX_REPLAY_RING_MAX_BYTES`, default 64 MiB) bounds the payload
+  bytes each stream shard's replay ring keeps, on top of its 1024 records. The oldest records go
+  first; the newest is kept even when it alone is larger. `replay_ring_max_bytes_total` (env:
+  `FELIX_REPLAY_RING_MAX_BYTES_TOTAL`, default `0`, off) bounds all rings together: a ring that
+  finds the total full gives up its own oldest records for room, and a batch that does not fit
+  even in an empty ring is not kept, leaving that ring empty. A shorter ring costs replay depth
+  only. A resume from below it reads from disk on a durable stream, and is refused as too old on
+  an in-memory stream. Neither ring bound touches fanout.
+- `cache_watch_max_bytes` (env: `FELIX_CACHE_WATCH_MAX_BYTES`, default 64 MiB) bounds the key and
+  value bytes one cache watch has queued, on top of its 1024 changes. A watch that would go over
+  ends as lagged, the same as one that runs out of entries, and the client re-watches from the
+  offset it missed. `cache_watch_max_bytes_total` (env: `FELIX_CACHE_WATCH_MAX_BYTES_TOTAL`,
+  default `0`, off) bounds all watch queues together, at the same cost in isolation as the
+  subscriber total.
 - `subscriber_writer_lanes` and `subscriber_lane_shard` control outbound event write parallelism.
 - `subscriber_lane_shard: auto` is the default and is usually the best starting point.
 - Lanes often help high fanout + large payload workloads, but gains can plateau; do not assume

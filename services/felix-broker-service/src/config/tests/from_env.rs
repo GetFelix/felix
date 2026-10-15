@@ -39,6 +39,14 @@ fn from_env_uses_defaults() {
     );
     assert_eq!(config.subscriber_queue_max_bytes_total, 0);
     assert_eq!(
+        config.subscriber_egress_max_bytes,
+        DEFAULT_SUBSCRIBER_EGRESS_MAX_BYTES
+    );
+    assert_eq!(config.replay_ring_max_bytes, DEFAULT_REPLAY_RING_MAX_BYTES);
+    assert_eq!(config.replay_ring_max_bytes_total, 0);
+    assert_eq!(config.cache_watch_max_bytes, DEFAULT_CACHE_WATCH_MAX_BYTES);
+    assert_eq!(config.cache_watch_max_bytes_total, 0);
+    assert_eq!(
         config.subscriber_writer_lanes,
         DEFAULT_SUBSCRIBER_WRITER_LANES
     );
@@ -296,11 +304,21 @@ fn from_env_reads_the_subscriber_byte_bounds() {
     unsafe {
         env::set_var("FELIX_SUB_QUEUE_MAX_BYTES", "0");
         env::set_var("FELIX_SUB_QUEUE_MAX_BYTES_TOTAL", "1073741824");
+        env::set_var("FELIX_SUB_EGRESS_MAX_BYTES", "0");
+        env::set_var("FELIX_REPLAY_RING_MAX_BYTES", "1");
+        env::set_var("FELIX_REPLAY_RING_MAX_BYTES_TOTAL", "2");
+        env::set_var("FELIX_CACHE_WATCH_MAX_BYTES", "3");
+        env::set_var("FELIX_CACHE_WATCH_MAX_BYTES_TOTAL", "4");
     }
 
     let config = BrokerConfig::from_env().expect("from_env");
     assert_eq!(config.subscriber_queue_max_bytes, 0);
     assert_eq!(config.subscriber_queue_max_bytes_total, 1073741824);
+    assert_eq!(config.subscriber_egress_max_bytes, 0);
+    assert_eq!(config.replay_ring_max_bytes, 1);
+    assert_eq!(config.replay_ring_max_bytes_total, 2);
+    assert_eq!(config.cache_watch_max_bytes, 3);
+    assert_eq!(config.cache_watch_max_bytes_total, 4);
 
     clear_felix_env();
 }

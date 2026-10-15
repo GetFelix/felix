@@ -11,6 +11,7 @@ mod budget;
 mod committed;
 mod delivery;
 mod producers;
+mod ring;
 mod state;
 mod stats;
 mod subscription;
@@ -21,8 +22,9 @@ pub use stats::{SubscriberOwner, SubscriberStats};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
 pub use budget::HeldBytes;
-pub(crate) use budget::{ByteBudget, QueueBytes};
+pub(crate) use budget::{QueueBytes, SubscriberBytes};
 pub(crate) use committed::{HeldBatch, Pass, ReadSource};
 pub(crate) use delivery::QueuedDelivery;
 pub(crate) use producers::Sequenced;
+pub(crate) use ring::RingBytes;
 pub(crate) use state::{StreamState, SubscriberEntry};

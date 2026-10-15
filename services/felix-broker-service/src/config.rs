@@ -249,10 +249,28 @@ pub struct BrokerConfig {
     /// Payload bytes one subscriber's queue may hold before the queue policy
     /// applies, as it does for a full count. Zero for no byte bound.
     pub subscriber_queue_max_bytes: usize,
-    /// Payload bytes all subscriber queues together may hold. Zero, the
-    /// default, for no bound. Caps queued memory, but a slow subscriber can
-    /// then cost a fast one records.
+    /// Payload bytes all subscriber queues together may hold, including
+    /// batches waiting in the writer lanes. Zero, the default, for no bound.
+    /// Caps queued memory, but a slow subscriber can then cost a fast one
+    /// records.
     pub subscriber_queue_max_bytes_total: usize,
+    /// Payload bytes one connection's subscriptions may have in the writer
+    /// lanes and connection writer, shared out equally among them. Not a hard
+    /// ceiling: a subscription with nothing in the lanes admits one batch
+    /// whatever its size. Zero for no byte bound there.
+    pub subscriber_egress_max_bytes: usize,
+    /// Payload bytes one stream shard's replay ring keeps. Zero for no byte
+    /// bound.
+    pub replay_ring_max_bytes: usize,
+    /// Payload bytes all replay rings together keep. Zero, the default, for
+    /// no bound.
+    pub replay_ring_max_bytes_total: usize,
+    /// Key and value bytes one cache watch may have queued before it is
+    /// ended as lagged. Zero for no byte bound.
+    pub cache_watch_max_bytes: usize,
+    /// Key and value bytes all cache watches together may have queued. Zero,
+    /// the default, for no bound.
+    pub cache_watch_max_bytes_total: usize,
     /// Subscriber queue policy for publish->fanout enqueue.
     #[serde(serialize_with = "print::queue_policy")]
     pub subscriber_queue_policy: SubQueuePolicy,
@@ -485,6 +503,11 @@ impl Default for BrokerConfig {
             max_subscriptions_per_conn_total: None,
             subscriber_queue_max_bytes: DEFAULT_SUBSCRIBER_QUEUE_MAX_BYTES,
             subscriber_queue_max_bytes_total: 0,
+            subscriber_egress_max_bytes: DEFAULT_SUBSCRIBER_EGRESS_MAX_BYTES,
+            replay_ring_max_bytes: DEFAULT_REPLAY_RING_MAX_BYTES,
+            replay_ring_max_bytes_total: 0,
+            cache_watch_max_bytes: DEFAULT_CACHE_WATCH_MAX_BYTES,
+            cache_watch_max_bytes_total: 0,
             subscriber_queue_policy: DEFAULT_SUBSCRIBER_QUEUE_POLICY,
             subscriber_writer_lanes: DEFAULT_SUBSCRIBER_WRITER_LANES,
             subscriber_lane_queue_depth: DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH,

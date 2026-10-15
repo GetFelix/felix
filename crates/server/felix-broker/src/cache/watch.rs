@@ -5,7 +5,8 @@
 //! each applied write while holding the shard's write lock, and the hub fans it
 //! out to every registered watcher whose filter matches — the same
 //! publisher-never-blocks discipline stream fanout uses, with `try_send`
-//! against bounded queues.
+//! against bounded queues. A queue is bounded by entries and by the key and
+//! value bytes it holds, with the same byte budgets subscriber queues use.
 //!
 //! What differs from stream fanout is what a drop means. Filtering makes
 //! offsets sparse — other keys' writes consume them — so a watcher cannot read
@@ -25,6 +26,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use crate::handoff::ShardMoved;
+use crate::stream::{HeldBytes, QueueBytes, SubscriberBytes};
 
 /// Sentinel for "not lagged" in [`WatcherState::lagged_at`]. No real offset can
 /// collide with it: a log would have to hold 2^64 records first.
@@ -35,6 +37,8 @@ const NOT_LAGGED: u64 = u64::MAX;
 /// writes to unrelated caches.
 const STRIPES: usize = 16;
 
+const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Fanout registry for every cache watch this broker serves.
 #[derive(Debug)]
 pub struct CacheWatchHub {
@@ -44,6 +48,8 @@ pub struct CacheWatchHub {
     /// Watchers registered anywhere. A broker with none skips the stripes.
     watching: AtomicUsize,
     next_id: AtomicU64,
+    /// Byte bounds for watches registered from now on.
+    queue_bytes: parking_lot::RwLock<QueueBytes>,
 }
 
 impl Default for CacheWatchHub {
@@ -53,6 +59,11 @@ impl Default for CacheWatchHub {
             hasher: hashbrown::DefaultHashBuilder::default(),
             watching: AtomicUsize::new(0),
             next_id: AtomicU64::new(0),
+            queue_bytes: parking_lot::RwLock::new(QueueBytes::new(
+                DEFAULT_MAX_BYTES,
+                0,
+                "felix_cache_watch_queue_bytes",
+            )),
         }
     }
 }
@@ -62,6 +73,11 @@ impl CacheWatchHub {
     /// back to it.
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// The byte bounds for watches registered after this.
+    pub(crate) fn set_queue_bytes(&self, bytes: QueueBytes) {
+        *self.queue_bytes.write() = bytes;
     }
 
     /// Register a watcher and hand back its queue.
@@ -107,6 +123,7 @@ impl CacheWatchHub {
                 id,
                 filter,
                 sender,
+                bytes: self.queue_bytes.read().for_subscriber(),
                 state: Arc::clone(&state),
             });
         CacheWatchSubscription {
@@ -200,8 +217,8 @@ impl CacheWatchHub {
 
 impl felix_storage::CacheObserver for CacheWatchHub {
     /// Called with the shard's write lock held, so it must not block: every
-    /// enqueue is a `try_send`, and a full queue ends that watcher rather than
-    /// stalling the writer.
+    /// enqueue is a `try_send`, and a full queue (by entries or by bytes)
+    /// ends that watcher rather than stalling the writer.
     fn cache_changed(&self, change: felix_storage::CacheChange) {
         if self.watching.load(Ordering::Acquire) == 0 {
             return;
@@ -302,24 +319,34 @@ fn offer(watchers: &mut Vec<Watcher>, event: &CacheChangeEvent) -> usize {
         if !watcher.filter.matches(&event.key) {
             return true;
         }
-        match watcher.sender.try_send(event.clone()) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // Ended, not thinned: record what was missed and close the
-                // queue by dropping the sender. The reader drains what was
-                // delivered, sees the close, and reports the lag offset so
-                // the client can re-watch from it without a gap.
-                watcher
-                    .state
-                    .lagged_at
-                    .store(event.offset, Ordering::Release);
-                metrics::counter!("felix_cache_watch_lagged_total").increment(1);
-                false
+        let permit = match watcher.sender.try_reserve() {
+            Ok(permit) => permit,
+            Err(mpsc::error::TrySendError::Full(())) => return lag(watcher, event),
+            Err(mpsc::error::TrySendError::Closed(())) => return false,
+        };
+        match watcher.bytes.try_hold(event.bytes()) {
+            Ok(held) => {
+                permit.send((event.clone(), held));
+                true
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Err(_) => lag(watcher, event),
         }
     });
     before - watchers.len()
+}
+
+/// End a watcher whose queue is full: record what it missed and close the
+/// queue. Always `false`, for `retain`.
+fn lag(watcher: &Watcher, event: &CacheChangeEvent) -> bool {
+    // Ended, not thinned: the reader drains what was delivered, sees the
+    // close, and reports the lag offset so the client can re-watch from it
+    // without a gap.
+    watcher
+        .state
+        .lagged_at
+        .store(event.offset, Ordering::Release);
+    metrics::counter!("felix_cache_watch_lagged_total").increment(1);
+    false
 }
 
 /// Tenant, namespace, cache, shard — one fanout list per cache shard.
@@ -331,7 +358,8 @@ struct Watcher {
     /// a closed watcher remove a live one — the Slab-recycling defect class.
     id: u64,
     filter: CacheWatchFilter,
-    sender: mpsc::Sender<CacheChangeEvent>,
+    sender: mpsc::Sender<(CacheChangeEvent, HeldBytes)>,
+    bytes: SubscriberBytes,
     state: Arc<WatcherState>,
 }
 
@@ -368,7 +396,7 @@ impl CacheWatchFilter {
 /// The receiving half of one cache watch.
 #[derive(Debug)]
 pub struct CacheWatchSubscription {
-    receiver: mpsc::Receiver<CacheChangeEvent>,
+    receiver: mpsc::Receiver<(CacheChangeEvent, HeldBytes)>,
     state: Arc<WatcherState>,
     #[allow(dead_code)]
     guard: CacheWatchGuard,
@@ -378,12 +406,12 @@ impl CacheWatchSubscription {
     /// The next change, or `None` once the watch has ended — check
     /// [`Self::lagged`] to learn whether it ended by falling behind.
     pub async fn recv(&mut self) -> Option<CacheChangeEvent> {
-        self.receiver.recv().await
+        self.receiver.recv().await.map(|(event, _)| event)
     }
 
     /// The next change if one is already queued.
     pub fn try_recv(&mut self) -> Result<CacheChangeEvent, mpsc::error::TryRecvError> {
-        self.receiver.try_recv()
+        self.receiver.try_recv().map(|(event, _)| event)
     }
 
     /// The offset of the first change this watch missed, once it has fallen
@@ -429,6 +457,13 @@ pub struct CacheChangeEvent {
     pub offset: u64,
     /// Absolute Unix milliseconds; zero means it never expires.
     pub expires_at_millis: u64,
+}
+
+impl CacheChangeEvent {
+    /// What the event counts against its watch's byte bounds.
+    fn bytes(&self) -> usize {
+        self.key.len() + self.value.as_ref().map_or(0, Bytes::len)
+    }
 }
 
 #[cfg(test)]

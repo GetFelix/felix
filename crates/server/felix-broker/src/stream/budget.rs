@@ -1,18 +1,20 @@
-//! Byte bounds on subscriber queues.
+//! Byte bounds on subscriber queues, cache watch queues and replay rings.
 //!
 //! A queue's entry count says nothing about memory when one entry can be a
 //! 16 MiB batch, so every queued batch also holds its payload bytes against
-//! the subscriber's own budget and, when one is set, a budget shared by every
-//! subscriber on the broker. The bytes go back when the batch leaves the
-//! queue, the same moment its entry does.
+//! the queue's own budget and, when one is set, a budget shared by every
+//! queue of that kind on the broker. The bytes go back when the batch leaves
+//! the queue, the same moment its entry does.
 //!
 //! The envelope is shared, so a batch queued for many subscribers is counted
 //! once per subscriber: that is what each one is keeping alive.
 //!
 //! A receiver that queues the batch again on its way out, as the broker
-//! service's writer lanes do, can take the bytes with it
-//! ([`SubscriptionReceiver::recv_held`](super::SubscriptionReceiver::recv_held)),
-//! so the same bounds cover that queue too.
+//! service's writer lanes do, takes the bytes with it
+//! ([`SubscriptionReceiver::recv_held`](super::SubscriptionReceiver::recv_held))
+//! and gives the subscriber's share back once its own bound has the batch
+//! ([`HeldBytes::release_subscriber`]). The broker-wide share stays held
+//! until the batch is written.
 
 use std::sync::Arc;
 
@@ -50,16 +52,22 @@ impl ByteBudget {
 
     /// Bytes not held by any queued batch.
     #[cfg(test)]
-    fn available(&self) -> usize {
+    pub(crate) fn available(&self) -> usize {
         self.permits.available_permits() << self.shift
+    }
+
+    /// Whole units covering `bytes`, uncapped.
+    fn units(&self, bytes: usize) -> usize {
+        let partial = bytes & ((1 << self.shift) - 1) != 0;
+        (bytes >> self.shift) + usize::from(partial)
     }
 
     /// A batch larger than the whole budget asks for all of it, so it goes
     /// through once the queue is empty instead of never.
     fn want(&self, bytes: usize) -> u32 {
-        let partial = bytes & ((1 << self.shift) - 1) != 0;
-        let units = (bytes >> self.shift) + usize::from(partial);
-        u32::try_from(units).unwrap_or(u32::MAX).min(self.max)
+        u32::try_from(self.units(bytes))
+            .unwrap_or(u32::MAX)
+            .min(self.max)
     }
 
     fn try_take(&self, bytes: usize) -> Option<OwnedSemaphorePermit> {
@@ -76,30 +84,51 @@ impl ByteBudget {
     }
 }
 
-/// The byte bounds every subscriber of a stream is held to.
-#[derive(Debug, Clone, Default)]
+/// The byte bounds every queue of one kind is held to: subscriber queues, or
+/// cache watch queues.
+#[derive(Debug, Clone)]
 pub(crate) struct QueueBytes {
-    /// Each subscriber's own bound; zero for none.
+    /// Each queue's own bound; zero for none.
     pub(crate) per_subscriber: usize,
-    /// Shared by every subscriber queue on the broker.
+    /// Shared by every queue of this kind on the broker.
     pub(crate) broker: Option<ByteBudget>,
+    /// The gauge that reports what these queues hold.
+    gauge: &'static str,
 }
 
 impl QueueBytes {
-    /// The budgets for one newly registered subscriber.
+    /// `broker` of zero leaves the queues without a shared bound.
+    pub(crate) fn new(per_subscriber: usize, broker: usize, gauge: &'static str) -> Self {
+        Self {
+            per_subscriber,
+            broker: ByteBudget::new(broker),
+            gauge,
+        }
+    }
+
+    /// The budgets for one newly registered queue.
     pub(crate) fn for_subscriber(&self) -> SubscriberBytes {
         SubscriberBytes {
             own: ByteBudget::new(self.per_subscriber),
             broker: self.broker.clone(),
+            gauge: self.gauge,
         }
     }
 }
 
-/// One subscriber's budgets.
-#[derive(Debug, Clone, Default)]
+impl Default for QueueBytes {
+    /// No bounds.
+    fn default() -> Self {
+        Self::new(0, 0, "felix_sub_queue_bytes")
+    }
+}
+
+/// One queue's budgets.
+#[derive(Debug, Clone)]
 pub(crate) struct SubscriberBytes {
     own: Option<ByteBudget>,
     broker: Option<ByteBudget>,
+    gauge: &'static str,
 }
 
 impl SubscriberBytes {
@@ -121,7 +150,7 @@ impl SubscriberBytes {
             Some(budget) => Some(budget.try_take(bytes).ok_or(ByteBound::Broker)?),
             None => None,
         };
-        Ok(HeldBytes::new(bytes, own, broker))
+        Ok(HeldBytes::new(bytes, own, broker, self.gauge))
     }
 
     /// Hold `bytes`, waiting for room in both budgets.
@@ -138,7 +167,7 @@ impl SubscriberBytes {
             Some(budget) => Some(budget.take(bytes).await),
             None => None,
         };
-        HeldBytes::new(bytes, own, broker)
+        HeldBytes::new(bytes, own, broker, self.gauge)
     }
 }
 
@@ -162,8 +191,10 @@ impl ByteBound {
 /// bounds, given back on drop.
 #[derive(Debug, Default)]
 pub struct HeldBytes {
+    /// What the gauge counts: zero once the subscriber's share is released.
     bytes: usize,
-    _own: Option<OwnedSemaphorePermit>,
+    gauge: &'static str,
+    own: Option<OwnedSemaphorePermit>,
     _broker: Option<OwnedSemaphorePermit>,
 }
 
@@ -172,14 +203,33 @@ impl HeldBytes {
         bytes: usize,
         own: Option<OwnedSemaphorePermit>,
         broker: Option<OwnedSemaphorePermit>,
+        gauge: &'static str,
     ) -> Self {
         if bytes > 0 {
-            metrics::gauge!("felix_sub_queue_bytes").increment(bytes as f64);
+            metrics::gauge!(gauge).increment(bytes as f64);
         }
         Self {
             bytes,
-            _own: own,
+            gauge,
+            own,
             _broker: broker,
+        }
+    }
+
+    /// Give back the bytes held against the subscriber's own bound, keeping
+    /// any broker-wide hold until this is dropped.
+    ///
+    /// For a caller that has moved the batch out of the subscriber's queue
+    /// into one with a bound of its own, as the broker service's writer lanes
+    /// do. The subscriber's bound then counts only what is waiting in its
+    /// queue, and a batch being written never looks like the subscriber
+    /// falling behind. The broker-wide bound, when set, still covers the
+    /// batch until it is written.
+    pub fn release_subscriber(&mut self) {
+        self.own = None;
+        if self.bytes > 0 {
+            metrics::gauge!(self.gauge).decrement(self.bytes as f64);
+            self.bytes = 0;
         }
     }
 
@@ -188,8 +238,12 @@ impl HeldBytes {
     /// Both must come from the same subscriber, as they do when one frame is
     /// built from several of its batches. Panics if they do not.
     pub fn absorb(&mut self, mut other: HeldBytes) {
+        if other.bytes > 0 {
+            // Moved across without touching the gauge, which counts it once.
+            self.gauge = other.gauge;
+        }
         self.bytes += std::mem::take(&mut other.bytes);
-        merge(&mut self._own, other._own.take());
+        merge(&mut self.own, other.own.take());
         merge(&mut self._broker, other._broker.take());
     }
 }
@@ -205,7 +259,63 @@ fn merge(into: &mut Option<OwnedSemaphorePermit>, from: Option<OwnedSemaphorePer
 impl Drop for HeldBytes {
     fn drop(&mut self) {
         if self.bytes > 0 {
-            metrics::gauge!("felix_sub_queue_bytes").decrement(self.bytes as f64);
+            metrics::gauge!(self.gauge).decrement(self.bytes as f64);
+        }
+    }
+}
+
+/// Bytes a store that grows at one end and shrinks at the other holds
+/// against a shared budget, as one permit. The replay ring uses it.
+#[derive(Debug, Default)]
+pub(crate) struct PooledBytes {
+    budget: Option<ByteBudget>,
+    permit: Option<OwnedSemaphorePermit>,
+    bytes: usize,
+}
+
+impl PooledBytes {
+    /// Counts without holding anything back when `budget` is `None`.
+    pub(crate) fn new(budget: Option<ByteBudget>) -> Self {
+        Self {
+            budget,
+            permit: None,
+            bytes: 0,
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Hold `more` bytes as well, without waiting. `false`, holding nothing
+    /// more, when the budget has no room for them.
+    pub(crate) fn try_grow(&mut self, more: usize) -> bool {
+        if let Some(budget) = &self.budget {
+            let held = self.permit.as_ref().map_or(0, |p| p.num_permits());
+            let need = budget.units(self.bytes + more).saturating_sub(held);
+            if need > 0 {
+                let Ok(need) = u32::try_from(need) else {
+                    return false;
+                };
+                match Arc::clone(&budget.permits).try_acquire_many_owned(need) {
+                    Ok(more) => merge(&mut self.permit, Some(more)),
+                    Err(_) => return false,
+                }
+            }
+        }
+        self.bytes += more;
+        true
+    }
+
+    /// Give `less` bytes back.
+    pub(crate) fn shrink(&mut self, less: usize) {
+        self.bytes = self.bytes.saturating_sub(less);
+        if let (Some(budget), Some(permit)) = (&self.budget, self.permit.as_mut()) {
+            let keep = budget.units(self.bytes);
+            let extra = permit.num_permits().saturating_sub(keep);
+            if extra > 0 {
+                drop(permit.split(extra));
+            }
         }
     }
 }

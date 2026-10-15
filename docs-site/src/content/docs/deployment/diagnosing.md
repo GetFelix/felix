@@ -294,11 +294,13 @@ drops across every subscriber, without saying whose they were.
   no longer moves.
 - The client is on a slow or lossy network: QUIC flow control holds the writes
   back and the queue fills behind them.
-- The records are large. The queue drops once its batches, together with
-  the frames waiting to be written, hold `FELIX_SUB_QUEUE_MAX_BYTES` (256 MiB
-  by default), however few of them there are, so `QUEUE` can show room, even
-  `0`, while `DROPPED` climbs.
-  `felix_sub_queue_byte_dropped_total` says so.
+- The records are large. The queue drops once its batches hold
+  `FELIX_SUB_QUEUE_MAX_BYTES` (128 MiB by default), however few of them there
+  are, so `QUEUE` can show room, even `0`, while `DROPPED` climbs.
+  `felix_sub_queue_byte_dropped_total` says so. A subscription whose frames
+  are not being written also stops taking from its queue once its share of
+  `FELIX_SUB_EGRESS_MAX_BYTES` is full; `felix_sub_egress_bytes` shows what
+  the writer lanes hold.
 
 **What to do.** Make the subscriber keep up, or give it a larger queue with
 `queue_capacity` on `subscribe` (up to `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`),

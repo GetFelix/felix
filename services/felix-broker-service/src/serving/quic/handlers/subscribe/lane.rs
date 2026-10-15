@@ -13,6 +13,7 @@ use crate::observability::timings;
 use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_unregister, hash64,
 };
+use crate::serving::quic::handlers::subscribe::egress::{EgressBudget, EgressBytes};
 use crate::serving::quic::handlers::subscribe::writer::{
     ConnectionWriterConfig, run_connection_writer, run_writer_lane,
 };
@@ -42,9 +43,8 @@ pub(super) enum ConnectionCommand {
         item_count: usize,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
-        /// The subscriber-queue bytes behind this frame, held until it is
-        /// written or dropped so the subscriber's byte bounds cover the lanes.
-        held: felix_broker::HeldBytes,
+        /// The bytes behind this frame, held until it is written or dropped.
+        held: EgressBytes,
     },
     Unregister {
         subscriber_id: u64,
@@ -69,9 +69,8 @@ pub(crate) enum LaneCommand {
         item_count: usize,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
-        /// The subscriber-queue bytes behind this frame, held until it is
-        /// written or dropped so the subscriber's byte bounds cover the lanes.
-        held: felix_broker::HeldBytes,
+        /// The bytes behind this frame, held until it is written or dropped.
+        held: EgressBytes,
     },
     Unregister {
         subscriber_id: u64,
@@ -106,6 +105,9 @@ pub(crate) struct WriterLaneManager {
     pub(super) shard: crate::config::SubscriberLaneShard,
     pub(super) single_writer_per_conn: bool,
     pub(super) rr_counter: AtomicUsize,
+    /// Bounds the bytes this connection's subscriptions have in the lanes and
+    /// the connection writer.
+    pub(super) egress: Arc<EgressBudget>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,7 +122,7 @@ pub(super) struct LaneDelivery {
     pub(super) item_count: usize,
     pub(super) first_enqueued_at: Instant,
     pub(super) enqueue_at: Instant,
-    pub(super) held: felix_broker::HeldBytes,
+    pub(super) held: EgressBytes,
 }
 
 impl WriterLaneManager {
@@ -164,6 +166,7 @@ impl WriterLaneManager {
             shard: config.subscriber_lane_shard,
             single_writer_per_conn: config.subscriber_single_writer_per_conn,
             rr_counter: AtomicUsize::new(0),
+            egress: Arc::new(EgressBudget::new(config.subscriber_egress_max_bytes)),
         };
         let manager = Arc::new(manager);
         let weak_manager = Arc::downgrade(&manager);

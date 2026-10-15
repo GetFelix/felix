@@ -212,3 +212,53 @@ async fn key_watchers_come_and_go_independently() {
     hub.cache_changed(change("user:42", 1));
     assert_eq!(later.try_recv().expect("a later watch").offset, 1);
 }
+
+fn sized(key: &str, offset: u64, len: usize) -> CacheChange {
+    CacheChange {
+        value: Some(Bytes::from(vec![0u8; len])),
+        ..change(key, offset)
+    }
+}
+
+/// A watch whose queued key and value bytes would pass its bound ends as
+/// lagged at the change it could not take, like one that ran out of entries,
+/// and its bytes come back as it drains.
+#[tokio::test]
+async fn a_watch_over_its_byte_bound_ends_lagged() {
+    let hub = CacheWatchHub::new();
+    hub.set_queue_bytes(QueueBytes::new(100, 0, "felix_cache_watch_queue_bytes"));
+    let mut slow = register(&hub, CacheWatchFilter::Prefix(String::new()));
+    let mut fast = register(&hub, CacheWatchFilter::Prefix(String::new()));
+
+    hub.cache_changed(sized("k", 0, 59));
+    assert_eq!(fast.try_recv().expect("first").offset, 0);
+    hub.cache_changed(sized("k", 1, 59));
+    assert_eq!(fast.try_recv().expect("second").offset, 1);
+
+    // `fast` drained each change, so only `slow` is over its bound.
+    assert_eq!(slow.recv().await.expect("queued").offset, 0);
+    assert_eq!(slow.recv().await, None);
+    assert_eq!(slow.lagged(), Some(1));
+    assert_eq!(fast.lagged(), None);
+    assert_eq!(hub.registered_watchers("t1", "ns", "sessions", 0), 1);
+}
+
+/// The broker-wide bound is shared by every watch.
+#[tokio::test]
+async fn the_broker_wide_watch_bound_is_shared() {
+    let hub = CacheWatchHub::new();
+    hub.set_queue_bytes(QueueBytes::new(0, 100, "felix_cache_watch_queue_bytes"));
+    let mut a = register(&hub, CacheWatchFilter::Key("a".to_string()));
+    let mut b = register(&hub, CacheWatchFilter::Key("b".to_string()));
+
+    hub.cache_changed(sized("a", 0, 79));
+    hub.cache_changed(sized("b", 1, 79));
+    assert_eq!(b.recv().await, None);
+    assert_eq!(b.lagged(), Some(1));
+
+    // Taking `a`'s change gives its bytes back to everyone.
+    assert_eq!(a.recv().await.expect("queued").offset, 0);
+    let mut c = register(&hub, CacheWatchFilter::Key("c".to_string()));
+    hub.cache_changed(sized("c", 2, 79));
+    assert_eq!(c.recv().await.expect("room again").offset, 2);
+}

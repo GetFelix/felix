@@ -15,6 +15,7 @@ use crate::observability::timings;
 use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_register, connection_subscriber_unregister,
 };
+use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
 use crate::serving::quic::handlers::subscribe::lane::{
     ConnectionCommand, LaneCommand, LaneDelivery, LaneRuntimeConfig, LaneSubscriber,
     WriterLaneManager,
@@ -383,7 +384,7 @@ pub(super) async fn run_connection_writer(
                                         item_count: 0,
                                         first_enqueued_at: now,
                                         enqueue_at: now,
-                                        held: felix_broker::HeldBytes::default(),
+                                        held: EgressBytes::default(),
                                     });
                             }
                             // What was queued ahead of this is the subscription's

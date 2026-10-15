@@ -445,21 +445,35 @@ subscriber_queue_capacity_max: 4096
 
 #### `subscriber_queue_max_bytes`
 
-**Description**: Payload bytes one subscriber's queue in broker core may hold. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. A batch keeps counting after it leaves the queue, until the frame carrying it is written to the subscriber's QUIC stream, so the frames waiting in the writer lanes are bounded too. When either bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
+**Description**: Payload bytes waiting in one subscriber's queue in broker core. A queued batch counts the sum of its records' payloads, so the count bound alone no longer decides memory: 4096 queued 16 MiB batches would be 64 GiB. A batch stops counting here once the subscription's feeder has moved it into the writer lanes, where `subscriber_egress_max_bytes` counts it until it is written, so a batch being written never looks like the subscriber falling behind. When either queue bound is full, `subscriber_queue_policy` applies (`drop_new` drops the batch for that subscriber, `block` waits). A batch larger than the bound still goes into an empty queue, so an oversize record is delayed, never undeliverable. `0` turns the byte bound off.
+
+**Type**: `usize` (bytes)
+
+**Default**: `134217728` (128 MiB)
+
+**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES`
+
+```yaml
+subscriber_queue_max_bytes: 134217728
+```
+
+#### `subscriber_egress_max_bytes`
+
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share, this divided by the subscriptions on the connection, and its feeder waits only for its own frames to be written. A subscription whose QUIC stream stalls stops at its share and its broker queue fills behind it, while the other subscriptions on the connection carry on. A shared pool would let one stalled subscription take everything. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
 
 **Type**: `usize` (bytes)
 
 **Default**: `268435456` (256 MiB)
 
-**Environment**: `FELIX_SUB_QUEUE_MAX_BYTES`
+**Environment**: `FELIX_SUB_EGRESS_MAX_BYTES`
 
 ```yaml
-subscriber_queue_max_bytes: 268435456
+subscriber_egress_max_bytes: 268435456
 ```
 
 #### `subscriber_queue_max_bytes_total`
 
-**Description**: Payload bytes all subscriber queues on the broker may hold together. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber queue it sits in, which is what each queue keeps alive, so the real memory is at most this. Without it, each subscriber can hold up to `subscriber_queue_max_bytes` or its largest single batch, whichever is larger, since an oversize batch still enters an empty queue; worst-case queued memory is the number of subscribers times that. With `subscriber_queue_max_bytes: 0`, only queue capacity times batch size limits a subscriber. Set it in production. Values above 4 GiB are honoured.
+**Description**: Payload bytes all subscriber queues on the broker may hold together, counting a batch until its frame is written, so the writer lanes are inside it. A hard ceiling on queued memory, at a cost: once slow subscribers fill it, a fast subscriber's batch meets the queue policy too, so subscribers are no longer isolated from each other. Off by default for that reason. A batch counts once per subscriber it is queued for, which is what each subscriber keeps alive, so the real memory is at most this. Without it, a stalled subscriber can hold up to `subscriber_queue_max_bytes` (or its largest single batch, since an oversize batch still enters an empty queue) plus its share of `subscriber_egress_max_bytes`; worst-case memory is the number of subscribers times the first, plus the second per connection. With `subscriber_queue_max_bytes: 0`, only queue capacity times batch size limits a subscriber's queue. Set it in production. Values above 4 GiB are honoured.
 
 **Type**: `usize` (bytes)
 
@@ -469,6 +483,62 @@ subscriber_queue_max_bytes: 268435456
 
 ```yaml
 subscriber_queue_max_bytes_total: 0
+```
+
+#### `replay_ring_max_bytes`
+
+**Description**: Payload bytes each stream shard's replay ring keeps in memory for cursor replay, on top of its 1024 records. The oldest go first; the newest is kept even when it alone is larger. A resume from below the ring reads from disk on a durable stream and is refused as too old on an in-memory stream. Live delivery does not use the ring. `0` turns the byte bound off.
+
+**Type**: `usize` (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+**Environment**: `FELIX_REPLAY_RING_MAX_BYTES`
+
+```yaml
+replay_ring_max_bytes: 67108864
+```
+
+#### `replay_ring_max_bytes_total`
+
+**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records, never another ring's; a batch that does not fit even in an empty ring is not kept, and the ring stays empty until the next one.
+
+**Type**: `usize` (bytes)
+
+**Default**: `0` (no bound)
+
+**Environment**: `FELIX_REPLAY_RING_MAX_BYTES_TOTAL`
+
+```yaml
+replay_ring_max_bytes_total: 0
+```
+
+#### `cache_watch_max_bytes`
+
+**Description**: Key and value bytes one cache watch may have queued, on top of its 1024 changes. A watch that would go over ends as lagged, as for a full queue, and the client re-watches from the change it missed. `0` turns the byte bound off.
+
+**Type**: `usize` (bytes)
+
+**Default**: `67108864` (64 MiB)
+
+**Environment**: `FELIX_CACHE_WATCH_MAX_BYTES`
+
+```yaml
+cache_watch_max_bytes: 67108864
+```
+
+#### `cache_watch_max_bytes_total`
+
+**Description**: Key and value bytes all cache watches on the broker may have queued together. Caps watch memory at the cost of isolation: once slow watchers fill it, a watch that is keeping up can be ended as lagged too.
+
+**Type**: `usize` (bytes)
+
+**Default**: `0` (no bound)
+
+**Environment**: `FELIX_CACHE_WATCH_MAX_BYTES_TOTAL`
+
+```yaml
+cache_watch_max_bytes_total: 0
 ```
 
 #### `max_subscriptions_per_conn`

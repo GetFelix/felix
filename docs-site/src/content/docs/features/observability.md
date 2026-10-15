@@ -111,7 +111,8 @@ felix_sub_queue_dropped_total               # records lost to slow consumers
 felix_sub_queue_byte_dropped_total{bound}   # of those, records the byte bound turned away
 felix_sub_queue_drop_old_emulated_total     # DropOld configured, DropNew behavior
 felix_sub_queue_len
-felix_sub_queue_bytes                       # payload bytes held in subscriber queues and writer lanes
+felix_sub_queue_bytes                       # payload bytes waiting in subscriber queues
+felix_sub_egress_bytes                      # payload bytes in the writer lanes, not yet written
 felix_sub_conn_queue_depth                  # histogram: commands waiting for a connection's writer
 felix_sub_connection_subscribers            # subscribers across all connections
 felix_subscriber_disconnect_total
@@ -123,7 +124,14 @@ queue filled by bytes rather than by entries: large records, with `bound` saying
 whether the subscriber's own bound (`subscriber`) or the broker-wide one
 (`broker`) was full. On a durable stream the subscriber can detect this itself
 from offset gaps and resume; on an ephemeral stream this counter is the only
-witness.
+witness. `felix_sub_egress_bytes` near `FELIX_SUB_EGRESS_MAX_BYTES` times the
+number of connections means frames are piling up behind QUIC flow control.
+
+Two more gauges show the other byte-bounded buffers:
+`felix_replay_ring_bytes` is the payload bytes held by every stream shard's
+replay ring, and `felix_cache_watch_queue_bytes` the key and value bytes
+waiting in cache watch queues. A watch that runs out of either entries or
+bytes counts in `felix_cache_watch_lagged_total`.
 
 **Are consumer groups keeping up?**
 

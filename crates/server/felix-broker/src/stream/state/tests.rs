@@ -15,6 +15,7 @@ fn stream() -> StreamState {
         16,
         SubQueuePolicy::DropNew,
         Default::default(),
+        &Default::default(),
         None,
         crate::broker::ConsistencyLevel::Leader,
     )
@@ -139,6 +140,7 @@ fn append_batch_keeps_monotonic_sequences_and_trims_once() {
         8,
         SubQueuePolicy::DropNew,
         Default::default(),
+        &Default::default(),
         None,
         Default::default(),
     );
@@ -262,4 +264,26 @@ async fn a_move_does_not_end_later_subscribers() {
     assert_eq!(later.moved(), None);
     assert!(!later.deleted());
     assert_eq!(state.subscriber_count(), 1);
+}
+
+#[test]
+fn a_batch_the_ring_cannot_hold_still_moves_the_tail() {
+    let stream = StreamState::new(
+        1,
+        8,
+        SubQueuePolicy::DropNew,
+        Default::default(),
+        &crate::stream::RingBytes::new(0, 4),
+        None,
+        Default::default(),
+    );
+    stream.append_batch(&[Bytes::from_static(b"ab")], 16);
+    stream.append_batch(&[Bytes::from_static(b"cdefgh")], 16);
+    // Nothing in the ring, and nothing below the tail it could serve.
+    assert_eq!(stream.tail_seq(), 2);
+    assert_eq!(stream.oldest_seq(), 2);
+    assert!(stream.register_with_backlog(1).is_err());
+    stream.append_batch(&[Bytes::from_static(b"i")], 16);
+    assert_eq!(stream.oldest_seq(), 2);
+    assert_eq!(stream.tail_seq(), 3);
 }

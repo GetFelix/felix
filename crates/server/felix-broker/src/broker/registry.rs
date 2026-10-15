@@ -233,6 +233,7 @@ impl Broker {
                 self.topic_capacity,
                 self.subscriber_queue_policy,
                 self.subscriber_queue_bytes.clone(),
+                &self.ring_bytes,
                 durable,
                 metadata.consistency,
             ));

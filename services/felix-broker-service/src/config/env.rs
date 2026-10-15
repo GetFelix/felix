@@ -294,6 +294,22 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0);
+        let bytes = |name: &str, default: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(default)
+        };
+        let subscriber_egress_max_bytes = bytes(
+            "FELIX_SUB_EGRESS_MAX_BYTES",
+            DEFAULT_SUBSCRIBER_EGRESS_MAX_BYTES,
+        );
+        let replay_ring_max_bytes =
+            bytes("FELIX_REPLAY_RING_MAX_BYTES", DEFAULT_REPLAY_RING_MAX_BYTES);
+        let replay_ring_max_bytes_total = bytes("FELIX_REPLAY_RING_MAX_BYTES_TOTAL", 0);
+        let cache_watch_max_bytes =
+            bytes("FELIX_CACHE_WATCH_MAX_BYTES", DEFAULT_CACHE_WATCH_MAX_BYTES);
+        let cache_watch_max_bytes_total = bytes("FELIX_CACHE_WATCH_MAX_BYTES_TOTAL", 0);
         let subscriber_queue_policy = std::env::var("FELIX_SUB_QUEUE_POLICY")
             .ok()
             .and_then(|value| parse_sub_queue_policy(&value))
@@ -433,6 +449,11 @@ impl BrokerConfig {
             max_subscriptions_per_conn_total,
             subscriber_queue_max_bytes,
             subscriber_queue_max_bytes_total,
+            subscriber_egress_max_bytes,
+            replay_ring_max_bytes,
+            replay_ring_max_bytes_total,
+            cache_watch_max_bytes,
+            cache_watch_max_bytes_total,
             subscriber_queue_policy,
             subscriber_writer_lanes,
             subscriber_lane_queue_depth,

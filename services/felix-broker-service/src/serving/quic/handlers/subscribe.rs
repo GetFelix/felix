@@ -28,6 +28,7 @@
 
 mod config;
 mod conn_counts;
+mod egress;
 mod feeder;
 mod lane;
 mod replay;

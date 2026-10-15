@@ -400,6 +400,7 @@ fn tiny_queues() -> (
         shard: crate::config::SubscriberLaneShard::Auto,
         single_writer_per_conn: true,
         rr_counter: std::sync::atomic::AtomicUsize::new(0),
+        egress: Arc::new(crate::serving::quic::handlers::subscribe::egress::EgressBudget::new(0)),
     };
     (Arc::new(manager), lane_rx, conn_rx)
 }
@@ -412,7 +413,7 @@ fn lane_delivery(subscriber_id: u64) -> LaneCommand {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: crate::serving::quic::handlers::subscribe::egress::EgressBytes::default(),
     }
 }
 
@@ -424,7 +425,7 @@ fn connection_delivery(subscriber_id: u64) -> ConnectionCommand {
         item_count: 1,
         first_enqueued_at: now,
         enqueue_at: now,
-        held: felix_broker::HeldBytes::default(),
+        held: crate::serving::quic::handlers::subscribe::egress::EgressBytes::default(),
     }
 }
 
