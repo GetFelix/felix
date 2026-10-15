@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792020561824,
+  "lastUpdate": 1792022591899,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29172,6 +29172,58 @@ window.BENCHMARK_DATA = {
             "range": "46619.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 736784.45\nmean: 756251.49\nstdev: 46619.99\ncv: 6.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ebe943ae879b4d571bf88a2e2d7112d7643d802e",
+          "message": "fix(history): reconnect a workload client whose connection went stale (#1223) (#1225)\n\n* fix(history): reconnect a workload client whose connection went stale (#1223)\n\nA client counted failed ops in a row and reconnected after three, but a\nsuccessful read or cache op, which opens its own connection, reset the\ncount. After a power cut restarts every broker on new ports, a client\ncould keep publishing over its dead connection and wait out one 10 s\ntimeout after another, which starved the outage campaign of cache puts.\n\nOnly ops over the connection now count toward reconnecting, and one of\nthem failing reconnects at once when the address book changed since the\nclient connected.\n\n* docs(history): say which restart triggers an early reconnect",
+          "timestamp": "2026-10-14T16:43:15-07:00",
+          "tree_id": "477cbfa0c8c5a97efbb11b482b353c34925b65f7",
+          "url": "https://github.com/GetFelix/felix/commit/ebe943ae879b4d571bf88a2e2d7112d7643d802e"
+        },
+        "date": 1792022591141,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354721.17,
+            "range": "12882.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354721.17\nmean: 352119.16\nstdev: 12882.30\ncv: 3.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354721.17,
+            "range": "12882.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354721.17\nmean: 352119.16\nstdev: 12882.30\ncv: 3.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83697.53,
+            "range": "4519.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83697.53\nmean: 81960.85\nstdev: 4519.23\ncv: 5.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 836975.27,
+            "range": "45192.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 836975.27\nmean: 819608.47\nstdev: 45192.32\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
