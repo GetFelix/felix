@@ -205,6 +205,15 @@ tasks:
     cmds:
       - "python3 scripts/check_publish_metadata.py"
       - "python3 scripts/check_license_graph.py"
+  changelog:check:
+    desc: "Validate the changelog.d/ fragments and the assembler's tests"
+    cmds:
+      - "python3 scripts/changelog_assemble.py --check"
+      - "python3 -m unittest scripts/test_changelog_assemble.py"
+  changelog:assemble:
+    desc: "Fold changelog.d/ fragments into CHANGELOG.md (task changelog:assemble -- <version>)"
+    cmds:
+      - "python3 scripts/changelog_assemble.py {{.CLI_ARGS}}"
   ci:toolchains:
     desc: "Assert every workflow's Rust setup matches rust-toolchain.toml"
     cmds:

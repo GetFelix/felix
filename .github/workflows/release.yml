@@ -138,6 +138,18 @@ jobs:
         if: ${{ !inputs.nightly }}
         run: python3 scripts/check_release_version.py "${RELEASE_TAG}"
 
+      # Fragments left behind mean the assembler was not run, so their entries
+      # are missing from the section extracted below.
+      - name: Changelog fragments are assembled
+        if: ${{ !inputs.nightly }}
+        run: |
+          left=$(find changelog.d -type f ! -name README.md ! -name '.*')
+          if [ -n "$left" ]; then
+            echo "::error::changelog.d/ still has fragments; run scripts/changelog_assemble.py ${RELEASE_TAG#v} and commit the result before tagging"
+            echo "$left"
+            exit 1
+          fi
+
       # The changelog entry, not auto-generated notes. A release spanning months
       # generates a list that is mostly dependency bumps: accurate about commits,
       # poor about what changed. Fails closed if the entry is missing.
