@@ -170,7 +170,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
-          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           context: .
           file: docker/broker.Dockerfile
           load: true
@@ -181,7 +181,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
-          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           context: .
           file: docker/controlplane.Dockerfile
           load: true
@@ -192,7 +192,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
-          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           context: .
           file: docker/felixctl.Dockerfile
           load: true
@@ -268,7 +268,13 @@ jobs:
             echo
             echo "## Unreleased changes"
             echo
-            python3 scripts/changelog_section.py Unreleased
+            # Fold any fragments into a throwaway section so the notes include them.
+            if compgen -G 'changelog.d/*.*.md' > /dev/null; then
+              python3 scripts/changelog_assemble.py nightly > /dev/null
+              python3 scripts/changelog_section.py nightly
+            else
+              python3 scripts/changelog_section.py Unreleased
+            fi
           } > notes.md
           cat notes.md
 

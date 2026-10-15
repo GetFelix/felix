@@ -90,7 +90,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
-          build-args: BASE_REGISTRY=public.ecr.aws/docker/library
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
@@ -153,15 +153,16 @@ jobs:
   # never reaches a persistent machine. See docs-site development/building.md.
   test:
     if: github.event_name != 'workflow_dispatch'
-    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
       FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
     services:
       postgres:
-        # The official image through AWS's mirror, which has no anonymous pull limit.
-        image: public.ecr.aws/docker/library/postgres:16-alpine
+        # The official image through Google's Docker Hub mirror. Docker Hub and AWS's
+        # mirror both throttle anonymous pulls from shared runner addresses.
+        image: mirror.gcr.io/library/postgres:16-alpine
         ports:
           - 55432:5432
         env:
@@ -284,6 +285,9 @@ jobs:
       # docs-site/ and would never see it.
       - name: Documentation evidence
         run: task docs:evidence
+
+      - name: Changelog fragments
+        run: task changelog:check
 
       # Without a tag this only asserts the version fields agree with each
       # other. That is the half a pull request can be wrong about: a bump that
@@ -472,7 +476,8 @@ jobs:
   # that shows a check is load-bearing stays a trace.
   formal:
     name: TLA+ model (${{ matrix.shard }}/7)
-    runs-on: ubuntu-latest
+    # TLC runs a worker per core; see "Larger runners" in docs-site building.md.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || '60') }}
     # Seven shards, filled by each configuration's measured time
     # (scripts/check_tla.sh), keep every job near forty minutes, well under
