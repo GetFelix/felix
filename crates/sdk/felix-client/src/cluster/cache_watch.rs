@@ -218,8 +218,7 @@ impl ClusterClient {
         namespace: &str,
         cache: &str,
     ) -> Result<u32> {
-        let ask = || async {
-            let client = self.client().await;
+        let ask = |client: Arc<Client>| async move {
             anyhow::ensure!(
                 client.supports_cache_shards(),
                 "this broker does not report cache shard counts, so the number of shards to \
@@ -230,15 +229,16 @@ impl ClusterClient {
                 .await
                 .with_context(|| format!("ask how many shards cache {cache} has"))
         };
-        let shards = match ask().await {
+        let client = self.client().await;
+        let shards = match ask(Arc::clone(&client)).await {
             Ok(shards) => shards,
             Err(first) => {
-                self.reconnect().await.map_err(|reconnect_err| {
+                self.reconnect(&client).await.map_err(|reconnect_err| {
                     first.context(format!(
                         "and no other broker answered either: {reconnect_err:#}"
                     ))
                 })?;
-                ask().await?
+                ask(self.client().await).await?
             }
         };
         anyhow::ensure!(
