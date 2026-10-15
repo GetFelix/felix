@@ -32,24 +32,12 @@
 //! already say how quickly a dead leader is detected, and a report has to
 //! survive exactly that long to be usable.
 //!
-//! Once no promoted shard can open on the lease, a report past that window is
-//! still believed while it is within the window of its leader's last
-//! heartbeat. A dead leader's last report then stops ageing: nothing else
-//! will ever report on its shards, and letting it expire leaves them with no
-//! leader the control plane will promote. A leader that keeps heartbeating but
-//! stops reporting ages its report out as before. It waits for those features
-//! because a follower named in an old report may since have lost its log, and
-//! only a promotion that fences a majority and takes the furthest tail
-//! recovers from that.
-//!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{
-    HaltedCopy, Node, NodeSuspicion, ReplicaReport, ShardAssignment, ShardKey, ShardKind,
-};
+use crate::model::{HaltedCopy, NodeSuspicion, ReplicaReport, ShardKey, ShardKind};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -93,10 +81,6 @@ pub struct ReplicaPositions {
     reports: HashMap<ShardKey, ReplicaReport>,
     ttl_millis: u64,
     now_millis: u64,
-    /// When each report's leader was last heard from, for the shards a
-    /// promotion fences before it serves. A report past the TTL by
-    /// `now_millis` is still believed within the TTL of this.
-    heard_at: HashMap<ShardKey, u64>,
     /// The fresh suspicions, by the broker that holds them.
     suspicions: HashMap<String, NodeSuspicion>,
     /// Each node's current incarnation, which a leader's `by_round` must
@@ -124,7 +108,6 @@ impl ReplicaPositions {
                 .collect(),
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
-            heard_at: HashMap::new(),
             suspicions: HashMap::new(),
             incarnations: HashMap::new(),
             followers_decide: false,
@@ -166,51 +149,6 @@ impl ReplicaPositions {
         self
     }
 
-    /// With who made each report and when they last heartbeated, so a dead
-    /// leader's last report stops ageing.
-    ///
-    /// Only for the shards that `enabled` says never open on the lease once
-    /// promoted: the new leader fences a majority and takes the furthest
-    /// tail, so a follower that lost its log after the report is caught up
-    /// before it serves. On the lease path nothing would catch it up, and a
-    /// report that outlived the TTL could promote it.
-    ///
-    /// A report is attributed to the assignment's leader only while the
-    /// assignment is still at the report's generation: the store holds a
-    /// report only from the leader of that generation.
-    pub fn with_reporters(
-        mut self,
-        existing: &[ShardAssignment],
-        nodes: &[Node],
-        enabled: &BTreeSet<String>,
-    ) -> Self {
-        let on = |feature: felix_common::fleet::FleetFeature| enabled.contains(feature.name());
-        let streams =
-            on(felix_common::fleet::GENERATION_START) && on(felix_common::fleet::MAJORITY_ACK);
-        let caches = streams && on(felix_common::fleet::FENCED_CACHES);
-        let heartbeats: HashMap<&str, u64> = nodes
-            .iter()
-            .map(|node| (node.node_id.as_str(), node.status.last_heartbeat_at_millis))
-            .collect();
-        self.heard_at = existing
-            .iter()
-            .filter(|assignment| match assignment.key.kind {
-                ShardKind::Stream => streams,
-                ShardKind::Cache => caches,
-            })
-            .filter(|assignment| {
-                self.reports
-                    .get(&assignment.key)
-                    .is_some_and(|report| report.generation == assignment.generation)
-            })
-            .filter_map(|assignment| {
-                let heard = *heartbeats.get(assignment.leader.as_str())?;
-                Some((assignment.key.clone(), heard.min(self.now_millis)))
-            })
-            .collect();
-        self
-    }
-
     /// With when this instance last saw each restore's new copy move.
     pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
         self.progressed = progressed;
@@ -222,19 +160,14 @@ impl ReplicaPositions {
         liveness: &NodeLivenessConfig,
     ) -> crate::store::StoreResult<Self> {
         let reports = store.list_replica_reports().await?;
-        let nodes = store.list_nodes().await?;
-        let existing = store.list_shard_assignments().await?;
-        let enabled = store.enabled_fleet_features().await?;
         let now_millis = store.now_millis().await?;
-        Ok(Self::new(reports, liveness, now_millis).with_reporters(&existing, &nodes, &enabled))
+        Ok(Self::new(reports, liveness, now_millis))
     }
 
     /// The report for `key`, if there is one and it is still believed.
     fn fresh(&self, key: &ShardKey) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
-        let within =
-            |as_of: u64| as_of.saturating_sub(report.reported_at_millis) <= self.ttl_millis;
-        (within(self.now_millis) || self.heard_at.get(key).copied().is_some_and(within))
+        (self.now_millis.saturating_sub(report.reported_at_millis) <= self.ttl_millis)
             .then_some(report)
     }
 }

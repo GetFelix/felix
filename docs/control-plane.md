@@ -758,12 +758,7 @@ report is believed for twice the expiry timeout plus one heartbeat interval:
 long enough to outlive the detection of the leader that made it, since a
 report that expired sooner would leave a shard unpromotable forever, and no
 longer, since a stale one is how a failover loses the records written after
-it. Once the fleet has finalized `generation_start` and `majority_ack` (and
-`fenced_caches`, for a cache), a report past that window is still believed
-while it is within the window of its leader's last heartbeat, so a dead
-leader's last report stops ageing and a slow pass or a control-plane outage
-after the death still finds it. A leader that keeps heartbeating but stops
-reporting ages its report out either way. Nothing about a report survives the assignment it describes: deleting the
+it. Nothing about a report survives the assignment it describes: deleting the
 assignment deletes the report, so a shard removed and recreated does not
 inherit the old one's promotability.
 

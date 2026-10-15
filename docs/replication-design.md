@@ -460,8 +460,8 @@ When the fence applies:
 - A stream shard's consumer-group state as well, as one pair. See
   [Group state at promotion](#group-state-at-promotion) below.
   `felix_broker_promotions_opened_total{path}` says which path each new
-  leadership took, promoted or not. It counts a leadership once the shard
-  opens, so a refused open that is retried is not counted twice.
+  leadership took, promoted or not. It counts a leadership when the shard
+  is let go to serve, so a refused open that is retried is counted once.
 
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
@@ -1733,25 +1733,6 @@ follower *was* caught up; the leader kept writing afterwards, and promoting on a
 stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
-
-A dead leader's last report would expire the same way, and nothing else will
-ever report on its shards: a placement pass that ran more than the window
-after the last report, through a control-plane outage or a slow pass, would
-find no replica to promote, and the shard would wait for an operator to
-abandon it. So once the fleet has finalized `generation_start` and
-`majority_ack` (and `fenced_caches`, for a cache), a report past the window is
-still believed while it is within the window of its leader's last heartbeat.
-A live leader heartbeats, so an old report from one that stopped reporting
-still expires. A report is tied to a heartbeat only while the assignment is
-still at the report's generation, since only that generation's leader can
-have made it.
-
-It waits for those features because a follower the report names may since
-have lost its log and registered again, and the control plane cannot tell.
-With them, a promoted shard never opens on the lease: the new leader fences a
-majority and takes the furthest tail before it serves, so such a follower is
-caught up first. On the lease path nothing would catch it up, so there the
-report expires as before.
 
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.
