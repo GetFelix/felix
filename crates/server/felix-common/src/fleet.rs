@@ -163,6 +163,22 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
         .collect()
 }
 
+/// The features a broker uses `feature` only alongside, in the order they
+/// can be finalized. The control plane refuses to finalize `feature` before
+/// them: on its own it turns nothing on at the brokers, while the control
+/// plane, reading the enabled set, would act as if it had. Empty for a
+/// feature that needs no other, or a name this build does not know.
+pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
+    const BY_FOLLOWERS: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
+    if feature == MAJORITY_ACK.name() {
+        &[GENERATION_START]
+    } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
+        BY_FOLLOWERS
+    } else {
+        &[]
+    }
+}
+
 /// One broker's view of which features the fleet has enabled.
 ///
 /// Built from what this broker reported, so it can only ever enable a

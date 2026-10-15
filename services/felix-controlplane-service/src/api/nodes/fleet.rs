@@ -63,7 +63,7 @@ pub(crate) struct FinalizeQuery {
     ),
     responses(
         (status = 200, description = "Enabled, or with dry_run the preview", body = FleetFinalizeResponse),
-        (status = 409, description = "A serving broker does not support it, or none is serving")
+        (status = 409, description = "A serving broker does not support it, none is serving, or a feature it needs is not enabled yet")
     )
 )]
 /// Enable a fleet feature. One-way: once enabled, a broker without the
@@ -72,11 +72,14 @@ pub(crate) struct FinalizeQuery {
 ///
 /// Refused unless every live or draining broker reported the feature. A
 /// broker that is down when it is enabled is refused when it comes back
-/// without it. With `dry_run=true` nothing changes, and the answer says
-/// whether a real finalize would be accepted and which brokers lack it.
+/// without it. Also refused before the features it is used alongside, such
+/// as `majority_ack` before `generation_start`. With `dry_run=true` nothing
+/// changes, and the answer says whether a real finalize would be accepted,
+/// which brokers lack it and which features it still needs.
 ///
 /// # Errors
-/// - 409 when a serving broker lacks the feature, or no broker is serving.
+/// - 409 when a serving broker lacks the feature, no broker is serving, or a
+///   feature it needs is not enabled yet.
 /// - 500 when the store cannot be read or written.
 pub(crate) async fn finalize_fleet_feature(
     State(state): State<AppState>,
@@ -92,26 +95,38 @@ pub(crate) async fn finalize_fleet_feature(
         .map_err(|ref err| api_internal("list nodes", err))?;
     let lacking = crate::cluster::fleet::lacking(&nodes, &feature);
     let serving_nodes = serving(&nodes);
+    let already = state
+        .store
+        .enabled_fleet_features()
+        .await
+        .map_err(|ref err| api_internal("read the enabled fleet features", err))?;
+    let requires = if already.contains(&feature) {
+        Vec::new()
+    } else {
+        crate::cluster::fleet::missing_prerequisites(&already, &feature)
+    };
 
     if query.dry_run {
-        let enabled = state
-            .store
-            .enabled_fleet_features()
-            .await
-            .map_err(|ref err| api_internal("read the enabled fleet features", err))?
-            .contains(&feature);
-        let would_enable =
-            enabled || crate::cluster::fleet::check_finalize(&nodes, &feature).is_ok();
+        let enabled = already.contains(&feature);
+        let would_enable = enabled
+            || (requires.is_empty()
+                && crate::cluster::fleet::check_finalize(&nodes, &feature).is_ok());
         return Ok(Json(FleetFinalizeResponse {
             feature,
             dry_run: true,
             enabled,
             would_enable,
             lacking,
+            requires,
             serving_nodes,
         }));
     }
 
+    // Here rather than in the stores: see `check_prerequisites`.
+    crate::cluster::fleet::check_prerequisites(&already, &feature).map_err(|err| match err {
+        StoreError::Conflict(ref message) => api_conflict("conflict", message),
+        ref other => api_internal("finalize a fleet feature", other),
+    })?;
     let enabled = state
         .store
         .finalize_fleet_feature(&feature)
@@ -127,6 +142,7 @@ pub(crate) async fn finalize_fleet_feature(
         feature,
         dry_run: false,
         lacking,
+        requires,
         serving_nodes,
     }))
 }

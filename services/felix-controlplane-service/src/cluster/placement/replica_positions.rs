@@ -114,10 +114,11 @@ impl ReplicaPositions {
     /// With what brokers said about the leaders they cannot reach, and the
     /// fleet features that decide whether that may move a shard.
     ///
-    /// Both features, not only `majority_ack`: without `lease_free_reads` a
-    /// deposed leader still serves reads on its lease, and replacing it
-    /// before that runs out would let it hand out what its successor has
-    /// since overwritten.
+    /// All three of what brokers need to serve without the lease
+    /// (`generation_start`, `majority_ack`, `lease_free_reads`): short of any
+    /// of them a deposed leader still acknowledges or serves reads on its
+    /// lease, and replacing it before that runs out would let it hand out
+    /// what its successor has since overwritten.
     pub fn with_suspicions(
         mut self,
         suspicions: Vec<NodeSuspicion>,
@@ -131,6 +132,7 @@ impl ReplicaPositions {
             .map(|suspicion| (suspicion.node_id.clone(), suspicion))
             .collect();
         self.followers_decide = [
+            felix_common::fleet::GENERATION_START,
             felix_common::fleet::MAJORITY_ACK,
             felix_common::fleet::LEASE_FREE_READS,
         ]

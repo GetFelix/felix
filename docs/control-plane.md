@@ -111,8 +111,9 @@ A broker that cannot reach the leader of a shard it follows also sends
 `FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft
 state for two heartbeat intervals and asks for a placement pass; a broker
 suspecting nobody leaves the field out. Placement promotes on it only for a
-durable `Quorum` stream once `majority_ack` and `lease_free_reads` are
-finalized (`docs/replication-design.md`, "Failover on the followers' word").
+durable `Quorum` stream once `generation_start`, `majority_ack` and
+`lease_free_reads` are all finalized (`docs/replication-design.md`, "Failover
+on the followers' word").
 A record that cannot be stored is logged and does not fail the heartbeat.
 
 Four rules, each of which exists for a reason:
@@ -166,7 +167,8 @@ answers whether a real finalize would be accepted:
 
 ```json
 { "feature": "jump_hash_routing", "dry_run": true, "enabled": false,
-  "would_enable": false, "lacking": ["broker-3"], "serving_nodes": 3 }
+  "would_enable": false, "lacking": ["broker-3"], "requires": [],
+  "serving_nodes": 3 }
 ```
 
 Finalizing an enabled feature again is a no-op. Registration and every
@@ -178,8 +180,18 @@ that alone. `GET /v1/fleet/features` (`node.view` on `cluster:*`) shows both:
 ```
 
 The names are opaque to the control plane, so it can gate a feature it has
-never heard of. An older control plane sends no `fleet_features`, which
-leaves every broker with nothing enabled.
+never heard of. The exception is the order of the ones brokers use only
+together: `majority_ack` is refused with 409 until `generation_start` is
+enabled, and `lease_free_reads` and `fenced_caches` until both are. Placement
+reads the enabled set directly, so a fleet with `lease_free_reads` but not
+`generation_start` would fail over on suspicion while its brokers still serve
+on the lease (`follower_features_are_finalized_after_generation_start`). The
+dry run lists what is still needed as `requires`. The check runs when the
+operator asks rather than when a store applies the finalize: the enabled set
+only grows, so a prerequisite once seen enabled stays enabled, and a Raft
+member applying the command never decides differently from one on an older
+release. An older control plane sends no `fleet_features`, which leaves every
+broker with nothing enabled.
 
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and

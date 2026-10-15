@@ -318,12 +318,16 @@ This build implements four features: `generation_start`, `majority_ack`,
 
 Support turns nothing on. `POST /v1/fleet/features/{feature}/finalize`
 (`node.manage:cluster:*`) enables a feature, and is refused with 409 unless
-every live or draining broker supports it. With `?dry_run=true` it changes
-nothing and answers whether it would be accepted:
+every live or draining broker supports it. It is also refused before the
+features it only works alongside: `majority_ack` before `generation_start`,
+and `lease_free_reads` or `fenced_caches` before both. With `?dry_run=true` it
+changes nothing and answers whether it would be accepted, listing brokers that
+lack the feature as `lacking` and features to finalize first as `requires`:
 
 ```json
 { "feature": "jump_hash_routing", "dry_run": true, "enabled": false,
-  "would_enable": false, "lacking": ["broker-3"], "serving_nodes": 3 }
+  "would_enable": false, "lacking": ["broker-3"], "requires": [],
+  "serving_nodes": 3 }
 ```
 
 Finalizing is one-way: after it, a broker that registers without the feature

@@ -389,3 +389,87 @@ async fn a_fleet_feature_is_enabled_only_by_finalizing() {
     assert_eq!(body["enabled"], serde_json::json!(["x"]));
     assert_eq!(body["serving_nodes"], 2);
 }
+
+/// `majority_ack` and `lease_free_reads` are refused before
+/// `generation_start`: brokers use them only alongside it, while placement
+/// would act on them as soon as they were enabled.
+#[tokio::test]
+async fn follower_features_are_finalized_after_generation_start() {
+    let store = store();
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec!["node.manage:cluster:*".to_string()],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let app = app_with(Arc::clone(&store)).await;
+    let response = app
+        .clone()
+        .oneshot(authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-a",
+                "advertise_addr": "10.0.0.4:7001",
+                "region": "local",
+                "features": ["generation_start", "majority_ack", "lease_free_reads"],
+            }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let finalize = |feature: &str, dry_run: bool| {
+        let query = if dry_run { "?dry_run=true" } else { "" };
+        authed(
+            &token,
+            "POST",
+            &format!("/v1/fleet/features/{feature}/finalize{query}"),
+            serde_json::json!({}),
+        )
+    };
+
+    let response = app
+        .clone()
+        .oneshot(finalize("lease_free_reads", true))
+        .await
+        .expect("request");
+    let preview = read_json(response).await;
+    assert_eq!(preview["would_enable"], false);
+    assert_eq!(
+        preview["requires"],
+        serde_json::json!(["generation_start", "majority_ack"])
+    );
+    for feature in ["majority_ack", "lease_free_reads"] {
+        let response = app
+            .clone()
+            .oneshot(finalize(feature, false))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{feature}");
+    }
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .is_empty()
+    );
+
+    for feature in ["generation_start", "majority_ack", "lease_free_reads"] {
+        let response = app
+            .clone()
+            .oneshot(finalize(feature, false))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK, "{feature}");
+    }
+}

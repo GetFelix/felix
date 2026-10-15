@@ -185,8 +185,9 @@ a promoted leader always fences a majority before it serves. `Leader`
 streams and reads keep the lease, and so do caches until `fenced_caches` is
 finalized.
 
-- **Finalize `generation_start` first, or in the same change window.**
-  `majority_ack` has no effect until both are finalized.
+- **Finalize `generation_start` first.** `majority_ack` has no effect
+  without it, so the control plane refuses to finalize it until
+  `generation_start` is enabled.
 - **Upgrade every control-plane instance first.** Don't finalize
   `majority_ack` while any control plane runs a build that rebuilds a
   failed-over `Quorum` shard's replica set (see the changelog entry "A
@@ -222,9 +223,10 @@ confirmed it for a lease duration, and the client finds the shard again as it
 does after a move. A group poll, ack, nack or dead-letter change is confirmed
 by the same round before it is acknowledged.
 
-- **Finalize `generation_start` and `majority_ack` first, or in the same
-  change window.** `lease_free_reads` has no effect until all three are
-  finalized.
+- **Finalize `generation_start` and `majority_ack` first.**
+  `lease_free_reads` has no effect until all three are finalized, so the
+  control plane refuses it until both are enabled. Placement fails a
+  `Quorum` stream over on its followers' word only once all three are.
 - **Every broker must fence on promotion.** As for `majority_ack`, a broker
   running with `FELIX_INTERNAL_FENCE=false` does not report the feature, so
   the dry run names it and the finalize is refused until it runs with the
@@ -296,9 +298,9 @@ report and the lease. A broker of an older build can be promoted to a cache
 shard without fencing it, which is why the lease stays until every broker
 fences caches.
 
-- **Finalize `generation_start` and `majority_ack` first, or in the same
-  change window.** `fenced_caches` has no effect until all three are
-  finalized.
+- **Finalize `generation_start` and `majority_ack` first.** `fenced_caches`
+  has no effect until all three are finalized, so the control plane refuses
+  it until both are enabled.
 - **Upgrade every control-plane instance first.** An older control plane
   rebuilds a failed-over `Quorum` cache's replica set instead of keeping it,
   so the promoted leader's fence could open without a write the old set

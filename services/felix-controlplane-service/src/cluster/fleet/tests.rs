@@ -67,3 +67,32 @@ fn finalizing_needs_every_serving_broker() {
     assert!(check_finalize(&nodes[..1], "x").is_ok());
     assert!(check_finalize(&nodes[2..], "x").is_err(), "nothing serving");
 }
+
+#[test]
+fn follower_features_wait_for_generation_start() {
+    let refused = check_prerequisites(&set(&[]), "majority_ack");
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("finalize generation_start first")),
+        "{refused:?}"
+    );
+    let refused = check_prerequisites(&set(&["majority_ack"]), "lease_free_reads");
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("finalize generation_start first")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        missing_prerequisites(&set(&["generation_start"]), "lease_free_reads"),
+        vec!["majority_ack".to_string()]
+    );
+    assert!(check_prerequisites(&set(&[]), "generation_start").is_ok());
+    assert!(check_prerequisites(&set(&["generation_start"]), "majority_ack").is_ok());
+    assert!(
+        check_prerequisites(
+            &set(&["generation_start", "majority_ack"]),
+            "lease_free_reads"
+        )
+        .is_ok()
+    );
+    // A fleet that finalized out of order is not refused a repeat.
+    assert!(check_prerequisites(&set(&["majority_ack"]), "majority_ack").is_ok());
+}

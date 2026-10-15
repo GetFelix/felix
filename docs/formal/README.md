@@ -657,8 +657,9 @@ acknowledged record that way, and never opens two leaders at one generation,
 with one such promotion; the moves and spares walks (below) promote on
 suspicion up to the tenth generation of every walk. `FelixShardSuspicionLease.cfg` does the same
 where the lease still decides who serves, and TLC finds two brokers serving,
-which is why placement acts on a suspicion only once both `majority_ack` and
-`lease_free_reads` are finalized.
+which is why placement acts on a suspicion only once `generation_start`,
+`majority_ack` and `lease_free_reads` are all finalized: short of any of them
+the brokers keep the lease, which is this configuration.
 
 ### The round that makes a read linearizable
 

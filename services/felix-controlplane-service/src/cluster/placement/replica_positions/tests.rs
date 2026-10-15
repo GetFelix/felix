@@ -301,14 +301,14 @@ fn features(names: &[&str]) -> BTreeSet<String> {
 /// stop counting on its own.
 #[test]
 fn a_suspicion_counts_for_two_heartbeats() {
-    let both = features(&["majority_ack", "lease_free_reads"]);
+    let all = features(&["generation_start", "majority_ack", "lease_free_reads"]);
     let now = 100_000;
     let held = |stamped| {
         at(Vec::new(), now)
             .with_suspicions(
                 vec![suspicion("broker-b", "broker-a", stamped)],
                 &liveness(),
-                &both,
+                &all,
             )
             .suspects(&key("orders"), "broker-b", "broker-a")
     };
@@ -318,12 +318,20 @@ fn a_suspicion_counts_for_two_heartbeats() {
 
 /// **Only once the fleet keeps a deposed leader out without its lease.**
 /// `majority_ack` keeps its writes from being acknowledged; without
-/// `lease_free_reads` it still answers reads on the lease.
+/// `lease_free_reads` it still answers reads on the lease. Brokers use
+/// either only alongside `generation_start`, so without it both stay on the
+/// lease, whatever else is enabled.
 #[test]
-fn a_suspicion_counts_only_with_both_features() {
+fn a_suspicion_counts_only_with_all_three_features() {
     let now = 100_000;
     for (enabled, counts) in [
-        (features(&["majority_ack", "lease_free_reads"]), true),
+        (
+            features(&["generation_start", "majority_ack", "lease_free_reads"]),
+            true,
+        ),
+        (features(&["majority_ack", "lease_free_reads"]), false),
+        (features(&["generation_start", "majority_ack"]), false),
+        (features(&["generation_start", "lease_free_reads"]), false),
         (features(&["majority_ack"]), false),
         (features(&["lease_free_reads"]), false),
         (features(&[]), false),
@@ -349,7 +357,12 @@ fn a_suspicion_does_not_move_a_cache() {
     let positions = at(Vec::new(), now).with_suspicions(
         vec![suspicion("broker-b", "broker-a", now)],
         &liveness(),
-        &features(&["majority_ack", "lease_free_reads", "fenced_caches"]),
+        &features(&[
+            "generation_start",
+            "majority_ack",
+            "lease_free_reads",
+            "fenced_caches",
+        ]),
     );
     let cache = ShardKey {
         kind: crate::model::ShardKind::Cache,

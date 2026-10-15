@@ -370,6 +370,10 @@ pub struct FleetFinalizeResponse {
     /// Serving brokers that did not report the feature. Finalizing is
     /// refused while any are listed.
     pub lacking: Vec<String>,
+    /// Features this one is used only alongside that are not enabled yet.
+    /// Finalizing is refused while any are listed.
+    #[serde(default)]
+    pub requires: Vec<String>,
     /// How many brokers are live or draining.
     pub serving_nodes: usize,
 }

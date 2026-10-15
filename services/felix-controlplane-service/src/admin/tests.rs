@@ -238,4 +238,12 @@ fn fleet_features_render_as_lines() {
         render_finalize(&refused),
         "dry run: a cannot be finalized: broker-2 do not support it\n"
     );
+    let early = json!({
+        "feature": "majority_ack", "dry_run": true, "enabled": false, "would_enable": false,
+        "lacking": [], "requires": ["generation_start"], "serving_nodes": 3,
+    });
+    assert_eq!(
+        render_finalize(&early),
+        "dry run: majority_ack cannot be finalized: finalize generation_start first\n"
+    );
 }

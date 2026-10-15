@@ -102,3 +102,27 @@ fn feature_names_are_snake_case() {
         );
     }
 }
+
+#[test]
+fn prerequisites_come_first_and_carry_their_own() {
+    for (at, feature) in IMPLEMENTED.iter().enumerate() {
+        for needed in prerequisites(feature.name()) {
+            let before = IMPLEMENTED.iter().position(|f| f == needed);
+            assert!(
+                before.is_some_and(|before| before < at),
+                "{needed} is listed after {feature}, which needs it"
+            );
+            for transitive in prerequisites(needed.name()) {
+                assert!(
+                    prerequisites(feature.name()).contains(transitive),
+                    "{feature} needs {needed}, so it also needs {transitive}"
+                );
+            }
+        }
+    }
+    assert_eq!(prerequisites(MAJORITY_ACK.name()), &[GENERATION_START]);
+    assert_eq!(
+        prerequisites(LEASE_FREE_READS.name()),
+        &[GENERATION_START, MAJORITY_ACK]
+    );
+}
