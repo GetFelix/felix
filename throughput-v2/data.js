@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792022591899,
+  "lastUpdate": 1792025160897,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29224,6 +29224,58 @@ window.BENCHMARK_DATA = {
             "range": "45192.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 836975.27\nmean: 819608.47\nstdev: 45192.32\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dfb3aa10d8c4856a150ef4b18d1c6b3f9e6c3155",
+          "message": "fix(client): resolve seed and advertised names again when no broker answers (#1227) (#1228)\n\n* fix(client): resolve seed and advertised names again when no broker answers (#1227)\n\nClusterClient::reconnect dialled only the addresses it held, and discovery\nneeds one of them to answer. After a rollout that gives every broker a new\nIP, no address answers again and the client failed every operation until\nthe application rebuilt it.\n\nSeeds can now be host:port names (Seed, ClusterClient::connect_seeds). When\nevery held address fails, reconnect resolves the seed names and the names\nbrokers last advertised again, dials what is new, and keeps one resolution\nfor a second so a dead cluster does not become a DNS query per failed\noperation. felixctl and the Python, TypeScript and C clients pass names\nthrough instead of resolving them once at startup.\n\n* fix(client): bound and share seed re-resolution, keep each name's last answer\n\nReview follow-up for #1227:\n- Keep each seed name's last answer, so one name that stops resolving does\n  not drop out of the seeds while others move on.\n- Look names up concurrently, each bounded to 2 s, and outside the client\n  lock, so a resolver that stops answering neither stalls other operations\n  nor holds a reconnect for the system resolver's retries.\n- One resolution at a time per Seeds, shared by a client and its\n  identities, so the once-a-second claim holds.\n- Python, TypeScript and C still refuse a name that does not resolve at\n  connect as an invalid argument; documented in felix.h and the stubs.\n\n* fix(client): reconnect only the client that failed, stagger dials, cancellation-safe resolution\n\nReview follow-up for #1227:\n- reconnect takes the client the operation saw fail and does nothing if\n  another caller already replaced it; endpoints are read under the lock.\n- connect_any dials in order but starts the next address after 250 ms, so\n  silent addresses no longer cost a QUIC idle timeout each.\n- Seed re-resolution runs in a task of its own that waiters share, so a\n  caller that gives up does not cancel it or start another round; system\n  lookups are bounded to 8 outstanding threads per client.\n- Discovery resolves advertised names at the same time, each bounded.\n\n* fix(client): one system lookup per name; dial addresses in order again",
+          "timestamp": "2026-10-14T17:29:01-07:00",
+          "tree_id": "7efd343176e0b94087b3863a6db2fc52ccfc51e2",
+          "url": "https://github.com/GetFelix/felix/commit/dfb3aa10d8c4856a150ef4b18d1c6b3f9e6c3155"
+        },
+        "date": 1792025160083,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342391.22,
+            "range": "10437.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342391.22\nmean: 341659.80\nstdev: 10437.26\ncv: 3.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342391.22,
+            "range": "10437.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342391.22\nmean: 341659.80\nstdev: 10437.26\ncv: 3.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80429.91,
+            "range": "417.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80429.91\nmean: 80688.56\nstdev: 417.65\ncv: 0.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804299.06,
+            "range": "4176.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804299.06\nmean: 806885.62\nstdev: 4176.52\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
