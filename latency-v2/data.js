@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792022589244,
+  "lastUpdate": 1792025157275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -37092,6 +37092,72 @@ window.BENCHMARK_DATA = {
             "range": "185.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 507.00\nmean: 573.60\nstdev: 185.66\ncv: 32.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dfb3aa10d8c4856a150ef4b18d1c6b3f9e6c3155",
+          "message": "fix(client): resolve seed and advertised names again when no broker answers (#1227) (#1228)\n\n* fix(client): resolve seed and advertised names again when no broker answers (#1227)\n\nClusterClient::reconnect dialled only the addresses it held, and discovery\nneeds one of them to answer. After a rollout that gives every broker a new\nIP, no address answers again and the client failed every operation until\nthe application rebuilt it.\n\nSeeds can now be host:port names (Seed, ClusterClient::connect_seeds). When\nevery held address fails, reconnect resolves the seed names and the names\nbrokers last advertised again, dials what is new, and keeps one resolution\nfor a second so a dead cluster does not become a DNS query per failed\noperation. felixctl and the Python, TypeScript and C clients pass names\nthrough instead of resolving them once at startup.\n\n* fix(client): bound and share seed re-resolution, keep each name's last answer\n\nReview follow-up for #1227:\n- Keep each seed name's last answer, so one name that stops resolving does\n  not drop out of the seeds while others move on.\n- Look names up concurrently, each bounded to 2 s, and outside the client\n  lock, so a resolver that stops answering neither stalls other operations\n  nor holds a reconnect for the system resolver's retries.\n- One resolution at a time per Seeds, shared by a client and its\n  identities, so the once-a-second claim holds.\n- Python, TypeScript and C still refuse a name that does not resolve at\n  connect as an invalid argument; documented in felix.h and the stubs.\n\n* fix(client): reconnect only the client that failed, stagger dials, cancellation-safe resolution\n\nReview follow-up for #1227:\n- reconnect takes the client the operation saw fail and does nothing if\n  another caller already replaced it; endpoints are read under the lock.\n- connect_any dials in order but starts the next address after 250 ms, so\n  silent addresses no longer cost a QUIC idle timeout each.\n- Seed re-resolution runs in a task of its own that waiters share, so a\n  caller that gives up does not cancel it or start another round; system\n  lookups are bounded to 8 outstanding threads per client.\n- Discovery resolves advertised names at the same time, each bounded.\n\n* fix(client): one system lookup per name; dial addresses in order again",
+          "timestamp": "2026-10-14T17:29:01-07:00",
+          "tree_id": "7efd343176e0b94087b3863a6db2fc52ccfc51e2",
+          "url": "https://github.com/GetFelix/felix/commit/dfb3aa10d8c4856a150ef4b18d1c6b3f9e6c3155"
+        },
+        "date": 1792025152874,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.00\nstdev: 1.87\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "3.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 245.40\nstdev: 3.91\ncv: 1.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "74.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 340.40\nstdev: 74.47\ncv: 21.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "2.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 221.40\nstdev: 2.79\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 489,
+            "range": "109.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 489.00\nmean: 550.20\nstdev: 109.73\ncv: 19.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1610,
+            "range": "584.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1610.00\nmean: 1683.00\nstdev: 584.53\ncv: 34.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
