@@ -117,6 +117,7 @@ impl ClusterClient {
         let mut last: Option<anyhow::Error> = None;
         let mut retrying = Retrying::default();
         let mut at_least = Duration::ZERO;
+        let mut client = self.client().await;
 
         for attempt in 0..self.policy.attempts.max(1) {
             if attempt > 0 {
@@ -130,12 +131,12 @@ impl ClusterClient {
                     break;
                 }
                 tokio::time::sleep(delay).await;
-                if let Err(err) = self.reconnect().await {
+                if let Err(err) = self.reconnect(&client).await {
                     last = Some(err.context("no broker answered"));
                     continue;
                 }
+                client = self.client().await;
             }
-            let client = self.client().await;
             match publish_once(&client, tenant_id, namespace, stream, payload.clone(), ack).await {
                 Ok(acked) => return Ok(acked.offset),
                 Err(err) => {
@@ -284,7 +285,7 @@ impl ClusterClient {
             Err(err) => {
                 // Reconnect before returning, so the caller's next publish does
                 // not repeat this failure against the same dead broker.
-                match self.reconnect().await {
+                match self.reconnect(&client).await {
                     Ok(()) => Err(err.context("publish failed; reconnected to another broker")),
                     Err(reconnect_err) => Err(err.context(format!(
                         "publish failed and no other broker answered: {reconnect_err:#}"

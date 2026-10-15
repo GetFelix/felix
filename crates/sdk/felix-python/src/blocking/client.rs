@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -32,8 +32,11 @@ impl Client {
     /// Connect to a cluster.
     ///
     /// `addrs` is one `"host:port"` or a list of them; any reachable one is
-    /// enough, and the client discovers the rest. `server_name` is the name
-    /// the broker's certificate is expected to carry.
+    /// enough, and the client discovers the rest. A name is resolved again
+    /// whenever no broker the client knows answers, so prefer one to an IP. A
+    /// name that does not resolve now raises `ValueError`.
+    /// `server_name` is the name the broker's certificate is expected to
+    /// carry.
     ///
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `ca_file`
     /// to trust a specific CA (what the demos and a self-signed development
@@ -74,7 +77,7 @@ impl Client {
 
         let server_name = server_name.to_string();
         let inner = block_on(py, async move {
-            ClusterClient::connect(&seeds, &server_name, config)
+            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
                 .await
                 .map_err(to_py_err)
         })?;

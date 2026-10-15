@@ -77,6 +77,15 @@ pub(crate) struct SyncCounts {
 pub(crate) struct PowerLoss {
     root: PathBuf,
     state: Mutex<Durable>,
+    /// Parks the next file capture between its read and its record.
+    #[cfg(test)]
+    park_next_capture: Mutex<Option<ParkedCapture>>,
+}
+
+#[cfg(test)]
+struct ParkedCapture {
+    parked: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 /// What the device holds, as of the last flush of each thing.
@@ -84,7 +93,22 @@ pub(crate) struct PowerLoss {
 struct Durable {
     files: HashMap<Inode, Vec<u8>>,
     dirs: HashMap<PathBuf, BTreeMap<OsString, Entry>>,
+    /// The ticket of the capture each entry above was read by. Two flushes of
+    /// one file can overlap, and the one that started reading later saw more:
+    /// its read must not be replaced by the other's.
+    file_tickets: HashMap<Inode, u64>,
+    dir_tickets: HashMap<PathBuf, u64>,
+    next_ticket: u64,
     counts: SyncCounts,
+}
+
+impl Durable {
+    /// A ticket for a capture about to read. Taken before the read, so a
+    /// higher ticket's read saw everything a lower one's could have.
+    fn ticket(&mut self) -> u64 {
+        self.next_ticket += 1;
+        self.next_ticket
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -108,6 +132,8 @@ impl PowerLoss {
         let this = Arc::new(Self {
             root,
             state: Mutex::new(durable),
+            #[cfg(test)]
+            park_next_capture: Mutex::new(None),
         });
         let mut observers = OBSERVERS.lock();
         observers.retain(|observer| observer.strong_count() > 0);
@@ -183,7 +209,10 @@ impl PowerLoss {
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
         let path = format!("/proc/self/fd/{}", file.as_raw_fd());
-        let captured = self.state.lock().files.get(&inode).map(Vec::len);
+        let (ticket, captured) = {
+            let mut state = self.state.lock();
+            (state.ticket(), state.files.get(&inode).map(Vec::len))
+        };
         // Only a file that has not shrunk is read from where the last capture
         // ended. The segment writer truncates only to rewind a failed append,
         // which the harness heals with a restart and a fresh observer.
@@ -196,7 +225,22 @@ impl PowerLoss {
         let Ok(tail) = read_from(&path, from) else {
             return;
         };
+        #[cfg(test)]
+        self.park_if_asked();
         let mut state = self.state.lock();
+        match kind {
+            SyncKind::Data => state.counts.data += 1,
+            SyncKind::All => state.counts.all += 1,
+            SyncKind::Uring => state.counts.uring += 1,
+        }
+        if state
+            .file_tickets
+            .get(&inode)
+            .is_some_and(|newer| *newer > ticket)
+        {
+            return;
+        }
+        state.file_tickets.insert(inode, ticket);
         let spliced = match state.files.get_mut(&inode) {
             Some(bytes) if from > 0 && bytes.len() >= from => {
                 bytes.truncate(from);
@@ -217,18 +261,50 @@ impl PowerLoss {
             };
             state.files.insert(inode, whole);
         }
-        match kind {
-            SyncKind::Data => state.counts.data += 1,
-            SyncKind::All => state.counts.all += 1,
-            SyncKind::Uring => state.counts.uring += 1,
-        }
     }
 
     fn capture_dir(&self, dir: &Path) {
+        let ticket = self.state.lock().ticket();
         let Ok(listing) = list(dir) else { return };
         let mut state = self.state.lock();
-        state.dirs.insert(dir.to_path_buf(), listing);
         state.counts.dir += 1;
+        if state
+            .dir_tickets
+            .get(dir)
+            .is_some_and(|newer| *newer > ticket)
+        {
+            return;
+        }
+        state.dir_tickets.insert(dir.to_path_buf(), ticket);
+        state.dirs.insert(dir.to_path_buf(), listing);
+    }
+
+    /// Park the next file capture after it has read the file and before it
+    /// records what it read, until the returned sender sends (or is dropped).
+    /// The receiver hears when it has parked.
+    #[cfg(test)]
+    pub(crate) fn park_next_capture(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (parked, on_parked) = std::sync::mpsc::channel();
+        let (release, on_release) = std::sync::mpsc::channel();
+        *self.park_next_capture.lock() = Some(ParkedCapture {
+            parked,
+            release: on_release,
+        });
+        (on_parked, release)
+    }
+
+    #[cfg(test)]
+    fn park_if_asked(&self) {
+        let Some(park) = self.park_next_capture.lock().take() else {
+            return;
+        };
+        let _ = park.parked.send(());
+        // Bounded, so a test that never releases fails rather than hangs.
+        let _ = park
+            .release
+            .recv_timeout(std::time::Duration::from_secs(10));
     }
 }
 

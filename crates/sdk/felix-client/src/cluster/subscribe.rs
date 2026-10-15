@@ -310,15 +310,19 @@ impl ClusterClient {
         // that broker can be the one that just died. Reconnect and ask again
         // rather than reporting its death as an answer about the stream —
         // reconnecting is the whole reason this wrapper exists.
-        let shards = match self.stream_shards_once(tenant_id, namespace, stream).await {
+        let client = self.client().await;
+        let shards = match self
+            .stream_shards_once(&client, tenant_id, namespace, stream)
+            .await
+        {
             Ok(shards) => shards,
             Err(first) => {
-                self.reconnect().await.map_err(|reconnect_err| {
+                self.reconnect(&client).await.map_err(|reconnect_err| {
                     first.context(format!(
                         "and no other broker answered either: {reconnect_err:#}"
                     ))
                 })?;
-                self.stream_shards_once(tenant_id, namespace, stream)
+                self.stream_shards_once(&*self.client().await, tenant_id, namespace, stream)
                     .await
                     .with_context(|| format!("ask how many shards {stream} has"))?
             }
@@ -333,11 +337,11 @@ impl ClusterClient {
     /// Ask the broker in hand how many shards a stream has, once.
     async fn stream_shards_once(
         &self,
+        client: &Client,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
     ) -> Result<u32> {
-        let client = self.client().await;
         anyhow::ensure!(
             client.supports_stream_shards(),
             "this broker does not report stream shard counts, so the number of shards to \
