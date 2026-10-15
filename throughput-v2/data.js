@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792094707345,
+  "lastUpdate": 1792095723228,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30524,6 +30524,58 @@ window.BENCHMARK_DATA = {
             "range": "17760.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1742775.17\nmean: 1745320.18\nstdev: 17760.14\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "214c0254ce9734ba383b41ade4694f1386049c0b",
+          "message": "fix(storage): retry a failed replica commit-offset write (#1263)\n\n* fix(storage): retry a failed replica commit-offset write (#1248)\n\nadvance_commit_offset returned early when the offset was already raised in\nmemory, so a failed write was never retried. It now compares against the\noffset last written. A follower still acks the batch; the doc says so.\n\nSpec-Unaffected: the TLA spec does not model the commit-offset file write, only a log message changed in felix-replication\n\n* docs(storage): say when a failed commit-offset write is retried\n\nSpec-Unaffected: docs and a log message only.\n\n* test(cluster): land the first waiting record alone in retention_floor\n\nSince every client connects before publishing, the 24 waiting publishes\ncan reach the leader together and start a new segment at the commit\noffset. Retention then correctly deletes the old segment, which lies\nwholly below the commit offset, and the replay from the start waits at\nthe commit offset until the 5 s timeout. Publishing the first waiting\nrecord alone keeps it in the early records' segment.\n\nSpec-Unaffected: test-only change.",
+          "timestamp": "2026-10-15T20:17:41Z",
+          "tree_id": "7c45fb1dde591a6d302ab92d150fa34b79ad362d",
+          "url": "https://github.com/GetFelix/felix/commit/214c0254ce9734ba383b41ade4694f1386049c0b"
+        },
+        "date": 1792095722801,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340905.38,
+            "range": "11051.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340905.38\nmean: 339378.72\nstdev: 11051.06\ncv: 3.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340905.38,
+            "range": "11051.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340905.38\nmean: 339378.72\nstdev: 11051.06\ncv: 3.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80188.04,
+            "range": "350.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80188.04\nmean: 80213.07\nstdev: 350.11\ncv: 0.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801880.4,
+            "range": "3501.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801880.40\nmean: 802130.70\nstdev: 3501.15\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
