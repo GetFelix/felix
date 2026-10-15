@@ -288,9 +288,12 @@ Delete the variable to go back.
 
 The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
 runner (16 cores, at most 10 at once). When it is set, the jobs above that run
-GitHub-hosted, and the seven TLA+ shards, use it instead of `ubuntu-latest`.
-TLC uses one worker per core, so the shards gain from the extra cores as much
-as `test` does. Larger runners are billed per minute even on a public
+GitHub-hosted, the seven TLA+ shards and `perf-pr.yml` use it instead of
+`ubuntu-latest`. TLC uses one worker per core, so the shards gain from the
+extra cores as much as `test` does. `perf-pr.yml` benchmarks the merge-base
+and the PR head in one job, so its comparison holds on any runner.
+`perf-publish.yml` stays on `ubuntu-latest`: it adds to a stored history, and
+a change of machine would show up in it as a regression or a speedup. Larger runners are billed per minute even on a public
 repository, which is why the rest of CI stays on `ubuntu-latest`. They are
 fresh machines for every job, like `ubuntu-latest`, so pull requests can use
 them. Delete the variable and every job is back on `ubuntu-latest`.
