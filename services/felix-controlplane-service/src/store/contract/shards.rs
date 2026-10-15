@@ -141,6 +141,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
     an_unknown_cache_is_rejected(store).await;
     deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(store).await;
+    a_cascading_delete_takes_shard_assignments_and_reports(store).await;
     replica_reports::a_replica_report_is_kept_and_read_back(store).await;
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
     replica_reports::a_report_on_another_incarnation_is_refused_at_the_write(store).await;
@@ -1211,6 +1212,136 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         owned(&after_cache, ShardKind::Cache),
         0,
         "the deleted cache's shards are still owned",
+    );
+}
+
+/// A namespace or tenant delete takes its streams' and caches' assignments and
+/// reports, as a stream delete does (and as Postgres's cascade does). Left
+/// behind, a stream created again under the name would be "updated" from the
+/// deleted one's assignment, and its first report weighed against the old log's.
+async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn ControlPlaneStore) {
+    const NAME: &str = "cascaded";
+
+    async fn fill(store: &dyn ControlPlaneStore, tenant: &str, namespace: &str) -> Vec<ShardKey> {
+        let _ = store
+            .create_tenant(Tenant {
+                tenant_id: tenant.to_string(),
+                display_name: "Cascade".to_string(),
+            })
+            .await;
+        store
+            .create_namespace(Namespace {
+                tenant_id: tenant.to_string(),
+                namespace: namespace.to_string(),
+                display_name: "Cascade".to_string(),
+            })
+            .await
+            .expect("namespace");
+        store
+            .create_stream(Stream {
+                tenant_id: tenant.to_string(),
+                namespace: namespace.to_string(),
+                stream: NAME.to_string(),
+                kind: StreamKind::Stream,
+                shards: 1,
+                replication_factor: 1,
+                retention: RetentionPolicy {
+                    max_age_seconds: None,
+                    max_size_bytes: None,
+                },
+                consistency: ConsistencyLevel::Leader,
+                delivery: DeliveryGuarantee::AtMostOnce,
+                durable: true,
+                region: None,
+                routing: Default::default(),
+                incarnation: 0,
+            })
+            .await
+            .expect("stream");
+        store
+            .create_cache(Cache {
+                tenant_id: tenant.to_string(),
+                namespace: namespace.to_string(),
+                cache: NAME.to_string(),
+                display_name: "Cascade".to_string(),
+                shards: 1,
+                replication_factor: 1,
+                consistency: ConsistencyLevel::Leader,
+            })
+            .await
+            .expect("cache");
+        let mut keys = Vec::new();
+        for kind in [ShardKind::Stream, ShardKind::Cache] {
+            let key = ShardKey {
+                tenant_id: tenant.to_string(),
+                namespace: namespace.to_string(),
+                stream: NAME.to_string(),
+                shard: 0,
+                kind,
+            };
+            let stored = store
+                .put_shard_assignment(ShardAssignment {
+                    key: key.clone(),
+                    ..assignment(0, "broker-x")
+                })
+                .await
+                .expect("assign");
+            store
+                .record_replica_report(
+                    crate::model::ReplicaReport {
+                        key: key.clone(),
+                        generation: stored.generation,
+                        caught_up: Default::default(),
+                        offsets: Default::default(),
+                        reported_at_millis: 7_000,
+                        drained: false,
+                        leader_offset: Some(10),
+                        halted: Default::default(),
+                        counter_offsets: Default::default(),
+                        stream_incarnation: None,
+                    },
+                    "broker-x",
+                )
+                .await
+                .expect("report");
+            keys.push(key);
+        }
+        keys
+    }
+    async fn left(store: &dyn ControlPlaneStore, keys: &[ShardKey]) -> (usize, usize) {
+        let assignments = store.list_shard_assignments().await.expect("list");
+        let reports = store.list_replica_reports().await.expect("reports");
+        (
+            assignments.iter().filter(|a| keys.contains(&a.key)).count(),
+            reports.iter().filter(|r| keys.contains(&r.key)).count(),
+        )
+    }
+
+    let keys = fill(store, "cascade-ns-t", "doomed").await;
+    assert_eq!(left(store, &keys).await, (2, 2));
+    store
+        .delete_namespace(&crate::model::NamespaceKey {
+            tenant_id: "cascade-ns-t".to_string(),
+            namespace: "doomed".to_string(),
+        })
+        .await
+        .expect("delete the namespace");
+    assert_eq!(
+        left(store, &keys).await,
+        (0, 0),
+        "a namespace delete left its shards' assignments or reports behind",
+    );
+
+    let keys = fill(store, "cascade-tenant-t", "doomed").await;
+    assert_eq!(left(store, &keys).await, (2, 2));
+    store
+        .delete_tenant("cascade-tenant-t")
+        .await
+        .expect("delete the tenant");
+    assert_eq!(
+        left(store, &keys).await,
+        (0, 0),
+        "a tenant delete left its shards' assignments or reports behind",
     );
 }
 

@@ -239,6 +239,34 @@ impl RaftHandle {
         Some(CatchUpTarget { index })
     }
 
+    /// Refuse to add member `id` at `addr` when it cannot apply what the
+    /// group already depends on ([`super::AppStateMachine::join_floor`]).
+    /// Added anyway, it would refuse those entries while the others apply
+    /// them, and the two would diverge. Once there is a floor, a member that
+    /// does not answer is refused too: nothing says it meets it.
+    pub(super) async fn admit(&self, id: NodeId, addr: &str) -> anyhow::Result<()> {
+        let floor = self.app.join_floor();
+        if floor == 0 {
+            return Ok(());
+        }
+        let base = self
+            .peer_url(Some(id), Some(addr))
+            .ok_or_else(|| anyhow::anyhow!("no address for raft member {id}"))?;
+        match self.probe_version(id, &base).await {
+            Some(version) if version >= floor => Ok(()),
+            Some(version) => anyhow::bail!(
+                "raft member {id} supports metadata version {version}, but the group is at \
+                 {floor}; upgrade it to a release at metadata version {floor} or later before \
+                 adding it"
+            ),
+            None => anyhow::bail!(
+                "raft member {id} did not report its metadata version, and the group is at \
+                 {floor}; start it on a release at metadata version {floor} or later before \
+                 adding it"
+            ),
+        }
+    }
+
     pub(super) fn standing(&self) -> Standing {
         Standing {
             last_log_index: self.raft.metrics().borrow().last_log_index,

@@ -22,7 +22,9 @@ use openraft::raft::{
 };
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use super::hold::Hold;
 use super::types::TypeConfig;
 use super::{NodeId, PeerSecurity};
 
@@ -31,6 +33,7 @@ pub(super) struct HttpNetworkFactory {
     scheme: &'static str,
     peer_addrs: BTreeMap<NodeId, String>,
     heartbeat: Duration,
+    hold: Arc<Hold>,
 }
 
 impl HttpNetworkFactory {
@@ -38,6 +41,7 @@ impl HttpNetworkFactory {
         security: &PeerSecurity,
         peer_addrs: BTreeMap<NodeId, String>,
         heartbeat: Duration,
+        hold: Arc<Hold>,
     ) -> anyhow::Result<Self> {
         // One client, shared by every peer connection: reqwest pools per
         // host underneath. The timeout bounds a peer that accepts and then
@@ -49,6 +53,7 @@ impl HttpNetworkFactory {
             scheme: security.scheme(),
             peer_addrs,
             heartbeat,
+            hold,
         })
     }
 }
@@ -66,6 +71,8 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             target,
             base: format!("{}://{addr}", self.scheme),
             heartbeat: self.heartbeat,
+            hold: Arc::clone(&self.hold),
+            acknowledged: None,
         }
     }
 }
@@ -75,6 +82,12 @@ pub(super) struct HttpNetwork {
     target: u64,
     base: String,
     heartbeat: Duration,
+    hold: Arc<Hold>,
+    /// The highest log index this member acknowledged to this client. A
+    /// client lives at most one leader's term (openraft also rebuilds it on
+    /// every membership change), and that leader's log only grows, so a
+    /// conflict at or below it means the member lost its log.
+    acknowledged: Option<u64>,
 }
 
 /// The longest wait between retries to an unreachable member, so a member
@@ -113,6 +126,26 @@ impl std::error::Error for PeerStatus {}
 const BODY_EXCERPT: usize = 200;
 
 impl HttpNetwork {
+    #[cfg(test)]
+    pub(super) fn for_tests(addr: &str, hold: Arc<Hold>) -> Self {
+        Self::for_tests_as(2, addr, hold)
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_tests_as(target: NodeId, addr: &str, hold: Arc<Hold>) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("client"),
+            target,
+            base: format!("http://{addr}"),
+            heartbeat: Duration::from_millis(150),
+            hold,
+            acknowledged: None,
+        }
+    }
+
     async fn send<Req, Resp, E>(
         &self,
         path: &str,
@@ -165,16 +198,77 @@ impl HttpNetwork {
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
         result.map_err(|err| RPCError::RemoteError(RemoteError::new(self.target, err)))
     }
+
+    /// Entries and snapshots go only to a member not known to be below the
+    /// group's floor ([`super::hold`]); otherwise it reads as unreachable.
+    fn hold_back(&self) -> Result<(), Unreachable> {
+        self.hold
+            .check(self.target)
+            .map_err(|held| Unreachable::new(&held))
+    }
+
+    /// Settle a fresh mark with a probe of this member alone, off the send
+    /// path.
+    fn ask(&self) {
+        let hold = Arc::clone(&self.hold);
+        let (client, base, target) = (self.client.clone(), self.base.clone(), self.target);
+        tokio::spawn(async move { hold.ask(target, &client, &base).await });
+    }
+
+    fn acknowledged(&mut self, index: Option<u64>) {
+        self.acknowledged = self.acknowledged.max(index);
+    }
 }
 
 impl RaftNetwork<TypeConfig> for HttpNetwork {
     async fn append_entries(
         &mut self,
-        rpc: AppendEntriesRequest<TypeConfig>,
+        mut rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>
     {
-        self.send("append-entries", &rpc).await
+        if let Err(held) = self.hold_back() {
+            if !rpc.entries.is_empty() {
+                return Err(RPCError::Unreachable(held));
+            }
+            // An empty append is a heartbeat, which openraft sends only while
+            // nothing else is queued for this member: it is caught up and
+            // nothing new has been written. Once entries are held, openraft
+            // retries them and sends no heartbeat. Without the commit index
+            // the member applies nothing, not even entries it was fed before
+            // the hold.
+            rpc.leader_commit = None;
+        }
+        let response = self.send("append-entries", &rpc).await;
+        let prev = rpc.prev_log_id.map(|log_id| log_id.index);
+        match &response {
+            Ok(AppendEntriesResponse::Success) => {
+                let last = rpc.entries.last().map(|entry| entry.log_id.index);
+                self.acknowledged(last.or(prev));
+            }
+            Ok(AppendEntriesResponse::PartialSuccess(matched)) => {
+                self.acknowledged(matched.map(|log_id| log_id.index));
+            }
+            // A lagging member conflicts above what it acknowledged; only
+            // one that lost its log conflicts at or below it.
+            Ok(AppendEntriesResponse::Conflict) if prev.is_some() && prev <= self.acknowledged => {
+                self.acknowledged = None;
+                if self.hold.lost_log(self.target) {
+                    self.ask();
+                }
+            }
+            // With no acknowledgement to compare with, a member that lost its
+            // log looks like one that is behind. It may lose it between two
+            // conflicts, so each one asks again once the last ask settled.
+            // Up-to-date members answer success and are never asked.
+            Ok(AppendEntriesResponse::Conflict)
+                if self.acknowledged.is_none() && self.hold.unconfirmed(self.target) =>
+            {
+                self.ask();
+            }
+            _ => {}
+        }
+        response
     }
 
     async fn install_snapshot(
@@ -185,7 +279,12 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
         InstallSnapshotResponse<u64>,
         RPCError<u64, openraft::BasicNode, RaftError<u64, InstallSnapshotError>>,
     > {
-        self.send("install-snapshot", &rpc).await
+        self.hold_back().map_err(RPCError::Unreachable)?;
+        let response = self.send("install-snapshot", &rpc).await;
+        if rpc.done && response.is_ok() {
+            self.acknowledged(rpc.meta.last_log_id.map(|log_id| log_id.index));
+        }
+        response
     }
 
     async fn vote(

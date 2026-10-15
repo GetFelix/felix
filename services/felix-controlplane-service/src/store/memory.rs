@@ -162,6 +162,42 @@ pub struct InMemoryStore {
 }
 
 impl InMemoryStore {
+    /// [`ControlPlaneStore::delete_tenant`], taking `cleanup` of its shards.
+    pub(crate) async fn apply_delete_tenant(
+        &self,
+        tenant_id: &str,
+        cleanup: ShardCleanup,
+    ) -> StoreResult<()> {
+        tenants::delete_tenant(self, tenant_id, cleanup).await
+    }
+
+    /// [`ControlPlaneStore::delete_namespace`], taking `cleanup` of its shards.
+    pub(crate) async fn apply_delete_namespace(
+        &self,
+        key: &NamespaceKey,
+        cleanup: ShardCleanup,
+    ) -> StoreResult<()> {
+        namespaces::delete_namespace(self, key, cleanup).await
+    }
+
+    /// [`ControlPlaneStore::delete_stream`], taking `cleanup` of its shards.
+    pub(crate) async fn apply_delete_stream(
+        &self,
+        key: &StreamKey,
+        cleanup: ShardCleanup,
+    ) -> StoreResult<()> {
+        streams::delete_stream(self, key, cleanup).await
+    }
+
+    /// [`ControlPlaneStore::delete_cache`], taking `cleanup` of its shards.
+    pub(crate) async fn apply_delete_cache(
+        &self,
+        key: &CacheKey,
+        cleanup: ShardCleanup,
+    ) -> StoreResult<()> {
+        caches::delete_cache(self, key, cleanup).await
+    }
+
     /// [`ControlPlaneStore::record_replica_report`], with the leadership
     /// check optional for the Raft apply of entries that predate it.
     pub(crate) async fn apply_replica_report(
@@ -239,12 +275,17 @@ impl InMemoryStore {
     /// cache change log, and a consumer that has been told the stream is gone
     /// does not need to be told separately about the shards of a stream that no
     /// longer exists.
+    ///
+    /// `take_reports` also drops the shards' replica reports, as Postgres
+    /// cascades them: a name created again can start at the same generation
+    /// after a restore, and the old log's report would read as the new one's.
     async fn drop_shard_assignments_for(
         &self,
         kind: ShardKind,
         tenant_id: &str,
         namespace: &str,
         name: &str,
+        take_reports: bool,
     ) {
         let of_it = |key: &ShardKey| {
             key.kind == kind
@@ -254,13 +295,12 @@ impl InMemoryStore {
         };
         let mut state = self.shards.write().await;
         state.records.retain(|key, _| !of_it(key));
-        // The reports go with the assignments, as Postgres cascades them: a
-        // name created again can start at the same generation after a
-        // restore, and the old log's report would read as the new one's.
-        self.replica_reports
-            .write()
-            .await
-            .retain(|key, _| !of_it(key));
+        if take_reports {
+            self.replica_reports
+                .write()
+                .await
+                .retain(|key, _| !of_it(key));
+        }
     }
 
     fn limit(&self) -> usize {
@@ -285,7 +325,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()> {
-        tenants::delete_tenant(self, tenant_id).await
+        tenants::delete_tenant(self, tenant_id, ShardCleanup::Full).await
     }
 
     async fn tenant_snapshot(&self) -> StoreResult<Snapshot<Tenant>> {
@@ -313,7 +353,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()> {
-        namespaces::delete_namespace(self, key).await
+        namespaces::delete_namespace(self, key, ShardCleanup::Full).await
     }
 
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>> {
@@ -354,7 +394,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {
-        streams::delete_stream(self, key).await
+        streams::delete_stream(self, key, ShardCleanup::Full).await
     }
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
@@ -395,7 +435,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()> {
-        caches::delete_cache(self, key).await
+        caches::delete_cache(self, key, ShardCleanup::Full).await
     }
 
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>> {
@@ -864,6 +904,21 @@ impl AuthStore for InMemoryStore {
         }
         Ok(cutoffs)
     }
+}
+
+/// How much of a deleted stream's or cache's shard state a delete takes.
+///
+/// The store's own deletes take everything. A Raft entry says which, so every
+/// member applies it the same way whatever build it runs; see
+/// `MetaCommand::DeleteTenant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShardCleanup {
+    /// What a member before metadata level 10 does: a stream or cache delete
+    /// takes its assignments and leaves its replica reports, and a namespace
+    /// or tenant delete takes neither.
+    Legacy,
+    /// Assignments and replica reports, on every delete.
+    Full,
 }
 
 /// Node records and their change log under one lock.

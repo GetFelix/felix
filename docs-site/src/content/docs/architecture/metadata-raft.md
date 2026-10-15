@@ -161,7 +161,20 @@ counts peer requests refused for the wrong cluster id or token.
 from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
 counts committed commands this build could not apply, which in a mixed-version
 group means this member has fallen behind the leader; the upgrade runbook
-watches it.
+watches it. `felix_meta_raft_member_below_floor{member}`, on the leader, is 1
+while it holds a member back because that member reported a build below the
+metadata version the group already uses, or lost its log and has not
+reported since; upgrade that member. The leader holds only on that
+evidence, read from levels it refreshes in the background, so a member it
+cannot reach or has not asked yet is fed as usual. One exception is short:
+a member that conflicts before accepting anything after a leader or
+membership change is held until a probe of it alone settles it, at most
+200 ms, or about a second more if it is slow to answer, released if it
+answers at the group's version or does not answer. A held member that is
+behind gets no heartbeats either, so it may call elections; the others refuse
+them while they hear from the leader, but after a long hold the member's
+first answer can cost one extra election. The gauge returns to 0 when the member leaves
+the group or this member stops leading.
 
 ### Leader deploys pause writes for one election (pre-0.10 openraft)
 

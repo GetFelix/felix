@@ -337,6 +337,11 @@ the name is deleted again after the finalize.
   its shard assignments with the incarnation. Its catalog answers leave
   incarnations out, which brokers refuse rather than misread, so upgrade every
   instance before finalizing.
+- **Under Raft, deletes keep shard state until every member is at metadata
+  version 10.** Before that, deleting a namespace or tenant keeps its streams'
+  and caches' shard assignments and replica reports, and deleting a stream or
+  cache keeps its replica reports, as the older release does, so every member
+  holds the same state. From then on a delete takes both.
 - **Every broker must report it.** A broker that predates it would keep a new
   stream's records in the directory a deleted stream of that name used.
 - **Nothing moves on disk.** Existing streams keep incarnation 0 and their
@@ -364,6 +369,35 @@ restart. `jump_hash_routing` needs metadata version 3, because a member
 before it would store a jump-hash stream as modulo: until every member is
 there the finalize, and any request for a `jump_hash` stream, is refused
 with 409. Upgrade the control plane first.
+
+Under the Raft backend a member is added to the group only if it runs a
+build at or above the metadata version the group already uses: the one a
+finalized fleet feature needed (10 for `stream_incarnations`, 3 for
+`jump_hash_routing`, 2 for the others), or the newest one any committed
+entry needed, such as 10 once a delete has taken shard state. The leader
+asks the new member before the membership changes and refuses a lower
+build, or one that does not report a version, with an error naming both
+versions. Added anyway, it would refuse entries the other members apply,
+and its metadata would part ways with theirs. While neither applies, an older
+build may join, as it would part-way through a rolling upgrade.
+
+A member already in the group that comes back on an older build, for
+example after its volume was lost, is held rather than fed: the leader
+sends it no entries and no snapshot, logs a warning once, and sets
+`felix_meta_raft_member_below_floor{member}` to 1. The leader holds a
+member only on evidence: the member reported an older version, or it lost
+the log it had acknowledged and has not reported a version since. A member
+that answers with a conflict before it has accepted anything from the
+current leader, as an empty one does, is held only until a probe of that
+member alone answers, or gives up after 200 ms and a second try of up to a
+second: a version at the group's or no answer releases it. After a leader change, a member that is behind can be
+held that briefly for each conflict while the leader finds where their logs
+match. A member that is slow to answer or cannot be asked is otherwise not
+held. A held member that is behind gets no heartbeats either, so it may
+call elections; the others refuse them while they hear from the leader, but
+once it is released it can cost one extra election. The group keeps committing with the other members, but a held
+voter is one fewer failure the group can survive. Upgrade that member; replication to it resumes within about a
+second of it starting on a build at the group's version.
 
 ### Storage format: the one that does not roll back
 

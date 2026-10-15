@@ -38,6 +38,8 @@ pub struct RaftHandle {
     pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
     /// What each member last reported it can apply ([`super::version`]).
     pub(super) versions: Arc<std::sync::Mutex<super::version::Versions>>,
+    /// Holds replication to members below the join floor ([`super::hold`]).
+    pub(super) hold: Arc<super::hold::Hold>,
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
@@ -84,6 +86,11 @@ impl RaftHandle {
         let state_machine =
             store::StateMachineStore::open(Arc::clone(&db), Arc::clone(&app)).await?;
 
+        let versions = Arc::default();
+        let hold = Arc::new(super::hold::Hold::new(
+            Arc::clone(&app),
+            Arc::clone(&versions),
+        ));
         let raft = Raft::new(
             settings.node_id,
             config,
@@ -91,6 +98,7 @@ impl RaftHandle {
                 &settings.security,
                 settings.peer_addrs.clone(),
                 settings.heartbeat_interval,
+                Arc::clone(&hold),
             )?,
             log_store,
             state_machine,
@@ -126,7 +134,7 @@ impl RaftHandle {
             }
         }
 
-        Ok(Self {
+        let handle = Self {
             raft,
             id: settings.node_id,
             write_timeout: settings.write_timeout,
@@ -140,9 +148,12 @@ impl RaftHandle {
             db: Arc::downgrade(&db),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
-            versions: Arc::default(),
+            versions,
+            hold,
             stopped: Arc::default(),
-        })
+        };
+        tokio::spawn(handle.clone().watch_versions());
+        Ok(handle)
     }
 
     pub fn status(&self) -> RaftStatus {
@@ -215,7 +226,11 @@ impl RaftHandle {
     /// Learner-first is what keeps a join from costing quorum: the group's
     /// vote arithmetic only changes at [`RaftHandle::change_membership`],
     /// after the newcomer already holds the data.
+    ///
+    /// Refused, before the membership changes, when the node runs a build
+    /// below the level the group already depends on.
     pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<()> {
+        self.admit(id, &addr).await?;
         self.raft
             .add_learner(id, openraft::BasicNode { addr }, true)
             .await
@@ -227,6 +242,7 @@ impl RaftHandle {
     /// stub answering only some routes.
     #[cfg(test)]
     pub(crate) async fn add_learner_without_waiting(&self, id: NodeId, addr: String) -> Result<()> {
+        self.admit(id, &addr).await?;
         self.raft
             .add_learner(id, openraft::BasicNode { addr }, false)
             .await

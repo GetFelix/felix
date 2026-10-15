@@ -1316,6 +1316,12 @@ not the same event as the shard becoming servable.
   local state is re-established rather than assumed.
 - **An older generation is ignored.** A duplicate delivery, a reordered poll, or
   a snapshot replay is not news, so repeated events cost nothing.
+- **A newer stream incarnation wins at any generation.** Assignments are ordered
+  by `(incarnation, generation)`, both in the broker's view of ownership and in
+  the shard lifecycle. A recreated stream's shard is a new one, and after a
+  control-plane restore rewinds the change seq its first generation can be below
+  the deleted stream's. An assignment without an incarnation counts as 0, below
+  every incarnated one.
 - **An open that finishes after a reassignment does not activate.** The shard
   moved on while it was being recovered.
 - **A failed open is not retried by the same assignment arriving again.** Every
@@ -1537,8 +1543,13 @@ passes it on to clients, which is how `ClusterClient` keys its owner cache.
 Two references, two different policies, chosen rather than inherited:
 
 - **Stream**: a foreign key with `ON DELETE CASCADE`. Deleting a stream removes
-  its assignments, because the shards no longer exist and keeping ownership
-  records for them leaves placement chasing ghosts.
+  its assignments and their replica reports, because the shards no longer exist
+  and keeping ownership records for them leaves placement chasing ghosts. The
+  in-memory and Raft stores do the same, including when the stream or cache goes
+  with its namespace or tenant. On Raft that needs every member at metadata
+  level 10. Below it a stream or cache delete keeps the reports and a namespace
+  or tenant delete keeps both, on every member alike (see
+  [metadata-raft-design.md](metadata-raft-design.md#upgrading)).
 - **Node**: deliberately **no** foreign key. Deleting a node that still leads or
   replicates a shard is **rejected**, not cascaded. A cascade would delete the
   only record of where that shard's data lives, turning an operator's tidy-up
@@ -1601,7 +1612,7 @@ Broker side:
 | `felix_broker_shard_watch_checkpoint` | log position the watch has reached; compare against the control plane to see lag |
 | `felix_broker_shard_assignments` | assignments this broker currently believes in |
 | `felix_broker_shard_changes_applied_total` | ownership changes applied |
-| `felix_broker_shard_changes_stale_total` | changes dropped for a stale generation; small numbers are routine, and are what makes duplicate delivery harmless |
+| `felix_broker_shard_changes_stale_total` | changes dropped for a stale generation or incarnation; small numbers are routine, and are what makes duplicate delivery harmless |
 | `felix_broker_shard_watch_resyncs_total{reason}` | forced resnapshots: `gap_in_history` or `sequence_reset` |
 | `felix_broker_shard_watch_failures_total` | polls that failed outright |
 | `felix_broker_shard_move_seconds` | histogram: a move toward this broker, from being named its destination to serving the shard |
