@@ -301,16 +301,19 @@ update usually needs only `./deploy.sh register`.
 ## Larger runners
 
 The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
-runner (`felix-runner-x64`: 2 cores, up to 50 at once). When it is set,
-`test` and `coverage` use it instead of `ubuntu-latest` wherever they run
-GitHub-hosted. It adds capacity, not speed: a public repository's
-`ubuntu-latest` has 4 cores, so `test` takes about twice as long there, which
-is why its timeout is 180 minutes. The TLA+ shards and `perf-pr.yml` stay on
-`ubuntu-latest`, since at 2 cores they would run past their 60- and 30-minute
-limits. Larger runners are billed per minute even on a public repository, up
-to the organization's Actions budget; past it, their jobs are refused. They
-are fresh machines for every job, so pull requests can use them. Delete the
-variable and every job is back on `ubuntu-latest`.
+runner (`felix-runner-x64`: 8 cores, 32 GB, up to 40 at once). When it is set,
+`test` and `coverage` (wherever they run GitHub-hosted), the seven TLA+
+shards and `perf-pr.yml` use it instead of the 4-core `ubuntu-latest`. TLC
+runs a worker per core, so the shards gain as much as `test` does.
+`perf-pr.yml` benchmarks the merge-base and the PR head in one job, so its
+comparison holds on any runner. `perf-publish.yml` stays on `ubuntu-latest`:
+it adds to a stored history, and a change of machine would show up there as a
+regression or a speedup.
+
+Larger runners are billed per minute even on a public repository, up to the
+organization's Actions budget; past it, their jobs are refused. They are fresh
+machines for every job, so pull requests can use them. Delete the variable and
+every job is back on `ubuntu-latest`.
 
 ## Docs site
 
