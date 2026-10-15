@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792088960650,
+  "lastUpdate": 1792090166770,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30316,6 +30316,58 @@ window.BENCHMARK_DATA = {
             "range": "6927.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809241.57\nmean: 811556.75\nstdev: 6927.45\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "595eb0cb1ac43433e6605ed05525674720e82c29",
+          "message": "fix(perf): mark large unconfirmed slowdowns inconclusive, not passing (#1257) (#1259)\n\nThe PR comparison passed any row the t-test could not confirm, so a noisy\ncell could double its latency and still get a green mark. A worse change of\n10% or more that misses significance is now inconclusive, and each row shows\nthe trials' coefficient of variation.",
+          "timestamp": "2026-10-15T18:44:57Z",
+          "tree_id": "f50845caabe18d891f335d7c6c859d4d169da4d3",
+          "url": "https://github.com/GetFelix/felix/commit/595eb0cb1ac43433e6605ed05525674720e82c29"
+        },
+        "date": 1792090164818,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340821.63,
+            "range": "4635.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340821.63\nmean: 343510.36\nstdev: 4635.62\ncv: 1.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340821.63,
+            "range": "4635.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340821.63\nmean: 343510.36\nstdev: 4635.62\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80563.88,
+            "range": "4101.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80563.88\nmean: 78677.63\nstdev: 4101.24\ncv: 5.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805638.77,
+            "range": "41012.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805638.77\nmean: 786776.25\nstdev: 41012.45\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
