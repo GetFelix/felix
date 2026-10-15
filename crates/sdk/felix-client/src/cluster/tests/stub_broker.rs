@@ -45,6 +45,8 @@ pub(super) struct StubBroker {
     pub(super) addr: SocketAddr,
     seen: Seen,
     connections: Arc<Mutex<Vec<QuicConnection>>>,
+    /// Refuse every new connection, as an address nothing listens on does.
+    refusing: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -86,8 +88,17 @@ impl StubBroker {
         let connections = Arc::new(Mutex::new(Vec::new()));
         let counts = seen.clone();
         let accepted = Arc::clone(&connections);
+        let refusing = Arc::new(AtomicBool::new(false));
+        let refuse = Arc::clone(&refusing);
         let task = tokio::spawn(async move {
-            while let Ok(connection) = server.accept().await {
+            while let Some(incoming) = server.accept_incoming().await {
+                if refuse.load(Ordering::SeqCst) {
+                    incoming.refuse();
+                    continue;
+                }
+                let Ok(connection) = incoming.accept().await else {
+                    continue;
+                };
                 accepted.lock().unwrap().push(connection.clone());
                 let script = Arc::clone(&script);
                 let counts = counts.clone();
@@ -104,6 +115,7 @@ impl StubBroker {
             addr,
             seen,
             connections,
+            refusing,
             task,
         })
     }
@@ -220,6 +232,13 @@ impl StubBroker {
     /// `publish_width` messages it was sent.
     pub(super) fn widths_declared(&self) -> usize {
         self.seen.widths_declared.load(Ordering::SeqCst)
+    }
+
+    /// Close every client connection and refuse new ones, as a broker that
+    /// has gone away for good would.
+    pub(super) fn shut_down(&self) {
+        self.refusing.store(true, Ordering::SeqCst);
+        self.drop_connections();
     }
 
     /// Close every client connection, as a broker that lost its network

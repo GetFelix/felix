@@ -10,6 +10,7 @@
 //! clients are derived from the parent's, so it shares their connections.
 
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +19,8 @@ use anyhow::Result;
 use crate::auth::TokenProvider;
 use crate::client::Client;
 use crate::config::ClientConfig;
+
+use super::seeds::{LOOKUP_TIMEOUT, Lookup};
 
 /// The client for each broker a cluster client has reached.
 pub(super) struct Nodes {
@@ -34,6 +37,7 @@ enum Source {
     Dial {
         server_name: String,
         config: Box<ClientConfig>,
+        lookup: Arc<dyn Lookup>,
     },
     /// [`Client::with_identity`] over the client `base` holds for the same
     /// broker.
@@ -45,10 +49,11 @@ enum Source {
 }
 
 impl Nodes {
-    pub(super) fn new(server_name: &str, config: ClientConfig) -> Self {
+    pub(super) fn new(server_name: &str, config: ClientConfig, lookup: Arc<dyn Lookup>) -> Self {
         Self::with_source(Source::Dial {
             server_name: server_name.to_string(),
             config: Box::new(config),
+            lookup,
         })
     }
 
@@ -87,24 +92,33 @@ impl Nodes {
     /// Looked up every time it is asked, since a broker's name outlives its
     /// address: a rescheduled pod keeps its name and gets a new IP.
     pub(super) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
-        // The dialling set connects, so it is the one that needs the name.
-        if let Source::Identity { base, .. } = &self.source {
-            return Box::pin(base.resolve(advertised)).await;
-        }
         if let Ok(addr) = advertised.parse::<SocketAddr>() {
             return Some(addr);
         }
+        let found = self.lookup(advertised).await;
+        self.adopt(advertised, found)
+    }
+
+    /// The address a broker that advertised `advertised` is dialled at, given
+    /// what the name resolved to, and the name its certificate is checked
+    /// against from now on.
+    pub(super) fn adopt(
+        &self,
+        advertised: &str,
+        found: io::Result<Vec<SocketAddr>>,
+    ) -> Option<SocketAddr> {
+        // The dialling set connects, so it is the one that needs the name.
+        if let Source::Identity { base, .. } = &self.source {
+            return base.adopt(advertised, found);
+        }
         // IPv4 when the name has both: a name like `localhost` resolves to
         // both families, and a broker is far more often listening on v4.
-        let resolved = match tokio::net::lookup_host(advertised).await {
-            Ok(addrs) => {
-                let addrs: Vec<SocketAddr> = addrs.collect();
-                addrs
-                    .iter()
-                    .find(|addr| addr.is_ipv4())
-                    .or(addrs.first())
-                    .copied()
-            }
+        let resolved = match found {
+            Ok(addrs) => addrs
+                .iter()
+                .find(|addr| addr.is_ipv4())
+                .or(addrs.first())
+                .copied(),
             Err(err) => {
                 tracing::warn!(advertised, error = %err, "a broker's advertised name did not resolve");
                 return None;
@@ -124,6 +138,83 @@ impl Nodes {
                 .insert(addr, host.to_string());
         }
         Some(addr)
+    }
+
+    /// Where each broker in `advertised` is reached now, as
+    /// [`Nodes::resolve`] answers, with every name looked up at once. Names
+    /// that do not resolve are left out.
+    pub(super) async fn resolve_all(&self, advertised: &[String]) -> Vec<SocketAddr> {
+        let mut addrs = Vec::with_capacity(advertised.len());
+        let mut names = Vec::new();
+        for broker in advertised {
+            match broker.parse::<SocketAddr>() {
+                Ok(addr) => addrs.push(addr),
+                Err(_) => names.push(broker.clone()),
+            }
+        }
+        for (name, found) in self.lookup_all(names).await {
+            if let Some(addr) = self.adopt(&name, found) {
+                addrs.push(addr);
+            }
+        }
+        addrs
+    }
+
+    /// Every address `host_port` resolves to now, or an error after
+    /// [`LOOKUP_TIMEOUT`].
+    pub(super) async fn lookup(&self, host_port: &str) -> io::Result<Vec<SocketAddr>> {
+        let mut found = self.lookup_all(vec![host_port.to_string()]).await;
+        found
+            .pop()
+            .map(|(_, result)| result)
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// Look every name up at once, each bounded by [`LOOKUP_TIMEOUT`], and
+    /// return the answers in the order the names were given.
+    ///
+    /// Concurrent and bounded because a resolver that stops answering, rather
+    /// than saying a name does not exist, otherwise holds a reconnect for
+    /// every retry the system resolver makes, name after name.
+    pub(super) async fn lookup_all(
+        &self,
+        names: Vec<String>,
+    ) -> Vec<(String, io::Result<Vec<SocketAddr>>)> {
+        let lookup = self.lookup_source();
+        let mut lookups = tokio::task::JoinSet::new();
+        for (index, name) in names.into_iter().enumerate() {
+            let lookup = Arc::clone(&lookup);
+            lookups.spawn(async move {
+                let found = tokio::time::timeout(LOOKUP_TIMEOUT, lookup.lookup(&name))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!("no answer within {LOOKUP_TIMEOUT:?}"),
+                        ))
+                    });
+                (index, name, found)
+            });
+        }
+        let mut answers = Vec::new();
+        while let Some(answer) = lookups.join_next().await {
+            match answer {
+                Ok(answer) => answers.push(answer),
+                Err(err) => tracing::warn!(error = %err, "a name lookup task failed"),
+            }
+        }
+        answers.sort_by_key(|(index, _, _)| *index);
+        answers
+            .into_iter()
+            .map(|(_, name, found)| (name, found))
+            .collect()
+    }
+
+    fn lookup_source(&self) -> Arc<dyn Lookup> {
+        match &self.source {
+            Source::Dial { lookup, .. } => Arc::clone(lookup),
+            Source::Identity { base, .. } => base.lookup_source(),
+        }
     }
 
     /// Live connections to each broker a client is held for.
@@ -174,6 +265,7 @@ impl Nodes {
             Source::Dial {
                 server_name,
                 config,
+                ..
             } => {
                 // A broker that advertised a name is checked against that
                 // name, as a client dialling the name directly would check it.

@@ -105,7 +105,9 @@ extern "C" {
 // Connect to a Felix cluster.
 //
 // `addrs` is one `host:port`, or several separated by commas; any reachable
-// one is enough and the rest are discovered. `tenant_id` and `token` are the
+// one is enough and the rest are discovered. A name is resolved again whenever
+// no broker the client knows answers; one that does not resolve now is
+// `FELIX_STATUS_INVALID_ARGUMENT`. `tenant_id` and `token` are the
 // credentials. `server_name` is the name the broker certificate must carry,
 // `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 // trust; when null the operating system's trust store is used.

@@ -78,6 +78,9 @@ before auth changes and their revocations, and refresh rotations, are single
 entries.
 
 ### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
 - Brokers export `felix_revocation_feed_last_success_seconds` (set when they
   start following the feed, then at each good poll) and
   `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
@@ -86,6 +89,25 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A `ClusterClient` recovers when every broker changes IP at once, as in a
+  rollout that restarts every pod (#1227). Reconnect dialled only the addresses
+  it already held, and discovery needs one of them to answer, so the client
+  failed every operation until it was rebuilt. When none of them answers, it
+  now resolves its seed names, and the names brokers last advertised, again
+  and dials the new addresses. The names are looked up at the same time, each
+  bounded to 2 s, without holding the lock every operation reads the client
+  through, and at most once a second for a client and the identities derived
+  from it, including when callers give up waiting. Discovery's names are
+  looked up the same way. A seed name that stops resolving keeps its last
+  addresses. felixctl and the
+  Python, TypeScript and C clients pass the configured `host:port` through as
+  a name instead of resolving it once at startup; a name that does not
+  resolve at connect is still refused as an invalid argument.
+- A `ClusterClient` reconnect replaces the client only if it is still the one
+  the failing operation used. Every operation that failed on the same broker
+  used to throw away whatever client was in place, including a fresh
+  replacement, and dial again with the endpoint list it had read before
+  waiting for the lock.
 - A history campaign client no longer keeps publishing over a connection to
   brokers that restarted on new ports (#1223). A successful read or cache op,
   which opens its own connection, reset the client's count of failures in a
