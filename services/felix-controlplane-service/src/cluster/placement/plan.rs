@@ -588,7 +588,7 @@ fn deposed_by_followers(
         .replicas
         .iter()
         .filter(|follower| is_live(follower))
-        .filter(|follower| caught_up.suspects(key, follower, &existing.leader))
+        .filter(|follower| caught_up.suspects(key, existing.generation, follower, &existing.leader))
         .count();
     // A majority of the set, the leader in it.
     saying * 2 > existing.replicas.len() + 1

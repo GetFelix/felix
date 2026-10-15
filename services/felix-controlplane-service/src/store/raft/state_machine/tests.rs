@@ -152,6 +152,7 @@ fn replica_report(
         leader_offset: Some(42),
         halted: Default::default(),
         stream_incarnation: None,
+        by_round: false,
     }
 }
 

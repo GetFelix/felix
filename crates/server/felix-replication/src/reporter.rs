@@ -129,6 +129,9 @@ pub struct ShardReport {
     /// The stream incarnation whose log this measured; 0 for a cache and
     /// before incarnations.
     pub incarnation: u64,
+    /// This leader acknowledges the shard by its followers and confirms its
+    /// reads by a round, so nothing it serves rests on its lease.
+    pub by_round: bool,
 }
 
 impl ShardReport {
@@ -138,6 +141,11 @@ impl ShardReport {
             incarnation,
             ..self
         }
+    }
+
+    /// This report, saying whether the leader serves without its lease.
+    pub(super) fn serving_by_round(self, by_round: bool) -> Self {
+        Self { by_round, ..self }
     }
 }
 
@@ -172,6 +180,7 @@ pub(super) fn shard_report(
             .collect(),
         counter_offsets: Vec::new(),
         incarnation: 0,
+        by_round: false,
     }
 }
 
@@ -286,6 +295,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     })
                     .collect(),
                 stream_incarnation: report.incarnation,
+                by_round: report.by_round,
             })
             .collect(),
     };

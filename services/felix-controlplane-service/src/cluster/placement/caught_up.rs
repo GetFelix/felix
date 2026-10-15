@@ -87,10 +87,12 @@ pub trait CaughtUp {
     }
 
     /// Whether `follower` said, recently enough to act on, that it cannot
-    /// reach `leader`, the leader of `key`. Only for a shard whose deposed
-    /// leader the fleet keeps out without the lease; for any other the
+    /// reach `leader`, the leader of `key` at `generation`. Only for a shard
+    /// whose deposed leader is kept out without the lease: the fleet must
+    /// have enabled what that takes, and `leader` must have reported at
+    /// `generation` that it serves nothing on its lease. For any other the
     /// followers' word decides nothing, and this is `false`.
-    fn suspects(&self, _key: &ShardKey, _follower: &str, _leader: &str) -> bool {
+    fn suspects(&self, _key: &ShardKey, _generation: u64, _follower: &str, _leader: &str) -> bool {
         false
     }
 

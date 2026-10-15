@@ -659,7 +659,11 @@ suspicion up to the tenth generation of every walk. `FelixShardSuspicionLease.cf
 where the lease still decides who serves, and TLC finds two brokers serving,
 which is why placement acts on a suspicion only once `generation_start`,
 `majority_ack` and `lease_free_reads` are all finalized: short of any of them
-the brokers keep the lease, which is this configuration.
+the brokers keep the lease, which is this configuration. The model puts every
+leader on one path. A real fleet can have a leader still on the lease after
+the finalize, one that has not heard of it yet, so placement also needs the
+leader's own report at the current generation to say it serves by round
+(`by_round`).
 
 ### The round that makes a read linearizable
 

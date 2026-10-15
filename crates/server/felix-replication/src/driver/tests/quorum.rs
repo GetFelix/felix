@@ -517,6 +517,68 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
     shutdown.cancel();
 }
 
+struct Confirms;
+
+#[async_trait::async_trait]
+impl crate::quorum::LeadershipCheck for Confirms {
+    async fn confirm(
+        &self,
+        _key: &crate::shard::ShardKey,
+        _generation: u64,
+    ) -> Result<(), crate::quorum::QuorumError> {
+        Ok(())
+    }
+}
+
+/// Marks with `features` finalized and a read round, unless `by_lease`.
+fn marks_reading(features: &[felix_common::fleet::FleetFeature], by_lease: bool) -> QuorumMarks {
+    let names: Vec<&str> = features.iter().map(|feature| feature.name()).collect();
+    let fleet = felix_common::fleet::FleetGate::new(names.iter().copied());
+    fleet.observe(names.iter().copied());
+    let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+    marks.set_read_check(Arc::new(Confirms), by_lease);
+    marks
+}
+
+/// **A report says the leader serves by round only when it does.** Placement
+/// trusts its followers' word against it on that alone, so a leader still
+/// reading on its lease, whether kept there by `FELIX_QUORUM_READS=lease` or
+/// by a feature it has not heard of yet, must not say so.
+#[tokio::test]
+async fn a_report_says_by_round_only_off_the_lease() {
+    use felix_common::fleet::{GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let (reporter, shutdown) = unreachable_reporter();
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let all = [GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS];
+    for (features, by_lease, by_round) in [
+        (&all[..], false, true),
+        (&all[..], true, false),
+        (&all[..2], false, false),
+        (&[GENERATION_START, LEASE_FREE_READS][..], false, false),
+    ] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        let marks = marks_reading(features, by_lease);
+        let pass = replicate_once(
+            &OnlyB,
+            &broker,
+            &router,
+            &marks,
+            Some(&reporter),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        )
+        .await;
+        let report = pass.reports.last().expect("a report");
+        assert_eq!(
+            report.by_round, by_round,
+            "{features:?} by_lease={by_lease}"
+        );
+    }
+    shutdown.cancel();
+}
+
 /// Stores every cache and counter batch on `broker-b`; `broker-c` is
 /// unreachable.
 struct CacheOnlyB;

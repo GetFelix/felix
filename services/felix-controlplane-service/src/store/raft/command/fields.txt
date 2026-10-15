@@ -318,6 +318,7 @@
 1 import_state.state.refresh_tokens[].token_id
 1 import_state.state.refresh_tokens[].used
 3 import_state.state.replica_reports
+11 import_state.state.replica_reports[].by_round
 3 import_state.state.replica_reports[].caught_up
 8 import_state.state.replica_reports[].counter_offsets
 8 import_state.state.replica_reports[].counter_offsets.*
@@ -561,6 +562,7 @@
 0 record_replica_report
 1 record_replica_report.leader
 0 record_replica_report.report
+11 record_replica_report.report.by_round
 0 record_replica_report.report.caught_up
 8 record_replica_report.report.counter_offsets
 8 record_replica_report.report.counter_offsets.*
@@ -836,6 +838,7 @@
 1 snapshot.state.refresh_tokens[].token_id
 1 snapshot.state.refresh_tokens[].used
 3 snapshot.state.replica_reports
+11 snapshot.state.replica_reports[].by_round
 3 snapshot.state.replica_reports[].caught_up
 8 snapshot.state.replica_reports[].counter_offsets
 8 snapshot.state.replica_reports[].counter_offsets.*

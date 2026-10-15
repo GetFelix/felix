@@ -253,6 +253,7 @@ pub(super) async fn report(
             crate::model::ReplicaReport {
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
+                by_round: false,
                 key: shard_zero(),
                 generation,
                 caught_up: caught_up.iter().map(|id| id.to_string()).collect(),

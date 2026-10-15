@@ -501,6 +501,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
                 durable_offset: 7,
             }],
             stream_incarnation: 0,
+            by_round: true,
         }],
     };
 
@@ -515,6 +516,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
     assert_eq!(shard["shard"], 3);
     assert_eq!(shard["kind"], "cache");
     assert_eq!(shard["generation"], 9);
+    assert_eq!(shard["by_round"], true);
     assert_eq!(shard["caught_up"][0], "broker-b");
     assert_eq!(shard["replica_offsets"][0]["node_id"], "broker-b");
     assert_eq!(shard["replica_offsets"][0]["durable_offset"], 41);

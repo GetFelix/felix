@@ -42,9 +42,11 @@ fn a_report_that_is_not_drained_omits_the_field() {
         halted: Vec::new(),
         replica_counter_offsets: Vec::new(),
         stream_incarnation: 0,
+        by_round: false,
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
+    assert!(!json.contains("by_round"), "{json}");
     assert!(!json.contains("incarnation"), "{json}");
     // Nor does one with nothing halted, or a stream's.
     assert!(!json.contains("halted"), "{json}");
@@ -88,6 +90,7 @@ fn a_report_round_trips() {
                 durable_offset: 9,
             }],
             stream_incarnation: 5,
+            by_round: true,
         }],
     };
     let json = serde_json::to_string(&report).expect("write");
@@ -106,4 +109,6 @@ fn an_older_report_without_a_kind_reads_as_a_stream() {
     let parsed: ReplicaStatusRequest = serde_json::from_str(older).expect("parse");
     assert_eq!(parsed.shards[0].kind, ShardKind::Stream);
     assert!(parsed.shards[0].replica_offsets.is_empty());
+    // And as a leader on its lease, so placement waits the lease out.
+    assert!(!parsed.shards[0].by_round);
 }

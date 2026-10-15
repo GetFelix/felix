@@ -532,6 +532,13 @@ stream's and a shard assignment's `incarnation`, a stream change's
 carries the proposed incarnation and the applying member decides the final one
 against its tombstones, so every member decides alike.
 
+Level 11 is a replica report's `by_round`, the leader's word that it serves
+the shard without its lease. Placement takes a follower's suspicion against a
+leader only when its report says so, so until every member is at level 11
+reports are recorded without it and leaders are failed over on the lease.
+Dropping it is the safe side: a member that applied the field and one that
+dropped it would otherwise disagree on whether a leader may be replaced.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -552,6 +559,7 @@ the field itself, on every member alike, or refuses the command:
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
 | stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| replica report `by_round`, snapshot `replica_reports[].by_round` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

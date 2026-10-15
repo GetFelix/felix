@@ -270,7 +270,18 @@ majority, and with `lease_free_reads` it cannot serve a read or a group
 commit without a round of fences either. Without the second it still serves
 reads on its lease, and replacing it before that runs out would let it hand
 out values its successor has since overwritten. `Leader` streams and caches
-keep the lease. `FelixShardSuspicion.cfg` lets placement promote on any read
+keep the lease.
+
+**Which leaders.** The enabled set says what brokers may do, not what a given
+leader does. A broker learns the set on its next heartbeat after the finalize,
+so for up to a heartbeat a leader can still be on the lease in a fleet that
+has finalized all three. So each leader says in its replica report whether it
+serves the shard by round (`by_round`): true only while it acknowledges by its
+followers and its `Quorum` reads go by a round. Placement acts on suspicion
+against a leader only when its latest report at the current generation says
+so (`suspects` in `placement/replica_positions.rs`). A report without the
+field, from an older broker or a Raft group not yet at level 11, reads as the
+lease, and the leader is replaced only once its lease has lapsed. `FelixShardSuspicion.cfg` lets placement promote on any read
 before the lease lapses, the old leader alive and renewing, and loses
 nothing and opens no second leader at a generation; `FelixShardSuspicionLease.cfg`, the same where the lease still
 decides who serves, finds two brokers serving.
@@ -850,7 +861,11 @@ What is left on the lease:
 
 - **`FELIX_QUORUM_READS=lease`** keeps a broker's reads on the lease, the
   faster path that is only as safe as the clocks and margins
-  (`FelixShardRealMarginsLease.cfg`).
+  (`FelixShardRealMarginsLease.cfg`). Such a broker does not report
+  `lease_free_reads`, so the fleet cannot finalize it while the broker
+  serves, and once it is finalized the broker is refused at registration.
+  Placement would not act on its followers' word anyway: its reports never
+  say `by_round`.
 - **An unreplicated shard**, which has no majority to ask, and `Leader`
   caches, whose writes are only as good as the lease anyway.
 - **Stream readers** (subscriptions, replay, group polls, Kafka fetches) and
@@ -862,8 +877,10 @@ What is left on the lease:
 **Across versions: the `lease_free_reads` fleet feature.** The round is the
 existing `Fence`, so nothing on the wire changes. A broker reports the
 feature only when it fences (`FELIX_INTERNAL_FENCE` not `false`), because the
-argument rests on every newer leader fencing before it serves; and only this
-build refuses a cache round on its counter log's generation. Until the
+argument rests on every newer leader fencing before it serves, and only when
+its reads are not kept on the lease (`FELIX_QUORUM_READS=lease`), because
+placement reads the finalized feature as no leader serving reads on its lease.
+Only this build refuses a cache round on its counter log's generation. Until the
 feature is finalized every read is on the lease, as before.
 
 ### Readers and group sessions without the lease

@@ -54,6 +54,7 @@ fn status(
         leader_offset: y_behind.map(|behind| 100 + behind),
         halted: Default::default(),
         stream_incarnation: 0,
+        by_round: false,
     }
 }
 

@@ -238,6 +238,7 @@ fn report_at(generation: u64, at: u64) -> ReplicaReport {
     ReplicaReport {
         counter_offsets: Default::default(),
         stream_incarnation: None,
+        by_round: false,
         key: assignment().key,
         generation,
         caught_up: BTreeSet::new(),

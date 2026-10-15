@@ -151,9 +151,6 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             .map(str::to_string)
             .collect();
     }
-    // Acknowledging by the followers, reading without the lease, and fencing
-    // caches are safe only if every broker fences what it is promoted to, and
-    // this one would not.
     let fences = !matches!(
         std::env::var("FELIX_INTERNAL_FENCE")
             .ok()
@@ -161,17 +158,27 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             .as_deref(),
         Some("0" | "false" | "no")
     );
+    // Unreadable reads as the lease, the side that reports less.
+    let reads_by_lease = crate::config::quorum_reads_by_lease().unwrap_or(true);
+    features_for(fences, reads_by_lease)
+}
+
+/// The features a broker can honestly report, given whether it fences what
+/// it is promoted to and whether its reads stay on the lease.
+///
+/// Acknowledging by the followers, reading without the lease, and fencing
+/// caches are safe only if every broker fences what it is promoted to. A
+/// broker whose reads stay on the lease does not report `lease_free_reads`:
+/// placement takes the enabled feature to mean no leader still serves reads
+/// on its lease.
+fn features_for(fences: bool, reads_by_lease: bool) -> std::collections::BTreeSet<String> {
+    use felix_common::fleet::{FENCED_CACHES, LEASE_FREE_READS, MAJORITY_ACK};
     felix_common::fleet::IMPLEMENTED
         .iter()
         .filter(|feature| {
-            fences
-                || !matches!(
-                    **feature,
-                    felix_common::fleet::MAJORITY_ACK
-                        | felix_common::fleet::LEASE_FREE_READS
-                        | felix_common::fleet::FENCED_CACHES
-                )
+            fences || !matches!(**feature, MAJORITY_ACK | LEASE_FREE_READS | FENCED_CACHES)
         })
+        .filter(|feature| !(reads_by_lease && matches!(**feature, LEASE_FREE_READS)))
         .map(|feature| feature.name().to_string())
         .collect()
 }

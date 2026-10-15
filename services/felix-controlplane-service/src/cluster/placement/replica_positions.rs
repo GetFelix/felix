@@ -165,11 +165,19 @@ impl ReplicaPositions {
 }
 
 impl CaughtUp for ReplicaPositions {
-    fn suspects(&self, key: &ShardKey, follower: &str, leader: &str) -> bool {
+    fn suspects(&self, key: &ShardKey, generation: u64, follower: &str, leader: &str) -> bool {
         // Streams only for now. A `Quorum` cache would also need
         // `fenced_caches`, and still fails over on the lease.
+        //
+        // The enabled set says what brokers may do, not what this leader
+        // does: it may not have heard of the finalize yet, and one that has
+        // not reported by round at this generation may still serve on its
+        // lease. Its report is held only from the assignment's leader.
         self.followers_decide
             && key.kind == ShardKind::Stream
+            && self
+                .fresh(key)
+                .is_some_and(|report| report.generation == generation && report.by_round)
             && self
                 .suspicions
                 .get(follower)

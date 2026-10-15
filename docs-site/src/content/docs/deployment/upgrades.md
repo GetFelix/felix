@@ -226,11 +226,21 @@ by the same round before it is acknowledged.
 - **Finalize `generation_start` and `majority_ack` first.**
   `lease_free_reads` has no effect until all three are finalized, so the
   control plane refuses it until both are enabled. Placement fails a
-  `Quorum` stream over on its followers' word only once all three are.
-- **Every broker must fence on promotion.** As for `majority_ack`, a broker
-  running with `FELIX_INTERNAL_FENCE=false` does not report the feature, so
-  the dry run names it and the finalize is refused until it runs with the
-  fence.
+  `Quorum` stream over on its followers' word only once all three are, and
+  only against a leader whose latest replica report says it serves by round.
+  A broker learns of the finalize on its next heartbeat and reports it after,
+  so for a heartbeat or so after the finalize leaders still fail over on the
+  lease. A Raft control plane keeps the report's flag only once every member
+  is at metadata level 11.
+- **Finalize with every control-plane member upgraded.** The order is checked
+  by the member that serves the `finalize` call. During a rolling
+  control-plane upgrade an older member does not check it, so finish the
+  control-plane upgrade first, or finalize in order yourself.
+- **Every broker must fence on promotion and read by round.** As for
+  `majority_ack`, a broker running with `FELIX_INTERNAL_FENCE=false` does not
+  report the feature, and neither does one running with
+  `FELIX_QUORUM_READS=lease`. The dry run names it and the finalize is
+  refused until it runs without either.
 - **Nothing changes on the wire or on disk.** The round is the existing
   `Fence`, sent at a generation the replica already accepted, which writes
   nothing.
@@ -243,9 +253,12 @@ by the same round before it is acknowledged.
   plane keeps serving reads its replicas confirm. One cut off from its
   replicas refuses them as `leadership_lost`, which is retryable, as soon as
   the round fails instead of at its lease's expiry.
-- **Keeping the lease.** `FELIX_QUORUM_READS=lease` keeps one broker's reads on
-  the lease after the finalize, the faster path that is only as safe as the
-  clocks and the lease margins.
+- **Keeping the lease.** `FELIX_QUORUM_READS=lease` keeps a broker's reads on
+  the lease, the faster path that is only as safe as the clocks and the lease
+  margins. It keeps the whole fleet there: the broker does not report
+  `lease_free_reads`, so the feature cannot be finalized while it serves, and
+  once the feature is finalized a broker started with it is refused at
+  registration.
 
 #### `publisher_principal`
 

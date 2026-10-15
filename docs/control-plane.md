@@ -112,8 +112,9 @@ A broker that cannot reach the leader of a shard it follows also sends
 state for two heartbeat intervals and asks for a placement pass; a broker
 suspecting nobody leaves the field out. Placement promotes on it only for a
 durable `Quorum` stream once `generation_start`, `majority_ack` and
-`lease_free_reads` are all finalized (`docs/replication-design.md`, "Failover
-on the followers' word").
+`lease_free_reads` are all finalized, and only against a leader whose own
+latest report says `by_round` (`docs/replication-design.md`, "Failover on the
+followers' word").
 A record that cannot be stored is logged and does not fail the heartbeat.
 
 Four rules, each of which exists for a reason:
@@ -183,9 +184,11 @@ The names are opaque to the control plane, so it can gate a feature it has
 never heard of. The exception is the order of the ones brokers use only
 together: `majority_ack` is refused with 409 until `generation_start` is
 enabled, and `lease_free_reads` and `fenced_caches` until both are. Placement
-reads the enabled set directly, so a fleet with `lease_free_reads` but not
+reads the enabled set, so a fleet with `lease_free_reads` but not
 `generation_start` would fail over on suspicion while its brokers still serve
-on the lease (`follower_features_are_finalized_after_generation_start`). The
+on the lease (`follower_features_are_finalized_after_generation_start`).
+Placement also waits for the leader's own report to say `by_round`, since
+brokers learn the enabled set on their next heartbeat. The
 dry run lists what is still needed as `requires`. The check runs when the
 operator asks rather than when a store applies the finalize: the enabled set
 only grows, so a prerequisite once seen enabled stays enabled, and a Raft
@@ -700,6 +703,14 @@ assignment's is refused as `stale`: after a control-plane restore a recreated
 stream can be at the deleted one's generation, and a broker that has not yet
 seen the recreate would otherwise report the old log, whose longer tail
 would then refuse every real report.
+`by_round: true` says the leader acknowledges the shard by its followers and
+confirms its reads by a round, so nothing it serves rests on its lease.
+Placement replaces a leader on its followers' word only when its report at the
+current generation says so ([Failover on the followers'
+word](replication-design.md#failover-on-the-followers-word)). It is left out
+when false and by brokers that predate it, which placement reads as a leader on
+its lease. Under Raft it is recorded only once every member is at metadata
+level 11.
 
 The answer is per shard, in request order: each entry names the shard and
 generation and says `accepted`, `stale`, `not_leader`, `unassigned` or

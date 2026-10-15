@@ -69,8 +69,9 @@ async fn start(features: &[&str]) -> Cluster {
 const ALL: &[&str] = &["generation_start", "majority_ack", "lease_free_reads"];
 
 /// Publish through `leader` and wait for a report naming a follower caught
-/// up, so placement has someone to promote.
-async fn publish_and_report(cluster: &Cluster, leader: &str) {
+/// up, so placement has someone to promote, and saying whether the leader
+/// serves by round, which decides whether its followers' word counts.
+async fn publish_and_report(cluster: &Cluster, leader: &str, by_round: bool) {
     cluster
         .publish_via(leader, STREAM, b"before".to_vec())
         .await
@@ -84,7 +85,10 @@ async fn publish_and_report(cluster: &Cluster, leader: &str) {
                 .await
                 .ok()
                 .flatten()
-                .is_some_and(|report| report.caught_up.iter().any(|id| id.as_str() != leader))
+                .is_some_and(|report| {
+                    report.by_round == by_round
+                        && report.caught_up.iter().any(|id| id.as_str() != leader)
+                })
         },
     )
     .await
@@ -154,7 +158,7 @@ async fn still_leads_after(cluster: &Cluster, old: &str, window: Duration) -> bo
 async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
     let cluster = start(ALL).await;
     let old = cluster.owner(STREAM).await.expect("owner");
-    publish_and_report(&cluster, &old).await;
+    publish_and_report(&cluster, &old, true).await;
     cut_off(&cluster, &old, &others(&cluster, &old)).await;
 
     assert!(
@@ -202,7 +206,7 @@ async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
 async fn one_follower_that_cannot_reach_the_leader_moves_nothing() {
     let cluster = start(ALL).await;
     let old = cluster.owner(STREAM).await.expect("owner");
-    publish_and_report(&cluster, &old).await;
+    publish_and_report(&cluster, &old, true).await;
     let follower = others(&cluster, &old).remove(0);
     cluster
         .inject(&Fault::Refuse {
@@ -228,7 +232,7 @@ async fn one_follower_that_cannot_reach_the_leader_moves_nothing() {
 async fn without_lease_free_reads_the_leader_is_not_moved_on_its_followers_word() {
     let cluster = start(&["generation_start", "majority_ack"]).await;
     let old = cluster.owner(STREAM).await.expect("owner");
-    publish_and_report(&cluster, &old).await;
+    publish_and_report(&cluster, &old, false).await;
     cut_off(&cluster, &old, &others(&cluster, &old)).await;
 
     assert!(still_leads_after(&cluster, &old, Duration::from_secs(5)).await);

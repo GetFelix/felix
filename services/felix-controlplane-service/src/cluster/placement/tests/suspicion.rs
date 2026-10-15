@@ -13,7 +13,7 @@ impl CaughtUp for Said {
         self.caught_up.contains(node_id)
     }
 
-    fn suspects(&self, _key: &ShardKey, follower: &str, leader: &str) -> bool {
+    fn suspects(&self, _key: &ShardKey, _generation: u64, follower: &str, leader: &str) -> bool {
         self.cannot_reach.contains(&(follower, leader))
     }
 }

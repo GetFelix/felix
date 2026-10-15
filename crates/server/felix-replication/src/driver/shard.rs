@@ -391,9 +391,13 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if by_followers {
         fence.serve_without_lease(mark_key, route.generation);
     }
-    if quorum_shard && marks.reads_by_round().is_some() {
+    let reads_by_round = quorum_shard && marks.reads_by_round().is_some();
+    if reads_by_round {
         fence.sessions_without_lease(mark_key, route.generation);
     }
+    // Placement replaces a leader on its followers' word only when this
+    // says nothing it serves rests on its lease.
+    let by_round = by_followers && reads_by_round;
     // Read from the cursors the last pass left: a follower halted this way
     // stays halted until the assignment changes.
     if entry
@@ -708,7 +712,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         &positions,
                         false,
                     )
-                    .at_incarnation(incarnation),
+                    .at_incarnation(incarnation)
+                    .serving_by_round(by_round),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -786,7 +791,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         &positions,
                         false,
                     )
-                    .at_incarnation(incarnation),
+                    .at_incarnation(incarnation)
+                    .serving_by_round(by_round),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -962,7 +968,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             &entry.followers,
             drained,
         )
-        .at_incarnation(incarnation),
+        .at_incarnation(incarnation)
+        .serving_by_round(by_round),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is
