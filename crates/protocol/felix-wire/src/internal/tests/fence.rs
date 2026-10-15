@@ -43,12 +43,83 @@ fn capabilities_travel_on_their_own_kind() {
         correlation_id: 42,
         node_id: "broker-b".to_string(),
         capabilities: Some(PeerCapabilities::NONE),
+        identity: None,
     });
     assert_eq!(answer.kind(), Kind::HelloCapableOk);
     let decoded = InternalMessage::decode(answer.encode().expect("encode")).expect("decode");
     assert_eq!(
         decoded, answer,
         "an answer of no capabilities must still be told apart from an old peer's",
+    );
+}
+
+fn capable_ok(capabilities: PeerCapabilities, identity: Option<[u8; 16]>) -> InternalMessage {
+    InternalMessage::HelloOk(HelloOk {
+        correlation_id: 42,
+        node_id: "broker-b".to_string(),
+        capabilities: Some(capabilities),
+        identity,
+    })
+}
+
+fn capable_ok_frame(bits: u64, trailing: &[u8]) -> Bytes {
+    let mut expected = BytesMut::new();
+    expected.put_u32(INTERNAL_MAGIC);
+    expected.put_u16(INTERNAL_VERSION);
+    expected.put_u16(Kind::HelloCapableOk as u16);
+    expected.put_u32((8 + 4 + 8 + 8 + trailing.len()) as u32);
+    expected.put_u64(42);
+    expected.put_u32(8);
+    expected.put_slice(b"broker-b");
+    expected.put_u64(bits);
+    expected.put_slice(trailing);
+    expected.freeze()
+}
+
+#[test]
+fn a_storage_identity_travels_after_the_bits() {
+    let identity = [7; 16];
+    let answer = capable_ok(
+        PeerCapabilities::FENCE.union(PeerCapabilities::STORAGE_IDENTITY),
+        Some(identity),
+    );
+    let encoded = answer.encode().expect("encode");
+    assert_eq!(
+        encoded,
+        capable_ok_frame((1 << 0) | (1 << 10), &identity),
+        "the identity is the 16 bytes after the capability bits",
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), answer);
+}
+
+/// **Without the bit the answer is today's frame, byte for byte**, so a
+/// caller that predates storage identities reads it as it always has.
+#[test]
+fn an_answer_without_the_identity_bit_is_unchanged() {
+    let answer = capable_ok(PeerCapabilities::FENCE, None);
+    assert_eq!(
+        answer.encode().expect("encode"),
+        capable_ok_frame(1 << 0, &[])
+    );
+}
+
+#[test]
+fn the_identity_bit_without_its_bytes_is_refused() {
+    let frame = capable_ok_frame(PeerCapabilities::STORAGE_IDENTITY.bits(), &[1; 15]);
+    assert!(matches!(
+        InternalMessage::decode(frame),
+        Err(Error::Incomplete)
+    ));
+    let frame = capable_ok_frame(PeerCapabilities::FENCE.bits(), &[1; 16]);
+    assert!(
+        matches!(InternalMessage::decode(frame), Err(Error::Incomplete)),
+        "identity bytes without the bit are trailing garbage",
+    );
+    assert!(
+        capable_ok(PeerCapabilities::STORAGE_IDENTITY, None)
+            .encode()
+            .is_err(),
+        "the bit and the bytes must agree on the way out too",
     );
 }
 

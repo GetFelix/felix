@@ -78,6 +78,7 @@ fn every_message() -> Vec<InternalMessage> {
             correlation_id: 42,
             node_id: "broker-b".to_string(),
             capabilities: None,
+            identity: None,
         }),
         InternalMessage::Hello(Hello {
             correlation_id: 42,
@@ -88,6 +89,7 @@ fn every_message() -> Vec<InternalMessage> {
             correlation_id: 42,
             node_id: "broker-b".to_string(),
             capabilities: Some(PeerCapabilities::NONE),
+            identity: None,
         }),
         InternalMessage::Fence(Fence {
             correlation_id: 42,

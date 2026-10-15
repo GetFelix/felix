@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use felix_storage::StorageId;
 use felix_transport::QuicClient;
 use felix_wire::internal::{InternalMessage, PeerCapabilities, ReplicaLog};
 use parking_lot::Mutex;
@@ -145,19 +146,17 @@ impl PeerPool {
         node_id: &str,
         addr: SocketAddr,
     ) -> std::result::Result<PeerCapabilities, PeerError> {
-        if self.shutdown.is_cancelled() {
-            return Err(PeerError::ShuttingDown);
-        }
-        if let Some(partition) = &self.partition
-            && partition.blocks(node_id)
-        {
-            return Err(PeerError::Unavailable {
-                node_id: node_id.to_string(),
-                detail: "partitioned from this broker (fault injection)".to_string(),
-            });
-        }
-        let connection = self.peer(node_id).connection(self, addr).await?;
-        Ok(connection.capabilities())
+        Ok(self.connection(node_id, addr).await?.capabilities())
+    }
+
+    /// The storage identity `node_id` gave in its handshake, dialling it if
+    /// there is no connection yet. `None` from a peer that does not send one.
+    pub async fn storage_identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<Option<StorageId>, PeerError> {
+        Ok(self.connection(node_id, addr).await?.identity())
     }
 
     /// Whether this broker offers the promotion fence to its peers.
@@ -192,6 +191,25 @@ impl PeerPool {
         }
         metrics::set_connections(0);
         metrics::set_streams(0);
+    }
+
+    async fn connection(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<Arc<PeerConnection>, PeerError> {
+        if self.shutdown.is_cancelled() {
+            return Err(PeerError::ShuttingDown);
+        }
+        if let Some(partition) = &self.partition
+            && partition.blocks(node_id)
+        {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "partitioned from this broker (fault injection)".to_string(),
+            });
+        }
+        self.peer(node_id).connection(self, addr).await
     }
 
     async fn request_inner(
@@ -370,7 +388,10 @@ impl PeerPool {
             connection,
             node_id.to_string(),
             self.local_node_id.clone(),
-            self.config.capabilities(),
+            // This side reads an identity whatever it offers itself.
+            self.config
+                .capabilities()
+                .union(PeerCapabilities::STORAGE_IDENTITY),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )
@@ -478,6 +499,18 @@ pub trait PeerRequester {
     fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
         None
     }
+
+    /// The storage identity `node_id` gave in its handshake, reaching it if
+    /// need be. `None` means it gave none, so it cannot be told apart from
+    /// a wiped copy of itself.
+    fn storage_identity(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<Option<StorageId>, PeerError>> + Send
+    {
+        async { Ok(None) }
+    }
 }
 
 impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
@@ -503,6 +536,15 @@ impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         T::recorded_capabilities(self, node_id)
     }
+
+    fn storage_identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<Option<StorageId>, PeerError>> + Send
+    {
+        T::storage_identity(self, node_id, addr)
+    }
 }
 
 impl PeerRequester for PeerPool {
@@ -525,6 +567,14 @@ impl PeerRequester for PeerPool {
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         self.known.get(node_id)
+    }
+
+    async fn storage_identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<Option<StorageId>, PeerError> {
+        PeerPool::storage_identity(self, node_id, addr).await
     }
 }
 

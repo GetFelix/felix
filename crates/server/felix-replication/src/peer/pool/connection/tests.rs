@@ -91,6 +91,7 @@ mod correlation {
                 correlation_id: 7,
                 node_id: "broker-b".to_string(),
                 capabilities: None,
+                identity: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
                 times: None,

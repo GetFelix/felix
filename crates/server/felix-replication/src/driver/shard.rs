@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_router::{Route, ShardKey};
+use felix_storage::StorageId;
 use felix_wire::internal::ShardRef;
 use futures::StreamExt;
 
@@ -546,6 +547,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // pass ends can be handed to the driver and outlive it.
     let mut launched: Vec<(String, bool)> = Vec::new();
     let mut launched_rode: Vec<String> = Vec::new();
+    let base = entry.base;
     let mut in_flight: futures::stream::FuturesUnordered<Exchange<'a>> = entry
         .followers
         .iter()
@@ -586,6 +588,30 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             );
             let generation = route.generation;
             let exchange: Exchange<'a> = Box::pin(async move {
+                // On an idle shard nothing is shipped, so this is the only
+                // contact that can tell a wiped follower from the copy its
+                // cursor describes. An error leaves the cursor as it is; the
+                // shipping below meets the same failure.
+                if let Ok(seen) = requester
+                    .storage_identity(&cursor.node_id, cursor.addr)
+                    .await
+                {
+                    if seen != cursor.storage_id && cursor.storage_id.is_some() {
+                        tracing::warn!(
+                            node_id = %cursor.node_id,
+                            stream = %shard.stream,
+                            shard = shard.shard,
+                            "the follower's storage changed; starting its copy over",
+                        );
+                    }
+                    follow_storage(&mut cursor, seen, base, rebuilds);
+                    for aux in [&mut rode.group, &mut rode.dead_letters, &mut rode.counters]
+                        .into_iter()
+                        .flatten()
+                    {
+                        follow_storage(aux, seen, 0, rebuilds);
+                    }
+                }
                 let RideAlong {
                     group,
                     dead_letters,
@@ -918,6 +944,19 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     };
 
     entry.followers = positions;
+    // An auxiliary cursor that did not ride its follower's exchange still
+    // describes the old copy.
+    for aux in [&mut aux.group, &mut aux.dead_letters, &mut aux.counters] {
+        for cursor in &mut aux.followers {
+            if let Some(main) = entry
+                .followers
+                .iter()
+                .find(|main| main.node_id == cursor.node_id)
+            {
+                follow_storage(cursor, main.storage_id, 0, rebuilds);
+            }
+        }
+    }
 
     // What the pass ended up seeing, when that is not what was already sent.
     //
@@ -1686,6 +1725,30 @@ pub(super) fn staged_learner(previous: Option<&ShardCursors>, route: &Route) -> 
             .iter()
             .any(|follower| &follower.node_id == successor);
     added.then(|| successor.clone())
+}
+
+/// Start `cursor` over at `base` unless it already describes the copy of
+/// the log whose storage identity is `seen`. Whatever it said about the old
+/// copy, including that it held everything, is not true of this one.
+pub(super) fn follow_storage(
+    cursor: &mut FollowerCursor,
+    seen: Option<StorageId>,
+    base: u64,
+    rebuilds: &Rebuilds,
+) {
+    if cursor.storage_id == seen {
+        return;
+    }
+    if cursor.rebuilding {
+        rebuilds.finish();
+    }
+    // A fenced halt is about this leader, not the follower's copy.
+    let fenced = cursor.halted.filter(|halt| *halt == crate::Halt::Fenced);
+    *cursor = FollowerCursor {
+        halted: fenced,
+        storage_id: seen,
+        ..FollowerCursor::new(cursor.node_id.clone(), cursor.addr, base)
+    };
 }
 
 pub(super) fn reconcile_followers(entry: &mut ShardCursors, route: &Route) {

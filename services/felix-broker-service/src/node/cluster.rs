@@ -120,6 +120,7 @@ pub(super) fn bind_peer_listener(
     auth: &Arc<BrokerAuth>,
     peer_tls: &Option<Arc<PeerTls>>,
     known_capabilities: Option<peer::KnownCapabilities>,
+    storage_id: felix_storage::StorageId,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -148,7 +149,8 @@ pub(super) fn bind_peer_listener(
                 let server = match known_capabilities {
                     Some(known) => server.with_known_capabilities(known),
                     None => server,
-                };
+                }
+                .with_storage_identity(storage_id);
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,

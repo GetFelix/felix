@@ -43,6 +43,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
         replica_counter_offsets: Vec::new(),
         stream_incarnation: 0,
         by_round: false,
+        replica_storage_ids: BTreeMap::new(),
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
@@ -53,6 +54,46 @@ fn a_report_that_is_not_drained_omits_the_field() {
     assert!(!json.contains("counter"), "{json}");
     let parsed: ShardReplicaStatus = serde_json::from_str(&json).expect("read");
     assert!(!parsed.drained);
+}
+
+/// **A report without storage ids is today's JSON, byte for byte**, and a
+/// report from a broker that predates them reads as having none.
+#[test]
+fn a_report_without_storage_ids_is_unchanged() {
+    let status = ShardReplicaStatus {
+        tenant_id: "t1".into(),
+        namespace: "ns".into(),
+        stream: "orders".into(),
+        shard: 0,
+        kind: ShardKind::Stream,
+        generation: 1,
+        caught_up: vec!["broker-b".into()],
+        replica_offsets: Vec::new(),
+        drained: false,
+        leader_offset: Some(3),
+        halted: Vec::new(),
+        replica_counter_offsets: Vec::new(),
+        stream_incarnation: 0,
+        by_round: false,
+        replica_storage_ids: BTreeMap::new(),
+    };
+    let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":1,"caught_up":["broker-b"],"replica_offsets":[],"leader_offset":3}"#;
+    assert_eq!(serde_json::to_string(&status).expect("write"), today);
+    let parsed: ShardReplicaStatus = serde_json::from_str(today).expect("read");
+    assert!(parsed.replica_storage_ids.is_empty());
+
+    let with = ShardReplicaStatus {
+        replica_storage_ids: BTreeMap::from([("broker-b".into(), "ab".repeat(16))]),
+        ..status
+    };
+    let json = serde_json::to_string(&with).expect("write");
+    assert!(
+        json.ends_with(&format!(
+            r#""replica_storage_ids":{{"broker-b":"{}"}}}}"#,
+            "ab".repeat(16)
+        )),
+        "{json}"
+    );
 }
 
 #[test]
@@ -91,6 +132,10 @@ fn a_report_round_trips() {
             }],
             stream_incarnation: 5,
             by_round: true,
+            replica_storage_ids: BTreeMap::from([(
+                "broker-b".into(),
+                "ab000000000000000000000000000000".into(),
+            )]),
         }],
     };
     let json = serde_json::to_string(&report).expect("write");

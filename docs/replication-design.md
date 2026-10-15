@@ -1528,6 +1528,59 @@ up on the next leader. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
 
+### Storage identities
+
+A follower's cursor says how far it has answered holding the leader's log. On
+an idle shard nothing is shipped, so nothing ever corrects that answer, and a
+follower that lost its disk and came back empty went on being reported as
+caught up for as long as the shard stayed idle (#1266). Placement could then
+promote it, and an acknowledged record was gone after two faults.
+
+Each broker's data directory has a **storage identity**, 16 random bytes in
+`<data dir>/storage-id`. A restart keeps it; a wiped or replaced directory
+gets a new one. The peer handshake carries it
+(`STORAGE_IDENTITY`, see `docs/internal-protocol.md`), and the pool keeps it
+with the connection.
+
+At the start of each exchange with a follower, before anything is shipped,
+the leader asks the pool for the follower's identity (`storage_identity`),
+dialling if there is no connection. When it differs from the one the cursor
+was learned under, including a first identity from a follower that had none,
+the cursor starts over at the shard's base with nothing confirmed, and the
+follower's cursors on the group, dead-letter and counter logs start over at
+zero. A rebuild the old copy held gives its slot back. A failed lookup leaves
+the cursor alone; the shipping that follows meets the same failure. A
+follower that only restarted gives the same identity and keeps its place.
+
+```mermaid
+sequenceDiagram
+    participant L as Leader
+    participant F as Follower
+    Note over L: cursor: F confirmed 120, id X
+    F->>F: disk lost, restarts with id Y
+    L->>F: Hello (offers STORAGE_IDENTITY)
+    F-->>L: HelloCapableOk(bits, id Y)
+    Note over L: Y is not X: cursor starts over, confirmed 0
+    L->>L: report: F not caught up, F under Y
+```
+
+The identity is learned once per connection, so a restart is noticed when the
+old connection is gone and the pool dials again. A follower that shuts down
+closes its connections, and the next exchange redials at once. One that
+crashes leaves the leader's connection open until QUIC's idle timeout,
+three quarters of `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` (3.75 s by default),
+because the restarted process cannot reset a connection it never had. Until
+then the leader reports the old identity, which the restarted broker no
+longer registers under.
+
+Each report names the identity every follower was counted under
+(`replica_storage_ids`, lowercase hex, omitted when empty). A follower that
+gives no identity, an older build, is reported without one and counted as
+before. The control plane does not compare them yet; that, and promoting a
+follower only while its registered identity matches the report, is the rest
+of #1266. `FelixShardWipe.cfg` checks the design with that comparison in
+place, and `FelixShardWipeNoIds.cfg` finds the lost record without it.
+
 ### Divergence and truncation
 
 Two brokers can hold different records at the same offset. It takes a leader

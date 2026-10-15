@@ -79,6 +79,16 @@ impl InternalMessage {
                 if let Some(capabilities) = m.capabilities {
                     body.put_u64(capabilities.bits());
                 }
+                let carries_identity = m
+                    .capabilities
+                    .is_some_and(|c| c.contains(PeerCapabilities::STORAGE_IDENTITY));
+                // The bit is what tells the decoder the bytes are there, so
+                // the two must agree or the frame would not read back.
+                match (carries_identity, m.identity) {
+                    (true, Some(identity)) => body.put_slice(&identity),
+                    (false, None) => {}
+                    _ => return Err(Error::Incomplete),
+                }
             }
             Self::Fence(m) => {
                 body.put_u64(m.correlation_id);
@@ -442,15 +452,23 @@ impl InternalMessage {
                 Ok(Self::Hello(message))
             }
             Kind::HelloOk | Kind::HelloCapableOk => {
+                let correlation_id = take_u64(&mut body)?;
+                let node_id = take_str(&mut body)?;
+                let capabilities = match header.kind {
+                    Kind::HelloCapableOk => Some(PeerCapabilities::from_bits(take_u64(&mut body)?)),
+                    _ => None,
+                };
+                let identity = match capabilities {
+                    Some(c) if c.contains(PeerCapabilities::STORAGE_IDENTITY) => {
+                        Some(take_identity(&mut body)?)
+                    }
+                    _ => None,
+                };
                 let message = HelloOk {
-                    correlation_id: take_u64(&mut body)?,
-                    node_id: take_str(&mut body)?,
-                    capabilities: match header.kind {
-                        Kind::HelloCapableOk => {
-                            Some(PeerCapabilities::from_bits(take_u64(&mut body)?))
-                        }
-                        _ => None,
-                    },
+                    correlation_id,
+                    node_id,
+                    capabilities,
+                    identity,
                 };
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))
@@ -884,6 +902,15 @@ fn take_u64(buf: &mut Bytes) -> Result<u64> {
         return Err(Error::Incomplete);
     }
     Ok(buf.get_u64())
+}
+
+fn take_identity(buf: &mut Bytes) -> Result<[u8; 16]> {
+    let mut identity = [0; 16];
+    if buf.remaining() < identity.len() {
+        return Err(Error::Incomplete);
+    }
+    buf.copy_to_slice(&mut identity);
+    Ok(identity)
 }
 
 /// Reject trailing bytes: a body that does not describe itself exactly means

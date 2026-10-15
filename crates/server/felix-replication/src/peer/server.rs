@@ -16,6 +16,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use felix_storage::StorageId;
 use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
     ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities, Pong,
@@ -158,6 +159,8 @@ pub struct PeerServer {
     /// What this broker offers peers, and where it notes what they offer.
     capabilities: PeerCapabilities,
     known: KnownCapabilities,
+    /// This broker's storage identity, given to a caller that asks for it.
+    identity: Option<StorageId>,
 }
 
 impl PeerServer {
@@ -200,6 +203,7 @@ impl PeerServer {
             app,
             capabilities: config.capabilities(),
             known: KnownCapabilities::default(),
+            identity: None,
         })
     }
 
@@ -207,6 +211,13 @@ impl PeerServer {
     /// [`super::PeerPool`] also fills from the handshakes it makes.
     pub fn with_known_capabilities(mut self, known: KnownCapabilities) -> Self {
         self.known = known;
+        self
+    }
+
+    /// Answer a handshake that offers [`PeerCapabilities::STORAGE_IDENTITY`]
+    /// with `identity`. Without it the bit is never answered.
+    pub fn with_storage_identity(mut self, identity: StorageId) -> Self {
+        self.identity = Some(identity);
         self
     }
 
@@ -293,6 +304,7 @@ impl PeerServer {
             let offered = Offered {
                 capabilities: self.capabilities,
                 known: self.known.clone(),
+                identity: self.identity,
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -310,6 +322,7 @@ impl PeerServer {
 struct Offered {
     capabilities: PeerCapabilities,
     known: KnownCapabilities,
+    identity: Option<StorageId>,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -431,10 +444,23 @@ async fn serve_connection(
                             &hello.node_id,
                             hello.capabilities.unwrap_or(PeerCapabilities::NONE),
                         );
+                        // Only to a caller that offered the bit, so an older
+                        // one reads the answer it always has.
+                        let identity = offered.identity.filter(|_| {
+                            hello.capabilities.is_some_and(|c| {
+                                c.contains(PeerCapabilities::STORAGE_IDENTITY)
+                            })
+                        });
                         InternalMessage::HelloOk(HelloOk {
                             correlation_id: hello.correlation_id,
                             node_id: node_id.clone(),
-                            capabilities: hello.capabilities.map(|_| offered.capabilities),
+                            capabilities: hello.capabilities.map(|_| match identity {
+                                Some(_) => offered
+                                    .capabilities
+                                    .union(PeerCapabilities::STORAGE_IDENTITY),
+                                None => offered.capabilities,
+                            }),
+                            identity: identity.map(|id| id.to_bytes()),
                         })
                     }
                     // Refused as a build without the fence would refuse it, so

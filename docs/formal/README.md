@@ -258,6 +258,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardReportUnpaired.cfg` | followers measured at the majority's offset, but the report claiming the whole log | violate `AckedSurvive` |
 | `FelixShardReportFromAnswers.cfg` | followers counted by what they answered, as the broker counts them, with two promotions in a row and no floor under the report | violate `AckedSurvive` |
 | `FelixShardReportFloor.cfg` | the same, with no follower named short of the log the leader inherited | pass |
+| `FelixShardWipe.cfg` | `FelixShardReportFloor.cfg` with a follower that loses its disk, the leader learning each follower's storage identity and placement promoting a follower only under the identity it has now | pass (not yet run; added with #1266) |
+| `FelixShardWipeNoIds.cfg` | the same without storage identities: a wiped follower stays counted on an idle shard | violate `AckedSurvive` (not yet run) |
 | `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.39M distinct states) |
 | `FelixShardHandoffNoWait.cfg` | the same move cutting over without waiting for the drained report | violate `AtMostOneServing` |
 | `FelixShardStalePlannerCas.cfg` | two instances moving the shard, one acting on a held read; writes conditional on the generation read | pass every invariant (3.30M distinct states) |

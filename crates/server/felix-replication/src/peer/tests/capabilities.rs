@@ -4,6 +4,7 @@
 use std::sync::atomic::AtomicUsize;
 
 use bytes::{Bytes, BytesMut};
+use felix_storage::StorageId;
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 use felix_wire::internal::{
     Fence, FrameEnvelope, Hello, HelloOk, InternalHeader, Kind, PeerCapabilities, ReplicaLog,
@@ -87,6 +88,7 @@ impl OldBroker {
                     correlation_id,
                     node_id: node_id.to_string(),
                     capabilities: None,
+                    identity: None,
                 })
             }
             _ => InternalMessage::ForwardPublishOk(ForwardPublishOk {
@@ -158,8 +160,123 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::PING);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
-    assert_eq!(noted.get("broker-a"), Some(offered));
+    // A caller reads an identity whether or not it gives one.
+    assert_eq!(
+        noted.get("broker-a"),
+        Some(offered.union(PeerCapabilities::STORAGE_IDENTITY))
+    );
 
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
+fn storage_id() -> StorageId {
+    StorageId::from_bytes([0xab; 16])
+}
+
+/// A current listener that answers with `storage_id()`.
+async fn listener_with_identity() -> Listener {
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_storage_identity(storage_id());
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(server.serve(shutdown.clone()));
+    Listener {
+        addr,
+        shutdown,
+        task,
+    }
+}
+
+/// **Two current brokers: the dialler learns the other's storage identity.**
+#[tokio::test]
+async fn a_current_broker_learns_the_storage_identity_it_dialled() {
+    let listener = listener_with_identity().await;
+    let pool = pool(config());
+
+    assert_eq!(
+        pool.storage_identity(PEER, listener.addr)
+            .await
+            .expect("handshake"),
+        Some(storage_id()),
+    );
+    assert!(
+        pool.capabilities(PEER, listener.addr)
+            .await
+            .expect("handshake")
+            .contains(PeerCapabilities::STORAGE_IDENTITY)
+    );
+
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
+/// **A caller that does not offer the bit gets today's answer, byte for
+/// byte**: neither the bit nor the 16 bytes, whatever the listener has.
+#[tokio::test]
+async fn a_caller_without_the_bit_gets_neither_the_bit_nor_the_identity() {
+    let listener = listener_with_identity().await;
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+
+    let offered = config().capabilities();
+    write_frame(
+        &mut send,
+        &InternalMessage::Hello(Hello {
+            correlation_id: 5,
+            node_id: "broker-old".to_string(),
+            capabilities: Some(offered),
+        }),
+    )
+    .await
+    .expect("write");
+    let (kind, frame) = read_raw(&mut recv).await.expect("an answer");
+    assert_eq!(kind, Kind::HelloCapableOk as u16);
+    let today = InternalMessage::HelloOk(HelloOk {
+        correlation_id: 5,
+        node_id: PEER.to_string(),
+        capabilities: Some(offered),
+        identity: None,
+    });
+    assert_eq!(frame, today.encode().expect("encode"));
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// **A responder that gives no identity reads as `None`**, whether it
+/// predates the bits or simply has none to give.
+#[tokio::test]
+async fn a_responder_without_an_identity_gives_none() {
+    let old = OldBroker::start(PEER).await;
+    let pool = pool(config());
+    assert_eq!(
+        pool.storage_identity(PEER, old.addr)
+            .await
+            .expect("handshake"),
+        None
+    );
+    pool.shutdown().await;
+    old.stop();
+
+    let (listener, _noted) = listener_noting(true).await;
+    let pool = super::pool(config());
+    assert_eq!(
+        pool.storage_identity(PEER, listener.addr)
+            .await
+            .expect("handshake"),
+        None
+    );
     pool.shutdown().await;
     listener.stop().await;
 }

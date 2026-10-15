@@ -8,6 +8,8 @@
 //! The `openapi` feature adds `ToSchema` so the control plane can keep
 //! publishing them, without making every consumer take a utoipa dependency.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "openapi")]
@@ -136,6 +138,12 @@ pub struct ShardReplicaStatus {
     /// so. Omitted when false, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_round: bool,
+    /// The storage identity each follower gave the leader, as 32 lowercase
+    /// hex digits, keyed by node id. The positions above describe that copy
+    /// of a follower's log. A follower that gives none is absent. Omitted
+    /// when empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replica_storage_ids: BTreeMap<String, String>,
 }
 
 fn is_zero(value: &u64) -> bool {
