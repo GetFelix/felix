@@ -500,6 +500,27 @@ impl ConsumerGroups {
         Ok(groups)
     }
 
+    /// [`Self::legacy_groups`] for a stream now registered at a later
+    /// incarnation, read through a store of its own so the live one's cursors
+    /// stay open.
+    pub async fn legacy_groups_beside(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shards: u32,
+    ) -> Result<Vec<(u32, String)>> {
+        let apart = Self::open(self.cursors.root(), self.cursors.config().clone())?;
+        apart.set_incarnation(tenant_id, namespace, stream, Some(0));
+        let found = apart
+            .legacy_groups(tenant_id, namespace, stream, shards)
+            .await;
+        apart
+            .close_incarnation(tenant_id, namespace, stream, 0)
+            .await?;
+        found
+    }
+
     /// The shard and incarnation of every directory of a stream's cursors
     /// here.
     pub fn dirs_on_disk(

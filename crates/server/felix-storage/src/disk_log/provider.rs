@@ -234,6 +234,12 @@ impl DiskLogProvider {
         incarnation::marker::write(&self.root, marker)
     }
 
+    /// Write markers that record only a deleted floor, with one directory
+    /// flush for all of them. See `incarnation::marker::write_unsynced`.
+    pub fn write_stream_floors(&self, markers: &[crate::StreamMarker]) -> Result<()> {
+        incarnation::marker::write_unsynced(&self.root, markers)
+    }
+
     /// Remove a stream's marker, durably.
     pub fn remove_stream_marker(&self, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
         incarnation::marker::remove(&self.root, tenant, namespace, stream)

@@ -870,10 +870,11 @@ async fn a_delete_naming_no_incarnation_keeps_the_data_for_a_create_at_0() {
 /// writes a tombstone for incarnation 0, and that deletes everything kept
 /// for it: records, group positions and the per-group dead letters of the
 /// layout before 0.6, whether the stream is registered, was kept after an
-/// earlier delete, or was left by a broker that never wrote a marker.
+/// earlier delete, was left by a broker that never wrote a marker, or sits
+/// under a later incarnation registered since.
 #[tokio::test]
 async fn a_tombstone_for_0_takes_kept_data_and_legacy_dead_letters() {
-    for case in ["registered", "kept", "no marker"] {
+    for case in ["registered", "kept", "no marker", "under a later one"] {
         let dir = tempdir().expect("dir");
         let shard = felix_storage::disk_log::layout::shard_dir(dir.path(), &shard_key(0));
         let legacy = felix_storage::disk_log::layout::shard_dir(
@@ -910,6 +911,13 @@ async fn a_tombstone_for_0_takes_kept_data_and_legacy_dead_letters() {
                 .await
                 .expect("register");
         }
+        if case == "under a later one" {
+            broker
+                .register_stream("t1", "default", "orders", incarnation(1, 9))
+                .await
+                .expect("register");
+            publish_three(&broker, "orders").await;
+        }
         assert!(shard.exists() && legacy.exists(), "{case}: went early");
         broker
             .remove_stream_from_catalog("t1", "default", "orders", Some(0))
@@ -921,6 +929,14 @@ async fn a_tombstone_for_0_takes_kept_data_and_legacy_dead_letters() {
             "{case}: the legacy dead letters were kept"
         );
         assert_no_group_state_on_disk(&dir, case);
+        if case == "under a later one" {
+            assert_eq!(
+                next_offset(&broker, "orders").await,
+                3,
+                "the live one changed"
+            );
+            continue;
+        }
         // Nothing comes back at 0.
         broker
             .register_stream("t1", "default", "orders", durable(1))
@@ -1119,4 +1135,51 @@ async fn a_restore_to_a_backup_point_takes_the_points_incarnation() {
     );
     let later = felix_storage::disk_log::layout::incarnation_dir(dir.path(), &shard_key(0), 8);
     assert!(later.exists(), "the restore deleted data");
+}
+
+/// A snapshot's tombstones, as a broker joining the fleet reads them: most
+/// name streams it never had, whose floors it records together, and one names
+/// the stream it holds, which goes. Both hold across a restart.
+#[tokio::test]
+async fn a_snapshots_tombstones_record_floors_and_delete_held_data() {
+    let dir = tempdir().expect("dir");
+    let names: Vec<String> = (0..50).map(|i| format!("gone-{i}")).collect();
+    {
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 5))
+            .await
+            .expect("register");
+        publish_three(&broker, "orders").await;
+        let mut tombstones = vec![("t1", "default", "orders", 5)];
+        tombstones.extend(names.iter().map(|name| ("t1", "default", name.as_str(), 3)));
+        broker
+            .apply_tombstones(&tombstones)
+            .await
+            .expect("the tombstones");
+        assert_eq!(broker.stream_incarnation("t1", "default", "orders"), None);
+        // Applied again, as a resnapshot does: nothing left to do.
+        broker
+            .apply_tombstones(&tombstones)
+            .await
+            .expect("the tombstones again");
+        storage.shutdown().await.expect("shutdown");
+    }
+    let (broker, _storage) = broker(&dir).await;
+    for (name, deleted) in [("orders", 5), ("gone-0", 3), ("gone-49", 3)] {
+        broker
+            .register_stream("t1", "default", name, incarnation(1, deleted))
+            .await
+            .expect("an older snapshot");
+        assert_eq!(
+            broker.stream_incarnation("t1", "default", name),
+            None,
+            "the deleted incarnation of {name} was registered again"
+        );
+        broker
+            .register_stream("t1", "default", name, incarnation(1, deleted + 1))
+            .await
+            .expect("a later one");
+        assert_eq!(next_offset(&broker, name).await, 0, "{name} kept data");
+    }
 }

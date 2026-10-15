@@ -398,7 +398,11 @@ impl ControlPlaneStore for InMemoryStore {
         caches::cache_changes(self, since).await
     }
 
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>> {
         resources::create_resources(self, streams, caches).await
     }
 

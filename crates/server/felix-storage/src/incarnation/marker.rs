@@ -90,6 +90,31 @@ pub(crate) fn write(root: &Path, marker: &StreamMarker) -> Result<()> {
     )
 }
 
+/// Write many markers with one directory flush and no file flushes, for
+/// markers that only record a floor over data this broker does not have. One
+/// flush each would cost a broker joining a fleet with many deleted names an
+/// fsync storm. A crash can lose some of them or leave one unreadable; the
+/// next catalog snapshot's tombstones write them again.
+pub(crate) fn write_unsynced(root: &Path, markers: &[StreamMarker]) -> Result<()> {
+    use std::io::Write;
+
+    if markers.is_empty() {
+        return Ok(());
+    }
+    let dir = root.join(STREAMS_DIR);
+    create_dir_all_durable(&dir).map_err(StorageError::Io)?;
+    for marker in markers {
+        let path = path(root, &marker.tenant, &marker.namespace, &marker.stream);
+        let temporary = path.with_extension("tmp");
+        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        file.write_all(encode(marker).as_bytes())
+            .map_err(StorageError::Io)?;
+        drop(file);
+        std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    }
+    sync_dir(&dir).map_err(StorageError::Io)
+}
+
 fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
 

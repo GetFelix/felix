@@ -453,6 +453,10 @@ pub enum MetaResponse {
     Stream {
         stream: Stream,
     },
+    /// `CreateResources`' streams as stored, once they carry incarnations.
+    Streams {
+        streams: Vec<Stream>,
+    },
     Cache {
         cache: Cache,
     },

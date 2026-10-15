@@ -180,6 +180,104 @@ impl Broker {
         Ok(covered.is_some())
     }
 
+    /// [`Self::delete_stream_through`] for each of a catalog snapshot's
+    /// tombstones. Most name streams this broker never had, as on a broker
+    /// joining the fleet; their floors are written together with one flush
+    /// instead of a delete each.
+    pub async fn apply_tombstones(&self, tombstones: &[(&str, &str, &str, u64)]) -> Result<()> {
+        let mut floors = Vec::new();
+        for &(tenant_id, namespace, stream, through) in tombstones {
+            let key = StreamKey::new(tenant_id, namespace, stream);
+            match self.floor_only(&key, through).await? {
+                Some(floor) => floors.push(floor),
+                None => {
+                    self.delete_stream_through(tenant_id, namespace, stream, through)
+                        .await?;
+                }
+            }
+        }
+        if let (Some(storage), false) = (&self.durable_storage, floors.is_empty()) {
+            storage
+                .provider()
+                .write_stream_floors(&floors)
+                .map_err(BrokerError::from)?;
+        }
+        Ok(())
+    }
+
+    /// The marker a delete through `through` would leave, when it has
+    /// nothing else to do: nothing registered that it covers, no delete in
+    /// progress and no directory of a covered incarnation in any store. `None`
+    /// when a delete is needed or the floor is already recorded.
+    async fn floor_only(&self, key: &StreamKey, through: u64) -> Result<Option<StreamMarker>> {
+        if self.durable_storage.is_none() {
+            return Ok(None);
+        }
+        let marker = match self.stream_marker(key)? {
+            MarkerRead::Valid(marker) if marker.retiring => return Ok(None),
+            MarkerRead::Valid(marker) => Some(marker),
+            MarkerRead::Absent | MarkerRead::Unreadable => None,
+        };
+        if marker
+            .as_ref()
+            .is_some_and(|marker| marker.deleted.is_some_and(|deleted| deleted >= through))
+        {
+            // Already applied; the full path returns at once for it too.
+            return Ok(None);
+        }
+        let registered = self
+            .streams
+            .read()
+            .await
+            .get(key)
+            .map(|existing| (existing.incarnation, existing.shards));
+        if registered.is_some_and(|(incarnation, _)| incarnation <= through) {
+            return Ok(None);
+        }
+        let covered = |held: &u64| *held <= through;
+        if self.incarnations_on_disk(key)?.iter().any(covered) {
+            return Ok(None);
+        }
+        let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+        if let Some(groups) = &self.consumer_groups
+            && groups
+                .dirs_on_disk(tenant_id, namespace, stream)?
+                .iter()
+                .any(|(_, held)| covered(held))
+        {
+            return Ok(None);
+        }
+        if let Some(reader) = &self.group_reader
+            && reader
+                .dead_letters()
+                .dirs_on_disk(tenant_id, namespace, stream)?
+                .iter()
+                .any(|(_, held)| covered(held))
+        {
+            return Ok(None);
+        }
+        Ok(Some(StreamMarker {
+            tenant: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            incarnation: registered
+                .map(|(incarnation, _)| incarnation)
+                .or(marker.as_ref().map(|marker| marker.incarnation))
+                .unwrap_or(through),
+            retiring: false,
+            shards: max_shards(
+                marker.as_ref().and_then(|marker| marker.shards),
+                registered.map(|(_, shards)| shards),
+            ),
+            deleted: Some(
+                marker
+                    .as_ref()
+                    .and_then(|marker| marker.deleted)
+                    .map_or(through, |deleted| deleted.max(through)),
+            ),
+        }))
+    }
+
     /// The control plane's delete of a stream that names no incarnation: a
     /// stream from before incarnations, deleted before the fleet finalized
     /// them. Its data stays, as it did before incarnations, because the name
@@ -523,28 +621,25 @@ impl Broker {
             return Ok(());
         };
         let shards = shards.max(marker.shards.unwrap_or(0));
-        if self
+        let found = if self
             .stream_incarnation(&key.tenant_id, &key.namespace, &key.stream)
             .is_some()
         {
-            // Opening incarnation 0's cursors would take the registered
-            // stream's away. Not reached in practice: the catalog deletes
-            // incarnation 0 before it creates a later one.
-            tracing::warn!(
-                tenant_id = %key.tenant_id,
-                namespace = %key.namespace,
-                stream = %key.stream,
-                "keeping per-group dead letters of a deleted stream while the name is registered",
-            );
-            return Ok(());
-        }
-        // The group stores open incarnation 0 to read them, and stop again
-        // before anything moves.
-        self.set_group_incarnation(key, Some(0));
-        let found = groups
-            .legacy_groups(&key.tenant_id, &key.namespace, &key.stream, shards)
-            .await;
-        self.set_group_incarnation(key, None);
+            // A tombstone for 0 while a later incarnation is registered:
+            // switching the group stores to 0 would close the live stream's.
+            groups
+                .legacy_groups_beside(&key.tenant_id, &key.namespace, &key.stream, shards)
+                .await
+        } else {
+            // The group stores open incarnation 0 to read them, and stop
+            // again before anything moves.
+            self.set_group_incarnation(key, Some(0));
+            let found = groups
+                .legacy_groups(&key.tenant_id, &key.namespace, &key.stream, shards)
+                .await;
+            self.set_group_incarnation(key, None);
+            found
+        };
         reader
             .dead_letters()
             .retire_legacy(&key.tenant_id, &key.namespace, &key.stream, &found?)

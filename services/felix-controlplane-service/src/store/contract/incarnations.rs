@@ -24,6 +24,7 @@ pub(crate) async fn run_incarnation_contract(store: Arc<dyn ControlPlaneStore>) 
     finalize(s).await;
     a_create_proposing_nothing_still_gets_an_incarnation(s).await;
     a_names_incarnations_only_increase(s).await;
+    a_batch_create_answers_the_incarnation_it_stored(s).await;
     a_stream_from_before_the_finalize_is_deleted_through_0(s).await;
     a_cascading_delete_writes_tombstones(s).await;
     super::shards::an_assignment_names_the_incarnation_it_was_written_for(s).await;
@@ -111,6 +112,34 @@ async fn a_create_proposing_nothing_still_gets_an_incarnation(store: &dyn Contro
 /// Each create of a name gets a higher incarnation than the last, whatever
 /// it proposed, and each delete records the incarnation it deleted in its
 /// change and in the name's tombstone.
+/// A batch create answers with the streams as stored. A proposal below the
+/// name's tombstone is raised, and the caller must see the raised one.
+async fn a_batch_create_answers_the_incarnation_it_stored(store: &dyn ControlPlaneStore) {
+    let high = 1 << 60;
+    store
+        .create_stream(stream(NAMESPACE, "batched", high))
+        .await
+        .expect("create");
+    store
+        .delete_stream(&key(NAMESPACE, "batched"))
+        .await
+        .expect("delete");
+    let created = store
+        .create_resources(vec![stream(NAMESPACE, "batched", 5)], Vec::new())
+        .await
+        .expect("create in a batch");
+    assert_eq!(created.len(), 1);
+    assert!(created[0].incarnation > high, "{}", created[0].incarnation);
+    assert_eq!(
+        store
+            .get_stream(&key(NAMESPACE, "batched"))
+            .await
+            .expect("read")
+            .incarnation,
+        created[0].incarnation
+    );
+}
+
 async fn a_names_incarnations_only_increase(store: &dyn ControlPlaneStore) {
     const NAME: &str = "again";
     let mut last = 0;

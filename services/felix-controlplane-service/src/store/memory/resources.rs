@@ -12,7 +12,7 @@ pub(super) async fn create_resources(
     store: &InMemoryStore,
     streams: Vec<Stream>,
     caches: Vec<Cache>,
-) -> StoreResult<()> {
+) -> StoreResult<Vec<Stream>> {
     // Same lock order as the namespace and tenant cascades. Holding all three
     // while checking means nothing can land between the check and the insert.
     let namespaces = store.namespaces.read().await;
@@ -53,6 +53,7 @@ pub(super) async fn create_resources(
         }
     }
 
+    let mut stored = Vec::with_capacity(streams.len());
     if !streams.is_empty() {
         // Held until every stream is in, as for a single create.
         let nodes = store.nodes.read().await;
@@ -62,6 +63,7 @@ pub(super) async fn create_resources(
             stream.incarnation =
                 super::streams::incarnation_for(store, &nodes, &key, stream.incarnation).await;
             stream_map.insert(key.clone(), stream.clone());
+            stored.push(stream.clone());
             changes.record(|seq| StreamChange {
                 seq,
                 op: StreamChangeOp::Created,
@@ -88,7 +90,7 @@ pub(super) async fn create_resources(
         }
         metrics::gauge!("felix_caches_total").set(cache_map.len() as f64);
     }
-    Ok(())
+    Ok(stored)
 }
 
 fn stream_key(stream: &Stream) -> StreamKey {

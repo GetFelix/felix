@@ -850,7 +850,9 @@ or an operator's or tool's `Broker::remove_stream`. Each names an
 incarnation, and every incarnation of the name up to it goes from every store:
 records, group cursors and dead letters. When incarnation 0 is covered, the
 dead letters the layout before 0.6 kept per group go too, found through the
-cursors before those are deleted.
+cursors before those are deleted. If a later incarnation is registered by
+then, incarnation 0's cursors are read through a second store, so the live
+stream's stay open.
 
 The order is fixed. The broker first writes the marker with `retiring 1` and
 the deleted incarnation; that write is the commit point. If the registered
@@ -890,7 +892,12 @@ tombstones, and the broker applies them before the snapshot's streams. One
 that missed a delete and the create after it learns of the delete from the
 tombstone and deletes the old incarnation's data
 (`a_snapshot_tombstone_deletes_a_stream_missed_while_down`). A registration of
-a higher incarnation alone never deletes the lower one's data.
+a higher incarnation alone never deletes the lower one's data. Most of a
+snapshot's tombstones name streams the broker never held, as on a broker
+joining the fleet. Those have nothing to delete, so only their floor markers
+are written, all of them with one directory flush and no flush per file. A
+crash can lose some of them, and the next snapshot writes them again
+(`a_snapshots_tombstones_record_floors_and_delete_held_data`).
 
 **A new incarnation starts above the old generations.** Brokers keep quorum
 marks, follower positions and replica reports per shard and generation. The

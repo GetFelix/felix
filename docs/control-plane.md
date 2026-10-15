@@ -1481,18 +1481,28 @@ release included:
   cascades and older instances;
 - a `BEFORE INSERT` trigger on `stream_changes` fills a `Deleted` change's
   `deleted_through` from the tombstone;
+- a `BEFORE INSERT` trigger on `shard_assignments` gives a new stream shard's
+  assignment written without an incarnation (by an older instance) its
+  stream's incarnation and, as generation, the seq of the shard change the
+  writer records next, and one on `shard_assignment_changes` copies both into
+  that change's payload
+  (`an_instance_before_incarnations_assigns_the_live_incarnation`);
 - the triggers read whether the feature is finalized under a shared advisory
   lock that an `AFTER INSERT` trigger on `fleet_features` takes exclusively
   for `stream_incarnations`, so a create that read "not finalized" commits
   before the finalize does
   (`a_create_waits_for_a_finalize_in_flight`).
 
-Upgrade every control-plane instance, so the migration has run, before
-finalizing `stream_incarnations`. After the finalize an older instance's
-stream creates fail
-(`an_instance_before_incarnations_cannot_create_at_0_after_the_finalize`), its
-deletes still write tombstones, and its catalog reads leave incarnations out,
-which brokers refuse rather than misread. The rules are checked for every
+The migration runs once per database, when the first upgraded instance
+starts, so it is in place for the finalize. Instances still on an older
+release may keep running across it: their stream creates fail
+(`an_instance_before_incarnations_cannot_create_at_0_after_the_finalize`),
+their deletes still write tombstones, and their assignments get the
+incarnation and generation from the triggers. Their catalog reads leave
+incarnations out, though, and brokers refuse those records rather than misread
+them, so a broker polling an older instance serves no incarnated stream until
+it reaches an upgraded one. Finish upgrading every instance before the
+finalize to avoid that. The rules are checked for every
 store by one contract (`run_incarnation_contract` in
 `store/contract/incarnations.rs`).
 

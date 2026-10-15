@@ -59,7 +59,7 @@ pub(crate) async fn run_resources_race_contract(store: Arc<dyn ControlPlaneStore
         let c = exists(store.as_ref(), &names[2]).await;
         let cache_a = store.get_cache(&cache_key(&names[0])).await.is_ok();
         match (&batch, &single) {
-            (Ok(()), Err(StoreError::Conflict(_))) => {
+            (Ok(_), Err(StoreError::Conflict(_))) => {
                 assert!(
                     a && c && cache_a,
                     "round {round}: the batch won but is partial"

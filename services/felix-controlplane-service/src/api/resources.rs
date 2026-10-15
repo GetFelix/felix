@@ -144,7 +144,21 @@ pub(crate) async fn create_resources(
             .create_resources(plan.new_streams, plan.new_caches)
             .await
         {
-            Ok(()) => return Ok((StatusCode::CREATED, Json(plan.response))),
+            Ok(stored) => {
+                // The store decides the incarnation, so answer with its copy.
+                let mut response = plan.response;
+                for item in &mut response.streams {
+                    if let Some(stored) = stored.iter().find(|stored| {
+                        stored.tenant_id == item.stream.tenant_id
+                            && stored.namespace == item.stream.namespace
+                            && stored.stream == item.stream.stream
+                    }) && matches!(item.status, BatchItemStatus::Created)
+                    {
+                        item.stream = stored.clone();
+                    }
+                }
+                return Ok((StatusCode::CREATED, Json(response)));
+            }
             // Something in the batch was created after it was looked at.
             // Nothing was written; look again.
             Err(StoreError::Conflict(_)) => continue,

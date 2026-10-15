@@ -122,3 +122,65 @@ DROP TRIGGER IF EXISTS stream_changes_deleted_through ON stream_changes;
 CREATE TRIGGER stream_changes_deleted_through
     BEFORE INSERT ON stream_changes
     FOR EACH ROW EXECUTE FUNCTION felix_stream_change_deleted_through();
+
+-- An instance from before incarnations writes a new stream shard's assignment
+-- at incarnation 0 and generation 0, which after a recreate would repeat the
+-- deleted stream's generations. The row takes its stream's incarnation and the
+-- generation `first_generation` gives: the seq of the change the writer takes
+-- next, held here so no other writer takes it first. A row that already
+-- exists is the writer's update path, which keeps the row's incarnation.
+CREATE OR REPLACE FUNCTION felix_shard_assignment_incarnation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    current BIGINT;
+BEGIN
+    IF EXISTS (SELECT 1 FROM shard_assignments
+        WHERE tenant_id = NEW.tenant_id AND namespace = NEW.namespace
+          AND kind = NEW.kind AND stream = NEW.stream AND shard = NEW.shard) THEN
+        RETURN NEW;
+    END IF;
+    SELECT incarnation INTO current FROM streams
+        WHERE tenant_id = NEW.tenant_id AND namespace = NEW.namespace AND stream = NEW.stream
+        FOR KEY SHARE;
+    IF current IS NULL OR current = 0 THEN
+        RETURN NEW;
+    END IF;
+    NEW.incarnation := current;
+    SELECT next_seq INTO NEW.generation FROM shard_assignment_change_seq FOR UPDATE;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS shard_assignments_incarnation ON shard_assignments;
+CREATE TRIGGER shard_assignments_incarnation
+    BEFORE INSERT ON shard_assignments
+    FOR EACH ROW WHEN (NEW.incarnation = 0 AND NEW.kind = 'stream')
+    EXECUTE FUNCTION felix_shard_assignment_incarnation();
+
+-- The same writer's change carries an assignment without the incarnation.
+-- It takes the row's, and the row's generation, which the trigger above may
+-- have set.
+CREATE OR REPLACE FUNCTION felix_shard_change_incarnation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    row_incarnation BIGINT;
+    row_generation BIGINT;
+BEGIN
+    SELECT incarnation, generation INTO row_incarnation, row_generation FROM shard_assignments
+        WHERE tenant_id = NEW.tenant_id AND namespace = NEW.namespace
+          AND kind = NEW.kind AND stream = NEW.stream AND shard = NEW.shard;
+    IF row_incarnation IS NULL OR row_incarnation = 0 THEN
+        RETURN NEW;
+    END IF;
+    NEW.payload := NEW.payload
+        || jsonb_build_object('incarnation', row_incarnation, 'generation', row_generation);
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS shard_assignment_changes_incarnation ON shard_assignment_changes;
+CREATE TRIGGER shard_assignment_changes_incarnation
+    BEFORE INSERT ON shard_assignment_changes
+    FOR EACH ROW WHEN (NEW.payload IS NOT NULL AND NEW.kind = 'stream'
+        AND COALESCE((NEW.payload->>'incarnation')::BIGINT, 0) = 0)
+    EXECUTE FUNCTION felix_shard_change_incarnation();

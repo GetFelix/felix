@@ -272,6 +272,32 @@ synchronised clocks. `FelixShardRealMargins.cfg`, `FelixShardAckWithoutLease.cfg
 and the fenced pair carry both, bought with one write and time to 5, or two
 writes and one promotion.
 
+### One shard is one log, across a delete and recreate
+
+The model follows one shard's log, and its invariants lean on two things about
+it: a generation never repeats, and everything a broker keeps per shard and
+generation (ballots, the accepted generation, quorum marks, follower positions,
+reports) describes that log. A stream deleted and created again under its name
+reuses the shard keys, so stream incarnations keep both true rather than adding
+anything to the model:
+
+- each incarnation has its own directories, so its ballot, replica state and
+  epochs start empty, and a follower refuses replication for an incarnation it
+  does not hold (`a_follower_refuses_an_incarnation_it_does_not_hold`,
+  `a_recreate_between_the_check_and_the_open_is_refused`);
+- an incarnated stream's first generation is the change seq that assigns it,
+  above every generation an earlier incarnation reached, so a mark or report
+  kept for the deleted stream never counts for the new one
+  (`a_recreated_stream_never_repeats_a_generation`);
+- a stream from before incarnations, deleted before the finalize and created
+  again at incarnation 0, reopens the old logs and restarts its shards at
+  generation 0, as every release before incarnations did. The model does not
+  cover a generation going back on one log; that case is unchanged here and
+  ends once the name is deleted after the finalize.
+
+Each incarnated stream is then one run of the model from an empty log, at
+generations above the last run's. Nothing in the spec names the incarnation.
+
 ### What ties this to the code, and what does not
 
 A spec and an implementation are two artifacts in two languages. Nothing in the

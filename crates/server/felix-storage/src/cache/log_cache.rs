@@ -85,6 +85,10 @@ impl LogCache {
         &self.root
     }
 
+    pub fn config(&self) -> &LogConfig {
+        &self.config
+    }
+
     /// The write behind [`StorageApi::put`].
     ///
     /// The write has two halves, and the state lock spans neither fsync nor

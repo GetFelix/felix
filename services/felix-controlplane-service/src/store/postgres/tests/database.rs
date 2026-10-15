@@ -417,8 +417,19 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     crate::store::contract::rbac::run_rbac_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_race_contract(store.clone(), 50).await;
-    crate::store::contract::pagination::run_pagination_contract(store.clone()).await;
-    // Last: it finalizes stream incarnations, which every later create sees.
+    crate::store::contract::pagination::run_pagination_contract(store).await;
+    Ok(())
+}
+
+/// On a database of its own, as in memory and Raft: it finalizes stream
+/// incarnations, which the brokers other cases register would refuse.
+#[tokio::test]
+#[serial]
+async fn satisfies_the_incarnation_contract() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, _pool) = fleet_store(&url).await?;
     crate::store::contract::incarnations::run_incarnation_contract(store).await;
     Ok(())
 }
@@ -577,6 +588,7 @@ fn feed_stream(name: &str) -> Stream {
         durable: true,
         region: None,
         routing: Default::default(),
+        incarnation: 0,
     }
 }
 
@@ -1508,6 +1520,82 @@ async fn an_instance_before_incarnations_cannot_create_at_0_after_the_finalize()
             incarnation: 0,
         }]
     );
+    Ok(())
+}
+
+/// The same older instance assigning a shard of an incarnated stream writes
+/// incarnation 0 and generation 0, as it always did. The row and its change
+/// still name the stream's incarnation, and take the change's seq as the
+/// generation, so a recreated stream's shard never repeats a deleted one's.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyhow::Result<()> {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = incarnation_store(&url).await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::STREAM_INCARNATIONS.name())
+        .await?;
+    let created = store.create_stream(incarnation_stream("old")).await?;
+    assert_ne!(created.incarnation, 0);
+
+    let key = ShardKey {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: "old".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let written = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-a".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    // Its write path: the row with no incarnation, then the change.
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, \
+         replicas, generation, state) VALUES ('t', 'n', 'old', 0, 'stream', 'broker-a', \
+         '[]'::jsonb, 0, 'assigning')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let seq: i64 = sqlx::query_scalar(
+        "UPDATE shard_assignment_change_seq SET next_seq = next_seq + 1 RETURNING next_seq - 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO shard_assignment_changes (seq, op, tenant_id, namespace, stream, shard, \
+         kind, payload) VALUES ($1, 'assigned', 't', 'n', 'old', 0, 'stream', $2)",
+    )
+    .bind(seq)
+    .bind(serde_json::to_value(&written)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let stored = store.get_shard_assignment(&key).await?;
+    assert_eq!(stored.incarnation, created.incarnation);
+    assert_eq!(stored.generation, seq as u64);
+    let changes = store.shard_assignment_changes(0).await?;
+    let change = changes
+        .items
+        .iter()
+        .find(|change| change.seq == seq as u64)
+        .and_then(|change| change.assignment.as_ref())
+        .expect("the assignment's change");
+    assert_eq!(change.incarnation, created.incarnation);
+    assert_eq!(change.generation, seq as u64);
     Ok(())
 }
 

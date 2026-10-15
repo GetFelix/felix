@@ -330,11 +330,13 @@ the name is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
   finalize is refused with 409 until every member is at metadata version 10.
-  With Postgres, every instance must have run migration 0028 before the
-  finalize. After it, an instance from before this release cannot create
-  streams (the database refuses a stream without an incarnation), its deletes
-  still record tombstones, and its catalog answers leave incarnations out,
-  which brokers refuse rather than misread.
+  With Postgres, the first upgraded instance runs migration 0028 for the whole
+  database. An instance from before this release that is still running after
+  the finalize cannot create streams (the database refuses a stream without an
+  incarnation), its deletes still record tombstones, and the database stamps
+  its shard assignments with the incarnation. Its catalog answers leave
+  incarnations out, which brokers refuse rather than misread, so upgrade every
+  instance before finalizing.
 - **Every broker must report it.** A broker that predates it would keep a new
   stream's records in the directory a deleted stream of that name used.
 - **Nothing moves on disk.** Existing streams keep incarnation 0 and their

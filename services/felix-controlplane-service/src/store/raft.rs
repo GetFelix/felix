@@ -302,10 +302,29 @@ impl ControlPlaneStore for RaftStore {
         self.local().cache_changes(since).await
     }
 
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
-        self.propose(MetaCommand::CreateResources { streams, caches })
-            .await
-            .map(|_| ())
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>> {
+        match self
+            .propose(MetaCommand::CreateResources {
+                streams: streams.clone(),
+                caches,
+            })
+            .await?
+        {
+            MetaResponse::Streams { streams } => Ok(streams),
+            // Before the finalize, every stream is stored at incarnation 0.
+            MetaResponse::Unit => Ok(streams
+                .into_iter()
+                .map(|stream| Stream {
+                    incarnation: 0,
+                    ..stream
+                })
+                .collect()),
+            _ => Err(unexpected_shape("streams")),
+        }
     }
 
     async fn create_resources_ready(&self) -> bool {

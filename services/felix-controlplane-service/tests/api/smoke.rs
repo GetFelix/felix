@@ -1042,7 +1042,7 @@ impl ControlPlaneStore for FailingStore {
         &self,
         _streams: Vec<Stream>,
         _caches: Vec<Cache>,
-    ) -> StoreResult<()> {
+    ) -> StoreResult<Vec<Stream>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

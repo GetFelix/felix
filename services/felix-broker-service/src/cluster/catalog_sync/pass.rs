@@ -129,16 +129,19 @@ pub(super) async fn sync_into(
             Ok(snapshot) => {
                 // Deletes first: the data of every incarnation a tombstone
                 // covers goes, whether or not this broker heard of it.
-                for tombstone in snapshot.tombstones {
-                    broker
-                        .delete_stream_through(
-                            &tombstone.tenant_id,
-                            &tombstone.namespace,
-                            &tombstone.stream,
+                let tombstones: Vec<_> = snapshot
+                    .tombstones
+                    .iter()
+                    .map(|tombstone| {
+                        (
+                            tombstone.tenant_id.as_str(),
+                            tombstone.namespace.as_str(),
+                            tombstone.stream.as_str(),
                             tombstone.incarnation,
                         )
-                        .await?;
-                }
+                    })
+                    .collect();
+                broker.apply_tombstones(&tombstones).await?;
                 for stream in snapshot.items {
                     let metadata = stream.metadata()?;
                     apply_stream_upsert(

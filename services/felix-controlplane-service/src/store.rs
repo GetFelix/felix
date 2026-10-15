@@ -109,8 +109,13 @@ pub trait ControlPlaneStore: Send + Sync {
     ///
     /// `NotFound` when an item's namespace does not exist, and `Conflict` when
     /// one already exists or the batch names it twice. Either way nothing is
-    /// written.
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()>;
+    /// written. Returns the streams as stored, with the incarnations the
+    /// store gave them.
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>>;
     /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
     /// part-way through an upgrade answers no.
     async fn create_resources_ready(&self) -> bool {
