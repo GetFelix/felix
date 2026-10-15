@@ -4,18 +4,23 @@
 //! can take time and can fail, and both are better surfaced as a startup
 //! error than as a failed publish once traffic is arriving.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_broker::{Broker, DurableStorage};
-use felix_storage::EphemeralCache;
+use felix_storage::{EphemeralCache, StorageId};
 
 use crate::config::{BrokerConfig, DurableStorageConfig};
 
 /// Open durable storage, the cache, consumer groups and counters, and build
 /// the broker over them. Without durable storage everything but the cache is
 /// left out and the cache lives in memory.
-pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStorage>)> {
+///
+/// Also returns the data directory's storage id, read before the broker
+/// registers so the control plane and peers only ever see the id of the data
+/// it serves.
+pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStorage>, StorageId)> {
     let durable_config = DurableStorageConfig::from_env()?;
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
@@ -43,6 +48,12 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
             None
         }
     };
+
+    let storage_id = storage_id(
+        durable_config
+            .as_ref()
+            .map(|durable| durable.root.as_path()),
+    )?;
 
     // The cache is a log when there is a disk to put one on.
     //
@@ -147,7 +158,30 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
         }
         None => broker,
     };
-    Ok((broker, durable_storage))
+    Ok((broker, durable_storage, storage_id))
+}
+
+/// The id kept under the durable root, or, without durable storage, a random
+/// one for this process that is never written down: a restart of such a
+/// broker has lost everything, and a new id says so.
+pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
+    match root {
+        Some(root) => felix_storage::storage_identity::load_or_create(root, fresh_storage_id)
+            .map(|(id, _)| id)
+            .with_context(|| format!("read the storage id under {}", root.display())),
+        None => Ok(StorageId::from_bytes(fresh_storage_id())),
+    }
+}
+
+/// Give the data directory under `root` a new storage id, for when its
+/// contents have become an older copy of themselves.
+pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
+    felix_storage::storage_identity::replace(root, fresh_storage_id())
+        .with_context(|| format!("write a new storage id under {}", root.display()))
+}
+
+fn fresh_storage_id() -> [u8; 16] {
+    uuid::Uuid::new_v4().into_bytes()
 }
 
 /// How stream and cache logs treat a retention hold they saved.

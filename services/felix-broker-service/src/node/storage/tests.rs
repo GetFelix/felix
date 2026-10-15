@@ -42,3 +42,16 @@ fn a_clustered_broker_keeps_saved_holds() {
     };
     assert_eq!(retention_hold(&peer), RetentionHold::AsSaved);
 }
+
+/// The id outlives a restart only where there is a disk to keep it on.
+#[test]
+fn the_storage_id_is_kept_on_disk_and_random_without_one() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let first = storage_id(Some(root.path())).expect("create");
+    assert_eq!(storage_id(Some(root.path())).expect("load"), first);
+    assert_eq!(first.to_hex().len(), 32);
+    assert_ne!(
+        storage_id(None).expect("random"),
+        storage_id(None).expect("random")
+    );
+}

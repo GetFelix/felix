@@ -1,5 +1,6 @@
 //! The small per-shard state files read at open: the durable mark, the
-//! replica state, the generation history and the producer snapshot.
+//! replica state, the generation history and the producer snapshot. Also the
+//! data directory's storage id.
 //!
 //! Each is checksummed, and an unreadable one is either ignored or refused
 //! depending on what it guards. None of them may panic on the way.

@@ -1036,6 +1036,36 @@ What this does not cover:
 The first two together answer the question that actually comes up: *is durability
 the bottleneck?* If sync dominates append, the fsync policy is the cost.
 
+## Storage identity
+
+A broker with durable storage keeps a random 16-byte id in `<root>/storage-id`
+(format in `docs/storage-format.md`). It is read at startup, after the stores
+open and before the broker registers, and sent with the registration as
+`storage_id`, 32 lowercase hex digits. A broker without durable storage
+makes up a new id each time it starts and never writes it down, since a
+restart of such a broker has kept nothing.
+
+The id names the data, not the node. A restart keeps it. A wipe gives a new
+one: anything that removes the file, whether a deleted or reformatted data
+directory, a replaced disk, or a fresh volume mounted at the same path, means
+the next start finds no file and writes a new id. Deleting a shard's
+directory and leaving the rest of the data directory in place keeps the id, so
+that loss is not detected; to give a broker an empty shard, empty its whole
+data directory. An upgrade from a build
+without storage ids looks the same, so the first start on this release gives
+every broker a new id even though its shards are intact. A file that does not
+decode is replaced with a new id. `felix-broker restore-point` also writes a
+new one, because restored logs are an older copy of what peers last saw here.
+
+A crash under `Periodic` or `None` keeps the id but can lose the unsynced
+tail of a log, so the same id does not promise that every acknowledged record
+survived. Only `OnCommit` makes it mean that. This is not handled; choose
+`OnCommit` where a follower's acknowledgement has to survive a power loss.
+
+Nothing compares ids yet. A follower whose disk was wiped can still be counted
+and promoted as if it held what it acknowledged before
+([#1266](https://github.com/GetFelix/felix/issues/1266)).
+
 ## Restoring to a backup point
 
 A backup point (see
@@ -1065,6 +1095,13 @@ through the same path truncation takes, which also cuts `epochs`, rewinds
 the point still had) with `StorageError::OutsideLog`, rather than padding or
 emptying it. Lowering first makes an interrupted restore safe to run again, and
 running it again on a restored log changes nothing.
+
+Before it cuts any log, the restore gives the data directory a new storage id
+(see [Storage identity](#storage-identity)), so a restore that fails part way
+does not leave older data under the id peers know. Removing a follower's copy
+of a restored shard is safe only on a broker the restore also ran on, since
+that is what gave it a new id; a missing shard directory alone keeps the old
+one. A broker the restore skipped starts with an empty data directory.
 
 ## Tools
 

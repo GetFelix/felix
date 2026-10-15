@@ -34,6 +34,8 @@
 //!   `legacy_swap` settles, before that open, a compaction swap an older build
 //!   left half done. `incarnation` picks which incarnation of a stream a store
 //!   opens, and retires a deleted one's directories.
+//! - [`storage_identity`]: the random id a data directory keeps, so peers can
+//!   tell a restarted disk from a wiped one.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -60,6 +62,7 @@ pub mod log;
 pub mod metrics_names;
 pub mod segment;
 mod shard_slots;
+pub mod storage_identity;
 mod task;
 pub mod tiered;
 
@@ -72,3 +75,4 @@ pub use counter_log::CounterStore;
 pub use disk_log::{DiskLog, DiskLogProvider, inspect};
 pub use error::{Corruption, CorruptionKind, CorruptionSite, Result, StorageError};
 pub use incarnation::{MarkerRead, StreamMarker};
+pub use storage_identity::StorageId;

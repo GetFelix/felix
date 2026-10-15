@@ -128,3 +128,48 @@ fn a_stream_with_an_incarnation_is_found_in_that_incarnations_directory() {
         vec![("t/ns/orders/0".to_string(), LogKind::Stream, 10)]
     );
 }
+
+fn durable_broker(root: &Path) -> (felix_broker::Broker, felix_broker::DurableStorage) {
+    let storage =
+        felix_broker::DurableStorage::open(root, felix_storage::log::LogConfig::default())
+            .expect("open storage");
+    let broker = felix_broker::Broker::new(Box::new(felix_storage::EphemeralCache::new()))
+        .with_durable_storage(storage.clone());
+    (broker, storage)
+}
+
+#[tokio::test]
+async fn a_restore_gives_the_data_directory_a_new_storage_id() {
+    // The restored logs are older than what peers last saw under the old id.
+    let root = tempfile::tempdir().expect("tempdir");
+    let before = crate::node::storage::storage_id(Some(root.path())).expect("create");
+    let (broker, storage) = durable_broker(root.path());
+    let restored = restore(
+        &manifest(),
+        Some("nobody"),
+        root.path(),
+        &broker,
+        Some(storage),
+    )
+    .await
+    .expect("restore");
+    assert_eq!(restored, 0);
+    let after = crate::node::storage::storage_id(Some(root.path())).expect("load");
+    assert_ne!(after, before);
+}
+
+#[tokio::test]
+async fn a_restore_that_fails_part_way_has_already_rotated_the_storage_id() {
+    // The copy here is empty, so cutting it to 10 records fails after the
+    // plan; some logs may already have been cut by then.
+    let root = tempfile::tempdir().expect("tempdir");
+    let before = crate::node::storage::storage_id(Some(root.path())).expect("create");
+    let manifest = manifest();
+    place(root.path(), LogKind::Stream, &manifest, 0);
+    let (broker, storage) = durable_broker(root.path());
+    restore(&manifest, None, root.path(), &broker, Some(storage))
+        .await
+        .expect_err("an empty copy is outside the point");
+    let after = crate::node::storage::storage_id(Some(root.path())).expect("load");
+    assert_ne!(after, before);
+}

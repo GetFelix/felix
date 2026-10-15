@@ -95,6 +95,21 @@ async fn shards_are_found_in_every_store() {
     );
 }
 
+#[tokio::test]
+async fn the_storage_id_is_not_a_shard() {
+    let data = tempdir().expect("dir");
+    write_shard(data.path(), Store::Stream, "orders", 1).await;
+    crate::storage_identity::load_or_create(data.path(), || [1; 16]).expect("storage id");
+    std::fs::write(data.path().join("storage-id.tmp"), b"torn").expect("leftover");
+
+    let found: Vec<String> = find_shards(data.path())
+        .expect("find")
+        .into_iter()
+        .map(|shard| shard.name)
+        .collect();
+    assert_eq!(found, [layout::shard_dir_name(&key("orders"))]);
+}
+
 #[test]
 fn a_missing_data_dir_is_an_error() {
     let parent = tempdir().expect("dir");

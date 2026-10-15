@@ -19,9 +19,26 @@ pub fn counter_record(bytes: &[u8]) {
 }
 
 /// Decode `bytes` as each small per-shard state file: the durable mark, the
-/// replica state, the generation history and the producer snapshot.
+/// replica state, the generation history and the producer snapshot. Also as
+/// the data directory's storage id, the one such file outside a shard.
 pub fn sidecar_state(bytes: &[u8]) {
     crate::disk_log::fuzzing::sidecars(bytes);
+    storage_id(bytes);
+}
+
+fn storage_id(bytes: &[u8]) {
+    use crate::storage_identity::{ENCODED_LEN, StorageId};
+
+    let mut fixed = bytes.to_vec();
+    if fixed.len() == ENCODED_LEN {
+        let crc = crc32fast::hash(&fixed[..ENCODED_LEN - 4]);
+        fixed[ENCODED_LEN - 4..].copy_from_slice(&crc.to_be_bytes());
+    }
+    for bytes in [bytes, fixed.as_slice()] {
+        if let Some(id) = StorageId::decode(bytes) {
+            assert_eq!(id.encode().as_slice(), bytes);
+        }
+    }
 }
 
 /// Plan the recovery of the shard in `dir`, then recover it: startup must
