@@ -720,7 +720,7 @@ It shortens an open, not memory: the index is still held whole in memory.
 
 ## `durable.mark`: how far the log was synced
 
-A 32-byte file, rewritten in place after every flush:
+A 32-byte file, rewritten in place whenever a flush, roll or seal moves it forward:
 
 ```text
  0   4  magic         u32  "FLSM"
@@ -736,12 +736,17 @@ Recovery reads it before repairing anything. For segment `id`: equal to the
 mark's segment, damage at or past `synced_bytes` is a torn tail; newer than
 it, anything after the header is; older, the strict rules apply (a sealed
 segment was synced whole). The mark is written only after the sync it
-describes returns, so it never runs ahead of the device. It is not itself
-fsynced per flush (that would double the flush cost), so after a power loss it
-can lag by the filesystem's writeback delay; it is synced at open (with its
-directory entry, so a fresh shard's first segment has a mark), at clean
-shutdown and close, and after a truncation or reset. A missing or corrupt mark
-reads as absent.
+describes returns, so it never runs ahead of the device. It only moves
+forward: a write that would put it behind the last one, such as a background
+roll's seal finishing after a flush that already covered the new segment, is
+dropped. Otherwise an idle shard, which never flushes again, would keep a mark
+pointing at the new segment's header. Only a truncation or reset moves it
+back, and a seal that started before one leaves the mark where the rewind put
+it. It is not itself fsynced per flush (that would double the flush cost), so
+after a power loss it can lag by the filesystem's writeback delay; it is
+synced at open (with its directory entry, so a fresh shard's first segment has
+a mark), at clean shutdown and close, and after a truncation or reset. A
+missing or corrupt mark reads as absent.
 
 ## Consumer-group cursor values
 
