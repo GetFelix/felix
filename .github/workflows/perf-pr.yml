@@ -60,8 +60,7 @@ env:
 
 jobs:
   perf-compare:
-    # Both sides run in this one job, so the runner size never skews the comparison.
-    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout PR head

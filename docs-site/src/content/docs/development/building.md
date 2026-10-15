@@ -284,20 +284,6 @@ When the Azure runners are down, set the repository variable
 `FELIX_SELF_HOSTED_RUNNERS` to `false` and those jobs run GitHub-hosted.
 Delete the variable to go back.
 
-## Larger runners
-
-The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
-runner (16 cores, at most 10 at once). When it is set, the jobs above that run
-GitHub-hosted, the seven TLA+ shards and `perf-pr.yml` use it instead of
-`ubuntu-latest`. TLC uses one worker per core, so the shards gain from the
-extra cores as much as `test` does. `perf-pr.yml` benchmarks the merge-base
-and the PR head in one job, so its comparison holds on any runner.
-`perf-publish.yml` stays on `ubuntu-latest`: it adds to a stored history, and
-a change of machine would show up in it as a regression or a speedup. Larger runners are billed per minute even on a public
-repository, which is why the rest of CI stays on `ubuntu-latest`. They are
-fresh machines for every job, like `ubuntu-latest`, so pull requests can use
-them. Delete the variable and every job is back on `ubuntu-latest`.
-
 On top of that, the repository requires a maintainer to approve workflow runs
 for every outside contributor's pull request.
 
@@ -311,6 +297,20 @@ To rebuild, re-register or tear down the machines, use
 Its README covers the network rules, what is installed and how registration
 tokens are handled. A runner that shows offline after a reboot or a runner
 update usually needs only `./deploy.sh register`.
+
+## Larger runners
+
+The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
+runner (`felix-runner-x64`: 2 cores, up to 50 at once). When it is set,
+`test` and `coverage` use it instead of `ubuntu-latest` wherever they run
+GitHub-hosted. It adds capacity, not speed: a public repository's
+`ubuntu-latest` has 4 cores, so `test` takes about twice as long there, which
+is why its timeout is 180 minutes. The TLA+ shards and `perf-pr.yml` stay on
+`ubuntu-latest`, since at 2 cores they would run past their 60- and 30-minute
+limits. Larger runners are billed per minute even on a public repository, up
+to the organization's Actions budget; past it, their jobs are refused. They
+are fresh machines for every job, so pull requests can use them. Delete the
+variable and every job is back on `ubuntu-latest`.
 
 ## Docs site
 
