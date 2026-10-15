@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792095720397,
+  "lastUpdate": 1792097125991,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -38808,6 +38808,72 @@ window.BENCHMARK_DATA = {
             "range": "93.69",
             "unit": "us",
             "extra": "trials: 5\nmedian: 612.00\nmean: 678.80\nstdev: 93.69\ncv: 13.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5709f0865e472ebac14c9857d7462296480992ac",
+          "message": "feat(storage): persist a storage identity per data directory (part of #1266) (#1269)\n\n* feat(storage): persist a storage identity per data directory (part of #1266)\n\nA broker keeps 16 random bytes in <durable root>/storage-id (magic FLID,\nversion, id, crc32), written through a synced temporary file and rename.\nA missing file gets a new id; one that does not decode is replaced with a\nwarning. The broker reads it after durable storage opens and sends it as\nstorage_id with its registration, omitted when unset. A broker without\ndurable storage uses a per-process id that is never written. restore-point\nwrites a new id, since restored logs are an older copy.\n\nNothing compares the ids yet; the docs say a follower that lost its disk\ncan still be promoted until #1266 lands.\n\nSpec-Unaffected: registration carries an extra optional field the control plane ignores; no apply, promotion or replication behaviour changes.\n\n* fix(restore): rotate the storage id before the first cut\n\nA restore that failed or crashed part way left older data under the id\npeers know. The rotation now comes first, in a restore() split out of\nrun() so tests cover the real path. The docs and the restore message say\nthat a deleted shard directory alone keeps the id, so followers drop the\nrestored shards only after restore-point has run on them, and a broker it\ndid not run on starts with an empty data directory. StorageId::as_bytes\nis gone until something uses it, and FILE_NAME is crate-private.\n\nSpec-Unaffected: restore tooling and docs only; no apply, promotion or replication behaviour changes.",
+          "timestamp": "2026-10-15T20:41:03Z",
+          "tree_id": "6bff8c589c5fc007161257f996c721618318ad8c",
+          "url": "https://github.com/GetFelix/felix/commit/5709f0865e472ebac14c9857d7462296480992ac"
+        },
+        "date": 1792097121550,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 140,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 140.40\nstdev: 0.55\ncv: 0.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "7.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 191.40\nstdev: 7.40\ncv: 3.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 254,
+            "range": "23.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 254.00\nmean: 256.20\nstdev: 23.35\ncv: 9.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 186,
+            "range": "10.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 186.00\nmean: 189.80\nstdev: 10.21\ncv: 5.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 388,
+            "range": "477.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 596.80\nstdev: 477.60\ncv: 80.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 794,
+            "range": "742.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 794.00\nmean: 1139.60\nstdev: 742.26\ncv: 65.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
