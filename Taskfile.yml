@@ -59,6 +59,43 @@ tasks:
         if [ -z "${CI:-}" ]; then
           task pg:down
         fi
+  # `task test` in two halves, so CI can run them on separate runners: every
+  # crate but felix-cluster, then the cluster suites. `task test:cluster
+  # SUITE=routing` runs one suite; SUITE=rest runs every suite not named in
+  # CLUSTER_OWN_JOB, so a new suite is never left out.
+  test:workspace:
+    cmds:
+      - |
+        if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
+          cargo test --workspace --exclude felix-cluster --features felix-controlplane-service/pg-tests
+        else
+          cargo test --workspace --exclude felix-cluster
+        fi
+  test:cluster:
+    vars:
+      # The suites that each get a CI job of their own (ci.yml, `cluster`).
+      CLUSTER_OWN_JOB: routing failures history
+    requires:
+      vars: [SUITE]
+    cmds:
+      # The harness runs the prebuilt broker beside the test binary, which
+      # `cargo test -p felix-cluster` does not rebuild; loadgen.rs shells out
+      # to felix-loadgen the same way.
+      - "cargo build -p felix-broker-service --bin felix-broker -p felix-loadgen"
+      - |
+        suite="{{.SUITE}}"
+        if [ "$suite" != rest ]; then
+          cargo test -p felix-cluster --test "$suite"
+          exit
+        fi
+        args=(--lib --bins)
+        for t in crates/testing/felix-cluster/tests/*; do
+          name="$(basename "$t" .rs)"
+          case " {{.CLUSTER_OWN_JOB}} " in *" $name "*) continue ;; esac
+          if [ -f "$t" ] || [ -f "$t/main.rs" ]; then args+=(--test "$name"); fi
+        done
+        cargo test -p felix-cluster "${args[@]}"
+        cargo test -p felix-cluster --doc
   # A test that has failed under load and passed alone, run hundreds of
   # times with every core busy. CI runs it after the suite.
   test:stress:

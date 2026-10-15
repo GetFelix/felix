@@ -121,8 +121,8 @@ pull requests.
 
 ## What CI runs
 
-`ci.yml` runs on Linux only. `test` runs on the self-hosted runners described
-below; the rest run GitHub-hosted (see [Larger runners](#larger-runners)).
+`ci.yml` runs on Linux only. `test` and `cluster` run on the self-hosted runners
+described below for pushes to main; the rest run GitHub-hosted (see [Larger runners](#larger-runners)).
 Every push and pull request starts `ci.yml` and `coverage.yml`. Their first
 job, `changes`, checks whether anything besides docs and Markdown changed
 (the TLA+ specs under `docs/formal` count as code), and the other jobs skip
@@ -138,7 +138,9 @@ Its jobs:
 
 | Job | Runs |
 | --- | --- |
-| `test` | `task lint`, `task test`, `task deny`, `task publish:check`, `task ci:toolchains`, `task ci:timeouts`, `task docs:evidence`, `scripts/check_release_version.py`, `task demo:check` (then fails if a demo lockfile changed), `task deny:rsa:default` |
+| `test` | `task test:workspace` (every crate but `felix-cluster`), then `task test:stress` |
+| `cluster` | `task test:cluster SUITE=…`, one job each for `routing`, `failures` and `history`, and one for the rest of `felix-cluster`'s suites |
+| `checks` | `task lint`, `task deny`, `task publish:check`, `task ci:toolchains`, `task ci:timeouts`, `task docs:evidence`, `task changelog:check`, `scripts/check_release_version.py`, `task demo:check` (then fails if a demo lockfile changed), `task deny:rsa:default` |
 | `images` | Builds `docker/broker.Dockerfile` and `docker/controlplane.Dockerfile`, then checks each image starts, serves `/ready` and does not run as root |
 | `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
 | `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
@@ -271,14 +273,13 @@ Four persistent Azure VMs (8 vCPU each, label `felix-azure`) take the jobs that
 are too slow for a GitHub-hosted runner, but only for pushes to `main`,
 schedules and manual runs:
 
-- `ci.yml`'s `test` job
+- `ci.yml`'s `test` and `cluster` jobs, and `formal` when the spec changes
 - `coverage.yml`
 - `history.yml`, the nightly history campaign
 - `power-loss-nightly.yml`
 
-Everything else stays on GitHub-hosted runners. The seven TLA+ shards run in
-parallel there, which two machines could not match, and each fuzz target uses
-one core, so the nightly fuzz matrix gains little from eight.
+Everything else stays on GitHub-hosted runners. Each fuzz target uses one
+core, so the nightly fuzz matrix gains little from eight.
 
 Each runner takes one job at a time, so when all four are busy jobs wait in
 the queue.
