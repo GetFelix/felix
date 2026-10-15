@@ -707,3 +707,33 @@ fn a_new_incarnation_starts_a_new_term() {
     assert_eq!(own.observe(&key(0), Some(&at(3, 1))), Action::None);
     assert!(own.may_serve(&key(0)));
 }
+
+/// After a control-plane restore the change seq a recreated stream's first
+/// generation comes from can be below the deleted stream's generations. The
+/// new incarnation still opens, and the deleted one's stays stale.
+#[test]
+fn a_new_incarnation_opens_at_a_lower_generation() {
+    let mut own = fencing_lifecycle();
+    let at = |generation, incarnation| ShardAssignment {
+        incarnation,
+        ..assigned_to("broker-a", generation)
+    };
+    own.observe(&key(0), Some(&at(9, 1)));
+    assert_eq!(own.opened(&key(0), 9), Opened::Fencing);
+    assert!(own.fenced(&key(0), 9));
+
+    let renewed = Action::Open {
+        key: key(0),
+        generation: 4,
+        new_term: true,
+        fence: true,
+        incarnation: 2,
+    };
+    assert_eq!(own.observe(&key(0), Some(&at(4, 2))), renewed);
+    assert_eq!(own.opened(&key(0), 4), Opened::Fencing);
+    assert!(own.fenced(&key(0), 4));
+    assert!(own.may_serve(&key(0)));
+
+    assert_eq!(own.observe(&key(0), Some(&at(9, 1))), Action::None);
+    assert!(own.may_serve(&key(0)));
+}

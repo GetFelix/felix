@@ -1183,3 +1183,44 @@ async fn a_snapshots_tombstones_record_floors_and_delete_held_data() {
         assert_eq!(next_offset(&broker, name).await, 0, "{name} kept data");
     }
 }
+
+/// A tombstone's floor survives losing the stream markers, as a power loss can
+/// leave a marker that was not flushed. A member that has not applied the
+/// delete, seeding the deleted incarnation after the restart, is refused.
+#[tokio::test]
+async fn a_tombstone_floor_outlives_its_markers() {
+    let dir = tempdir().expect("dir");
+    {
+        let (broker, storage) = broker(&dir).await;
+        broker
+            .register_stream("t1", "default", "orders", incarnation(1, 9))
+            .await
+            .expect("register");
+        broker
+            .apply_tombstones(&[("t1", "default", "orders", 5), ("t1", "default", "gone", 3)])
+            .await
+            .expect("the tombstones");
+        storage.shutdown().await.expect("shutdown");
+    }
+    for entry in std::fs::read_dir(dir.path().join(".streams")).expect("markers") {
+        let path = entry.expect("entry").path();
+        if !path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        {
+            std::fs::remove_file(path).expect("lose a marker");
+        }
+    }
+    let (broker, _storage) = broker(&dir).await;
+    for (name, deleted) in [("orders", 5), ("gone", 3)] {
+        broker
+            .register_stream("t1", "default", name, incarnation(1, deleted))
+            .await
+            .expect("a lagging snapshot");
+        assert_eq!(
+            broker.stream_incarnation("t1", "default", name),
+            None,
+            "the deleted incarnation of {name} was registered"
+        );
+    }
+}

@@ -83,7 +83,14 @@ impl Broker {
             retiring: false,
             shards,
             deleted: None,
-        })
+        })?;
+        if let Some(storage) = &self.durable_storage {
+            storage
+                .provider()
+                .clear_stream_floor(tenant_id, namespace, stream)
+                .map_err(BrokerError::from)?;
+        }
+        Ok(())
     }
 
     /// Finish every delete that stopped part-way, as a crash leaves them. Call
@@ -182,15 +189,17 @@ impl Broker {
 
     /// [`Self::delete_stream_through`] for each of a catalog snapshot's
     /// tombstones. Most name streams this broker never had, as on a broker
-    /// joining the fleet; their floors are written together with one flush
-    /// instead of a delete each.
+    /// joining the fleet; their floors go into one file with one flush
+    /// instead of a delete and two marker writes each.
     pub async fn apply_tombstones(&self, tombstones: &[(&str, &str, &str, u64)]) -> Result<()> {
         let mut floors = Vec::new();
-        for &(tenant_id, namespace, stream, through) in tombstones {
+        for &tombstone in tombstones {
+            let (tenant_id, namespace, stream, through) = tombstone;
             let key = StreamKey::new(tenant_id, namespace, stream);
-            match self.floor_only(&key, through).await? {
-                Some(floor) => floors.push(floor),
-                None => {
+            match self.tombstone_work(&key, through).await? {
+                TombstoneWork::Done => {}
+                TombstoneWork::Floor => floors.push(tombstone),
+                TombstoneWork::Delete => {
                     self.delete_stream_through(tenant_id, namespace, stream, through)
                         .await?;
                 }
@@ -199,44 +208,36 @@ impl Broker {
         if let (Some(storage), false) = (&self.durable_storage, floors.is_empty()) {
             storage
                 .provider()
-                .write_stream_floors(&floors)
+                .record_stream_floors(&floors)
                 .map_err(BrokerError::from)?;
         }
         Ok(())
     }
 
-    /// The marker a delete through `through` would leave, when it has
-    /// nothing else to do: nothing registered that it covers, no delete in
-    /// progress and no directory of a covered incarnation in any store. `None`
-    /// when a delete is needed or the floor is already recorded.
-    async fn floor_only(&self, key: &StreamKey, through: u64) -> Result<Option<StreamMarker>> {
+    /// What a tombstone through `through` needs here. Only a floor when
+    /// nothing registered is covered, no delete is in progress and no store
+    /// has a directory of a covered incarnation.
+    async fn tombstone_work(&self, key: &StreamKey, through: u64) -> Result<TombstoneWork> {
         if self.durable_storage.is_none() {
-            return Ok(None);
+            return Ok(TombstoneWork::Delete);
         }
         let marker = match self.stream_marker(key)? {
-            MarkerRead::Valid(marker) if marker.retiring => return Ok(None),
+            MarkerRead::Valid(marker) if marker.retiring => return Ok(TombstoneWork::Delete),
             MarkerRead::Valid(marker) => Some(marker),
             MarkerRead::Absent | MarkerRead::Unreadable => None,
         };
-        if marker
-            .as_ref()
-            .is_some_and(|marker| marker.deleted.is_some_and(|deleted| deleted >= through))
-        {
-            // Already applied; the full path returns at once for it too.
-            return Ok(None);
-        }
         let registered = self
             .streams
             .read()
             .await
             .get(key)
-            .map(|existing| (existing.incarnation, existing.shards));
-        if registered.is_some_and(|(incarnation, _)| incarnation <= through) {
-            return Ok(None);
+            .map(|existing| existing.incarnation);
+        if registered.is_some_and(|incarnation| incarnation <= through) {
+            return Ok(TombstoneWork::Delete);
         }
         let covered = |held: &u64| *held <= through;
         if self.incarnations_on_disk(key)?.iter().any(covered) {
-            return Ok(None);
+            return Ok(TombstoneWork::Delete);
         }
         let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
         if let Some(groups) = &self.consumer_groups
@@ -245,7 +246,7 @@ impl Broker {
                 .iter()
                 .any(|(_, held)| covered(held))
         {
-            return Ok(None);
+            return Ok(TombstoneWork::Delete);
         }
         if let Some(reader) = &self.group_reader
             && reader
@@ -254,28 +255,16 @@ impl Broker {
                 .iter()
                 .any(|(_, held)| covered(held))
         {
-            return Ok(None);
+            return Ok(TombstoneWork::Delete);
         }
-        Ok(Some(StreamMarker {
-            tenant: key.tenant_id.clone(),
-            namespace: key.namespace.clone(),
-            stream: key.stream.clone(),
-            incarnation: registered
-                .map(|(incarnation, _)| incarnation)
-                .or(marker.as_ref().map(|marker| marker.incarnation))
-                .unwrap_or(through),
-            retiring: false,
-            shards: max_shards(
-                marker.as_ref().and_then(|marker| marker.shards),
-                registered.map(|(_, shards)| shards),
-            ),
-            deleted: Some(
-                marker
-                    .as_ref()
-                    .and_then(|marker| marker.deleted)
-                    .map_or(through, |deleted| deleted.max(through)),
-            ),
-        }))
+        let recorded = marker
+            .and_then(|marker| marker.deleted)
+            .max(self.stream_floor(key)?);
+        Ok(if recorded.is_some_and(|deleted| deleted >= through) {
+            TombstoneWork::Done
+        } else {
+            TombstoneWork::Floor
+        })
     }
 
     /// The control plane's delete of a stream that names no incarnation: a
@@ -392,7 +381,10 @@ impl Broker {
         if incoming != 0 {
             self.require_registered_streams();
         }
-        let deleted = marker.as_ref().and_then(|marker| marker.deleted);
+        let deleted = marker
+            .as_ref()
+            .and_then(|marker| marker.deleted)
+            .max(self.stream_floor(key)?);
         let held = previous.or(marker
             .as_ref()
             .map(|marker| marker.incarnation)
@@ -670,6 +662,16 @@ impl Broker {
             .map_err(BrokerError::from)
     }
 
+    fn stream_floor(&self, key: &StreamKey) -> Result<Option<u64>> {
+        let Some(storage) = &self.durable_storage else {
+            return Ok(None);
+        };
+        storage
+            .provider()
+            .stream_floor(&key.tenant_id, &key.namespace, &key.stream)
+            .map_err(BrokerError::from)
+    }
+
     fn incarnations_on_disk(&self, key: &StreamKey) -> Result<std::collections::BTreeSet<u64>> {
         let Some(storage) = &self.durable_storage else {
             return Ok(Default::default());
@@ -699,6 +701,16 @@ impl Broker {
             .remove_stream_marker(&key.tenant_id, &key.namespace, &key.stream)
             .map_err(BrokerError::from)
     }
+}
+
+/// What one catalog tombstone needs from this broker.
+enum TombstoneWork {
+    /// Its floor is already recorded.
+    Done,
+    /// Nothing here to delete: record the floor.
+    Floor,
+    /// A full delete.
+    Delete,
 }
 
 /// One of the stores a stream keeps directories in.

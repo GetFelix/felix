@@ -38,6 +38,9 @@ use crate::model::{
     TenantChange,
 };
 use crate::raft::{AskLeaderError, RaftHandle};
+
+/// The metadata level whose members store a stream's incarnation.
+const INCARNATION_LEVEL: u16 = 10;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -325,6 +328,10 @@ impl ControlPlaneStore for RaftStore {
                 .collect()),
             _ => Err(unexpected_shape("streams")),
         }
+    }
+
+    async fn takes_incarnation_proposals(&self) -> bool {
+        self.handle.cluster_version().await >= INCARNATION_LEVEL
     }
 
     async fn create_resources_ready(&self) -> bool {

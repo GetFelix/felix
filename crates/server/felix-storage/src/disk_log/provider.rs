@@ -34,6 +34,8 @@ pub struct DiskLogProvider {
     /// Whether each stream's logs are held at the commit offset, as set by
     /// [`Self::set_stream_retention_hold`].
     stream_hold: parking_lot::RwLock<HashMap<(String, String, String), bool>>,
+    /// The floors file under `.streams/`, read on first use.
+    floors: parking_lot::Mutex<Option<incarnation::marker::Floors>>,
     /// Runs inside every open, under the shard's lock, so tests can make an
     /// open slow and watch what waits on it.
     #[cfg(test)]
@@ -66,6 +68,7 @@ impl DiskLogProvider {
             dirs: Default::default(),
             stream_retention: parking_lot::RwLock::new(HashMap::new()),
             stream_hold: parking_lot::RwLock::new(HashMap::new()),
+            floors: parking_lot::Mutex::new(None),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })
@@ -234,10 +237,69 @@ impl DiskLogProvider {
         incarnation::marker::write(&self.root, marker)
     }
 
-    /// Write markers that record only a deleted floor, with one directory
-    /// flush for all of them. See `incarnation::marker::write_unsynced`.
-    pub fn write_stream_floors(&self, markers: &[crate::StreamMarker]) -> Result<()> {
-        incarnation::marker::write_unsynced(&self.root, markers)
+    /// The deleted floor recorded for a stream with
+    /// [`Self::record_stream_floors`]: every incarnation up to it is deleted.
+    /// Kept apart from the stream's marker, which may hold its own.
+    pub fn stream_floor(&self, tenant: &str, namespace: &str, stream: &str) -> Result<Option<u64>> {
+        let key = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        Ok(self.floors()?.get(&key).copied())
+    }
+
+    /// Record deleted floors for many streams with one flush, for catalog
+    /// tombstones of streams with nothing here to delete. A floor never goes
+    /// down.
+    pub fn record_stream_floors(&self, floors: &[(&str, &str, &str, u64)]) -> Result<()> {
+        let mut held = self.floors.lock();
+        let mut next = match held.as_ref() {
+            Some(floors) => floors.clone(),
+            None => incarnation::marker::read_floors(&self.root)?,
+        };
+        for &(tenant, namespace, stream, deleted) in floors {
+            let floor = next
+                .entry((
+                    tenant.to_string(),
+                    namespace.to_string(),
+                    stream.to_string(),
+                ))
+                .or_insert(deleted);
+            *floor = (*floor).max(deleted);
+        }
+        incarnation::marker::write_floors(&self.root, &next)?;
+        *held = Some(next);
+        Ok(())
+    }
+
+    /// Forget a stream's recorded floor, as a restore to a backup point does.
+    pub fn clear_stream_floor(&self, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
+        let mut held = self.floors.lock();
+        let mut next = match held.as_ref() {
+            Some(floors) => floors.clone(),
+            None => incarnation::marker::read_floors(&self.root)?,
+        };
+        let key = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        if next.remove(&key).is_some() {
+            incarnation::marker::write_floors(&self.root, &next)?;
+        }
+        *held = Some(next);
+        Ok(())
+    }
+
+    fn floors(&self) -> Result<parking_lot::MappedMutexGuard<'_, incarnation::marker::Floors>> {
+        let mut held = self.floors.lock();
+        if held.is_none() {
+            *held = Some(incarnation::marker::read_floors(&self.root)?);
+        }
+        Ok(parking_lot::MutexGuard::map(held, |floors| {
+            floors.get_or_insert_with(Default::default)
+        }))
     }
 
     /// Remove a stream's marker, durably.

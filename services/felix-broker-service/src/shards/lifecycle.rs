@@ -321,19 +321,22 @@ impl ShardLifecycle {
             (true, None) => self.begin_open(key, generation, incarnation, draining),
 
             (true, Some(existing)) => {
+                // Incarnations first: a recreated stream's shard is new, and
+                // its generation can be below the deleted one's after a
+                // control-plane restore rewound the change seq it starts at.
+                // A lower incarnation is the deleted stream's, delivered late.
+                if incarnation < existing.incarnation {
+                    mm::record_stale_event();
+                    return Action::None;
+                }
+                if incarnation > existing.incarnation {
+                    return self.begin_open_renewed(key, generation, incarnation, draining, true);
+                }
                 if generation < existing.generation {
                     // Older than what we already acted on: a duplicate, a
                     // reordered poll, or a snapshot replay.
                     mm::record_stale_event();
                     return Action::None;
-                }
-                // The stream was deleted and created again: its shard is new,
-                // and nothing kept for the old one carries over. Checked after
-                // the generation, which the control plane starts above the
-                // deleted stream's, so an older incarnation's assignment
-                // delivered late is stale rather than a reopen.
-                if existing.incarnation != incarnation {
-                    return self.begin_open_renewed(key, generation, incarnation, draining, true);
                 }
                 match existing.phase {
                     // The shard is moving away. Stop serving now; the log

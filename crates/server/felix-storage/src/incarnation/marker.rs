@@ -90,29 +90,69 @@ pub(crate) fn write(root: &Path, marker: &StreamMarker) -> Result<()> {
     )
 }
 
-/// Write many markers with one directory flush and no file flushes, for
-/// markers that only record a floor over data this broker does not have. One
-/// flush each would cost a broker joining a fleet with many deleted names an
-/// fsync storm. A crash can lose some of them or leave one unreadable; the
-/// next catalog snapshot's tombstones write them again.
-pub(crate) fn write_unsynced(root: &Path, markers: &[StreamMarker]) -> Result<()> {
-    use std::io::Write;
+/// Name of the file holding deleted floors recorded from catalog tombstones,
+/// for every name in one place. Dotted, so it is never read as a marker.
+const FLOORS: &str = ".floors";
 
-    if markers.is_empty() {
-        return Ok(());
+const FLOORS_HEADER: &str = "felix-stream-floors 1";
+
+/// Deleted floors by (tenant, namespace, stream).
+pub(crate) type Floors = std::collections::HashMap<(String, String, String), u64>;
+
+/// The floors file, empty when there is none. A line that does not parse is
+/// skipped with a warning: the file is replaced whole and flushed, so that is
+/// damage, and a floor only ever refuses a registration.
+pub(crate) fn read_floors(root: &Path) -> Result<Floors> {
+    let path = root.join(STREAMS_DIR).join(FLOORS);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Floors::new()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    let mut lines = text.lines();
+    if lines.next() != Some(FLOORS_HEADER) {
+        tracing::warn!(path = %path.display(), "unreadable stream floors file; ignoring it");
+        return Ok(Floors::new());
     }
-    let dir = root.join(STREAMS_DIR);
-    create_dir_all_durable(&dir).map_err(StorageError::Io)?;
-    for marker in markers {
-        let path = path(root, &marker.tenant, &marker.namespace, &marker.stream);
-        let temporary = path.with_extension("tmp");
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
-        file.write_all(encode(marker).as_bytes())
-            .map_err(StorageError::Io)?;
-        drop(file);
-        std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    let mut floors = Floors::new();
+    for line in lines {
+        let mut parts = line.split(' ');
+        let parsed = (|| {
+            let deleted = parts.next()?.parse().ok()?;
+            let tenant = unhex(parts.next()?)?;
+            let namespace = unhex(parts.next()?)?;
+            let stream = unhex(parts.next()?)?;
+            parts
+                .next()
+                .is_none()
+                .then_some(((tenant, namespace, stream), deleted))
+        })();
+        match parsed {
+            Some((key, deleted)) => {
+                let floor = floors.entry(key).or_insert(deleted);
+                *floor = (*floor).max(deleted);
+            }
+            None => tracing::warn!(path = %path.display(), "skipping a damaged stream floor"),
+        }
     }
-    sync_dir(&dir).map_err(StorageError::Io)
+    Ok(floors)
+}
+
+/// Replace the floors file with `floors`, durably: one file flush and one
+/// directory flush however many names it holds.
+pub(crate) fn write_floors(root: &Path, floors: &Floors) -> Result<()> {
+    let mut entries: Vec<_> = floors.iter().collect();
+    entries.sort();
+    let mut text = format!("{FLOORS_HEADER}\n");
+    for ((tenant, namespace, stream), deleted) in entries {
+        text.push_str(&format!(
+            "{deleted} {} {} {}\n",
+            hex(tenant),
+            hex(namespace),
+            hex(stream)
+        ));
+    }
+    write_file(root, &root.join(STREAMS_DIR).join(FLOORS), text.as_bytes())
 }
 
 fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
@@ -157,7 +197,11 @@ pub(crate) fn in_play(root: &Path) -> Result<bool> {
     };
     for entry in entries {
         let path = entry.map_err(StorageError::Io)?.path();
-        if path.extension().is_some() || path.file_name().is_some_and(|name| name == IN_PLAY) {
+        if path.extension().is_some()
+            || path
+                .file_name()
+                .is_some_and(|name| name == IN_PLAY || name == FLOORS)
+        {
             continue;
         }
         if let MarkerRead::Valid(marker) = read_path(&path)?
@@ -198,8 +242,12 @@ fn markers(root: &Path, wanted: impl Fn(&StreamMarker) -> bool) -> Result<Vec<St
     for entry in entries {
         let path = entry.map_err(StorageError::Io)?.path();
         // A temporary left by a crash mid-write, whose marker is still in
-        // place, or the record of incarnations.
-        if path.extension().is_some() || path.file_name().is_some_and(|name| name == IN_PLAY) {
+        // place, or the record of incarnations, or the floors.
+        if path.extension().is_some()
+            || path
+                .file_name()
+                .is_some_and(|name| name == IN_PLAY || name == FLOORS)
+        {
             continue;
         }
         // An unreadable one is left alone: deleting on a guess could take a

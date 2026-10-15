@@ -116,6 +116,12 @@ pub trait ControlPlaneStore: Send + Sync {
         streams: Vec<Stream>,
         caches: Vec<Cache>,
     ) -> StoreResult<Vec<Stream>>;
+    /// Whether a create may carry a proposed incarnation. Only a Raft group
+    /// with a member below the metadata level that stores one answers no.
+    async fn takes_incarnation_proposals(&self) -> bool {
+        true
+    }
+
     /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
     /// part-way through an upgrade answers no.
     async fn create_resources_ready(&self) -> bool {

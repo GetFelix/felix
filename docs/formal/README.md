@@ -288,7 +288,10 @@ anything to the model:
 - an incarnated stream's first generation is the change seq that assigns it,
   above every generation an earlier incarnation reached, so a mark or report
   kept for the deleted stream never counts for the new one
-  (`a_recreated_stream_never_repeats_a_generation`);
+  (`a_recreated_stream_never_repeats_a_generation`). A broker compares the
+  incarnation before the generation, so a restore that rewinds the seq still
+  opens the new stream as a new run rather than dropping it as stale
+  (`a_new_incarnation_opens_at_a_lower_generation`);
 - a stream from before incarnations, deleted before the finalize and created
   again at incarnation 0, reopens the old logs and restarts its shards at
   generation 0, as every release before incarnations did. The model does not

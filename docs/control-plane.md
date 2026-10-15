@@ -1428,8 +1428,10 @@ like every finalize it is one-way. A stream created before is incarnation 0,
 which every answer leaves out.
 
 A name's incarnations only increase. The creating request proposes one, the
-control plane's clock in microseconds (kept below 2^53), and only when the API
-handler saw the feature finalized. The store decides inside the write that
+control plane's clock in microseconds (kept below 2^53), whenever the store can
+carry one: always on memory and Postgres, and on Raft once every member is at
+metadata level 10, whether or not the instance handling the request has seen
+the finalize yet. The store decides inside the write that
 creates the stream: the memory store under its locks, Raft in the applied
 command, which carries the proposal so every member decides alike, and
 Postgres in a trigger. Before the finalize the stream gets 0 whatever was
@@ -1438,7 +1440,16 @@ tombstone, whichever is higher, and never 0, so a create that read the fleet
 just before the finalize still gets an incarnation. The clock is what keeps a
 create after a restore of the control plane to an earlier point, which rewinds
 tombstones and change sequences, above every incarnation given before the
-restore. A request cannot set the incarnation.
+restore. A clock stepped back or skewed across a restore can only give a lower
+incarnation than one a broker holds, which the broker refuses: the stream is
+unavailable there until it is created again, and no data is reused or lost.
+A request cannot set the incarnation.
+
+Brokers compare an assignment's incarnation before its generation: a higher
+one opens the shard anew whatever its generation, a lower one is stale. The
+first generation of an incarnated shard is the change seq, which a restore
+can rewind below the deleted stream's generations
+(`a_new_incarnation_opens_at_a_lower_generation`).
 
 **Tombstones.** After the finalize every stream delete records a tombstone,
 including the deletes a namespace or tenant delete cascades to. There is one

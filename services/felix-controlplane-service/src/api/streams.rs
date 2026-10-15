@@ -102,7 +102,7 @@ pub(crate) async fn create_stream(
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let asked = body.routing;
     let finalized = jump_hash_finalized(&state).await?;
-    let incarnations = incarnations_finalized(&state).await?;
+    let incarnations = state.store.takes_incarnation_proposals().await;
     let stream = new_stream(tenant_id, namespace, body, finalized, incarnations)?;
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
@@ -143,7 +143,7 @@ pub(crate) fn new_stream(
     namespace: String,
     body: StreamCreateRequest,
     jump_hash_finalized: bool,
-    incarnations_finalized: bool,
+    propose_incarnation: bool,
 ) -> Result<Stream, ApiError> {
     Ok(Stream {
         tenant_id,
@@ -159,8 +159,10 @@ pub(crate) fn new_stream(
         region: body.region,
         routing: creation_routing(body.routing, jump_hash_finalized)?,
         // A proposal: the store gives the incarnation, from its own view of
-        // the finalize and the name's tombstone, in the same write.
-        incarnation: if incarnations_finalized {
+        // the finalize and the name's tombstone, in the same write. Proposed
+        // whether or not this member has seen the finalize, so one that has
+        // not still sends the clock rather than 0.
+        incarnation: if propose_incarnation {
             crate::model::proposed_incarnation()
         } else {
             0
@@ -209,15 +211,6 @@ pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
 /// done, refuses any broker that could not serve jump hash.
 pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiError> {
     fleet_finalized(state, felix_common::fleet::JUMP_HASH_ROUTING).await
-}
-
-/// Whether the fleet has finalized `stream_incarnations`, to propose an
-/// incarnation with the create. Only a proposal: the store decides inside the
-/// write, against the finalize as it stands there, so a finalize landing in
-/// between cannot leave a stream at 0. Not proposing before the finalize
-/// keeps the field out of a Raft command that members without it would read.
-pub(crate) async fn incarnations_finalized(state: &AppState) -> Result<bool, ApiError> {
-    fleet_finalized(state, felix_common::fleet::STREAM_INCARNATIONS).await
 }
 
 async fn fleet_finalized(

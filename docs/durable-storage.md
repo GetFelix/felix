@@ -894,10 +894,12 @@ tombstone and deletes the old incarnation's data
 (`a_snapshot_tombstone_deletes_a_stream_missed_while_down`). A registration of
 a higher incarnation alone never deletes the lower one's data. Most of a
 snapshot's tombstones name streams the broker never held, as on a broker
-joining the fleet. Those have nothing to delete, so only their floor markers
-are written, all of them with one directory flush and no flush per file. A
-crash can lose some of them, and the next snapshot writes them again
-(`a_snapshots_tombstones_record_floors_and_delete_held_data`).
+joining the fleet. Those have nothing to delete, so only their floors are
+recorded, all in `.streams/.floors`, replaced and flushed once for the
+snapshot. A floor there refuses a registration as a marker's would, and
+survives a marker lost to a crash
+(`a_snapshots_tombstones_record_floors_and_delete_held_data`,
+`a_tombstone_floor_outlives_its_markers`).
 
 **A new incarnation starts above the old generations.** Brokers keep quorum
 marks, follower positions and replica reports per shard and generation. The

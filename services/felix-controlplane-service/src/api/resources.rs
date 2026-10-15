@@ -18,8 +18,8 @@ use crate::api::error::{
     ApiError, api_conflict, api_error, api_internal, api_not_found, api_validation_error,
 };
 use crate::api::streams::{
-    incarnations_finalized, jump_hash_finalized, new_stream, same_stream, stream_key,
-    stream_object, validate_stream_request,
+    jump_hash_finalized, new_stream, same_stream, stream_key, stream_object,
+    validate_stream_request,
 };
 use crate::api::types::{
     BatchCache, BatchItemStatus, BatchStream, ResourceBatchRequest, ResourceBatchResponse,
@@ -103,7 +103,7 @@ pub(crate) async fn create_resources(
     } else {
         (
             jump_hash_finalized(&state).await?,
-            incarnations_finalized(&state).await?,
+            state.store.takes_incarnation_proposals().await,
         )
     };
     let streams = body

@@ -906,3 +906,42 @@ async fn combined_writes_fall_back_below_their_level() {
             .is_some()
     );
 }
+
+/// A create proposes the clock as soon as every member stores an
+/// incarnation, not only once this member has applied the finalize: one
+/// behind it would otherwise propose 0, and the apply after the finalize
+/// would give the name tombstone + 1, which can repeat after a restore.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incarnations_are_proposed_from_the_level_that_stores_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 9).await;
+    assert!(!store.takes_incarnation_proposals().await);
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not proposed after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Not finalized: the clock is carried and the stream stored at 0.
+    let proposed = crate::api::streams::new_stream(
+        "t1".into(),
+        "ns".into(),
+        serde_json::from_value(serde_json::json!({
+            "stream": "early", "kind": "Stream", "shards": 1, "retention": {},
+            "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true
+        }))
+        .expect("request"),
+        false,
+        store.takes_incarnation_proposals().await,
+    )
+    .expect("stream");
+    assert_ne!(proposed.incarnation, 0);
+    let created = store.create_stream(proposed).await.expect("create");
+    assert_eq!(created.incarnation, 0);
+}

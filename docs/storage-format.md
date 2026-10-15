@@ -66,6 +66,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   .deleted/                                  ← directories of deleted streams, waiting to be removed
   .streams/
     acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation of a stream this broker holds
+    .floors                                   ← deleted floors from catalog tombstones
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
@@ -115,6 +116,13 @@ stops a start. See `docs/durable-storage.md`, "Deleting a stream".
 `.streams/.incarnations` records, written the same way, that this broker has
 seen a stream with an incarnation; from then on, and from the start after a
 restart, it opens a stream's logs only once the catalog has registered it.
+
+`.streams/.floors` holds the deleted floors of catalog tombstones that had
+nothing to delete here: a `felix-stream-floors 1` header, then one line per
+name, `<deleted> <tenant> <namespace> <stream>` with the names in hex. It is
+replaced whole and flushed like a marker, so a snapshot's tombstones cost one
+flush however many names they cover. A registration at or below a name's
+floor is refused, as for the `deleted` line of its marker.
 
 `.deleted/` holds directories taken out of service when a stream is deleted.
 Moving a directory there is a rename, so a crash leaves it either where it was
