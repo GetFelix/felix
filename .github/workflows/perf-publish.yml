@@ -39,13 +39,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.97.1"
           components: rustfmt
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # This is best-effort telemetry, not a gate -- nobody is blocked on it,
       # so a flaky benchmark run shouldn't turn every merge to main into a
@@ -71,7 +71,7 @@ jobs:
 
       - name: Publish latency data (smaller is better)
         if: steps.benchmarks.outcome == 'success'
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           # `name` is the top-level series key in data.js -- it must stay stable.
           # Changing it starts a brand new series and orphans existing history.
@@ -94,7 +94,7 @@ jobs:
 
       - name: Publish throughput data (bigger is better)
         if: steps.benchmarks.outcome == 'success'
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           # See the note on `name` in the latency step above -- keep this stable.
           name: "Felix throughput - batch=64, GitHub-hosted runner"

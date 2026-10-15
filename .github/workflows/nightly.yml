@@ -146,6 +146,8 @@ jobs:
       # the nightly builds the newest main commit with green CI, which can
       # predate the script.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Registry owner
         run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
@@ -160,14 +162,14 @@ jobs:
 
       # A dry run pushed nothing, so build the same images here instead. The
       # cache scopes are release.yml's, which built them earlier in this run.
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: env.DRY_RUN == 'true'
         with:
           # BuildKit from our GHCR copy; see mirror-buildkit.yml.
           driver-opts: image=ghcr.io/getfelix/buildkit:v0.33.1
       - name: Build felix-broker
         if: env.DRY_RUN == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
           build-args: BASE_REGISTRY=mirror.gcr.io/library
@@ -178,7 +180,7 @@ jobs:
           cache-from: type=gha,scope=felix-broker-amd64
       - name: Build felix-controlplane
         if: env.DRY_RUN == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
           build-args: BASE_REGISTRY=mirror.gcr.io/library
@@ -189,7 +191,7 @@ jobs:
           cache-from: type=gha,scope=felix-controlplane-amd64
       - name: Build felixctl
         if: env.DRY_RUN == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           # Base images from the mirror, not Docker Hub (see the Dockerfile).
           build-args: BASE_REGISTRY=mirror.gcr.io/library
@@ -222,6 +224,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.sha }}
 
       # What release.yml would attach to a release, from its workflow artifacts.

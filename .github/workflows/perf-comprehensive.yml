@@ -49,15 +49,17 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.97.1"
           components: rustfmt
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -70,14 +72,17 @@ jobs:
         run: pip install -r scripts/perf/requirements.txt
 
       - name: Run comprehensive matrix
+        env:
+          TRIALS: ${{ inputs.trials }}
+          FILTER: ${{ inputs.filter }}
         run: |
           set -euo pipefail
           ARGS=()
-          if [ -n "${{ inputs.trials }}" ]; then
-            ARGS+=(--trials "${{ inputs.trials }}")
+          if [ -n "$TRIALS" ]; then
+            ARGS+=(--trials "$TRIALS")
           fi
-          if [ -n "${{ inputs.filter }}" ]; then
-            ARGS+=(--filter "${{ inputs.filter }}")
+          if [ -n "$FILTER" ]; then
+            ARGS+=(--filter "$FILTER")
           fi
           python3 scripts/perf/run_latency_matrix.py "${ARGS[@]}"
 
