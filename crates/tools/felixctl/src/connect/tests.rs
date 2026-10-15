@@ -54,6 +54,23 @@ async fn a_broker_address_needs_a_port() {
     assert_eq!(addrs, ["127.0.0.1:5000".parse().unwrap()]);
 }
 
+/// A name is handed to the client as a name, so it can be resolved again
+/// after every broker behind it has moved.
+#[test]
+fn a_broker_name_stays_a_name() {
+    let given =
+        seeds(&["felix.svc:5000".to_string(), "127.0.0.1:5000".to_string()]).expect("seeds");
+    assert_eq!(
+        given,
+        [
+            Seed::Name("felix.svc:5000".to_string()),
+            Seed::Addr("127.0.0.1:5000".parse().unwrap()),
+        ]
+    );
+    let err = seeds(&["localhost".to_string()]).unwrap_err();
+    assert_eq!(exit_for(&err), Exit::Usage);
+}
+
 #[test]
 fn a_client_config_carries_the_tenant_and_token() {
     let config = client_config(&settings(&["127.0.0.1:5000"])).expect("config");

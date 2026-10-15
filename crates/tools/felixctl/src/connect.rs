@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use felix_client::{ClientConfig, ClientIdentity, ClusterClient};
+use felix_client::{ClientConfig, ClientIdentity, ClusterClient, ReconnectPolicy, Seed};
 
 use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
@@ -19,15 +19,16 @@ pub(crate) struct Broker {
 impl Broker {
     /// Connect to whichever configured broker answers first.
     pub(crate) async fn connect(settings: &Settings) -> anyhow::Result<Self> {
-        let addrs = addresses(settings.brokers()?).await?;
+        let seeds = seeds(settings.brokers()?)?;
         let config = client_config(settings)?;
         let server_name = server_name(settings);
-        let cluster = ClusterClient::connect(&addrs, &server_name, config)
-            .await
-            .mark(
-                Exit::Connection,
-                format!("connect to {}", settings.brokers.join(", ")),
-            )?;
+        let cluster =
+            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+                .await
+                .mark(
+                    Exit::Connection,
+                    format!("connect to {}", settings.brokers.join(", ")),
+                )?;
         Ok(Self {
             cluster: Arc::new(cluster),
             tenant: settings.tenant()?.to_string(),
@@ -64,6 +65,19 @@ pub(crate) fn server_name(settings: &Settings) -> String {
         .filter(|host| host.parse::<std::net::IpAddr>().is_err() && !host.is_empty())
         .unwrap_or("localhost")
         .to_string()
+}
+
+/// The brokers as cluster client seeds. Names stay names, so the client can
+/// resolve them again after every broker behind them has moved.
+pub(crate) fn seeds(brokers: &[String]) -> anyhow::Result<Vec<Seed>> {
+    brokers
+        .iter()
+        .map(|broker| {
+            broker
+                .parse::<Seed>()
+                .mark(Exit::Usage, "read the broker address")
+        })
+        .collect()
 }
 
 /// Resolve `host:port` strings. Every name is resolved and every address it

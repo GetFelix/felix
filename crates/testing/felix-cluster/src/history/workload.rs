@@ -49,9 +49,9 @@ const ENTITY: &[u8] = b"history";
 /// How long a client may take to reach a broker before trying again.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Consecutive failed operations after which a client reconnects from the
-/// current address book: a restarted broker listens on new ports, so the
-/// addresses a client started with go stale.
+/// Consecutive failed operations over a client's connection after which it
+/// reconnects from the current address book: a restarted broker listens on
+/// new ports, so the addresses a client started with go stale.
 const FAILURES_BEFORE_RECONNECT: u32 = 3;
 
 /// Sends of one idempotent batch before its value is recorded as unknown.
@@ -454,32 +454,41 @@ impl Client<'_> {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 continue;
             };
-            self.run_connected(&Arc::new(cluster)).await;
+            self.run_connected(&Arc::new(cluster), &addrs).await;
         }
     }
 
     /// Run operations over one connection until it looks dead or the run ends.
-    async fn run_connected(&mut self, cluster: &Arc<ClusterClient>) {
+    async fn run_connected(&mut self, cluster: &Arc<ClusterClient>, connected_to: &[SocketAddr]) {
         let w = self.workload;
         let mut producer: Option<IdempotentProducer> = None;
         let mut failures = 0;
-        while !w.stopped() && failures < FAILURES_BEFORE_RECONNECT {
+        let mut stale = false;
+        while !w.stopped() && !stale && failures < FAILURES_BEFORE_RECONNECT {
             let roll = self.rng.below(100);
-            let ok = if roll < READ_PERCENT {
-                self.read().await
+            // Reads and cache ops open their own connection, so they say
+            // nothing about whether `cluster` is still alive.
+            let (ok, on_connection) = if roll < READ_PERCENT {
+                (self.read().await, false)
             } else if roll < READ_PERCENT + CACHE_PERCENT {
-                self.cache_op().await
+                (self.cache_op().await, false)
             } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT {
-                self.commit(cluster).await
+                (self.commit(cluster).await, true)
             } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT + COMMIT_READ_PERCENT {
-                self.commit_read(cluster).await
+                (self.commit_read(cluster).await, true)
             } else {
-                match self.kind {
+                let ok = match self.kind {
                     ClientKind::Plain => self.append_plain(cluster).await,
                     ClientKind::Idempotent => self.append_idempotent(cluster, &mut producer).await,
-                }
+                };
+                (ok, true)
             };
-            failures = if ok { 0 } else { failures + 1 };
+            if on_connection {
+                // A broker restarted on new ports since this connection was
+                // made: every later op on it would wait out `op_timeout`.
+                stale = !ok && w.addrs() != connected_to;
+                failures = if ok { 0 } else { failures + 1 };
+            }
             let think = self.rng.between(Duration::ZERO, Duration::from_millis(20));
             tokio::time::sleep(think).await;
         }
