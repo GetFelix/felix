@@ -704,7 +704,11 @@ stream can be at the deleted one's generation, and a broker that has not yet
 seen the recreate would otherwise report the old log, whose longer tail
 would then refuse every real report.
 `by_round: true` says the leader acknowledges the shard by its followers and
-confirms its reads by a round, so nothing it serves rests on its lease.
+confirms its reads by a round, so nothing it serves rests on its lease. It is
+kept only when the request's `incarnation` is the node's current one, and is
+recorded with it as `leader_incarnation`; placement ignores it once the node
+has registered again, since a restarted leader serves on its lease until its
+first pass.
 Placement replaces a leader on its followers' word only when its report at the
 current generation says so ([Failover on the followers'
 word](replication-design.md#failover-on-the-followers-word)). It is left out

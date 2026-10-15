@@ -672,6 +672,7 @@ impl ControlPlaneStore for RaftStore {
         .version();
         if report.by_round && self.handle.cluster_version().await < by_round_level {
             report.by_round = false;
+            report.leader_incarnation = None;
         }
         // Halts and counter positions are advisory: a group with a member that
         // would drop them records the rest of the report, which placement

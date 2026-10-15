@@ -92,7 +92,10 @@ pub struct ReportTo {
     /// Held, not copied: this reports for the life of the process, across
     /// however many access tokens that spans.
     pub token: Option<std::sync::Arc<dyn Credential>>,
-    pub incarnation: u64,
+    /// This process's node incarnation, set by membership at each
+    /// registration (0 before the first). The control plane keeps a report's
+    /// `by_round` only from the node's current incarnation.
+    pub incarnation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The token a report is sent with.
@@ -253,7 +256,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
     // same definition, so a field renamed on one side stops compiling instead
     // of quietly arriving as a missing one.
     let body = ReplicaStatusRequest {
-        incarnation: to.incarnation,
+        incarnation: to.incarnation.load(std::sync::atomic::Ordering::Acquire),
         shards: reports
             .iter()
             .map(|report| ShardReplicaStatus {

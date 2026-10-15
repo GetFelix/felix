@@ -258,7 +258,11 @@ by the same round before it is acknowledged.
   margins. It keeps the whole fleet there: the broker does not report
   `lease_free_reads`, so the feature cannot be finalized while it serves, and
   once the feature is finalized a broker started with it is refused at
-  registration.
+  registration. The refusal names `FELIX_QUORUM_READS`: unset it (reads then
+  confirm by a round, the default) and restart the broker. Before upgrading a
+  fleet that already finalized `lease_free_reads`, remove
+  `FELIX_QUORUM_READS=lease` from every broker, or each upgraded broker is
+  refused.
 
 #### `publisher_principal`
 

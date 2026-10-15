@@ -396,6 +396,12 @@ pub struct ReplicaReport {
     /// and, under Raft, until every member can apply it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_round: bool,
+    /// The leader's node incarnation when it reported `by_round`, and only
+    /// then. Placement trusts `by_round` only while this is still the node's
+    /// incarnation: a restarted leader serves on its lease until its first
+    /// replication pass, while its last report still says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_incarnation: Option<u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

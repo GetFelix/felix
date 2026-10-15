@@ -1626,3 +1626,78 @@ async fn a_create_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// **A member that predates `by_round` cannot leave a stale one behind.** Its
+/// upsert updates the report without the new columns, so the flag the row
+/// still holds came with an earlier report, maybe another leader's. It reads
+/// as false until a report that sets it again.
+#[tokio::test]
+#[serial]
+async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> {
+    use crate::store::contract::shards::{assignment, key, seed};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = fleet_store(&url).await?;
+    seed(store.as_ref()).await;
+    store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await?;
+    let generation = store.get_shard_assignment(&key(0)).await?.generation;
+    let report = crate::model::ReplicaReport {
+        key: key(0),
+        generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 10)].into(),
+        reported_at_millis: 5_000,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: true,
+        leader_incarnation: Some(1),
+    };
+    store
+        .record_replica_report(report.clone(), "broker-x")
+        .await?;
+    let held = || async {
+        let reports = store.list_replica_reports().await.expect("list");
+        reports
+            .into_iter()
+            .find(|held| held.key == key(0))
+            .expect("held")
+    };
+    assert!(held().await.by_round);
+
+    // What the previous release's upsert changes: everything but the new
+    // columns.
+    sqlx::query(
+        "UPDATE replica_reports SET reported_at_millis = 6000, leader_offset = 11
+         WHERE shard = 0",
+    )
+    .execute(&pool)
+    .await?;
+    let after = held().await;
+    assert_eq!(after.reported_at_millis, 6_000);
+    assert!(!after.by_round, "{after:?}");
+    assert_eq!(after.leader_incarnation, None);
+
+    // A current member's next report sets it again.
+    store
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                reported_at_millis: 7_000,
+                leader_offset: Some(12),
+                ..report
+            },
+            "broker-x",
+        )
+        .await?;
+    let again = held().await;
+    assert!(
+        again.by_round && again.leader_incarnation == Some(1),
+        "{again:?}"
+    );
+    Ok(())
+}

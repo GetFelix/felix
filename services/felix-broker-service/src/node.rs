@@ -368,6 +368,8 @@ where
     );
     // Filled by the shard tasks, carried by the heartbeat.
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
+    // Set at each registration, read by the replica reports.
+    let incarnation = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let membership = membership::spawn(
         &config,
         &membership_client,
@@ -377,6 +379,7 @@ where
         &fleet,
         &credential,
         &suspects,
+        &incarnation,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
@@ -406,6 +409,7 @@ where
         shard_status: &shard_status,
         fleet: &fleet,
         suspects: &suspects,
+        incarnation: &incarnation,
         sync_shutdown: &sync_shutdown,
     });
 

@@ -40,6 +40,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,
+        leader_incarnation: None,
         key: key(stream),
         generation: 4,
         offsets: caught_up
@@ -219,6 +220,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
                 by_round: false,
+                leader_incarnation: None,
                 key: key.clone(),
                 generation,
                 caught_up: ["broker-b".to_string()].into_iter().collect(),
@@ -294,6 +296,11 @@ fn suspicion(node_id: &str, leader: &str, reported_at_millis: u64) -> crate::mod
     }
 }
 
+/// The leader, `broker-a`, at the incarnation its reports came from.
+fn incarnations() -> HashMap<String, u64> {
+    HashMap::from([("broker-a".to_string(), 1)])
+}
+
 fn features(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|name| name.to_string()).collect()
 }
@@ -303,6 +310,7 @@ fn features(names: &[&str]) -> BTreeSet<String> {
 fn leader_report(by_round: bool, reported_at_millis: u64) -> ReplicaReport {
     ReplicaReport {
         by_round,
+        leader_incarnation: by_round.then_some(1),
         ..report("orders", &["broker-b"], reported_at_millis)
     }
 }
@@ -319,6 +327,7 @@ fn a_suspicion_counts_for_two_heartbeats() {
         at(vec![leader_report(true, now)], now)
             .with_suspicions(
                 vec![suspicion("broker-b", "broker-a", stamped)],
+                incarnations(),
                 &liveness(),
                 &features(ALL),
             )
@@ -350,6 +359,7 @@ fn a_suspicion_counts_only_with_all_three_features() {
     ] {
         let positions = at(vec![leader_report(true, now)], now).with_suspicions(
             vec![suspicion("broker-b", "broker-a", now)],
+            incarnations(),
             &liveness(),
             &enabled,
         );
@@ -379,6 +389,7 @@ fn a_suspicion_does_not_move_a_cache() {
     )
     .with_suspicions(
         vec![suspicion("broker-b", "broker-a", now)],
+        incarnations(),
         &liveness(),
         &features(&[
             "generation_start",
@@ -402,6 +413,7 @@ fn a_suspicion_counts_only_against_a_leader_off_its_lease() {
         at(reports, now)
             .with_suspicions(
                 vec![suspicion("broker-b", "broker-a", now)],
+                incarnations(),
                 &liveness(),
                 &features(ALL),
             )
@@ -426,6 +438,44 @@ fn a_suspicion_counts_only_against_a_leader_off_its_lease() {
     assert!(!suspects(vec![leader_report(true, now)], 5));
 }
 
+/// **Not on a report from before the leader restarted.** A broker that
+/// restarts within the report's lifetime can lead again at the same
+/// generation, and serves on its lease until its first replication pass. Its
+/// last report, from the process that is gone, still says `by_round`; the
+/// incarnation its registration took tells the two apart.
+#[test]
+fn a_suspicion_does_not_count_on_a_report_from_before_a_restart() {
+    let now = 100_000;
+    let suspects = |incarnations: HashMap<String, u64>| {
+        at(vec![leader_report(true, now)], now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", now)],
+                incarnations,
+                &liveness(),
+                &features(ALL),
+            )
+            .suspects(&key("orders"), 4, "broker-b", "broker-a")
+    };
+    assert!(suspects(incarnations()));
+    assert!(!suspects(HashMap::from([("broker-a".to_string(), 2)])));
+    assert!(!suspects(HashMap::new()));
+    // Nor one that says `by_round` without naming the incarnation.
+    let unnamed = ReplicaReport {
+        leader_incarnation: None,
+        ..leader_report(true, now)
+    };
+    assert!(
+        !at(vec![unnamed], now)
+            .with_suspicions(
+                vec![suspicion("broker-b", "broker-a", now)],
+                incarnations(),
+                &liveness(),
+                &features(ALL),
+            )
+            .suspects(&key("orders"), 4, "broker-b", "broker-a")
+    );
+}
+
 /// **Finalizing does not move a leader that has not heard of it.** Brokers
 /// learn the enabled set on their next heartbeat, and until then a leader
 /// reads on its lease and reports so. Placement waits for the report that
@@ -436,6 +486,7 @@ fn a_finalize_waits_for_the_leader_to_report_by_round() {
     let positions = |reports| {
         at(reports, now).with_suspicions(
             vec![suspicion("broker-b", "broker-a", now)],
+            incarnations(),
             &liveness(),
             &features(ALL),
         )

@@ -47,6 +47,24 @@ fn a_joiner_lacking_an_enabled_feature_is_refused() {
 }
 
 #[test]
+fn a_joiner_reading_by_lease_is_told_to_unset_it() {
+    let refused = admit(
+        &set(&["lease_free_reads"]),
+        &at("c", NodeLifecycle::Live, &["majority_ack"]),
+    );
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message))
+            if message.contains("unset FELIX_QUORUM_READS") && message.contains("restart the broker")),
+        "{refused:?}"
+    );
+    let other = admit(&set(&["x"]), &at("c", NodeLifecycle::Live, &[]));
+    assert!(
+        matches!(&other, Err(StoreError::Conflict(message)) if !message.contains("FELIX_QUORUM_READS")),
+        "{other:?}"
+    );
+}
+
+#[test]
 fn nothing_is_refused_before_a_finalize() {
     assert!(admit(&set(&[]), &at("c", NodeLifecycle::Live, &[])).is_ok());
 }

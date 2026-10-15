@@ -153,6 +153,7 @@ fn replica_report(
         halted: Default::default(),
         stream_incarnation: None,
         by_round: false,
+        leader_incarnation: None,
     }
 }
 

@@ -342,6 +342,7 @@ fn a_restore_copying_only_counters_is_moving() {
         .into(),
         stream_incarnation: None,
         by_round: false,
+        leader_incarnation: None,
     };
 
     let mut progress = super::super::progress::CopyProgress::default();

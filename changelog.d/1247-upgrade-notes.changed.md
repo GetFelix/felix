@@ -7,4 +7,7 @@
   two. A Raft control plane records a report's `by_round` only once every
   member is at metadata level 11; until then placement fails a leader over on
   its lease, not its followers' word. A Postgres control plane runs migration
-  `0029` on start.
+  `0029` on start. Remove `FELIX_QUORUM_READS=lease` before upgrading a fleet
+  that has finalized `lease_free_reads`; otherwise each upgraded broker is
+  refused at registration. The refusal names the variable: unset it and
+  restart the broker.

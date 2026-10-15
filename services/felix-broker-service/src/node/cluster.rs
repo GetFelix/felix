@@ -194,6 +194,9 @@ pub(super) struct ShardTaskDeps<'a> {
     pub(super) shard_status: &'a Arc<replication::status::ShardStatusBoard>,
     pub(super) fleet: &'a Arc<felix_common::fleet::FleetGate>,
     pub(super) suspects: &'a Arc<replication::suspicion::Suspects>,
+    /// This process's node incarnation, which membership sets once it
+    /// registers. Reports carry it.
+    pub(super) incarnation: &'a Arc<std::sync::atomic::AtomicU64>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -215,6 +218,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         shard_status,
         fleet,
         suspects,
+        incarnation,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -341,7 +345,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                                     Arc::new(credential)
                                         as Arc<dyn replication::reporter::Credential>
                                 }),
-                                incarnation: 0,
+                                incarnation: Arc::clone(incarnation),
                             },
                             sync_shutdown.clone(),
                         );

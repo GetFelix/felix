@@ -444,6 +444,7 @@ pub fn spawn(
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
+    incarnation: Arc<AtomicU64>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
@@ -494,6 +495,7 @@ pub fn spawn(
                 };
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
+                incarnation.store(registration.incarnation, Ordering::Release);
 
                 match run_heartbeat(
                     client.clone(),

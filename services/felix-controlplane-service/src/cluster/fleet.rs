@@ -55,9 +55,18 @@ pub(crate) fn admit(enabled: &BTreeSet<String>, joining: &Node) -> Result<(), St
     if missing.is_empty() {
         return Ok(());
     }
+    // A current build lacks `lease_free_reads` only when it keeps its reads
+    // on the lease, and the operator can fix that without a new build.
+    let reads_by_lease = if missing.contains(&felix_common::fleet::LEASE_FREE_READS.name()) {
+        "; a broker started with FELIX_QUORUM_READS=lease does not support \
+         lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) \
+         and restart the broker"
+    } else {
+        ""
+    };
     Err(StoreError::Conflict(format!(
         "node {} does not support fleet feature(s) {} that the fleet has enabled; \
-         run a build that has them, since an enabled feature cannot be disabled",
+         run a build that has them, since an enabled feature cannot be disabled{reads_by_lease}",
         joining.node_id,
         missing.join(", "),
     )))

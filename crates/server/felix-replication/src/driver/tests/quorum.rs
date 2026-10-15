@@ -376,7 +376,7 @@ fn unreachable_reporter() -> (
             base_url: "http://127.0.0.1:1".to_string(),
             node_id: LOCAL.to_string(),
             token: None,
-            incarnation: 1,
+            incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         },
         shutdown.clone(),
     );

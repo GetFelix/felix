@@ -279,7 +279,17 @@ has finalized all three. So each leader says in its replica report whether it
 serves the shard by round (`by_round`): true only while it acknowledges by its
 followers and its `Quorum` reads go by a round. Placement acts on suspicion
 against a leader only when its latest report at the current generation says
-so (`suspects` in `placement/replica_positions.rs`). A report without the
+so (`suspects` in `placement/replica_positions.rs`), and only if that report
+came from the node's current incarnation. A broker that restarts within a
+report's lifetime can lead again at the same generation, and it serves on its
+lease until its first replication pass; its last report, from the process
+that is gone, still says `by_round`. Registration moves the node to a new
+incarnation before the new process can hold a lease, so the old report stops
+counting first. Reports carry the incarnation the broker last registered,
+and the control plane stamps `leader_incarnation` only when it matches. A
+Postgres member that predates the column updates a report without it, so the
+flag is read as true only while `by_round_at` matches the row's
+`reported_at_millis`. A report without the
 field, from an older broker or a Raft group not yet at level 11, reads as the
 lease, and the leader is replaced only once its lease has lapsed. `FelixShardSuspicion.cfg` lets placement promote on any read
 before the lease lapses, the old leader alive and renewing, and loses

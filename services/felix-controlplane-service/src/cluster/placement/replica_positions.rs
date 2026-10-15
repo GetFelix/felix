@@ -83,6 +83,9 @@ pub struct ReplicaPositions {
     now_millis: u64,
     /// The fresh suspicions, by the broker that holds them.
     suspicions: HashMap<String, NodeSuspicion>,
+    /// Each node's current incarnation, which a leader's `by_round` must
+    /// have been reported from.
+    incarnations: HashMap<String, u64>,
     /// The fleet acknowledges `Quorum` stream writes by their followers and
     /// confirms `Quorum` reads by a round, so a deposed stream leader is
     /// kept out without its lease running out.
@@ -106,6 +109,7 @@ impl ReplicaPositions {
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
             suspicions: HashMap::new(),
+            incarnations: HashMap::new(),
             followers_decide: false,
             progressed: HashMap::new(),
         }
@@ -119,12 +123,16 @@ impl ReplicaPositions {
     /// of them a deposed leader still acknowledges or serves reads on its
     /// lease, and replacing it before that runs out would let it hand out
     /// what its successor has since overwritten.
+    ///
+    /// `incarnations` is each node's current incarnation, from the same read.
     pub fn with_suspicions(
         mut self,
         suspicions: Vec<NodeSuspicion>,
+        incarnations: HashMap<String, u64>,
         liveness: &NodeLivenessConfig,
         enabled: &BTreeSet<String>,
     ) -> Self {
+        self.incarnations = incarnations;
         let ttl = suspicion_ttl_millis(liveness);
         self.suspicions = suspicions
             .into_iter()
@@ -172,12 +180,17 @@ impl CaughtUp for ReplicaPositions {
         // The enabled set says what brokers may do, not what this leader
         // does: it may not have heard of the finalize yet, and one that has
         // not reported by round at this generation may still serve on its
-        // lease. Its report is held only from the assignment's leader.
+        // lease. Its report is held only from the assignment's leader. A
+        // report from before the leader last registered speaks for a process
+        // that is gone: the new one serves on its lease until its first pass.
         self.followers_decide
             && key.kind == ShardKind::Stream
-            && self
-                .fresh(key)
-                .is_some_and(|report| report.generation == generation && report.by_round)
+            && self.fresh(key).is_some_and(|report| {
+                report.generation == generation
+                    && report.by_round
+                    && report.leader_incarnation.is_some()
+                    && report.leader_incarnation == self.incarnations.get(leader).copied()
+            })
             && self
                 .suspicions
                 .get(follower)

@@ -571,3 +571,53 @@ async fn reported_caught_up(
         .expect("load reports")
         .is_caught_up(key, node_id)
 }
+
+/// **`by_round` is kept only from the incarnation the node registered last.**
+/// A restarted leader serves on its lease until its first replication pass,
+/// so a report from the process before it, or from one that has not learned
+/// its incarnation yet, must not let placement act on its followers' word.
+#[tokio::test]
+async fn by_round_is_kept_only_from_the_current_incarnation() {
+    let (app, store, keys) = setup().await;
+    // Registered twice, so there is an earlier incarnation to report from.
+    seed_node(&store, "broker-a", 7001).await;
+    seed_node(&store, "broker-a", 7001).await;
+    seed_shard(&store, "broker-a", 0).await;
+    let bearer = token(&keys, vec!["node.manage:cluster:*"]);
+    let current = store
+        .get_node("broker-a")
+        .await
+        .expect("node")
+        .status
+        .incarnation;
+    assert_ne!(current, 0);
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .next()
+            .expect("a report")
+    };
+    let report = |incarnation: u64| {
+        let mut body = replica_report(0, &["broker-a"]);
+        body["incarnation"] = incarnation.into();
+        body["shards"][0]["by_round"] = true.into();
+        post("/v1/nodes/broker-a/replica-status", Some(&bearer), body)
+    };
+
+    for stale in [current - 1, current + 1] {
+        let response = app.clone().oneshot(report(stale)).await.expect("report");
+        assert_eq!(response.status(), StatusCode::OK);
+        let held = held().await;
+        assert!(!held.by_round, "{stale}: {held:?}");
+        assert_eq!(held.leader_incarnation, None);
+    }
+
+    let response = app.clone().oneshot(report(current)).await.expect("report");
+    assert_eq!(response.status(), StatusCode::OK);
+    let held = held().await;
+    assert!(held.by_round, "{held:?}");
+    assert_eq!(held.leader_incarnation, Some(current));
+}

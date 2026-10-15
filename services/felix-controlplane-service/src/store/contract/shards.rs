@@ -1156,6 +1156,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,
+        leader_incarnation: None,
         key: doomed(0, ShardKind::Stream).key,
         generation: before
             .iter()
