@@ -11,7 +11,10 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
-  # Example: forward traces to Tempo
+  # Logs a summary of each trace batch. To forward traces to Tempo instead,
+  # uncomment otlp/tempo and use it in the traces pipeline.
+  debug:
+
   # otlp/tempo:
   #   endpoint: tempo:4317
   #   tls:
@@ -26,4 +29,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/tempo]
+      exporters: [debug]
