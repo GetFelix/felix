@@ -137,37 +137,32 @@ impl Inode {
         }
     }
 
-    /// For a directory listing, where no descriptor is held.
-    fn at(path: &Path, meta: &std::fs::Metadata) -> Self {
-        // O_NONBLOCK so a fifo or similar cannot stall the open.
+    /// For a directory listing: the key of the file or directory at `path`,
+    /// built from one descriptor so the stat and the generation describe the
+    /// same file. `None` for anything else or if it cannot be opened.
+    fn at(path: &Path) -> Option<(Self, bool)> {
+        // O_NONBLOCK so a racing swap to a fifo cannot stall the open.
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
             .open(path)
-            .ok();
-        match file {
-            Some(file) => Self::of(meta, &file),
-            None => Self {
-                dev: meta.dev(),
-                ino: meta.ino(),
-                born: meta.created().ok(),
-                generation: None,
-            },
-        }
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        (meta.is_dir() || meta.is_file()).then(|| (Self::of(&meta, &file), meta.is_dir()))
     }
 }
 
-/// `FS_IOC_GETVERSION`, i.e. `_IOR('v', 1, long)`.
+/// `FS_IOC_GETVERSION`, i.e. `_IOR('v', 1, long)`. The kernel writes an `int`.
 const FS_IOC_GETVERSION: u64 = 0x8008_7601;
 
 fn generation(file: &File) -> Option<u32> {
-    let mut value: libc::c_long = 0;
-    // SAFETY: the request writes at most one `long` through the pointer.
+    let mut value: libc::c_int = 0;
+    // SAFETY: the request writes one `int` through the pointer.
     let rc = unsafe {
         libc::ioctl(
             file.as_raw_fd(),
             FS_IOC_GETVERSION as _,
-            &mut value as *mut libc::c_long,
+            &mut value as *mut libc::c_int,
         )
     };
     (rc == 0).then_some(value as u32)
@@ -432,15 +427,24 @@ fn list(dir: &Path) -> std::io::Result<BTreeMap<OsString, Entry>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         // A file removed between the listing and the stat is simply not there.
+        // Typed before opening, so devices and fifos are never opened.
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
-        let inode = Inode::at(&entry.path(), &meta);
-        if meta.is_dir() {
-            listing.insert(entry.file_name(), Entry::Dir(inode));
-        } else if meta.is_file() {
-            listing.insert(entry.file_name(), Entry::File(inode));
+        if !(meta.is_dir() || meta.is_file()) {
+            continue;
         }
+        let Some((inode, is_dir)) = Inode::at(&entry.path()) else {
+            continue;
+        };
+        listing.insert(
+            entry.file_name(),
+            if is_dir {
+                Entry::Dir(inode)
+            } else {
+                Entry::File(inode)
+            },
+        );
     }
     Ok(listing)
 }
