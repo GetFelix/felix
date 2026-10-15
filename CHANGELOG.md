@@ -108,6 +108,22 @@ entries.
   used to throw away whatever client was in place, including a fresh
   replacement, and dial again with the endpoint list it had read before
   waiting for the lock.
+- A history campaign client no longer keeps publishing over a connection to
+  brokers that restarted on new ports (#1223). A successful read or cache op,
+  which opens its own connection, reset the client's count of failures in a
+  row, so a client could spend most of the outage campaign waiting out 10 s
+  publish timeouts, and the campaign fell short of its floor of cache puts.
+  A failed op over the connection now reconnects at once when the address
+  book changed since the client connected, and only ops over the connection
+  count toward reconnecting.
+- The power-loss test model no longer loses a sync it saw (#1218). When two
+  flushes of one file overlapped, the one that read the file first could
+  record its read last, so the model held less than the device would. A flush
+  that read the active segment just before a background roll retired it could
+  undo the seal's sync of that segment, and the nightly sweep then built
+  crashes that cut a sealed segment short and failed when recovery refused
+  them. Each capture now takes a ticket before it reads, and an older read
+  never replaces a newer one. Storage itself is unchanged.
 - A client can no longer split one shard across two writers by routing with
   the width of a stream that was deleted and created again at another width
   (#1067). The client declares the width it routed each keyed batch by in a
