@@ -1133,3 +1133,79 @@ async fn a_finalized_group_proposes_incarnations_past_a_peer_that_never_answered
         "a peer that reported level 0 was overridden: {refused:?}"
     );
 }
+
+/// Before anything level-gated is finalized, a member on an older build may
+/// join: that is a rolling upgrade in progress, and the group's level drops
+/// to the newcomer's.
+#[tokio::test]
+async fn an_older_member_joins_a_group_with_nothing_finalized() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    for (id, level) in [(2, 8), (3, 0)] {
+        let addr = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(level))).await;
+        store
+            .handle
+            .add_learner_without_waiting(id, addr)
+            .await
+            .unwrap_or_else(|err| panic!("member at level {level} refused: {err:#}"));
+    }
+}
+
+/// Once `stream_incarnations` is finalized, a member below level 10 would
+/// refuse the incarnated entries the others apply, so it is refused before
+/// the membership changes: at a lower level, without a reported level, and
+/// without an answer. One at the group's level joins.
+#[tokio::test]
+async fn a_member_below_a_finalized_level_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
+    let addr = stub_member(Arc::clone(&version)).await;
+    for (level, expected) in [
+        (8, "supports metadata version 8, but the group is at 10"),
+        (0, "supports metadata version 0, but the group is at 10"),
+        (
+            SILENT,
+            "did not report its metadata version, and the group is at 10",
+        ),
+    ] {
+        version.store(level, std::sync::atomic::Ordering::SeqCst);
+        let before = store.handle.status().last_applied_index;
+        let refused = store
+            .handle
+            .add_learner_without_waiting(2, addr.clone())
+            .await;
+        assert!(
+            matches!(&refused, Err(err) if err.to_string().contains(expected)),
+            "member at level {level}: {refused:?}"
+        );
+        assert_eq!(
+            store.handle.status().last_applied_index,
+            before,
+            "the refused join reached the log"
+        );
+    }
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("a member at the group's level joins");
+}

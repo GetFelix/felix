@@ -165,6 +165,30 @@ impl RaftHandle {
         level
     }
 
+    /// Ask one member at `base` for the level it can apply, and remember the
+    /// answer. `None` when it does not answer.
+    pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
+        let response = self
+            .forward
+            .get(format!("{base}/internal/raft/standing"))
+            .query(&Asker {
+                from: Some(self.id),
+                version: Some(self.app.version()),
+            })
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let version = response.json::<Standing>().await.ok()?.version;
+        let mut versions = self.versions.lock().expect("versions lock");
+        versions.reported.insert(id, version);
+        versions.checked = None;
+        Some(version)
+    }
+
     /// Forget every level the members reported, as a restart does.
     #[cfg(test)]
     pub(crate) fn forget_reported_versions(&self) {

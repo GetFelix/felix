@@ -168,6 +168,13 @@ pub trait AppStateMachine: Send + Sync + 'static {
     fn version(&self) -> u16 {
         0
     }
+
+    /// The lowest level a member must report to be added to the group: the
+    /// level the applied state already depends on. A member below it would
+    /// refuse entries the others apply. 0 admits any member.
+    async fn join_floor(&self) -> u16 {
+        0
+    }
 }
 
 /// A snapshot of where this member stands, in the seam's own vocabulary.

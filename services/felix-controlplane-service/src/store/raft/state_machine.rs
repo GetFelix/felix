@@ -562,6 +562,19 @@ impl AppStateMachine for MetadataStateMachine {
     fn version(&self) -> u16 {
         crate::store::raft::command::METADATA_VERSION
     }
+
+    /// Finalizing a fleet feature needed every member at that finalize's
+    /// level, and the entries after it may rely on that level.
+    async fn join_floor(&self) -> u16 {
+        self.store
+            .enabled_fleet_features()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Panics if the snapshot carries fields this build would drop.

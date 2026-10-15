@@ -10,3 +10,9 @@
   only once every member is at metadata version 10, the same gate as stream
   incarnations; below it every member keeps what the older release keeps, so
   members never disagree.
+- Under Raft, once a fleet feature is finalized the leader refuses to add a
+  control-plane member whose build is below the metadata version that
+  finalize needed (10 for `stream_incarnations`), or that reports none; the
+  error names both versions. Such a member would refuse entries the others
+  apply and diverge from them. Before any finalize an older build may still
+  join (#1209).

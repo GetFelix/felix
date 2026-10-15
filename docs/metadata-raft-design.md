@@ -468,6 +468,16 @@ recomputed at most every two seconds, so it rises shortly after the last
 member restarts on the new build. The rollout order therefore does not
 matter: a StatefulSet can upgrade the leader first.
 
+**A member below a finalized level is not added.** Finalizing a fleet
+feature needed every member at that finalize's level (`stream_incarnations`
+needs 10, `jump_hash_routing` 3, any other 2), and the entries after it rely
+on it. Once one is finalized, the leader asks a new member its level on the
+`standing` route before adding it as a learner, and refuses the join when
+it is below the highest such level, or reports none, or does not answer,
+naming both versions. Before anything is finalized any build may join: the
+group's level drops to the newcomer's, as during a rolling upgrade. Run a
+member you add on a build at or above the group's level.
+
 Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 `remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,
 `retire_signing_key`) and leader soft-state liveness (`expire_nodes`,
@@ -562,6 +572,7 @@ the field itself, on every member alike, or refuses the command:
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
 | stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 
 **A member refuses what it would drop.** From level 3 on, a member that
@@ -581,7 +592,7 @@ replicated type from full struct literals and compares the paths they
 serialize with `fields.txt`, so a new field does not compile until it has a
 sample value, and the test fails until it has a level. If `felix_meta_raft_unsupported_commands_total` still
 moves on a member (something proposed through the raw peer `propose`
-route, or a member added on an older build after the level was computed),
+route, or a member on an older build that joined before any finalize),
 upgrade it, then wipe its volume and let it rejoin: it rebuilds from the
 leader's snapshot as in
 [rejoining after a lost volume](#rejoining-after-a-lost-volume).

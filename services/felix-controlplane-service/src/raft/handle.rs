@@ -215,7 +215,11 @@ impl RaftHandle {
     /// Learner-first is what keeps a join from costing quorum: the group's
     /// vote arithmetic only changes at [`RaftHandle::change_membership`],
     /// after the newcomer already holds the data.
+    ///
+    /// Refused, before the membership changes, when the node runs a build
+    /// below the level the group already depends on.
     pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<()> {
+        self.admit(id, &addr).await?;
         self.raft
             .add_learner(id, openraft::BasicNode { addr }, true)
             .await
@@ -227,6 +231,7 @@ impl RaftHandle {
     /// stub answering only some routes.
     #[cfg(test)]
     pub(crate) async fn add_learner_without_waiting(&self, id: NodeId, addr: String) -> Result<()> {
+        self.admit(id, &addr).await?;
         self.raft
             .add_learner(id, openraft::BasicNode { addr }, false)
             .await
