@@ -101,9 +101,7 @@ pub(crate) async fn create_stream(
     validate_stream_request(&body)?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let asked = body.routing;
-    let finalized = jump_hash_finalized(&state).await?;
-    let incarnations = state.store.takes_incarnation_proposals().await;
-    let stream = new_stream(tenant_id, namespace, body, finalized, incarnations)?;
+    let stream = stream_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
@@ -201,6 +199,29 @@ pub(crate) fn stream_key(stream: &Stream) -> StreamKey {
         namespace: stream.namespace.clone(),
         stream: stream.stream.clone(),
     }
+}
+
+/// The stream a create request asks for, routed and with the incarnation it
+/// proposes as of now.
+pub(crate) async fn stream_to_create(
+    state: &AppState,
+    tenant_id: String,
+    namespace: String,
+    body: StreamCreateRequest,
+) -> Result<Stream, ApiError> {
+    let finalized = jump_hash_finalized(state).await?;
+    let incarnations = proposes_incarnation(state).await?;
+    new_stream(tenant_id, namespace, body, finalized, incarnations)
+}
+
+/// Whether a create proposes the clock as the stream's incarnation: when the
+/// store can carry it, or once incarnations are finalized. The second is not
+/// implied by the first: a restarted Raft member counts a peer that has not
+/// answered yet as level 0, and proposing 0 after the finalize gives the
+/// name tombstone + 1, which a restore can repeat.
+pub(crate) async fn proposes_incarnation(state: &AppState) -> Result<bool, ApiError> {
+    Ok(state.store.takes_incarnation_proposals().await
+        || fleet_finalized(state, felix_common::fleet::STREAM_INCARNATIONS).await?)
 }
 
 /// Whether the fleet has finalized `jump_hash_routing`.

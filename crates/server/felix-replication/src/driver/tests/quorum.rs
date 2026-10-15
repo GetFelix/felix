@@ -711,3 +711,105 @@ async fn a_cache_leader_counts_only_its_own_generation() {
 
     shutdown.cancel();
 }
+
+/// **A stream recreated at the deleted one's generation starts its
+/// replication state over.** After a control-plane restore rewinds the change
+/// seq, the new incarnation's first generation can equal the old one's, and a
+/// delete and create in one poll leave the shard led throughout. The old
+/// log's follower positions and mark describe nothing in the new log, so a
+/// write to it must not be acknowledged on them.
+#[tokio::test]
+async fn a_recreate_at_the_same_generation_does_not_inherit_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.require_registered_streams();
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    let at = |incarnation| felix_broker::StreamMetadata {
+        durable: true,
+        shards: 1,
+        consistency: felix_broker::ConsistencyLevel::Quorum,
+        incarnation,
+        ..Default::default()
+    };
+    let append = |count: usize| {
+        let broker = Arc::clone(&broker);
+        async move {
+            let log = broker
+                .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+                .await
+                .expect("log");
+            for i in 0..count {
+                log.append(&[Bytes::from(format!("v{i}"))])
+                    .await
+                    .expect("append");
+            }
+        }
+    };
+    broker
+        .register_stream(TENANT, NAMESPACE, STREAM, at(5))
+        .await
+        .expect("stream");
+    append(10).await;
+
+    let router = router(LOCAL, &["broker-b"], 4);
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    replicate_once(
+        &AcceptingFollower::default(),
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(10));
+
+    // Deleted and created again in one catalog batch, at the same generation.
+    broker
+        .register_stream(TENANT, NAMESPACE, STREAM, at(6))
+        .await
+        .expect("the new stream");
+    append(3).await;
+    replicate_once(
+        &UnreachableFollowers {
+            handshake: Duration::from_millis(1),
+        },
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+
+    let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+    assert!(
+        mark < 3,
+        "the new log's records were acknowledged at mark {mark} with no follower holding them",
+    );
+}

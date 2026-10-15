@@ -907,41 +907,72 @@ async fn combined_writes_fall_back_below_their_level() {
     );
 }
 
-/// A create proposes the clock as soon as every member stores an
-/// incarnation, not only once this member has applied the finalize: one
-/// behind it would otherwise propose 0, and the apply after the finalize
-/// would give the name tombstone + 1, which can repeat after a restore.
+/// Once incarnations are finalized, a create proposes the clock even while
+/// this member counts a peer as level 0, as a restarted member does until the
+/// peer answers. Proposing 0 then gives the name tombstone + 1, which can
+/// repeat an incarnation after a restore. Goes through the API's create path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn incarnations_are_proposed_from_the_level_that_stores_them() {
+async fn a_finalized_group_proposes_incarnations_with_a_member_at_level_0() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (store, version) = store_with_member_at(dir.path(), 9).await;
-    assert!(!store.takes_incarnation_proposals().await);
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !store.takes_incarnation_proposals().await {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "not proposed after every member reported the level"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    // Not finalized: the clock is carried and the stream stored at 0.
-    let proposed = crate::api::streams::new_stream(
-        "t1".into(),
-        "ns".into(),
-        serde_json::from_value(serde_json::json!({
-            "stream": "early", "kind": "Stream", "shards": 1, "retention": {},
+    let (store, version) =
+        store_with_member_at(dir.path(), crate::store::raft::command::METADATA_VERSION).await;
+    let wait_for = |proposes: bool| {
+        let store = Arc::clone(&store);
+        async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while store.takes_incarnation_proposals().await != proposes {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the member's level never read as wanted"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    wait_for(true).await;
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let state = crate::test_support::app_state_ready(store.clone());
+    let create = || async {
+        let body = serde_json::from_value(serde_json::json!({
+            "stream": "orders", "kind": "Stream", "shards": 1, "retention": {},
             "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true
         }))
-        .expect("request"),
-        false,
-        store.takes_incarnation_proposals().await,
-    )
-    .expect("stream");
-    assert_ne!(proposed.incarnation, 0);
-    let created = store.create_stream(proposed).await.expect("create");
-    assert_eq!(created.incarnation, 0);
+        .expect("request");
+        let stream = crate::api::streams::stream_to_create(&state, "t1".into(), "ns".into(), body)
+            .await
+            .expect("stream");
+        store.create_stream(stream).await
+    };
+    let first = create().await.expect("create");
+    assert_ne!(first.incarnation, 0);
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("delete");
+
+    version.store(0, std::sync::atomic::Ordering::SeqCst);
+    wait_for(false).await;
+    let again = create().await.expect("create with a member at level 0");
+    assert!(
+        again.incarnation > first.incarnation + 1,
+        "proposed nothing: incarnation {} after {}",
+        again.incarnation,
+        first.incarnation
+    );
 }

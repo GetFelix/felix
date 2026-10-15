@@ -518,6 +518,7 @@ async fn fence_one<R: PeerRequester>(
         felix_router::ShardKind::Stream => marks.acks_by_followers(),
         felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
     };
+    let incarnation = crate::incarnation::of(broker, &key);
     let outcome = promotion::fence_shard(
         requester,
         broker,
@@ -527,6 +528,16 @@ async fn fence_one<R: PeerRequester>(
         lease_fallback,
     )
     .await;
+    // A fence taken on another incarnation's logs, which a recreate at the
+    // same generation can replace mid-attempt, does not open the new one.
+    let outcome = if crate::incarnation::of(broker, &key) == incarnation {
+        outcome
+    } else {
+        Outcome::Pending {
+            why: "the stream was recreated while its fence was taken".into(),
+            took: Vec::new(),
+        }
+    };
     (key, route.generation, outcome)
 }
 

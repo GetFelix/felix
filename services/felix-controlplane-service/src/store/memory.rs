@@ -246,13 +246,21 @@ impl InMemoryStore {
         namespace: &str,
         name: &str,
     ) {
-        let mut state = self.shards.write().await;
-        state.records.retain(|key, _| {
-            !(key.kind == kind
+        let of_it = |key: &ShardKey| {
+            key.kind == kind
                 && key.tenant_id == tenant_id
                 && key.namespace == namespace
-                && key.stream == name)
-        });
+                && key.stream == name
+        };
+        let mut state = self.shards.write().await;
+        state.records.retain(|key, _| !of_it(key));
+        // The reports go with the assignments, as Postgres cascades them: a
+        // name created again can start at the same generation after a
+        // restore, and the old log's report would read as the new one's.
+        self.replica_reports
+            .write()
+            .await
+            .retain(|key, _| !of_it(key));
     }
 
     fn limit(&self) -> usize {

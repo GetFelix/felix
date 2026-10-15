@@ -1151,11 +1151,41 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
     let before = store.list_shard_assignments().await.expect("list");
     assert_eq!(owned(&before, ShardKind::Stream), 2);
     assert_eq!(owned(&before, ShardKind::Cache), 2);
+    let doomed_report = crate::model::ReplicaReport {
+        counter_offsets: Default::default(),
+        key: doomed(0, ShardKind::Stream).key,
+        generation: before
+            .iter()
+            .find(|a| a.key == doomed(0, ShardKind::Stream).key)
+            .expect("assigned")
+            .generation,
+        caught_up: ["broker-y".to_string()].into_iter().collect(),
+        offsets: [("broker-y".to_string(), 10)].into_iter().collect(),
+        reported_at_millis: 7_000,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+    };
+    store
+        .record_replica_report(doomed_report.clone(), "broker-x")
+        .await
+        .expect("report");
 
     store
         .delete_stream(&stream_key)
         .await
         .expect("delete the stream");
+    // A stream created again at the same generation (after a restore rewinds
+    // the change seq) would otherwise inherit the old log's report.
+    assert!(
+        !store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .iter()
+            .any(|report| report.key == doomed_report.key),
+        "the deleted stream's replica report outlived its assignments",
+    );
     let after_stream = store.list_shard_assignments().await.expect("list");
     assert_eq!(
         owned(&after_stream, ShardKind::Stream),

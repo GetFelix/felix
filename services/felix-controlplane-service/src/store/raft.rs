@@ -75,12 +75,32 @@ impl RaftStore {
         self.machine.store()
     }
 
+    /// The metadata level every member is known to be at. A member that has
+    /// not answered a probe since this process started counts as 0 in
+    /// `cluster_version`, but `stream_incarnations` was finalized only with
+    /// every member at [`INCARNATION_LEVEL`], so once it is, the group is at
+    /// least there. Without that floor, a restarted member with one peer down
+    /// refuses an incarnated create the finalize already allows.
+    async fn group_level(&self) -> u16 {
+        let level = self.handle.cluster_version().await;
+        let finalized = self
+            .local()
+            .enabled_fleet_features()
+            .await
+            .is_ok_and(|enabled| enabled.contains(felix_common::fleet::STREAM_INCARNATIONS.name()));
+        if finalized {
+            level.max(INCARNATION_LEVEL)
+        } else {
+            level
+        }
+    }
+
     /// Propose one command and decode its outcome. A command newer than
     /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
         let needs = command.version();
         if needs > 0 {
-            let level = self.handle.cluster_version().await;
+            let level = self.group_level().await;
             if level < needs {
                 return Err(StoreError::Conflict(format!(
                     "this change needs every control-plane member at metadata version {needs}, \
@@ -340,7 +360,7 @@ impl ControlPlaneStore for RaftStore {
             caches: Vec::new(),
         }
         .version();
-        self.handle.cluster_version().await >= needs
+        self.group_level().await >= needs
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {

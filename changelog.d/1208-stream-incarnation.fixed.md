@@ -19,8 +19,11 @@
   finalize keeps the data as before, so a stream created again at
   incarnation 0 reopens it consistently with the quorum marks kept for it.
   The first assignment of an incarnated stream's shard takes its change's
-  sequence number as its generation, so a recreated stream never repeats a
-  generation of the deleted one; a follower refuses replication for an
+  sequence number as its generation. A control-plane restore can still make
+  that equal to a deleted incarnation's, so leaders keep follower positions
+  and quorum marks per incarnation too, and a stream delete takes its shards'
+  replica reports in the in-memory and Raft stores as Postgres already did.
+  A follower refuses replication for an
   incarnation it does not hold (the new internal `Incarnated` frame, kind
   40). The catalog sync moves past each change it applies, a shard assigned
   before its stream registers waits without holding up the others, and a
@@ -31,7 +34,9 @@
   the incarnation, and `restore-point` sets each stream's back to the
   point's. A broker joining a fleet with many deleted names records their
   tombstones with one flush, and `POST /v1/resources` answers with the
-  incarnation the store gave each stream.
+  incarnation the store gave each stream. Once incarnations are finalized, a
+  create proposes the clock even while a Raft member has not yet heard from a
+  peer since it restarted.
 - Upgrade notes for `stream_incarnations` (#1208): it needs every Raft
   control-plane member at metadata level 10 and every broker on this release
   before it can be finalized. A Postgres control plane runs migration `0028`

@@ -911,14 +911,25 @@ survives a marker lost to a crash
 (`a_snapshots_tombstones_record_floors_and_delete_held_data`,
 `a_tombstone_floor_outlives_its_markers`).
 
-**A new incarnation starts above the old generations.** Brokers keep quorum
-marks, follower positions and replica reports per shard and generation. The
-control plane gives the first assignment of an incarnated stream's shard the
-sequence number of the change that records it, which is above every
-generation any earlier stream of that name reached, so none of what was kept
-for the deleted stream counts for the new one's records. A broker leading the
-shard also starts a new, fenced term whenever the assignment names another
-incarnation, whatever the generations say.
+**Replication state does not carry over to a new incarnation.** The control
+plane gives the first assignment of an incarnated stream's shard the sequence
+number of the change that records it, which is usually above every generation
+an earlier stream of that name reached. A control-plane restore rewinds that
+sequence, so after one the new stream can start at the deleted one's
+generation, and if the delete and the create arrive in one catalog poll, the
+leader never sees the shard unled in between. So the leader keeps its follower
+positions and quorum marks per shard, generation *and* incarnation. Follower
+positions start over when the registered incarnation changes, a quorum wait
+only counts a mark measured on the log of the incarnation registered now, and
+a replication pass that began on the old log publishes neither its mark nor
+its report (`a_recreate_at_the_same_generation_does_not_inherit_the_mark`).
+A promotion fence taken on the old incarnation's logs does not open the new
+one. A broker leading the shard also starts a new, fenced term whenever the
+assignment names another incarnation, whatever the generations say.
+
+Replica reports to the control plane name only the generation, so the leader
+drops a report from a pass that began on the old log, and deleting a stream
+deletes its shards' reports with their assignments in every store.
 
 **A delete is applied once.** A delete names the incarnation through which the
 name is gone, so a delete delivered again after the create that followed it

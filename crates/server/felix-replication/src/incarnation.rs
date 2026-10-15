@@ -15,6 +15,36 @@
 use felix_broker::Broker;
 use felix_wire::internal::ShardRef;
 
+/// The incarnation a shard's logs open at on this broker now: the registered
+/// one for a stream, and 0 for a cache, a stream from before incarnations or
+/// one not registered. Replication state (cursors, quorum marks) describes
+/// one log, so it is kept per incarnation as well as per generation.
+pub(crate) fn current(
+    broker: &Broker,
+    stream_kind: bool,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> u64 {
+    if !stream_kind {
+        return 0;
+    }
+    broker
+        .stream_incarnation(tenant_id, namespace, stream)
+        .unwrap_or(0)
+}
+
+/// [`current`], for a routing key.
+pub(crate) fn of(broker: &Broker, key: &felix_router::ShardKey) -> u64 {
+    current(
+        broker,
+        key.kind == felix_router::ShardKind::Stream,
+        &key.tenant_id,
+        &key.namespace,
+        &key.stream,
+    )
+}
+
 /// The reference to `key` at `generation`, naming this broker's incarnation of
 /// a stream shard when it is not 0.
 pub(crate) fn shard_ref(

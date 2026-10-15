@@ -286,20 +286,25 @@ anything to the model:
   does not hold (`a_follower_refuses_an_incarnation_it_does_not_hold`,
   `a_recreate_between_the_check_and_the_open_is_refused`);
 - an incarnated stream's first generation is the change seq that assigns it,
-  above every generation an earlier incarnation reached, so a mark or report
-  kept for the deleted stream never counts for the new one
-  (`a_recreated_stream_never_repeats_a_generation`). A broker compares the
-  incarnation before the generation, so a restore that rewinds the seq still
-  opens the new stream as a new run rather than dropping it as stale
-  (`a_new_incarnation_opens_at_a_lower_generation`);
+  above every generation an earlier incarnation reached on one control-plane
+  timeline (`a_recreated_stream_never_repeats_a_generation`). A restore
+  rewinds the seq, so the generation alone does not separate the two runs:
+  the leader keys follower positions and quorum marks by incarnation as well,
+  so a mark or position kept for the deleted stream never counts for the new
+  one even at an equal generation
+  (`a_recreate_at_the_same_generation_does_not_inherit_the_mark`). A broker
+  compares the incarnation before the generation, so a restore that rewinds
+  the seq still opens the new stream as a new run rather than dropping it as
+  stale (`a_new_incarnation_opens_at_a_lower_generation`);
 - a stream from before incarnations, deleted before the finalize and created
   again at incarnation 0, reopens the old logs and restarts its shards at
   generation 0, as every release before incarnations did. The model does not
   cover a generation going back on one log; that case is unchanged here and
   ends once the name is deleted after the finalize.
 
-Each incarnated stream is then one run of the model from an empty log, at
-generations above the last run's. Nothing in the spec names the incarnation.
+Each incarnated stream is then one run of the model from an empty log, with
+none of the last run's per-shard state. Nothing in the spec names the
+incarnation.
 
 ### What ties this to the code, and what does not
 

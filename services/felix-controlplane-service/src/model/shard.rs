@@ -464,12 +464,13 @@ impl ReplicaReport {
 }
 
 /// The generation a shard's first assignment takes. For a stream with an
-/// incarnation, the sequence number of the change that records it: every
-/// generation the shard had under an earlier incarnation came from an
-/// earlier change, so it is below this, and no broker can take state it kept
-/// for the deleted stream's shard (quorum marks, follower positions, reports)
-/// as the new one's. A stream from before incarnations starts at 0, as every
-/// member of a Raft group that may hold one does.
+/// incarnation, the sequence number of the change that records it: on one
+/// timeline every generation the shard had under an earlier incarnation came
+/// from an earlier change, so it is below this. A restore rewinds the seq, so
+/// brokers also key what they keep per shard (quorum marks, follower
+/// positions) by incarnation, and a delete takes the shard's reports. A
+/// stream from before incarnations starts at 0, as every member of a Raft
+/// group that may hold one does.
 pub(crate) fn first_generation(incarnation: u64, change_seq: u64) -> u64 {
     if incarnation == 0 { 0 } else { change_seq }
 }
