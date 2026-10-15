@@ -89,6 +89,49 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The power-loss test model no longer mixes up a file with an earlier one that
+  had the same inode number (#1221). A file created after another was deleted
+  could get its inode number, and the model then spliced the new file's bytes
+  onto the old one's, or gave a deleted name whose unlink was not flushed the
+  new file's bytes after a crash. Files are now told apart by birth time and
+  inode generation as well.
+- A broker following the control plane's catalog no longer misses tenant,
+  namespace, stream or cache changes (#1224). Three ways to lose one are
+  closed, on Postgres and in memory: a snapshot now reads its items and its
+  `next_seq` at one point, so a delete landing between the two reads is no
+  longer counted but unseen; Postgres hands out each change table's `seq` in
+  commit order, so a reader can no longer pass a change that is still
+  committing; and a full page of changes (`FELIX_CONTROLPLANE_CHANGES_LIMIT`,
+  1000 by default) answers with the seq after its last change instead of the
+  feed's tail, which skipped everything past the first page. The node and
+  shard-assignment feeds had the same page bug and are fixed too. Brokers now
+  follow each feed page by page within a sync pass, up to 64 pages. The wire
+  format is unchanged; an older broker against a fixed control plane catches
+  up one page per sync interval.
+- A broker no longer moves a change-feed cursor backwards (#1224). On Raft a
+  control-plane member answers from its own applied state, so a broker whose
+  request reached a lagging member could replay changes it had already applied
+  (a stale delete removing a stream created again since) or, for shard
+  assignments, re-snapshot onto the member's older view. The catalog sync and
+  the shard watch now ignore an answer from behind what they applied and ask
+  again. Once a feed has answered from behind for 60 s it is taken as reset,
+  and the broker takes a new snapshot of it.
+- A Postgres catalog write that waits more than 5 s for other writes to the
+  same change feed now gives up with a retryable 503 `unavailable`, and writes
+  queued in one control-plane instance no longer hold pooled connections while
+  they wait, so a long cascading delete cannot starve reads (#1224). The
+  commit-order guarantee holds once every control-plane instance runs this
+  release. A Postgres write that gives up waiting answers 503
+  `busy` (nothing written, safe to retry); `felixctl` retries only `busy`, up
+  to three times over about two seconds. A Raft 503 `unavailable` may have
+  committed, so it is not retried.
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
 - A `ClusterClient` recovers when every broker changes IP at once, as in a
   rollout that restarts every pod (#1227). Reconnect dialled only the addresses
   it already held, and discovery needs one of them to answer, so the client

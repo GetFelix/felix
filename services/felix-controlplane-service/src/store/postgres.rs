@@ -13,7 +13,13 @@
 //! Three things about `seq` that are easy to get wrong:
 //! - it is monotonic *per change table*, not global across entity types;
 //! - `since` is inclusive (`seq >= since`);
-//! - `next_seq` is `MAX(seq) + 1`, i.e. the first sequence not yet observed.
+//! - `next_seq` is `MAX(seq) + 1`, i.e. the first sequence not yet observed,
+//!   except after a full page of changes, where it is the seq after the page's
+//!   last change.
+//!
+//! Rows and `next_seq` are read in one `REPEATABLE READ` transaction, and
+//! writers append to a change table one at a time (see `CatalogFeed`), so
+//! snapshot-then-poll neither skips nor invents a change.
 //!
 //! The optional retention task bounds each change table to the most recent N
 //! rows. That caps growth at the cost of the catch-up window: a client that
@@ -75,7 +81,23 @@ const RETENTION_TICK: Duration = Duration::from_secs(60);
 pub struct PostgresStore {
     pool: PgPool,
     config: StoreConfig,
+    /// One per [`CatalogFeed`], in its order. A writer queues here, holding
+    /// no connection, before it takes one to wait on the feed's advisory lock.
+    feed_gates: [tokio::sync::Mutex<()>; 4],
+    /// How long a writer waits for a feed before giving up with [`Busy`].
+    feed_wait: Duration,
 }
+
+/// Default for [`PostgresStore::feed_wait`]: well under the pool's acquire
+/// timeout, so writers queued behind a long cascade give up before the reads
+/// they share the pool with would.
+const FEED_WAIT: Duration = Duration::from_secs(5);
+
+/// A catalog write gave up waiting for another write to the same feed.
+/// Retryable: answered as 503.
+#[derive(Debug, thiserror::Error)]
+#[error("too many concurrent writes to the {0:?} change feed; retry")]
+pub(crate) struct Busy(CatalogFeed);
 
 impl PostgresStore {
     /// Connect, apply embedded migrations, and start the best-effort
@@ -87,6 +109,13 @@ impl PostgresStore {
         #[cfg(any(test, feature = "pg-tests"))]
         let _ = Self::connect_without_migrations;
         Self::connect_internal(pg, config, true).await
+    }
+
+    /// The same store with a different [`Self::feed_wait`].
+    #[cfg(all(test, feature = "pg-tests"))]
+    pub(crate) fn with_feed_wait(mut self, wait: Duration) -> Self {
+        self.feed_wait = wait;
+        self
     }
 
     /// Connect without running migrations, for tests that manage the schema
@@ -126,7 +155,12 @@ impl PostgresStore {
             spawn_retention_task(pool.clone(), retention);
         }
 
-        Ok(Self { pool, config })
+        Ok(Self {
+            pool,
+            config,
+            feed_gates: Default::default(),
+            feed_wait: FEED_WAIT,
+        })
     }
 
     /// The newest migration this build carries.
@@ -148,6 +182,11 @@ impl PostgresStore {
     /// This bounds response size, memory usage, and tail latency for callers polling changes.
     fn limit(&self) -> i64 {
         self.config.changes_limit as i64
+    }
+
+    /// [`Self::limit`] as a count, for [`ChangeSet::page`].
+    fn changes_limit(&self) -> usize {
+        self.config.changes_limit as usize
     }
 
     async fn refresh_counts(&self) -> StoreResult<()> {
@@ -800,6 +839,118 @@ async fn begin_consistent_read(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+/// One of the catalog change tables.
+///
+/// Their `seq` is a `BIGSERIAL`, and a sequence hands out numbers in request
+/// order, not commit order: a reader could see seq 11 committed while 10 is
+/// still in flight, resume at 12, and never see 10. So every writer appends
+/// under the feed's advisory lock, held until it commits or rolls back. Seq
+/// order is then commit order, and `MAX(seq) + 1` read in one snapshot never
+/// passes a change that is still to come. `node_change_seq` gets the same
+/// property from a locked counter row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CatalogFeed {
+    Tenants,
+    Namespaces,
+    Streams,
+    Caches,
+}
+
+impl CatalogFeed {
+    fn lock_key(self) -> i64 {
+        // "fxfeed_t", "fxfeed_n", "fxfeed_s", "fxfeed_c" in ASCII.
+        match self {
+            Self::Tenants => 0x6678_6665_6564_5f74,
+            Self::Namespaces => 0x6678_6665_6564_5f6e,
+            Self::Streams => 0x6678_6665_6564_5f73,
+            Self::Caches => 0x6678_6665_6564_5f63,
+        }
+    }
+
+    fn head_query(self) -> &'static str {
+        match self {
+            Self::Tenants => "SELECT COALESCE(MAX(seq) + 1, 0) FROM tenant_changes",
+            Self::Namespaces => "SELECT COALESCE(MAX(seq) + 1, 0) FROM namespace_changes",
+            Self::Streams => "SELECT COALESCE(MAX(seq) + 1, 0) FROM stream_changes",
+            Self::Caches => "SELECT COALESCE(MAX(seq) + 1, 0) FROM cache_changes",
+        }
+    }
+}
+
+/// Begin a transaction that appends to `feeds`, holding each feed's lock
+/// until it ends. Keep the returned gates alive until the transaction ends.
+///
+/// The locks come first, before any row lock: a writer holding a feed lock
+/// while it waits on another writer's row, which in turn waits on that feed,
+/// would deadlock. They are taken in one fixed order for the same reason.
+///
+/// Writers in this process queue on an in-memory gate before they take a
+/// connection, so a long cascade parks at most one connection per feed here
+/// rather than starving reads of the pool. Waiting is bounded by `feed_wait`,
+/// on the gate and on the lock (which another instance may hold); a writer
+/// that runs out gets [`Busy`].
+async fn begin_feed_write<'s>(
+    store: &'s PostgresStore,
+    feeds: &[CatalogFeed],
+) -> StoreResult<(
+    Vec<tokio::sync::MutexGuard<'s, ()>>,
+    sqlx::Transaction<'static, sqlx::Postgres>,
+)> {
+    let mut feeds = feeds.to_vec();
+    feeds.sort_unstable();
+    feeds.dedup();
+    let deadline = tokio::time::Instant::now() + store.feed_wait;
+    let mut gates = Vec::with_capacity(feeds.len());
+    for &feed in &feeds {
+        let gate = tokio::time::timeout_at(deadline, store.feed_gates[feed as usize].lock())
+            .await
+            .map_err(|_| busy(feed))?;
+        gates.push(gate);
+    }
+    let mut tx = store.pool.begin().await?;
+    for &feed in &feeds {
+        // lock_timeout bounds each wait on its own, so it is set to what is
+        // left of the deadline before every lock, not once for all of them.
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(busy(feed));
+        }
+        sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+            .bind(format!("{}ms", left.as_millis().max(1)))
+            .execute(&mut *tx)
+            .await?;
+        let locked = sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(feed.lock_key())
+            .execute(&mut *tx)
+            .await;
+        match locked {
+            Ok(_) => {}
+            // 55P03: lock_not_available, which is how lock_timeout ends a wait.
+            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("55P03") => {
+                return Err(busy(feed));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    // Only the feed locks are bounded; the rest of the write waits as before.
+    sqlx::query("SET LOCAL lock_timeout TO DEFAULT")
+        .execute(&mut *tx)
+        .await?;
+    Ok((gates, tx))
+}
+
+fn busy(feed: CatalogFeed) -> StoreError {
+    StoreError::Unexpected(Busy(feed).into())
+}
+
+/// The first seq `feed` has not handed out, as of this transaction's snapshot.
+async fn feed_head(tx: &mut sqlx::PgConnection, feed: CatalogFeed) -> StoreResult<u64> {
+    let head = sqlx::query_scalar::<_, i64>(feed.head_query())
+        .fetch_one(&mut *tx)
+        .await?;
+    Ok(head as u64)
 }
 
 /// `NotFound` unless the namespace exists, checked inside the caller's
