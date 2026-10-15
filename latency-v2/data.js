@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792041874163,
+  "lastUpdate": 1792042983621,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -37752,6 +37752,72 @@ window.BENCHMARK_DATA = {
             "range": "335.46",
             "unit": "us",
             "extra": "trials: 5\nmedian: 628.00\nmean: 780.60\nstdev: 335.46\ncv: 42.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "278fc450255b3aefb28906909138092baa717090",
+          "message": "test(storage): tell a reused inode number apart in the power-loss model (#1221) (#1231)\n\n* test(storage): tell a reused inode number apart in the power-loss model (#1221)\n\nThe model keyed what the device holds by device and inode number, which\noutlive an unlink. A file that got a deleted file's number was spliced onto\nthe old bytes, and a crash that brought the deleted name back gave it the\nnew file's bytes. Key by birth time as well.\n\n* test(storage): make the inode-reuse test independent of the filesystem's choice\n\n* fix(storage): tell power-loss model files apart by inode generation too\n\n* fix(storage): key power-loss files from one descriptor; read generation as int",
+          "timestamp": "2026-10-14T22:38:58-07:00",
+          "tree_id": "1b38148407a9c9ab8d0a370e976863d0e55e584b",
+          "url": "https://github.com/GetFelix/felix/commit/278fc450255b3aefb28906909138092baa717090"
+        },
+        "date": 1792042979833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 180.20\nstdev: 1.92\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 241.20\nstdev: 4.76\ncv: 1.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 293,
+            "range": "98.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 293.00\nmean: 333.00\nstdev: 98.29\ncv: 29.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 219.40\nstdev: 1.82\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 575,
+            "range": "179.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 575.00\nmean: 648.40\nstdev: 179.78\ncv: 27.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2368,
+            "range": "713.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2368.00\nmean: 2096.60\nstdev: 713.51\ncv: 34.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
