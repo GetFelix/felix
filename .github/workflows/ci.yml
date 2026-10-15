@@ -166,11 +166,13 @@ jobs:
   # Heavy, so pushes to main run it on the self-hosted Azure runners. Every PR
   # runs on GitHub-hosted: that keeps PRs out of the Azure queue, and fork code
   # never reaches a persistent machine. See docs-site development/building.md.
+  # Every crate but felix-cluster. The cluster suites take about three
+  # quarters of the suite's time, so they run beside this in `cluster`.
   test:
     needs: changes
     if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 120
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
       FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
@@ -220,8 +222,64 @@ jobs:
           # install fails with "API rate limit exceeded" before any code runs.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lint
-        run: task lint
+      - name: Test
+        env:
+          # raft_chaos waits on the same scaled constants as the cluster suites.
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+        run: task test:workspace
+
+      # Failed 74 times in 640 under load, and never alone, before cache puts
+      # staged on a task of their own.
+      - name: Cancelled put under load
+        run: task test:stress
+
+  # felix-cluster's suites, the three longest each on a runner of its own
+  # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
+  # load-sensitive, and sharing a runner would make them flaky.
+  cluster:
+    name: Cluster tests (${{ matrix.suite }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [routing, failures, history, rest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        if: runner.environment == 'github-hosted'
+        uses: swatinem/rust-cache@v2
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          # Shared with `test`: a runner takes one job at a time, and the
+          # cluster build is a subset of the workspace's.
+          slot: ci-test
+
+      - name: Install Task
+        uses: arduino/setup-task@v3
+        with:
+          # Pinned: a new tag can be published before its binaries are.
+          version: 3.53.1
+          # Authenticated, so this reads the repo's 1000/hr budget rather than
+          # the 60/hr GitHub allows an unauthenticated IP. Runners share their
+          # IP, so the anonymous budget is routinely spent by other jobs and the
+          # install fails with "API rate limit exceeded" before any code runs.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Setup waits in the cluster and chaos suites are wall-clock constants
       # chosen against a developer machine. A shared runner takes longer to
@@ -237,7 +295,7 @@ jobs:
           # steps below upload the failing tests' share.
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         shell: bash
-        run: task test 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+        run: task test:cluster SUITE=${{ matrix.suite }} 2>&1 | tee "$RUNNER_TEMP/test-output.log"
 
       # Only the tests libtest reported as failed, matched by name to the
       # folder the harness kept for each, plus the control-plane log of the
@@ -271,17 +329,49 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: failed-cluster-logs-${{ github.run_attempt }}
+          name: failed-cluster-logs-${{ matrix.suite }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/failed-cluster-logs.tar.gz
           if-no-files-found: ignore
           retention-days: 7
           # Already gzipped.
           compression-level: 0
 
-      # Failed 74 times in 640 under load, and never alone, before cache puts
-      # staged on a task of their own.
-      - name: Cancelled put under load
-        run: task test:stress
+  # Lint and the repository checks, beside the tests rather than in front of
+  # them.
+  checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        if: runner.environment == 'github-hosted'
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Task
+        uses: arduino/setup-task@v3
+        with:
+          # Pinned: a new tag can be published before its binaries are.
+          version: 3.53.1
+          # Authenticated, so this reads the repo's 1000/hr budget rather than
+          # the 60/hr GitHub allows an unauthenticated IP. Runners share their
+          # IP, so the anonymous budget is routinely spent by other jobs and the
+          # install fails with "API rate limit exceeded" before any code runs.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lint
+        run: task lint
 
       - name: cargo-deny
         run: task deny
@@ -625,7 +715,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, test, chart, python, typescript, spec-pairing, formal, fuzz]
+    needs: [changes, images, test, cluster, checks, chart, python, typescript, spec-pairing, formal, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
