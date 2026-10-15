@@ -157,6 +157,12 @@ pub enum Kind {
     Ping = 38,
     /// The answer to `Ping`, given by the broker's serving runtime.
     Pong = 39,
+    /// A replication request (records, bootstrap, rebuild, fence or fetch)
+    /// with the stream incarnation the sender's log belongs to: the
+    /// correlation id, the incarnation, the inner kind and the inner body.
+    /// Sent only once the fleet finalized `stream_incarnations`, so every
+    /// peer reads it.
+    Incarnated = 40,
 }
 
 impl Kind {
@@ -203,6 +209,7 @@ impl Kind {
             37 => Ok(Kind::ReplicateTimedFetch),
             38 => Ok(Kind::Ping),
             39 => Ok(Kind::Pong),
+            40 => Ok(Kind::Incarnated),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

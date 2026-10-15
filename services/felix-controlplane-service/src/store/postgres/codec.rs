@@ -27,6 +27,7 @@ pub(super) struct DbStream {
     pub(super) durable: bool,
     pub(super) region: Option<String>,
     pub(super) routing: Option<String>,
+    pub(super) incarnation: i64,
 }
 
 /// Row shape for `namespaces` table.
@@ -66,6 +67,7 @@ pub(super) fn stream_from_db(row: DbStream) -> StoreResult<Stream> {
         durable: row.durable,
         region: row.region,
         routing: parse_routing(row.routing.as_deref())?,
+        incarnation: row.incarnation as u64,
     })
 }
 

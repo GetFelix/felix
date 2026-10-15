@@ -90,3 +90,50 @@ fn the_label_is_the_human_readable_form() {
         "acme/default/orders/3"
     );
 }
+
+#[test]
+fn incarnation_zero_keeps_the_legacy_name() {
+    let key = shard("acme", "default", "orders", 3);
+    assert_eq!(incarnation_dir_name(&key, 0), shard_dir_name(&key));
+}
+
+#[test]
+fn incarnations_of_one_shard_get_distinct_directories() {
+    let key = shard("acme", "default", "orders", 3);
+    let first = incarnation_dir_name(&key, 7);
+    let second = incarnation_dir_name(&key, 8);
+    assert_ne!(first, second);
+    assert_ne!(first, shard_dir_name(&key));
+    assert!(!first.contains('.'), "{first}");
+}
+
+#[test]
+fn a_directory_is_matched_to_its_stream_exactly() {
+    let key = shard("acme", "default", "orders", 12);
+    for incarnation in [0, 0xa51f] {
+        let name = incarnation_dir_name(&key, incarnation);
+        assert_eq!(
+            stream_shard_of(&name, "acme", "default", "orders"),
+            Some((12, incarnation))
+        );
+        // Same readable prefix, different stream.
+        assert_eq!(stream_shard_of(&name, "acme", "default", "Orders"), None);
+        assert_eq!(stream_shard_of(&name, "acme", "default", "orders_12"), None);
+    }
+    assert_eq!(
+        stream_shard_of(".deleted", "acme", "default", "orders"),
+        None
+    );
+}
+
+#[test]
+fn a_directory_name_gives_back_its_streams_prefix() {
+    let key = shard("acme", "default", "orders-0123456789abcdef", 12);
+    let prefix = stream_prefix("acme", "default", "orders-0123456789abcdef");
+    for incarnation in [0, 0xa51f] {
+        let name = incarnation_dir_name(&key, incarnation);
+        assert_eq!(prefix_of(&name), Some(prefix.as_str()), "{name}");
+    }
+    assert_eq!(prefix_of(".deleted"), None);
+    assert_eq!(prefix_of("caches"), None);
+}

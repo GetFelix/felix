@@ -408,6 +408,7 @@ fn placed(stream: &str, shard: u32, routing: ShardRouting) -> Placed {
         draining: false,
         successor: None,
         routing,
+        incarnation: 0,
     }
 }
 

@@ -196,10 +196,18 @@ impl MetadataStateMachine {
                     fleet,
                 })
             }
+            // `Streams` only once a stream has an incarnation, which needs
+            // every member at the level that decodes it; `Unit` before.
             MetaCommand::CreateResources { streams, caches } => store
                 .create_resources(streams, caches)
                 .await
-                .map(|()| MetaResponse::Unit)
+                .map(|streams| {
+                    if streams.iter().any(|stream| stream.incarnation != 0) {
+                        MetaResponse::Streams { streams }
+                    } else {
+                        MetaResponse::Unit
+                    }
+                })
                 .map_err(Into::into),
             MetaCommand::FinalizeFleetFeature { feature } => store
                 .finalize_fleet_feature(&feature)

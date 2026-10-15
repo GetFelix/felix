@@ -22,6 +22,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }
 
@@ -52,6 +53,7 @@ fn status(
         drained,
         leader_offset: y_behind.map(|behind| 100 + behind),
         halted: Default::default(),
+        stream_incarnation: 0,
     }
 }
 
@@ -136,6 +138,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             joining: None,
             move_started_at_millis: None,
             move_reason: None,
+            incarnation: 0,
         })
         .await
         .expect("fenced move");
@@ -263,6 +266,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -381,5 +385,135 @@ async fn stale_reports_are_refused_and_do_not_overwrite_a_newer_one() {
     assert!(
         held[0].caught_up.is_empty(),
         "the late report overwrote the newer one"
+    );
+}
+
+/// A report measured on another incarnation of the stream than the
+/// assignment's is refused. After a restore a recreated stream can be at the
+/// deleted one's generation, and a broker that has not seen the recreate yet
+/// reports the old log, whose longer tail would refuse every real report.
+#[tokio::test]
+async fn a_report_on_another_incarnation_is_refused() {
+    let (store, keys) = one_shard_cluster().await;
+    let assigned = store
+        .put_shard_assignment(assignment(ShardState::Active, None))
+        .await
+        .expect("assign");
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let send = |stream_incarnation: u64, expected: StatusCode| {
+        let state = state.clone();
+        let token = token(&keys, &["node.manage:cluster:*"]);
+        async move {
+            let report = serde_json::json!({
+                "incarnation": 0,
+                "shards": [{
+                    "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+                    "generation": assigned.generation, "caught_up": ["broker-y"],
+                    "replica_offsets": [], "leader_offset": 100,
+                    "stream_incarnation": stream_incarnation,
+                }],
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/nodes/broker-x/replica-status")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(report.to_string()))
+                .expect("request");
+            let response = crate::api::build_router(state)
+                .oneshot(request)
+                .await
+                .expect("response");
+            assert_eq!(response.status(), expected);
+        }
+    };
+    send(5, StatusCode::CONFLICT).await;
+    assert!(
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .is_empty(),
+        "a report on another incarnation's log was stored"
+    );
+    send(assigned.incarnation, StatusCode::OK).await;
+    assert_eq!(
+        store.list_replica_reports().await.expect("reports").len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_report_without_an_incarnation_is_stale_against_an_incarnated_assignment() {
+    let (store, keys) = one_shard_cluster().await;
+    // The store owns an assignment's incarnation: give the stream one by
+    // finalizing the feature and recreating it.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-x", "broker-y"].into_iter().enumerate() {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, 7500 + i as u16),
+                &[feature],
+            ))
+            .await
+            .expect("node");
+    }
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let stream = store
+        .get_stream(&crate::model::StreamKey {
+            tenant_id: "t1".into(),
+            namespace: "ns".into(),
+            stream: "orders".into(),
+        })
+        .await
+        .expect("stream");
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".into(),
+            namespace: "ns".into(),
+            stream: "orders".into(),
+        })
+        .await
+        .expect("delete");
+    store.create_stream(stream).await.expect("recreate");
+    let assigned = store
+        .put_shard_assignment(assignment(ShardState::Active, None))
+        .await
+        .expect("assign");
+    assert_ne!(assigned.incarnation, 0);
+    let state = app_state_ready(Arc::clone(&store) as _);
+    // An old broker: no `stream_incarnation` key at all.
+    let report = serde_json::json!({
+        "incarnation": 0,
+        "shards": [{
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "generation": assigned.generation, "caught_up": ["broker-y"],
+            "replica_offsets": [], "leader_offset": 100,
+        }],
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/nodes/broker-x/replica-status")
+        .header(
+            "authorization",
+            format!("Bearer {}", token(&keys, &["node.manage:cluster:*"])),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(report.to_string()))
+        .expect("request");
+    let response = crate::api::build_router(state)
+        .oneshot(request)
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .is_empty()
     );
 }

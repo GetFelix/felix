@@ -85,6 +85,7 @@ fn stream() -> Stream {
         durable: true,
         region: Some(s("r")),
         routing: StreamRouting::JumpHash,
+        incarnation: 7,
     }
 }
 
@@ -176,6 +177,7 @@ fn assignment() -> ShardAssignment {
         joining: Some(s("c")),
         move_started_at_millis: Some(1),
         move_reason: Some(MoveReason::Drain),
+        incarnation: 7,
     }
 }
 
@@ -194,6 +196,7 @@ fn report() -> ReplicaReport {
             since_millis: 1,
         }),
         counter_offsets: any_map(1),
+        stream_incarnation: Some(1),
     }
 }
 
@@ -312,6 +315,7 @@ fn exported() -> ExportedState {
             op: StreamChangeOp::Created,
             key: stream_key(),
             stream: Some(stream()),
+            deleted_through: Some(1),
         }),
         cache_changes: log(CacheChange {
             seq: 1,
@@ -335,6 +339,12 @@ fn exported() -> ExportedState {
             tenant_id: s("t"),
             principal_id: s("p"),
             revoked_at: 1,
+        }],
+        stream_tombstones: vec![crate::model::StreamTombstone {
+            tenant_id: s("t"),
+            namespace: s("n"),
+            stream: s("s"),
+            incarnation: 1,
         }],
     }
 }
@@ -718,8 +728,9 @@ fn a_command_needs_the_level_of_its_newest_field() {
 fn a_command_at_its_defaults_needs_only_its_variant() {
     let mut plain = stream();
     plain.routing = StreamRouting::Modulo;
+    plain.incarnation = 0;
     assert_eq!(MetaCommand::CreateStream { stream: plain }.version(), 0);
-    assert_eq!(MetaCommand::CreateStream { stream: stream() }.version(), 3);
+    assert_eq!(MetaCommand::CreateStream { stream: stream() }.version(), 10);
 
     let mut token = refresh_token();
     token.narrowing = None;

@@ -69,6 +69,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -80,6 +81,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                             op: TenantChangeOp::Deleted,
                             tenant_id: "t1".to_string(),
                             tenant: None,
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -174,6 +176,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -197,6 +200,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                                 namespace: "ns".to_string(),
                             },
                             namespace: None,
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -276,6 +280,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -289,6 +294,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             tenant: Some(Tenant {
                                 tenant_id: "t1".to_string(),
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -308,6 +314,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 tenant_id: "t1".to_string(),
                                 namespace: "ns1".to_string(),
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -330,6 +337,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 cache: "c1".to_string(),
                                 consistency: None,
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -340,6 +348,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                 get(|| async {
                     Json(StreamChangesResponse {
                         items: vec![StreamChange {
+                            deleted_through: None,
                             op: StreamChangeOp::Created,
                             key: StreamKey {
                                 tenant_id: "t1".to_string(),
@@ -354,7 +363,9 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 durable: true,
                                 consistency: None,
                                 retention: None,
+                                incarnation: 0,
                             }),
+                            seq: None,
                         }],
                         next_seq: 2,
                     })
@@ -433,6 +444,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(StreamSnapshotResponse {
                         items: vec![],
                         next_seq: 0,
+                        tombstones: vec![],
                     })
                 }),
             )
@@ -444,6 +456,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                         let page: Vec<TenantChange> = tenants
                             .get(since as usize)
                             .map(|tenant_id| TenantChange {
+                                seq: Some(since),
                                 op: TenantChangeOp::Created,
                                 tenant_id: tenant_id.to_string(),
                                 tenant: Some(Tenant {
@@ -524,6 +537,7 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
                 get(|| async {
                     Json(TenantChangesResponse {
                         items: vec![TenantChange {
+                            seq: Some(1),
                             op: TenantChangeOp::Deleted,
                             tenant_id: "t1".to_string(),
                             tenant: None,

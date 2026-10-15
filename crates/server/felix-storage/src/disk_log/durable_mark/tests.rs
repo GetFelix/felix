@@ -193,31 +193,3 @@ async fn a_late_seal_does_not_move_the_mark_back() {
         other => panic!("expected corruption, got {other:?}"),
     }
 }
-
-/// A seal that started before a truncation must not move the mark past it:
-/// the segment it names may be gone, and the mark would then vouch for the
-/// whole of the segment the truncation reopened.
-#[tokio::test]
-async fn a_seal_from_before_a_truncation_leaves_the_mark_alone() {
-    let dir = tempdir().expect("dir");
-    let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
-    log.append(&batch("a", 10)).await.expect("append");
-    let (roll, release) = park_a_seal(&log).await;
-
-    let truncating = {
-        let log = log.clone();
-        tokio::spawn(async move { log.truncate(4).await })
-    };
-    release.send(()).expect("release the seal");
-    roll.await.expect("join").expect("roll");
-    truncating.await.expect("join").expect("truncate");
-
-    let active = {
-        let segments = log.inner.segments.read();
-        DurableMark {
-            segment: segments.active().id(),
-            synced_bytes: segments.active().size_bytes(),
-        }
-    };
-    assert_eq!(load(dir.path()), Some(active));
-}

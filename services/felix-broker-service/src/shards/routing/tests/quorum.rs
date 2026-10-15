@@ -81,6 +81,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
             state: "active".to_string(),
             successor: successor.map(str::to_string),
             routing: Default::default(),
+            incarnation: 0,
         },
     )]
     .into_iter()

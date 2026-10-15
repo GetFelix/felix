@@ -20,6 +20,7 @@ fn route(replicas: &[&str], successor: Option<&str>) -> Route {
         generation: 4,
         draining: false,
         successor: successor.map(str::to_string),
+        incarnation: 0,
     }
 }
 

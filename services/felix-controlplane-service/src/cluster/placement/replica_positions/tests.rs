@@ -38,6 +38,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
     let caught_up: BTreeSet<String> = caught_up.iter().map(|n| n.to_string()).collect();
     ReplicaReport {
         counter_offsets: Default::default(),
+        stream_incarnation: None,
         key: key(stream),
         generation: 4,
         offsets: caught_up
@@ -215,6 +216,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
         .record_replica_report(
             ReplicaReport {
                 counter_offsets: Default::default(),
+                stream_incarnation: None,
                 key: key.clone(),
                 generation,
                 caught_up: ["broker-b".to_string()].into_iter().collect(),

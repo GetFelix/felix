@@ -52,6 +52,10 @@ pub struct LogCache {
     /// Whether each cache's logs are held at the commit offset, keyed by
     /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
     holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
+    /// Which incarnation of each name to open. Only consumer-group state and
+    /// dead letters set one, being a stream's; a cache's shards stay at 0.
+    incarnations: crate::incarnation::Incarnations,
+    dirs: crate::incarnation::DirIndex,
 }
 
 impl LogCache {
@@ -64,10 +68,13 @@ impl LogCache {
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         crate::io::create_dir_all_durable(&root).map_err(StorageError::Io)?;
+        crate::incarnation::purge_in_background(root.clone());
         Ok(Self {
             root,
             config,
             shards: ShardSlots::new(),
+            incarnations: Default::default(),
+            dirs: Default::default(),
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
             holds: SyncMutex::new(std::collections::HashMap::new()),
@@ -76,6 +83,10 @@ impl LogCache {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn config(&self) -> &LogConfig {
+        &self.config
     }
 
     /// The write behind [`StorageApi::put`].
@@ -422,7 +433,7 @@ impl LogCache {
         self.shards
             .open_entries()
             .into_iter()
-            .map(|(id, _)| id)
+            .map(|((tenant, namespace, cache, shard, _), _)| (tenant, namespace, cache, shard))
             .collect()
     }
 
@@ -642,7 +653,33 @@ impl LogCache {
         base_offset: u64,
     ) -> Result<DiskLog> {
         Ok(self
-            .shard_with_base(tenant, namespace, cache, shard, Some(base_offset))?
+            .shard_with_base(tenant, namespace, cache, shard, Some(base_offset), None)?
+            .current_log()
+            .await)
+    }
+
+    /// [`LogCache::shard_log`], or [`LogCache::shard_log_at`] with a base,
+    /// only when `incarnation` is the one set for `name`: refused with
+    /// [`StorageError::Closed`] otherwise, before anything is created. See
+    /// [`crate::DiskLogProvider::open_incarnation`].
+    pub async fn shard_log_for(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: u64,
+    ) -> Result<DiskLog> {
+        Ok(self
+            .shard_with_base(
+                tenant,
+                namespace,
+                name,
+                shard,
+                base_offset,
+                Some(incarnation),
+            )?
             .current_log()
             .await)
     }
@@ -661,14 +698,116 @@ impl LogCache {
         cache: &str,
         shard: u32,
     ) -> Result<()> {
+        for (id, _) in self.shards.open_entries() {
+            if id.0 == tenant && id.1 == namespace && id.2 == cache && id.3 == shard {
+                self.close_id(&id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open `tenant/namespace/name` at `incarnation` from here on, or nothing
+    /// with `None`. See [`crate::DiskLogProvider::set_stream_incarnation`].
+    pub fn set_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        incarnation: Option<u64>,
+    ) {
+        match incarnation {
+            Some(incarnation) => self.incarnations.set(tenant, namespace, name, incarnation),
+            None => self.incarnations.retire(tenant, namespace, name),
+        }
+    }
+
+    /// The incarnation set for `name` with [`Self::set_incarnation`], or
+    /// `None` when none is set or it was retired.
+    pub fn incarnation(&self, tenant: &str, namespace: &str, name: &str) -> Option<u64> {
+        self.incarnations.registered(tenant, namespace, name)
+    }
+
+    /// Close every shard of one incarnation of `name` and move all its
+    /// directories out of service. See
+    /// [`crate::DiskLogProvider::retire_stream`].
+    pub async fn retire(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        for (id, _) in self.shards.open_entries() {
+            if id.0 == tenant && id.1 == namespace && id.2 == name && id.4 == incarnation {
+                self.close_id(&id).await?;
+            }
+        }
+        self.dirs
+            .retire_stream(&self.root, tenant, namespace, name, incarnation)
+    }
+
+    /// The shard and incarnation of every directory of `name` here.
+    pub fn dirs_on_disk(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<(u32, u64)>> {
+        Ok(self
+            .dirs
+            .stream_dirs(&self.root, tenant, namespace, name)?
+            .into_iter()
+            .map(|(shard, incarnation, _)| (shard, incarnation))
+            .collect())
+    }
+
+    /// Close every shard of one incarnation of `name`, keeping its
+    /// directories. See [`crate::DiskLogProvider::close_incarnation`].
+    pub async fn close_incarnation(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        for (id, _) in self.shards.open_entries() {
+            if id.0 == tenant && id.1 == namespace && id.2 == name && id.4 == incarnation {
+                self.close_id(&id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Close one shard of `name` at incarnation 0 and move its directory out
+    /// of service, for a log named outside the stream's own key.
+    pub async fn retire_shard(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Result<()> {
         let id = (
             tenant.to_string(),
             namespace.to_string(),
-            cache.to_string(),
+            name.to_string(),
             shard,
+            0,
         );
+        self.close_id(&id).await?;
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: name.to_string(),
+            shard,
+        };
+        crate::incarnation::retire_dir(&self.root, &layout::shard_dir(&self.root, &key))?;
+        Ok(())
+    }
+
+    async fn close_id(&self, id: &CacheId) -> Result<()> {
         self.shards
-            .close(&id, |shard: Arc<CacheShard>| async move {
+            .close(id, |shard: Arc<CacheShard>| async move {
                 // Marked under the state lock, so a compaction pass sees it at
                 // its next step and stops, and nothing queued reopens the log.
                 let mut state = shard.state.lock().await;
@@ -721,7 +860,7 @@ impl LogCache {
         cache: &str,
         shard: u32,
     ) -> Result<Arc<CacheShard>> {
-        self.shard_with_base(tenant, namespace, cache, shard, None)
+        self.shard_with_base(tenant, namespace, cache, shard, None, None)
     }
 
     /// The configuration a shard of `cache` opens with: this store's, with
@@ -749,12 +888,19 @@ impl LogCache {
         cache: &str,
         shard: u32,
         base_offset: Option<u64>,
+        expected: Option<u64>,
     ) -> Result<Arc<CacheShard>> {
+        let incarnation = self
+            .incarnations
+            .resolve(tenant, namespace, cache)
+            .filter(|incarnation| expected.is_none_or(|expected| expected == *incarnation))
+            .ok_or_else(|| StorageError::Closed(format!("{tenant}/{namespace}/{cache}/{shard}")))?;
         let id = (
             tenant.to_string(),
             namespace.to_string(),
             cache.to_string(),
             shard,
+            incarnation,
         );
         let key = || ShardKey {
             tenant: tenant.to_string(),
@@ -768,10 +914,16 @@ impl LogCache {
             &id,
             || {
                 let key = key();
-                let dir = layout::shard_dir(&self.root, &key);
+                // Again under the slot's lock, as `DiskLogProvider` does.
+                if self.incarnations.resolve(tenant, namespace, cache) != Some(incarnation) {
+                    return Err(StorageError::Closed(layout::shard_label(&key)));
+                }
+                let dir = layout::incarnation_dir(&self.root, &key, incarnation);
                 let label = layout::shard_label(&key);
                 crate::legacy_swap::recover_legacy_swap(&dir)?;
                 let config = self.config_for(tenant, namespace, cache);
+                self.dirs
+                    .created(&layout::incarnation_dir_name(&key, incarnation));
                 let log = match base_offset {
                     Some(base) => DiskLog::open_at(dir.clone(), label.clone(), config, base)?,
                     None => DiskLog::open(dir.clone(), label.clone(), config)?,
@@ -964,7 +1116,7 @@ impl StorageApi for LogCache {
             ),
             hold,
         );
-        for ((tenant, ns, name, _), shard) in self.shards.open_entries() {
+        for ((tenant, ns, name, _, _), shard) in self.shards.open_entries() {
             if tenant != tenant_id || ns != namespace || name != cache {
                 continue;
             }
@@ -1058,9 +1210,10 @@ impl StorageApi for LogCache {
     }
 }
 
-/// Tenant, namespace, cache, and shard. The shard is part of the identity
-/// because each one is a separate log in a separate directory.
-type CacheId = (String, String, String, u32);
+/// Tenant, namespace, cache, shard and incarnation. The shard and incarnation
+/// are part of the identity because each is a separate log in a separate
+/// directory.
+type CacheId = (String, String, String, u32, u64);
 
 /// When [`LogCache::delete_entry`] writes its delete.
 #[derive(Clone, Copy)]

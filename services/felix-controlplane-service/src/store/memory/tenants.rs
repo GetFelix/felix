@@ -81,8 +81,11 @@ pub(super) async fn delete_tenant(store: &InMemoryStore, tenant_id: &str) -> Sto
     stream_keys.sort_by(|a, b| {
         (&a.tenant_id, &a.namespace, &a.stream).cmp(&(&b.tenant_id, &b.namespace, &b.stream))
     });
+    let nodes = store.nodes.read().await;
     for key in &stream_keys {
         if let Some(stream) = streams.remove(key) {
+            let deleted_through =
+                super::streams::record_tombstone(store, &nodes, key, stream.incarnation).await;
             store
                 .stream_changes
                 .write()
@@ -92,9 +95,11 @@ pub(super) async fn delete_tenant(store: &InMemoryStore, tenant_id: &str) -> Sto
                     op: StreamChangeOp::Deleted,
                     key: key.clone(),
                     stream: Some(stream),
+                    deleted_through,
                 });
         }
     }
+    drop(nodes);
     metrics::gauge!("felix_streams_total").set(streams.len() as f64);
     drop(streams);
 

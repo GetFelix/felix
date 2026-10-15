@@ -45,17 +45,20 @@ async fn write_shard_assignment(
     // all. Which of the two is decided by the key's kind, not by looking in
     // both: a cache and a stream may share a name, and falling back from one
     // to the other would let a shard of the wrong thing validate.
-    let shards = match assignment.key.kind {
-        ShardKind::Stream => store
-            .streams
-            .read()
-            .await
+    //
+    // The stream map stays read-locked until the write lands, so a delete of
+    // the stream waits for it and then takes it away, and one created again
+    // after is read with its own incarnation, never the old one stamped on
+    // an assignment of the new.
+    let streams = store.streams.read().await;
+    let (shards, incarnation) = match assignment.key.kind {
+        ShardKind::Stream => streams
             .get(&StreamKey {
                 tenant_id: assignment.key.tenant_id.clone(),
                 namespace: assignment.key.namespace.clone(),
                 stream: assignment.key.stream.clone(),
             })
-            .map(|stream| stream.shards)
+            .map(|stream| (stream.shards, stream.incarnation))
             .ok_or_else(|| StoreError::NotFound("stream".into()))?,
         ShardKind::Cache => store
             .caches
@@ -66,7 +69,7 @@ async fn write_shard_assignment(
                 namespace: assignment.key.namespace.clone(),
                 cache: assignment.key.stream.clone(),
             })
-            .map(|cache| cache.shards)
+            .map(|cache| (cache.shards, 0))
             .ok_or_else(|| StoreError::NotFound("cache".into()))?,
     };
     assignment.validate_within(shards).map_err(invalid_shard)?;
@@ -111,13 +114,17 @@ async fn write_shard_assignment(
                 existing.generation.saturating_add(1),
             )
         }
-        None => (ShardAssignmentChangeOp::Assigned, 0),
+        None => (
+            ShardAssignmentChangeOp::Assigned,
+            crate::model::first_generation(incarnation, state.changes.next_seq),
+        ),
     };
 
     // Store-owned, so a caller cannot pin a generation and make its own
     // stale report look current.
     let stored = ShardAssignment {
         generation,
+        incarnation,
         ..assignment
     };
     state.records.insert(stored.key.clone(), stored.clone());
@@ -238,8 +245,17 @@ pub(super) async fn record_replica_report(
             return Ok(ReportWrite::Stale);
         }
     }
+    // The API checked this against a read from before the lock; a recreate
+    // can land in between.
+    if report
+        .stream_incarnation
+        .is_some_and(|incarnation| incarnation != assignment.incarnation)
+    {
+        return Ok(ReportWrite::Stale);
+    }
     let mut reports = store.replica_reports.write().await;
     let mut report = report;
+    report.stream_incarnation = None;
     if let Some(held) = reports.get(&report.key) {
         if !report.supersedes(held) {
             return Ok(ReportWrite::Stale);

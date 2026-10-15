@@ -182,6 +182,7 @@ fn draining_router(leader: &str, replicas: &[&str], generation: u64) -> Arc<Shar
             // A move names where it is going; the drained report waits on it.
             successor: replicas.first().map(|r| r.to_string()),
             routing: Default::default(),
+            incarnation: 0,
         }],
         &nodes,
     );
@@ -270,6 +271,60 @@ async fn leader_with(count: usize) -> (Arc<Broker>, TempDir) {
     }
     let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
     (Arc::new(broker), dir)
+}
+
+/// A leader of the stream registered as durable and `Quorum` at
+/// `incarnation`, with `count` records in that incarnation's log, and
+/// requiring registration as a broker following the control plane does.
+async fn incarnated_leader(incarnation: u64, count: usize) -> (Arc<Broker>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.require_registered_streams();
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    reincarnate(&broker, incarnation, count).await;
+    (broker, dir)
+}
+
+/// Register the stream at `incarnation`, as a delete and a create landing in
+/// one catalog poll do, and append `count` records to that incarnation's log.
+async fn reincarnate(broker: &Broker, incarnation: u64, count: usize) {
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                shards: 1,
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+                incarnation,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("register");
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    for i in 0..count {
+        log.append(&[Bytes::from(format!("v{i}"))])
+            .await
+            .expect("append");
+    }
 }
 
 /// A leader with `count` records whose log says generation `generation` began

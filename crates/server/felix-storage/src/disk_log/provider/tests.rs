@@ -389,3 +389,102 @@ async fn a_lifted_provider_ignores_a_streams_hold() {
         .expect("open");
     assert!(!later.retention_held_at_commit());
 }
+
+#[tokio::test]
+async fn a_new_incarnation_never_sees_the_old_ones_records() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    provider.set_stream_incarnation("t", "ns", "orders", Some(7));
+    let old = provider.open_shard(&shard("orders")).expect("open");
+    old.append(&[record("a"), record("b")])
+        .await
+        .expect("append");
+
+    // A broker that missed the delete: the new incarnation is set while the
+    // old log is still open, and still gets a log of its own.
+    provider.set_stream_incarnation("t", "ns", "orders", Some(8));
+    let new = provider.open_shard(&shard("orders")).expect("open new");
+    assert_eq!(new.tail_offset().await.expect("tail"), 0);
+    assert!(!old.is_closed());
+
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire");
+    assert!(old.is_closed());
+    let reopened = provider
+        .opened_shard(&shard("orders"))
+        .expect("new still open");
+    assert_eq!(reopened.tail_offset().await.expect("tail"), 0);
+}
+
+#[tokio::test]
+async fn a_retired_stream_opens_nothing_and_comes_back_empty() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    let old = provider.open_shard(&shard("orders")).expect("open");
+    old.append(&[record("a")]).await.expect("append");
+
+    provider.set_stream_incarnation("t", "ns", "orders", None);
+    provider
+        .retire_stream("t", "ns", "orders", 0)
+        .await
+        .expect("retire");
+    assert!(old.is_closed());
+    assert!(matches!(
+        provider.open_shard(&shard("orders")),
+        Err(StorageError::Closed(_))
+    ));
+    assert!(!layout::shard_dir(dir.path(), &shard("orders")).exists());
+
+    // Created again at the same incarnation, as an older control plane does.
+    provider.set_stream_incarnation("t", "ns", "orders", Some(0));
+    let fresh = provider.open_shard(&shard("orders")).expect("open again");
+    assert_eq!(fresh.tail_offset().await.expect("tail"), 0);
+}
+
+#[tokio::test]
+async fn with_registration_required_an_unregistered_stream_opens_nothing() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    provider.require_registration();
+    assert!(matches!(
+        provider.open_shard(&shard("orders")),
+        Err(StorageError::Closed(_))
+    ));
+    assert!(!layout::shard_dir(dir.path(), &shard("orders")).exists());
+
+    provider.set_stream_incarnation("t", "ns", "orders", Some(3));
+    provider.open_shard(&shard("orders")).expect("open");
+    assert!(layout::incarnation_dir(dir.path(), &shard("orders"), 3).is_dir());
+}
+
+/// The directory index is read from disk once; one created after that is
+/// still found and retired.
+#[tokio::test]
+async fn a_directory_opened_after_the_index_was_read_is_still_retired() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    provider.set_stream_incarnation("t", "ns", "orders", Some(7));
+    assert!(
+        provider
+            .stream_incarnations_on_disk("t", "ns", "orders")
+            .expect("scan")
+            .is_empty()
+    );
+    let log = provider.open_shard(&shard("orders")).expect("open");
+    log.append(&[record("a")]).await.expect("append");
+    assert_eq!(
+        provider
+            .stream_incarnations_on_disk("t", "ns", "orders")
+            .expect("scan")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![7]
+    );
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire");
+    assert!(!layout::incarnation_dir(dir.path(), &shard("orders"), 7).exists());
+}

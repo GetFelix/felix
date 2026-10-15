@@ -27,6 +27,7 @@ struct DbShardAssignment {
     joining: Option<String>,
     move_started_at_millis: Option<i64>,
     move_reason: Option<String>,
+    incarnation: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -108,27 +109,32 @@ async fn write_shard_assignment(
         }
     }
 
+    // `FOR KEY SHARE` holds the stream or cache row until this commits, so a
+    // delete waits for the assignment to land (and then removes it with the
+    // row), and a stream created again after the delete is read with its own
+    // incarnation: never the old one stamped on an assignment of the new.
     // The shard bound comes from whichever of the two the key names, chosen
     // by the kind rather than by trying one and falling back to the other:
     // a cache and a stream may share a name, and a fallback would let a
     // shard of the wrong one validate against the other's count.
     let (table, missing) = match assignment.key.kind {
         ShardKind::Stream => (
-            "SELECT shards FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3",
+            "SELECT shards, incarnation FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR KEY SHARE",
             "stream",
         ),
         ShardKind::Cache => (
-            "SELECT shards FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3",
+            "SELECT shards, 0::BIGINT AS incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR KEY SHARE",
             "cache",
         ),
     };
-    let shards: Option<i32> = sqlx::query_scalar(table)
+    let bounds: Option<(i32, i64)> = sqlx::query_as(table)
         .bind(&assignment.key.tenant_id)
         .bind(&assignment.key.namespace)
         .bind(&assignment.key.stream)
         .fetch_optional(&mut *tx)
         .await?;
-    let shards = shards.ok_or_else(|| StoreError::NotFound(missing.into()))? as u32;
+    let (shards, incarnation) = bounds.ok_or_else(|| StoreError::NotFound(missing.into()))?;
+    let shards = shards as u32;
     assignment.validate_within(shards).map_err(invalid_shard)?;
 
     // Checked here rather than by a foreign key: the node reference has none
@@ -152,7 +158,7 @@ async fn write_shard_assignment(
     // reading the row this transaction is about to replace.
     let existing = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR UPDATE"#,
@@ -176,6 +182,7 @@ async fn write_shard_assignment(
         return Ok(AssignmentWrite::Stale { current });
     }
 
+    let mut change_seq = None;
     let (op, generation) = match &existing {
         Some(existing) => {
             if !existing.state.can_transition_to(assignment.state) {
@@ -189,25 +196,36 @@ async fn write_shard_assignment(
                 existing.generation.saturating_add(1),
             )
         }
-        None => (ShardAssignmentChangeOp::Assigned, 0),
+        // The change's sequence number is taken here, before the write, so
+        // a new stream's first generation can be it; see
+        // `model::first_generation`.
+        None => {
+            let seq = take_change_seq(&mut tx).await?;
+            change_seq = Some(seq);
+            (
+                ShardAssignmentChangeOp::Assigned,
+                crate::model::first_generation(incarnation as u64, seq as u64),
+            )
+        }
     };
 
     // Store-owned, so a caller cannot pin a generation and make its own
     // stale report look current.
     let stored = ShardAssignment {
         generation,
+        incarnation: incarnation as u64,
         ..assignment
     };
 
     // A write that expects no assignment must not replace one another writer
     // inserted since the read above.
     let insert = if expected == Some(None) {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO NOTHING"#
     } else {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE SET
                  leader = EXCLUDED.leader,
                  replicas = EXCLUDED.replicas,
@@ -217,6 +235,7 @@ async fn write_shard_assignment(
                  joining = EXCLUDED.joining,
                  move_started_at_millis = EXCLUDED.move_started_at_millis,
                  move_reason = EXCLUDED.move_reason,
+                 incarnation = EXCLUDED.incarnation,
                  updated_at = now()"#
     };
     let written = sqlx::query(insert)
@@ -233,6 +252,7 @@ async fn write_shard_assignment(
         .bind(&stored.joining)
         .bind(stored.move_started_at_millis.map(|millis| millis as i64))
         .bind(stored.move_reason.map(MoveReason::as_str))
+        .bind(stored.incarnation as i64)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -248,7 +268,10 @@ async fn write_shard_assignment(
         return Ok(AssignmentWrite::Stale { current });
     }
 
-    record_shard_change(&mut tx, op, &stored.key, Some(&stored)).await?;
+    match change_seq {
+        Some(seq) => insert_shard_change(&mut tx, seq, op, &stored.key, Some(&stored)).await?,
+        None => record_shard_change(&mut tx, op, &stored.key, Some(&stored)).await?,
+    }
     tx.commit().await?;
     metrics::counter!("felix_shard_assignment_changes_total", "op" => shard_op_to_str(op))
         .increment(1);
@@ -261,7 +284,7 @@ pub(super) async fn get_shard_assignment(
 ) -> StoreResult<ShardAssignment> {
     sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
     )
@@ -282,7 +305,7 @@ pub(super) async fn list_shard_assignments(
 ) -> StoreResult<Vec<ShardAssignment>> {
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&store.pool)
@@ -301,7 +324,7 @@ pub(super) async fn list_shard_assignments_page(
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $2"#,
         )
@@ -309,7 +332,7 @@ pub(super) async fn list_shard_assignments_page(
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                  AND (tenant_id, namespace, kind, stream, shard) > ($2, $3, $4, $5, $6)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $7"#,
@@ -339,7 +362,7 @@ pub(super) async fn list_shard_assignments_for_node(
 ) -> StoreResult<Vec<ShardAssignment>> {
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments WHERE leader = $1
                ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
@@ -385,7 +408,7 @@ pub(super) async fn shard_assignment_snapshot(
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason
+                      joining, move_started_at_millis, move_reason, incarnation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&mut *tx)
@@ -451,8 +474,8 @@ pub(super) async fn record_replica_report(
     let mut tx = store.pool.begin().await?;
     // `FOR SHARE` holds the assignment row until commit, so a promotion
     // either committed before this read and is seen, or waits for the report.
-    let assignment: Option<(String, i64)> = sqlx::query_as(
-        r#"SELECT leader, generation FROM shard_assignments
+    let assignment: Option<(String, i64, i64)> = sqlx::query_as(
+        r#"SELECT leader, generation, incarnation FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR SHARE"#,
     )
@@ -463,13 +486,20 @@ pub(super) async fn record_replica_report(
     .bind(report.key.kind.as_str())
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((current_leader, generation)) = assignment else {
+    let Some((current_leader, generation, incarnation)) = assignment else {
         return Err(StoreError::NotFound("shard assignment".into()));
     };
     if current_leader != leader {
         return Ok(ReportWrite::NotLeader);
     }
     if generation as u64 != report.generation {
+        return Ok(ReportWrite::Stale);
+    }
+    // Under the same row lock: a recreate cannot land between this and the write.
+    if report
+        .stream_incarnation
+        .is_some_and(|reported| reported != incarnation as u64)
+    {
         return Ok(ReportWrite::Stale);
     }
     // Locked, so a concurrent report cannot carry halts from a row this one
@@ -583,6 +613,7 @@ fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
                 })
             })
             .transpose()?,
+        incarnation: row.incarnation as u64,
     })
 }
 
@@ -607,6 +638,7 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             .map_err(|err| StoreError::Unexpected(anyhow!("decode halted: {err}")))?,
         counter_offsets: serde_json::from_value(row.counter_offsets)
             .map_err(|err| StoreError::Unexpected(anyhow!("decode counter_offsets: {err}")))?,
+        stream_incarnation: None,
     })
 }
 
@@ -621,12 +653,27 @@ async fn record_shard_change(
     key: &ShardKey,
     assignment: Option<&ShardAssignment>,
 ) -> StoreResult<()> {
-    let seq = sqlx::query_scalar::<_, i64>(
+    let seq = take_change_seq(tx).await?;
+    insert_shard_change(tx, seq, op, key, assignment).await
+}
+
+/// The next shard change's `seq`, taken from the locked counter.
+async fn take_change_seq(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> StoreResult<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
         "UPDATE shard_assignment_change_seq SET next_seq = next_seq + 1 RETURNING next_seq - 1",
     )
     .fetch_one(&mut **tx)
-    .await?;
+    .await?)
+}
 
+/// Append a shard change at a `seq` already taken with [`take_change_seq`].
+async fn insert_shard_change(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    seq: i64,
+    op: ShardAssignmentChangeOp,
+    key: &ShardKey,
+    assignment: Option<&ShardAssignment>,
+) -> StoreResult<()> {
     sqlx::query(
         r#"INSERT INTO shard_assignment_changes (seq, op, tenant_id, namespace, stream, shard, kind, payload)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,

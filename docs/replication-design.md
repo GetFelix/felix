@@ -1910,7 +1910,8 @@ log, a follower catching up hands its position back after five seconds of
 shipping (`CATCH_UP_SLICE` in `driver/shard.rs`) and the driver passes again
 at once, and one batch is bounded by the peer request timeout (five seconds
 by default), so a copy that is moving shows a higher offset every ten seconds
-or so. Neither the
+or so. A cache's counter log gets a slice of its own ahead of the cache log,
+which makes that twenty seconds at worst for a cache. Neither the
 report nor the store keeps that history, and writing it to the assignment
 would start a new generation every pass, so the instance running placement
 watches it across passes. One that has not watched the copy, after a restart
@@ -2105,8 +2106,10 @@ to every follower before the cache log, and waiting for all of them, put a dead
 follower in front of every cache write: right after a broker died, writes
 waited out the request timeout on its half-open connection, then a dial each
 time its reconnect backoff ran out (#1137). So each follower's exchange ships
-its counters and then its cache log, and the pass stops waiting once a majority
-has answered or the cache log's mark and the whole counter log are on a
+its counters and then its cache log, each for at most one catch-up slice, which
+puts a long counter catch-up in the reports as it goes
+(`a_counter_catch_up_is_reported_a_slice_at_a_time`). The pass stops waiting
+once a majority has answered or the cache log's mark and the whole counter log are on a
 majority. A follower that does not answer is handed to the driver like any
 other, and the end of the pass does not ship its counters again. The marks
 still count only what followers confirmed, and the counter mark moves only on

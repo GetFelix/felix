@@ -41,13 +41,14 @@ impl BackupOffsets {
         led.sort();
         for (key, generation) in led {
             match self.shard(ingress, &key, generation).await {
-                Ok(logs) => response.shards.push(ShardOffsets {
+                Ok((logs, incarnation)) => response.shards.push(ShardOffsets {
                     tenant_id: key.tenant_id,
                     namespace: key.namespace,
                     name: key.stream,
                     shard: key.shard,
                     kind: kind_name(key.kind),
                     generation,
+                    incarnation,
                     logs,
                 }),
                 Err(reason) => response.skipped.push(SkippedShard {
@@ -72,7 +73,7 @@ impl BackupOffsets {
         ingress: &IngressRouter,
         key: &ShardKey,
         generation: u64,
-    ) -> Result<LogOffsets, SkipReason> {
+    ) -> Result<(LogOffsets, u64), SkipReason> {
         let quorum_cache = key.kind == ShardKind::Cache
             && self
                 .broker
@@ -127,12 +128,13 @@ impl BackupOffsets {
         if ingress.generation(key) != Some(generation) {
             return Err(SkipReason::Moved);
         }
-        Ok(LogOffsets {
+        let logs = LogOffsets {
             records: offsets.records,
             group_cursors: offsets.group_cursors,
             group_dead_letters: offsets.group_dead_letters,
             counters: offsets.counters,
-        })
+        };
+        Ok((logs, offsets.incarnation))
     }
 }
 
@@ -153,7 +155,15 @@ struct ShardOffsets {
     shard: u32,
     kind: &'static str,
     generation: u64,
+    /// Which incarnation of the stream the logs belong to, so a restore cuts
+    /// that incarnation's directories. Left out when 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    incarnation: u64,
     logs: LogOffsets,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// One past the last committed record of each log.

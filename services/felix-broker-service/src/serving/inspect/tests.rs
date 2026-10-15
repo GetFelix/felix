@@ -23,6 +23,7 @@ fn route(leader: &str, generation: u64) -> Route {
         generation,
         draining: false,
         successor: None,
+        incarnation: 0,
     }
 }
 

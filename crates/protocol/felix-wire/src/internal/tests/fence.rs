@@ -123,3 +123,78 @@ fn a_fence_answer_carries_where_the_replica_stands() {
     assert_eq!(encoded.len(), InternalHeader::LEN + 32);
     assert_eq!(InternalMessage::decode(encoded).expect("decode"), ok);
 }
+
+fn fence(incarnation: Option<u64>) -> InternalMessage {
+    InternalMessage::Fence(Fence {
+        correlation_id: 9,
+        shard: ShardRef {
+            incarnation,
+            ..shard()
+        },
+        log: ReplicaLog::Stream,
+    })
+}
+
+/// A request without an incarnation is its own kind, byte for byte; one with
+/// an incarnation travels in an `Incarnated` envelope around it.
+#[test]
+fn an_incarnation_travels_in_an_envelope_around_the_request() {
+    let plain = fence(None).encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&plain).expect("header").kind,
+        Kind::Fence
+    );
+
+    let incarnated = fence(Some(77));
+    let encoded = incarnated.encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&encoded).expect("header").kind,
+        Kind::Incarnated
+    );
+    let mut expected = BytesMut::new();
+    expected.put_u64(9);
+    expected.put_u64(77);
+    expected.put_u16(Kind::Fence as u16);
+    expected.extend_from_slice(&plain[InternalHeader::LEN..]);
+    assert_eq!(&encoded[InternalHeader::LEN..], &expected[..]);
+    assert_eq!(
+        InternalMessage::decode(encoded).expect("decode"),
+        incarnated
+    );
+}
+
+#[test]
+fn an_envelope_must_hold_one_replication_request_with_its_own_correlation() {
+    let wrap = |correlation: u64, kind: Kind, inner: &[u8]| {
+        let mut body = BytesMut::new();
+        body.put_u64(correlation);
+        body.put_u64(77);
+        body.put_u16(kind as u16);
+        body.extend_from_slice(inner);
+        let mut frame = BytesMut::new();
+        InternalHeader {
+            kind: Kind::Incarnated,
+            length: body.len() as u32,
+        }
+        .encode(&mut frame);
+        frame.extend_from_slice(&body);
+        frame.freeze()
+    };
+    let fence_body = fence(None)
+        .encode()
+        .expect("encode")
+        .slice(InternalHeader::LEN..);
+    let hello_body = hello(None)
+        .encode()
+        .expect("encode")
+        .slice(InternalHeader::LEN..);
+    let nested = fence(Some(5))
+        .encode()
+        .expect("encode")
+        .slice(InternalHeader::LEN..);
+
+    assert!(InternalMessage::decode(wrap(9, Kind::Fence, &fence_body)).is_ok());
+    assert!(InternalMessage::decode(wrap(8, Kind::Fence, &fence_body)).is_err());
+    assert!(InternalMessage::decode(wrap(42, Kind::Hello, &hello_body)).is_err());
+    assert!(InternalMessage::decode(wrap(9, Kind::Incarnated, &nested)).is_err());
+}

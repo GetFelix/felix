@@ -44,6 +44,7 @@ fn leading_both_shards() -> Arc<IngressRouter> {
                     state: "active".to_string(),
                     successor: None,
                     routing: Default::default(),
+                    incarnation: 0,
                 },
             )
         })

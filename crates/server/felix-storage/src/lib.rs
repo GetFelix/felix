@@ -32,7 +32,8 @@
 //!   restart replays only the log past it.
 //! - `shard_slots`: the per-shard open and close every store above shares.
 //!   `legacy_swap` settles, before that open, a compaction swap an older build
-//!   left half done.
+//!   left half done. `incarnation` picks which incarnation of a stream a store
+//!   opens, and retires a deleted one's directories.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -51,6 +52,7 @@ pub mod fault;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
+mod incarnation;
 mod index_snapshot;
 pub(crate) mod io;
 mod legacy_swap;
@@ -69,3 +71,4 @@ pub use commit_order::{CommitSequencer, CommitTurn, Superseded};
 pub use counter_log::CounterStore;
 pub use disk_log::{DiskLog, DiskLogProvider, inspect};
 pub use error::{Corruption, CorruptionKind, CorruptionSite, Result, StorageError};
+pub use incarnation::{MarkerRead, StreamMarker};

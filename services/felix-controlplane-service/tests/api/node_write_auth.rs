@@ -397,6 +397,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await;
     for _ in 0..=generation {
@@ -417,6 +418,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                incarnation: 0,
             })
             .await
             .expect("assign");

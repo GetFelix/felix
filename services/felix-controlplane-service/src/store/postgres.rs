@@ -301,6 +301,10 @@ impl ControlPlaneStore for PostgresStore {
         streams::stream_snapshot(self).await
     }
 
+    async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
+        streams::stream_tombstones(self).await
+    }
+
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
         streams::stream_changes(self, since).await
     }
@@ -342,7 +346,11 @@ impl ControlPlaneStore for PostgresStore {
         caches::cache_changes(self, since).await
     }
 
-    async fn create_resources(&self, streams: Vec<Stream>, caches: Vec<Cache>) -> StoreResult<()> {
+    async fn create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+    ) -> StoreResult<Vec<Stream>> {
         resources::create_resources(self, streams, caches).await
     }
 

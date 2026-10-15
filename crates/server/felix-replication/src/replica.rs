@@ -41,15 +41,25 @@ pub struct ReplicaHandler {
     /// batch. See [`unverified_from`].
     verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
-    /// this broker holds as committed, per log. A rebuild from that leader
-    /// would only find the same disagreement again.
-    mismatched: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    /// this broker holds as committed, per log, with the stream incarnation
+    /// it shipped. A rebuild from that leader would only find the same
+    /// disagreement again; a recreated stream at the same generation is
+    /// another log.
+    mismatched:
+        parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), (u64, u64)>>,
+    /// Run after an incarnation check passes, to change the catalog between
+    /// the check and the open.
+    #[cfg(test)]
+    incarnation_checked: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// Progress comparing a follower's older records with a newer leader's.
 #[derive(Debug, Clone, Copy)]
 struct Verified {
     generation: u64,
+    /// The stream incarnation whose log was compared; 0 for a cache and
+    /// before incarnations.
+    incarnation: u64,
     through: u64,
 }
 
@@ -60,6 +70,8 @@ impl ReplicaHandler {
             router,
             verified: parking_lot::Mutex::new(HashMap::new()),
             mismatched: parking_lot::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            incarnation_checked: parking_lot::Mutex::new(None),
         }
     }
 
@@ -93,6 +105,11 @@ impl ReplicaHandler {
         if let Some(refusal) = self.check_role(correlation_id, &key, request.shard.generation) {
             return refusal;
         }
+        if let Some(refusal) =
+            self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+        {
+            return refusal;
+        }
         if let Some(refusal) = self
             .check_shard_fence(
                 correlation_id,
@@ -100,6 +117,7 @@ impl ReplicaHandler {
                 log_kind,
                 request.shard.generation,
                 sender,
+                request.shard.incarnation,
             )
             .await
         {
@@ -107,16 +125,22 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_at(
+            .shard_log_for(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
-                request.base_offset,
+                Some(request.base_offset),
+                self.expected_incarnation(&key, request.shard.incarnation),
             )
             .await
         else {
+            if let Some(refusal) =
+                self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+            {
+                return refusal;
+            }
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return refused(
                 correlation_id,
@@ -180,7 +204,8 @@ impl ReplicaHandler {
         commit: u64,
     ) -> InternalMessage {
         let generation = request.shard.generation;
-        if self.committed_mismatch(key, log_kind) == Some(generation) {
+        let incarnation = request.shard.incarnation.unwrap_or(0);
+        if self.committed_mismatch(key, log_kind) == Some((generation, incarnation)) {
             tracing::error!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -235,13 +260,13 @@ impl ReplicaHandler {
         })
     }
 
-    /// The generation whose leader last disagreed with a committed record of
-    /// this log, if any.
+    /// The generation and incarnation whose leader last disagreed with a
+    /// committed record of this log, if any.
     fn committed_mismatch(
         &self,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         self.mismatched
             .lock()
             .get(&(key.clone(), log_kind))
@@ -292,6 +317,11 @@ impl ReplicaHandler {
         if let Some(refusal) = self.check_role(correlation_id, &key, request.shard.generation) {
             return refusal;
         }
+        if let Some(refusal) =
+            self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+        {
+            return refusal;
+        }
         if let Some(refusal) = self
             .check_shard_fence(
                 correlation_id,
@@ -299,6 +329,7 @@ impl ReplicaHandler {
                 log_kind,
                 request.shard.generation,
                 sender,
+                request.shard.incarnation,
             )
             .await
         {
@@ -309,16 +340,22 @@ impl ReplicaHandler {
         // is the authority either way.
         let Some(log) = self
             .broker
-            .shard_log_at(
+            .shard_log_for(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
-                request.base_offset,
+                Some(request.base_offset),
+                self.expected_incarnation(&key, request.shard.incarnation),
             )
             .await
         else {
+            if let Some(refusal) =
+                self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+            {
+                return refusal;
+            }
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return refused(
                 correlation_id,
@@ -434,6 +471,10 @@ impl ReplicaHandler {
         if let Some(refusal) = self.check_role(correlation_id, &key, batch.shard.generation) {
             return refusal;
         }
+        if let Some(refusal) = self.check_incarnation(correlation_id, &key, batch.shard.incarnation)
+        {
+            return refusal;
+        }
         if let Some(refusal) = self
             .check_shard_fence(
                 correlation_id,
@@ -441,6 +482,7 @@ impl ReplicaHandler {
                 log_kind,
                 batch.shard.generation,
                 sender,
+                batch.shard.incarnation,
             )
             .await
         {
@@ -452,15 +494,22 @@ impl ReplicaHandler {
         // and silently keeping nothing.
         let Some(log) = self
             .broker
-            .shard_log(
+            .shard_log_for(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
+                None,
+                self.expected_incarnation(&key, batch.shard.incarnation),
             )
             .await
         else {
+            if let Some(refusal) =
+                self.check_incarnation(correlation_id, &key, batch.shard.incarnation)
+            {
+                return refusal;
+            }
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return refused(
                 correlation_id,
@@ -489,7 +538,10 @@ impl ReplicaHandler {
             .verified
             .lock()
             .get(&key)
-            .filter(|verified| verified.generation == batch.shard.generation)
+            .filter(|verified| {
+                verified.generation == batch.shard.generation
+                    && verified.incarnation == batch.shard.incarnation.unwrap_or(0)
+            })
             .map(|verified| verified.through);
         let unverified = match log.tail_offset().await {
             Ok(tail) => unverified_from(
@@ -552,9 +604,10 @@ impl ReplicaHandler {
             // one at this generation is refused.
             let below_commit = cuts_committed(&log, diverged_at).await;
             if let Some(commit) = below_commit {
-                self.mismatched
-                    .lock()
-                    .insert((key.clone(), log_kind), batch.shard.generation);
+                self.mismatched.lock().insert(
+                    (key.clone(), log_kind),
+                    (batch.shard.generation, batch.shard.incarnation.unwrap_or(0)),
+                );
                 tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -697,6 +750,7 @@ impl ReplicaHandler {
                         key.clone(),
                         Verified {
                             generation: batch.shard.generation,
+                            incarnation: batch.shard.incarnation.unwrap_or(0),
                             through: applied.durable_offset,
                         },
                     );
@@ -777,17 +831,29 @@ impl ReplicaHandler {
                 }
             }
         }
+        if let Some(refusal) =
+            self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+        {
+            return refusal;
+        }
         let Some(log) = self
             .broker
-            .shard_log(
+            .shard_log_for(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
+                None,
+                self.expected_incarnation(&key, request.shard.incarnation),
             )
             .await
         else {
+            if let Some(refusal) =
+                self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+            {
+                return refusal;
+            }
             // A broker without consumer groups holds no group state and can
             // store none, so it answers as an empty log rather than leaving
             // the leader waiting on a promise it has no log to keep.
@@ -797,7 +863,14 @@ impl ReplicaHandler {
             ) && self.broker.group_reader().is_none()
             {
                 if let Some(refusal) = self
-                    .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+                    .check_shard_fence(
+                        correlation_id,
+                        &key,
+                        log_kind,
+                        generation,
+                        sender,
+                        request.shard.incarnation,
+                    )
                     .await
                 {
                     return refusal;
@@ -820,7 +893,14 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                generation,
+                sender,
+                request.shard.incarnation,
+            )
             .await
         {
             return refusal;
@@ -909,17 +989,29 @@ impl ReplicaHandler {
                 }
             }
         }
+        if let Some(refusal) =
+            self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+        {
+            return refusal;
+        }
         let Some(log) = self
             .broker
-            .shard_log(
+            .shard_log_for(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
+                None,
+                self.expected_incarnation(&key, request.shard.incarnation),
             )
             .await
         else {
+            if let Some(refusal) =
+                self.check_incarnation(correlation_id, &key, request.shard.incarnation)
+            {
+                return refusal;
+            }
             return refused(
                 correlation_id,
                 ErrorCode::Unauthorized,
@@ -928,7 +1020,14 @@ impl ReplicaHandler {
             );
         };
         if let Some(refusal) = self
-            .check_shard_fence(correlation_id, &key, log_kind, generation, sender)
+            .check_shard_fence(
+                correlation_id,
+                &key,
+                log_kind,
+                generation,
+                sender,
+                request.shard.incarnation,
+            )
             .await
         {
             return refusal;
@@ -1025,6 +1124,7 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
         generation: u64,
         sender: Option<&str>,
+        sent: Option<u64>,
     ) -> Option<InternalMessage> {
         let own = match log_kind {
             felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => return None,
@@ -1035,7 +1135,15 @@ impl ReplicaHandler {
         };
         let log = self
             .broker
-            .shard_log(own, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .shard_log_for(
+                own,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                self.expected_incarnation(key, sent),
+            )
             .await?;
         if let Some(refusal) = refuse_other_leader(&log, correlation_id, key, generation, sender) {
             return Some(refusal);
@@ -1052,6 +1160,39 @@ impl ReplicaHandler {
                 ),
             )
         })
+    }
+
+    /// Refuse a request for a stream shard at an incarnation this broker does
+    /// not hold, as a stale route: retried, and taken once the catalog here
+    /// has caught up. See `crate::incarnation`.
+    ///
+    /// Checked before the log opens, for the refusal's reason; the open
+    /// itself then takes only the named incarnation
+    /// ([`Self::expected_incarnation`]), since a delete and create can land in
+    /// between.
+    fn check_incarnation(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        sent: Option<u64>,
+    ) -> Option<InternalMessage> {
+        let Some(reason) = crate::incarnation::mismatch(&self.broker, key, sent) else {
+            #[cfg(test)]
+            if let Some(hook) = &*self.incarnation_checked.lock() {
+                hook();
+            }
+            return None;
+        };
+        metrics::record_replicated(metrics::OUTCOME_BEHIND);
+        Some(refused(correlation_id, ErrorCode::StaleRoute, 0, reason))
+    }
+
+    /// The incarnation a log for `key` may open at for a request that named
+    /// `sent`, once this broker requires registration; `None` opens whatever
+    /// is registered, as before incarnations.
+    fn expected_incarnation(&self, key: &felix_router::ShardKey, sent: Option<u64>) -> Option<u64> {
+        (key.kind == felix_router::ShardKind::Stream && self.broker.registration_required())
+            .then(|| sent.unwrap_or(0))
     }
 
     /// May this broker store anything for `key` at `generation`?

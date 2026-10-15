@@ -48,6 +48,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }
 
@@ -83,6 +84,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await;
 
@@ -141,6 +143,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(store).await;
     replica_reports::a_replica_report_is_kept_and_read_back(store).await;
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
+    replica_reports::a_report_on_another_incarnation_is_refused_at_the_write(store).await;
     replica_reports::a_report_at_the_same_generation_is_an_update(store).await;
     replica_reports::a_report_behind_the_held_one_is_dropped(store).await;
     replica_reports::a_report_from_a_deposed_leader_is_refused(store).await;
@@ -177,6 +180,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     }
 }
 
@@ -238,6 +242,91 @@ pub(crate) async fn run_shard_concurrency_contract(store: Arc<dyn ControlPlaneSt
     seed(store.as_ref()).await;
     concurrent_writes_to_one_shard_serialise(Arc::clone(&store)).await;
     concurrent_conditional_writes_have_one_winner(store).await;
+}
+
+/// An assignment written while its stream is deleted and created again names
+/// the incarnation of the stream it ended up attached to, or is gone with the
+/// deleted one: never the old incarnation on an assignment of the new stream.
+pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_on(
+    store: Arc<dyn ControlPlaneStore>,
+) {
+    const RACED: &str = "raced";
+    let stream = |incarnation| Stream {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: RACED.to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Leader,
+        delivery: DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation,
+    };
+    let key = StreamKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: RACED.to_string(),
+    };
+    let shard = ShardKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: RACED.to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assignment = ShardAssignment {
+        key: shard.clone(),
+        leader: "broker-x".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    store.create_stream(stream(1)).await.expect("create");
+    for round in 0..50u64 {
+        // The write starts first, so a backend that reads the stream and
+        // then yields lets the recreate in between.
+        let assign = {
+            let store = Arc::clone(&store);
+            let assignment = assignment.clone();
+            tokio::spawn(async move {
+                // Refused when the stream is gone at that moment, which is fine.
+                let _ = store.put_shard_assignment(assignment).await;
+            })
+        };
+        let recreate = {
+            let store = Arc::clone(&store);
+            let key = key.clone();
+            tokio::spawn(async move {
+                store.delete_stream(&key).await.expect("delete");
+                store
+                    .create_stream(stream(round + 2))
+                    .await
+                    .expect("create again");
+            })
+        };
+        recreate.await.expect("recreate");
+        assign.await.expect("assign");
+        if let Ok(held) = store.get_shard_assignment(&shard).await {
+            let current = store.get_stream(&key).await.expect("stream").incarnation;
+            assert_eq!(
+                held.incarnation, current,
+                "round {round}: an assignment of the new stream names the old one"
+            );
+        }
+    }
+    store.delete_stream(&key).await.expect("clean up");
 }
 
 /// Deleting a node while an assignment to it is being written: either the
@@ -1008,6 +1097,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
             durable: true,
             region: None,
             routing: Default::default(),
+            incarnation: 0,
         })
         .await
         .expect("create the stream to delete");
@@ -1040,6 +1130,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
+        incarnation: 0,
     };
     for shard in 0..2 {
         store
@@ -1061,11 +1152,42 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
     let before = store.list_shard_assignments().await.expect("list");
     assert_eq!(owned(&before, ShardKind::Stream), 2);
     assert_eq!(owned(&before, ShardKind::Cache), 2);
+    let doomed_report = crate::model::ReplicaReport {
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        key: doomed(0, ShardKind::Stream).key,
+        generation: before
+            .iter()
+            .find(|a| a.key == doomed(0, ShardKind::Stream).key)
+            .expect("assigned")
+            .generation,
+        caught_up: ["broker-y".to_string()].into_iter().collect(),
+        offsets: [("broker-y".to_string(), 10)].into_iter().collect(),
+        reported_at_millis: 7_000,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+    };
+    store
+        .record_replica_report(doomed_report.clone(), "broker-x")
+        .await
+        .expect("report");
 
     store
         .delete_stream(&stream_key)
         .await
         .expect("delete the stream");
+    // A stream created again at the same generation (after a restore rewinds
+    // the change seq) would otherwise inherit the old log's report.
+    assert!(
+        !store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .iter()
+            .any(|report| report.key == doomed_report.key),
+        "the deleted stream's replica report outlived its assignments",
+    );
     let after_stream = store.list_shard_assignments().await.expect("list");
     assert_eq!(
         owned(&after_stream, ShardKind::Stream),
@@ -1090,4 +1212,199 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         0,
         "the deleted cache's shards are still owned",
     );
+}
+
+/// An assignment carries the incarnation of the stream it was written for,
+/// whatever the writer passed, and its change keeps it after the stream is
+/// created anew: a broker replaying the old change must not take it for the
+/// new stream's.
+pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
+    store: &dyn ControlPlaneStore,
+) {
+    const AGAIN: &str = "again";
+    let stream = |incarnation| Stream {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: AGAIN.to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Leader,
+        delivery: DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation,
+    };
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: AGAIN.to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        // Ignored: the store reads the stream's.
+        incarnation: 99,
+    };
+    let key = StreamKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: AGAIN.to_string(),
+    };
+
+    let first = store
+        .create_stream(stream(1))
+        .await
+        .expect("create")
+        .incarnation;
+    let since = store
+        .shard_assignment_snapshot()
+        .await
+        .expect("snapshot")
+        .next_seq;
+    store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    assert_eq!(
+        store
+            .get_shard_assignment(&assignment.key)
+            .await
+            .expect("read")
+            .incarnation,
+        first
+    );
+
+    store.delete_stream(&key).await.expect("delete");
+    let second = store
+        .create_stream(stream(2))
+        .await
+        .expect("create again")
+        .incarnation;
+    assert!(second > first, "{second} after {first}");
+    store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign again");
+    assert_eq!(
+        store
+            .get_shard_assignment(&assignment.key)
+            .await
+            .expect("read")
+            .incarnation,
+        second
+    );
+
+    let changes = store
+        .shard_assignment_changes(since)
+        .await
+        .expect("changes");
+    let written: Vec<u64> = changes
+        .items
+        .iter()
+        .filter(|change| change.key == assignment.key)
+        .filter_map(|change| change.assignment.as_ref().map(|a| a.incarnation))
+        .collect();
+    assert_eq!(
+        written,
+        vec![first, second],
+        "a change took the incarnation of a later stream"
+    );
+    store.delete_stream(&key).await.expect("clean up");
+}
+
+/// A stream deleted and created again under the same name starts its shards
+/// above every generation the deleted one reached. Brokers keep quorum marks,
+/// follower positions and reports per shard and generation; at a repeated
+/// generation the deleted stream's would count for the new one's records.
+pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn ControlPlaneStore) {
+    const REUSED: &str = "reused";
+    let stream = |incarnation| Stream {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: REUSED.to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Quorum,
+        delivery: DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation,
+    };
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: REUSED.to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    let key = StreamKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: REUSED.to_string(),
+    };
+    let generation = || async {
+        store
+            .get_shard_assignment(&assignment.key)
+            .await
+            .expect("read")
+            .generation
+    };
+
+    store.create_stream(stream(1)).await.expect("create");
+    for _ in 0..3 {
+        store
+            .put_shard_assignment(assignment.clone())
+            .await
+            .expect("assign");
+    }
+    let deleted_reached = generation().await;
+
+    store.delete_stream(&key).await.expect("delete");
+    store.create_stream(stream(2)).await.expect("create again");
+    store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign again");
+    let first = generation().await;
+    assert!(
+        first > deleted_reached,
+        "the new stream's shard starts at {first}, the deleted one reached {deleted_reached}"
+    );
+    store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("reassign");
+    assert_eq!(generation().await, first + 1);
+    store.delete_stream(&key).await.expect("clean up");
 }

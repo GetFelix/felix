@@ -50,6 +50,7 @@ mod correlation {
             stream: "orders".to_string(),
             shard: 0,
             generation: 4,
+            incarnation: None,
         }
     }
 

@@ -20,7 +20,7 @@ fn key() -> ShardKey {
 }
 
 async fn write_shard(data: &Path, count: usize) -> PathBuf {
-    let dir = shard_dir(data, Store::Stream, &key());
+    let dir = felix_storage::inspect::shard_dir(data, Store::Stream, &key());
     let log = DiskLog::open(dir.clone(), "orders", config()).expect("open");
     for i in 0..count {
         log.append(&[AppendRecord {
@@ -146,6 +146,8 @@ fn arguments_parse_like_the_usage_says() {
         "acme/default/orders/0",
         "--kind",
         "cache",
+        "--incarnation",
+        "42",
         "--json",
         "--index-spacing",
         "8192",
@@ -161,6 +163,7 @@ fn arguments_parse_like_the_usage_says() {
             data_dir: "/data".into(),
             shard: Some("acme/default/orders/0".into()),
             kind: Some(Store::Cache),
+            incarnation: Some(42),
             segments: true,
             json: true,
             repair_checksum_tail: true,
@@ -175,6 +178,7 @@ fn arguments_parse_like_the_usage_says() {
         &["segments"],
         &["segments", "/data", "--kind", "topics"],
         &["segments", "/data", "--index-spacing", "lots"],
+        &["segments", "/data", "--incarnation", "new"],
         &["segments", "/data", "--frobnicate"],
         &["segments", "/data", "a/b/c/0", "extra"],
     ] {

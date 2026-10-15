@@ -39,8 +39,29 @@ pub(super) struct Asker {
 #[derive(Default)]
 pub(super) struct Versions {
     reported: BTreeMap<NodeId, u16>,
-    checked: Option<(Instant, u16)>,
+    checked: Option<(Instant, Level)>,
     refreshing: bool,
+}
+
+/// The levels the members reported, as of one refresh.
+#[derive(Debug, Clone, Copy)]
+struct Level {
+    /// The lowest level any member that has answered can apply, this one
+    /// included.
+    answered: u16,
+    /// Some member has never answered since this process started.
+    unknown: bool,
+}
+
+impl Level {
+    /// The level, counting a member that never answered at `unknown`.
+    fn counting_unknown_at(self, unknown: u16) -> u16 {
+        if self.unknown {
+            self.answered.min(unknown)
+        } else {
+            self.answered
+        }
+    }
 }
 
 impl RaftHandle {
@@ -53,6 +74,19 @@ impl RaftHandle {
     /// leader asks on every broker heartbeat, and one member being down must
     /// not add a probe timeout to each of them.
     pub async fn cluster_version(&self) -> u16 {
+        self.level().await.counting_unknown_at(0)
+    }
+
+    /// [`Self::cluster_version`], counting a member that has never answered
+    /// since this process started at `unknown` rather than at 0. For a
+    /// caller that knows a floor every member reached, such as a finalized
+    /// feature that needed it. A member that answered counts at what it
+    /// said, however low.
+    pub async fn cluster_version_with_unknown_at(&self, unknown: u16) -> u16 {
+        self.level().await.counting_unknown_at(unknown)
+    }
+
+    async fn level(&self) -> Level {
         let cached = {
             let mut versions = self.versions.lock().expect("versions lock");
             match versions.checked {
@@ -74,7 +108,7 @@ impl RaftHandle {
         }
     }
 
-    async fn refresh_versions(&self) -> u16 {
+    async fn refresh_versions(&self) -> Level {
         let members: Vec<(NodeId, String)> = {
             let metrics = self.raft.metrics();
             let metrics = metrics.borrow();
@@ -117,13 +151,26 @@ impl RaftHandle {
         }
         let mut versions = self.versions.lock().expect("versions lock");
         versions.reported.extend(answers);
-        let level = members
-            .iter()
-            .map(|(id, _)| versions.reported.get(id).copied().unwrap_or(0))
-            .fold(self.app.version(), u16::min);
+        let level = Level {
+            answered: members
+                .iter()
+                .filter_map(|(id, _)| versions.reported.get(id).copied())
+                .fold(self.app.version(), u16::min),
+            unknown: members
+                .iter()
+                .any(|(id, _)| !versions.reported.contains_key(id)),
+        };
         versions.checked = Some((Instant::now(), level));
         versions.refreshing = false;
         level
+    }
+
+    /// Forget every level the members reported, as a restart does.
+    #[cfg(test)]
+    pub(crate) fn forget_reported_versions(&self) {
+        let mut versions = self.versions.lock().expect("versions lock");
+        versions.reported.clear();
+        versions.checked = None;
     }
 
     /// Remember the level a probing member said it is at.

@@ -89,6 +89,7 @@ fn forward(generation: u64) -> InternalMessage {
             stream: "orders".to_string(),
             shard: 0,
             generation,
+            incarnation: None,
         },
         ack: AckMode::None,
         payloads: vec![],

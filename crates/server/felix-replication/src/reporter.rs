@@ -126,6 +126,19 @@ pub struct ShardReport {
     /// How far each follower had got with a cache's counter log, so a
     /// restore copying only counters still shows progress. Empty for streams.
     pub counter_offsets: Vec<(String, u64)>,
+    /// The stream incarnation whose log this measured; 0 for a cache and
+    /// before incarnations.
+    pub incarnation: u64,
+}
+
+impl ShardReport {
+    /// This report, as one measured on the log of `incarnation`.
+    pub(super) fn at_incarnation(self, incarnation: u64) -> Self {
+        Self {
+            incarnation,
+            ..self
+        }
+    }
 }
 
 /// Who could take this shard over, as of `tail`.
@@ -158,6 +171,7 @@ pub(super) fn shard_report(
             })
             .collect(),
         counter_offsets: Vec::new(),
+        incarnation: 0,
     }
 }
 
@@ -271,6 +285,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                         durable_offset: *durable_offset,
                     })
                     .collect(),
+                stream_incarnation: report.incarnation,
             })
             .collect(),
     };
