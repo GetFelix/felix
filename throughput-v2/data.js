@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792042986286,
+  "lastUpdate": 1792046200388,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29796,6 +29796,58 @@ window.BENCHMARK_DATA = {
             "range": "2490.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810432.34\nmean: 809520.63\nstdev: 2490.62\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77c5be4560b3d31a8a08e002fd2feeb7594f7f34",
+          "message": "fix(storage): refuse truncation and reset on a failed log (#1222) (#1241)\n\nA flush that fails to sync a retired segment marks the roll failed while\nits seal can still be running. The roll fence let a truncation through on\na failed roll, so it could cut that segment and return Ok before the\nseal's set_len padded it back with zeros. fence_rolls now checks health\nfirst and refuses.\n\nWith that, no rewind can overlap a background seal, so the mark's rewind\ncounter and the test written for it go.",
+          "timestamp": "2026-10-14T23:32:16-07:00",
+          "tree_id": "3a13b28dd5caf9e342f748bf80618b071d170e5e",
+          "url": "https://github.com/GetFelix/felix/commit/77c5be4560b3d31a8a08e002fd2feeb7594f7f34"
+        },
+        "date": 1792046199866,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343038.71,
+            "range": "11556.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343038.71\nmean: 337703.60\nstdev: 11556.81\ncv: 3.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343038.71,
+            "range": "11556.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343038.71\nmean: 337703.60\nstdev: 11556.81\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80129.58,
+            "range": "699.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80129.58\nmean: 79937.38\nstdev: 699.97\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801295.8,
+            "range": "6999.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801295.80\nmean: 799373.79\nstdev: 6999.73\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
