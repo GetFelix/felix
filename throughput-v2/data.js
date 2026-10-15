@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792085281526,
+  "lastUpdate": 1792086666571,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30160,6 +30160,58 @@ window.BENCHMARK_DATA = {
             "range": "5191.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 788035.28\nmean: 790028.48\nstdev: 5191.29\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8d44e3caac32054691fb569dc24b0c851029d732",
+          "message": "feat(broker): split subscriber queue and writer-lane byte bounds; byte-bound replay rings and cache watches (#1195, #1201) (#1243)\n\n* feat(broker): split subscriber queue and writer-lane byte bounds; bound replay rings and cache watches by bytes (#1195, #1201)\n\nFELIX_SUB_QUEUE_MAX_BYTES now counts only what waits in a subscriber's\nbroker queue, and defaults to 64 MiB. Once the feeder takes a batch it\ncounts against a new per-connection bound, FELIX_SUB_EGRESS_MAX_BYTES\n(256 MiB), shared out equally among the connection's subscriptions. A\nfeeder waits only on its own share, so one subscription whose stream\nstalls stops at its share and never makes the others on the connection\nwait. The broker-wide FELIX_SUB_QUEUE_MAX_BYTES_TOTAL still covers a\nbatch until it is written.\n\nReplay rings gain FELIX_REPLAY_RING_MAX_BYTES (64 MiB per stream shard)\nand cache watch queues FELIX_CACHE_WATCH_MAX_BYTES (64 MiB per watch),\neach with an optional broker-wide _TOTAL, built on the same byte budget\nas subscriber queues.\n\n* docs(broker): say the egress byte bound admits one batch per subscription; test the cache watch bound\n\n* Spec-Unaffected: subscriber queue, egress and replay-ring byte bounds are broker-local delivery buffering; no lease, quorum mark, report, promotion or handoff change\n\n* broker: subscriber queue default 128 MiB; 64 MiB regressed the 64 KiB fanout-10 p99",
+          "timestamp": "2026-10-15T10:46:39-07:00",
+          "tree_id": "ea7f7cf96ca0562447ad83d634f5567724ef0150",
+          "url": "https://github.com/GetFelix/felix/commit/8d44e3caac32054691fb569dc24b0c851029d732"
+        },
+        "date": 1792086666026,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351724.24,
+            "range": "9196.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351724.24\nmean: 348112.23\nstdev: 9196.06\ncv: 2.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351724.24,
+            "range": "9196.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351724.24\nmean: 348112.23\nstdev: 9196.06\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80673.48,
+            "range": "195.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80673.48\nmean: 80619.84\nstdev: 195.69\ncv: 0.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806734.79,
+            "range": "1956.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806734.79\nmean: 806198.39\nstdev: 1956.92\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
