@@ -17,6 +17,11 @@ between the two sides. A change is only flagged as a regression if BOTH:
     3%), so a technically-significant-but-trivial wobble isn't reported as a
     regression just because both sides happened to have very low variance.
 
+A change in the worse direction of at least --inconclusive-pct (default 10%)
+that is not significant is reported as inconclusive, not as passing: with a
+handful of trials and a wide spread, the t-test cannot tell a doubling from
+noise, and a green mark would claim it can.
+
 This intentionally has no third-party dependency (no scipy) so it runs on a
 bare `python3` in CI without an extra install step.
 """
@@ -187,7 +192,14 @@ def _self_check():
     assert abs(p - 1.0) < 1e-9, f"t-dist self-check failed: p={p}"
 
 
-def compare_group(key, baseline_runs, candidate_runs, alpha, min_effect_pct):
+def coefficient_of_variation(values):
+    if len(values) < 2:
+        return None
+    m = mean(values)
+    return math.sqrt(variance(values, m)) / m * 100.0 if m else None
+
+
+def compare_group(key, baseline_runs, candidate_runs, alpha, min_effect_pct, inconclusive_pct):
     rows = []
     for metric in LATENCY_METRICS + THROUGHPUT_METRICS:
         base_vals = successful_values(baseline_runs, metric)
@@ -224,18 +236,29 @@ def compare_group(key, baseline_runs, candidate_runs, alpha, min_effect_pct):
             and p_value < alpha
             and abs(pct_change) >= min_effect_pct
         )
+        is_inconclusive = (
+            not is_regression and worse_direction and abs(pct_change) >= inconclusive_pct
+        )
+        if is_regression:
+            status = "regression"
+        elif is_inconclusive:
+            status = "inconclusive"
+        else:
+            status = "ok"
 
         rows.append(
             {
                 "key": key,
                 "metric": metric,
-                "status": "regression" if is_regression else "ok",
+                "status": status,
                 "baseline_n": len(base_vals),
                 "candidate_n": len(cand_vals),
                 "baseline_median": base_median,
                 "candidate_median": cand_median,
                 "pct_change": pct_change,
                 "p_value": p_value,
+                "baseline_cv_pct": coefficient_of_variation(base_vals),
+                "candidate_cv_pct": coefficient_of_variation(cand_vals),
             }
         )
     return rows
@@ -246,8 +269,17 @@ def format_key(key):
     return f"{profile}/{preset} fanout={fanout} batch={batch} payload={payload}B"
 
 
-def render_markdown(all_rows, alpha, min_effect_pct):
+def _p(value):
+    return "-" if value is None else f"{value:.4f}"
+
+
+def _cv(value):
+    return "-" if value is None else f"{value:.0f}%"
+
+
+def render_markdown(all_rows, alpha, min_effect_pct, inconclusive_pct):
     regressions = [r for r in all_rows if r["status"] == "regression"]
+    inconclusive = [r for r in all_rows if r["status"] == "inconclusive"]
     insufficient = [r for r in all_rows if r["status"] == "insufficient_data"]
 
     lines = []
@@ -255,32 +287,44 @@ def render_markdown(all_rows, alpha, min_effect_pct):
         lines.append(
             f"### :warning: {len(regressions)} potential performance regression(s) detected\n"
         )
+        if inconclusive:
+            lines.append(f"_Also {len(inconclusive)} inconclusive large change(s), marked below._\n")
+    elif inconclusive:
+        lines.append(
+            f"### :grey_question: {len(inconclusive)} large change(s) in the worse direction "
+            "these trials can neither confirm nor rule out\n"
+        )
     else:
         lines.append("### :white_check_mark: No statistically significant performance regressions\n")
     lines.append(
         f"_Welch's t-test, p < {alpha}, minimum practical effect {min_effect_pct}%. "
+        f"A worse change of {inconclusive_pct}% or more that is not significant is "
+        "inconclusive: rerun the cell with more trials before trusting it. "
         "Baseline and candidate were built and benchmarked back-to-back on the same "
         "runner instance in this job to control for ambient noise. This check is "
         "advisory only and does not block merging._\n"
     )
     lines.append(
-        "| Config | Metric | Baseline (median) | Candidate (median) | Change | p-value | |"
+        "| Config | Metric | Baseline (median) | Candidate (median) | Change | p-value | CV base/cand | |"
     )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for row in all_rows:
         cfg = format_key(row["key"])
         if row["status"] == "insufficient_data":
             lines.append(
-                f"| {cfg} | {row['metric']} | - | - | - | - | :grey_question: insufficient data "
+                f"| {cfg} | {row['metric']} | - | - | - | - | - | :grey_question: insufficient data "
                 f"(n={row['baseline_n']}/{row['candidate_n']}) |"
             )
             continue
-        marker = ":warning:" if row["status"] == "regression" else ":white_check_mark:"
+        marker = {
+            "regression": ":warning:",
+            "inconclusive": ":grey_question: inconclusive",
+        }.get(row["status"], ":white_check_mark:")
         unit = "us" if row["metric"] in LATENCY_METRICS else "msg/s"
         lines.append(
             f"| {cfg} | {row['metric']} | {row['baseline_median']:.1f} {unit} | "
             f"{row['candidate_median']:.1f} {unit} | {row['pct_change']:+.1f}% | "
-            f"{row['p_value']:.4f} | {marker} |"
+            f"{_p(row['p_value'])} | {_cv(row['baseline_cv_pct'])}/{_cv(row['candidate_cv_pct'])} | {marker} |"
         )
 
     if insufficient:
@@ -299,6 +343,7 @@ def main():
     parser.add_argument("--candidate", required=True, help="Path to candidate JSONL")
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--min-effect-pct", type=float, default=3.0)
+    parser.add_argument("--inconclusive-pct", type=float, default=10.0)
     parser.add_argument("--output-markdown", default=None)
     parser.add_argument("--output-json", default=None)
     args = parser.parse_args()
@@ -332,10 +377,11 @@ def main():
                 candidate_groups.get(key, []),
                 args.alpha,
                 args.min_effect_pct,
+                args.inconclusive_pct,
             )
         )
 
-    markdown = render_markdown(all_rows, args.alpha, args.min_effect_pct)
+    markdown = render_markdown(all_rows, args.alpha, args.min_effect_pct, args.inconclusive_pct)
     print(markdown)
 
     if args.output_markdown:
