@@ -89,6 +89,12 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- The power-loss test model no longer mixes up a file with an earlier one that
+  had the same inode number (#1221). A file created after another was deleted
+  could get its inode number, and the model then spliced the new file's bytes
+  onto the old one's, or gave a deleted name whose unlink was not flushed the
+  new file's bytes after a crash. Files are now told apart by birth time and
+  inode generation as well.
 - A broker following the control plane's catalog no longer misses tenant,
   namespace, stream or cache changes (#1224). Three ways to lose one are
   closed, on Postgres and in memory: a snapshot now reads its items and its
@@ -119,6 +125,13 @@ entries.
   `busy` (nothing written, safe to retry); `felixctl` retries only `busy`, up
   to three times over about two seconds. A Raft 503 `unavailable` may have
   committed, so it is not retried.
+- The durable mark no longer moves backward (#1220). A background roll's seal
+  that finished after a flush had already covered the new segment set the mark
+  back to that segment's header, and on an idle shard nothing moved it forward
+  again. After a power loss, rot in acknowledged records of that segment was
+  then repaired as a torn tail instead of refused. The mark now only moves
+  forward, except on a truncation or reset, and a seal that started before a
+  truncation leaves the mark alone.
 - A `ClusterClient` recovers when every broker changes IP at once, as in a
   rollout that restarts every pod (#1227). Reconnect dialled only the addresses
   it already held, and discovery needs one of them to answer, so the client
