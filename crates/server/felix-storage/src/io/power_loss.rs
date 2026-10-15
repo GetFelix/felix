@@ -31,7 +31,7 @@ pub(crate) mod trigger;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -111,10 +111,61 @@ impl Durable {
     }
 }
 
+/// One file, for as long as it exists. The inode number alone is not enough:
+/// a filesystem hands a freed number to the next file it creates, and the
+/// model still needs the old file's bytes for a name whose unlink was not
+/// flushed. The birth time tells the two apart wherever the filesystem
+/// records one (ext4, xfs, btrfs), but it comes from a coarse clock, so an
+/// unlink and create within a few milliseconds can share it. The inode
+/// generation, which ext4 and others bump on reuse, covers that case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Inode {
     dev: u64,
     ino: u64,
+    born: Option<std::time::SystemTime>,
+    /// `None` where the filesystem does not answer `FS_IOC_GETVERSION`.
+    generation: Option<u32>,
+}
+
+impl Inode {
+    fn of(meta: &std::fs::Metadata, file: &File) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            born: meta.created().ok(),
+            generation: generation(file),
+        }
+    }
+
+    /// For a directory listing: the key of the file or directory at `path`,
+    /// built from one descriptor so the stat and the generation describe the
+    /// same file. `None` for anything else or if it cannot be opened.
+    fn at(path: &Path) -> Option<(Self, bool)> {
+        // O_NONBLOCK so a racing swap to a fifo cannot stall the open.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        (meta.is_dir() || meta.is_file()).then(|| (Self::of(&meta, &file), meta.is_dir()))
+    }
+}
+
+/// `FS_IOC_GETVERSION`, i.e. `_IOR('v', 1, long)`. The kernel writes an `int`.
+const FS_IOC_GETVERSION: u64 = 0x8008_7601;
+
+fn generation(file: &File) -> Option<u32> {
+    let mut value: libc::c_int = 0;
+    // SAFETY: the request writes one `int` through the pointer.
+    let rc = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            FS_IOC_GETVERSION as _,
+            &mut value as *mut libc::c_int,
+        )
+    };
+    (rc == 0).then_some(value as u32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,10 +253,7 @@ impl PowerLoss {
 
     fn capture_file(&self, file: &File, kind: SyncKind) {
         let Ok(meta) = file.metadata() else { return };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
+        let inode = Inode::of(&meta, file);
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
         let path = format!("/proc/self/fd/{}", file.as_raw_fd());
@@ -379,18 +427,24 @@ fn list(dir: &Path) -> std::io::Result<BTreeMap<OsString, Entry>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         // A file removed between the listing and the stat is simply not there.
+        // Typed before opening, so devices and fifos are never opened.
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
-        let inode = Inode {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        };
-        if meta.is_dir() {
-            listing.insert(entry.file_name(), Entry::Dir(inode));
-        } else if meta.is_file() {
-            listing.insert(entry.file_name(), Entry::File(inode));
+        if !(meta.is_dir() || meta.is_file()) {
+            continue;
         }
+        let Some((inode, is_dir)) = Inode::at(&entry.path()) else {
+            continue;
+        };
+        listing.insert(
+            entry.file_name(),
+            if is_dir {
+                Entry::Dir(inode)
+            } else {
+                Entry::File(inode)
+            },
+        );
     }
     Ok(listing)
 }

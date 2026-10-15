@@ -117,8 +117,11 @@ pub(crate) async fn shard_assignment_snapshot(
 ///
 /// A caller that finds the first returned `seq` above its `since`, or an empty
 /// page with `next_seq` above it, has fallen outside the retention window and
-/// must re-snapshot. `next_seq` below `since` means the sequence was reset —
-/// a control plane restarted onto a store that does not persist it.
+/// must re-snapshot. `next_seq` below `since` means the answer is behind the
+/// caller: a Raft member that has not applied as far as one the caller asked
+/// before, or a sequence that was reset by a control plane restarting onto a
+/// store that does not persist it. Only the reset calls for a re-snapshot,
+/// and only time tells the two apart.
 ///
 /// # Errors
 /// - 500 when the store cannot be read.

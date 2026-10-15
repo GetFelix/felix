@@ -122,7 +122,16 @@ pull requests.
 ## What CI runs
 
 `ci.yml` runs on Linux only. `test` runs on the self-hosted runners described
-below; the rest run GitHub-hosted (see [Larger runners](#larger-runners)). Its jobs:
+below; the rest run GitHub-hosted (see [Larger runners](#larger-runners)).
+Every push and pull request starts `ci.yml` and `coverage.yml`. Their first
+job, `changes`, checks whether anything besides docs and Markdown changed
+(the TLA+ specs under `docs/formal` count as code), and the other jobs skip
+when nothing did. Each workflow ends with a job that always runs, `CI ok` and
+`Coverage ok`. They fail if any job failed or was cancelled, and they are the
+checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
+docs-only change gets both within a minute or two.
+
+Its jobs:
 
 | Job | Runs |
 | --- | --- |
@@ -284,17 +293,6 @@ When the Azure runners are down, set the repository variable
 `FELIX_SELF_HOSTED_RUNNERS` to `false` and those jobs run GitHub-hosted.
 Delete the variable to go back.
 
-## Larger runners
-
-The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
-runner (16 cores, at most 10 at once). When it is set, the jobs above that run
-GitHub-hosted, and the seven TLA+ shards, use it instead of `ubuntu-latest`.
-TLC uses one worker per core, so the shards gain from the extra cores as much
-as `test` does. Larger runners are billed per minute even on a public
-repository, which is why the rest of CI stays on `ubuntu-latest`. They are
-fresh machines for every job, like `ubuntu-latest`, so pull requests can use
-them. Delete the variable and every job is back on `ubuntu-latest`.
-
 On top of that, the repository requires a maintainer to approve workflow runs
 for every outside contributor's pull request.
 
@@ -308,6 +306,23 @@ To rebuild, re-register or tear down the machines, use
 Its README covers the network rules, what is installed and how registration
 tokens are handled. A runner that shows offline after a reboot or a runner
 update usually needs only `./deploy.sh register`.
+
+## Larger runners
+
+The repository variable `FELIX_LARGE_RUNNER` names a GitHub-hosted larger
+runner (`felix-runner-x64`: 8 cores, 32 GB, up to 40 at once). When it is set,
+`test` and `coverage` (wherever they run GitHub-hosted), the seven TLA+
+shards and `perf-pr.yml` use it instead of the 4-core `ubuntu-latest`. TLC
+runs a worker per core, so the shards gain as much as `test` does.
+`perf-pr.yml` benchmarks the merge-base and the PR head in one job, so its
+comparison holds on any runner. `perf-publish.yml` stays on `ubuntu-latest`:
+it adds to a stored history, and a change of machine would show up there as a
+regression or a speedup.
+
+Larger runners are billed per minute even on a public repository, up to the
+organization's Actions budget; past it, their jobs are refused. They are fresh
+machines for every job, so pull requests can use them. Delete the variable and
+every job is back on `ubuntu-latest`.
 
 ## Docs site
 

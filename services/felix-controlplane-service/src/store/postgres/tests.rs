@@ -137,3 +137,12 @@ fn decode_key_rejects_invalid_length() {
     let ok = decode_key(&[0u8; 32], "key").unwrap();
     assert_eq!(ok, [0u8; 32]);
 }
+
+/// A write that gave up waiting for its feed is a 503 `busy` (nothing written), not a 500.
+#[test]
+fn a_busy_feed_is_answered_as_busy() {
+    let error =
+        crate::api::error::api_internal("failed to create stream", &busy(CatalogFeed::Streams));
+    assert_eq!(error.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.body.code, "busy");
+}
