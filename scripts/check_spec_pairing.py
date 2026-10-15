@@ -83,13 +83,40 @@ def modelled(path: str) -> bool:
 def strip_comments(text: str, suffix: str) -> str:
     """The text with TLA+ comments and whitespace removed.
 
-    `(* ... *)` blocks and `\\*` line comments in a spec; `\\*` lines in a
-    configuration. Block comments do not nest in anything this repo writes.
+    One left-to-right pass, so a `\\*` inside a block comment or a `(*` inside
+    a line comment or string means what the language says. Block comments
+    nest. `suffix` is kept for callers; specs and configurations read alike.
     """
-    if suffix == ".tla":
-        text = re.sub(r"\(\*.*?\*\)", "", text, flags=re.DOTALL)
-    text = re.sub(r"\\\*[^\n]*", "", text)
-    return " ".join(text.split())
+    out = []
+    depth = 0
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i : i + 2]
+        if depth:
+            if two == "(*":
+                depth += 1
+                i += 2
+            elif two == "*)":
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        elif two == "(*":
+            depth = 1
+            i += 2
+        elif two == "\\*":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        else:
+            out.append(text[i])
+            i += 1
+    return " ".join("".join(out).split())
 
 
 def spec_changed(base: str, changed: list[str]) -> bool:
@@ -142,7 +169,8 @@ def main() -> int:
     for path in touched:
         print(f"  {path}")
     print(
-        f"\nand no spec or configuration under {SPEC} beyond comments. If it changes the protocol -- the lease, the\n"
+        f"\nand no spec or configuration under {SPEC} beyond comments. If it changes\n"
+        "the protocol -- the lease, the\n"
         "quorum mark, reports, promotion or handoff -- update the model. If it does\n"
         "not, say so with a line in a commit message or the PR description:\n\n"
         "  Spec-Unaffected: <why>\n\n"

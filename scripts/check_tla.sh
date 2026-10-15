@@ -294,12 +294,24 @@ weight_of() {
 }
 
 # `TLA_QUICK=1` leaves out the registered configurations weighing more than
-# ten minutes. Pull requests check that tier; the rest run when the spec
-# changes on main. Configurations named on the command line always run.
+# ten minutes, except those whose own .cfg changed against `TLA_CHANGED_BASE`
+# (a revision; CI passes the PR's base), which always run. A changed .tla does
+# not pull in its heavy configurations: FelixShard.tla is behind most of them.
+# Pull requests check that tier; the rest run when the spec changes on main.
+# Configurations named on the command line always run.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
+  changed_cfgs=" "
+  if [ -n "${TLA_CHANGED_BASE:-}" ]; then
+    while read -r f; do
+      f="${f##*/}"
+      changed_cfgs="$changed_cfgs${f%.cfg} "
+    done < <(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")
+  fi
   quick=()
   for entry in "${selected[@]}"; do
-    if [ "$(weight_of "${entry%% *}")" -le 10 ]; then quick+=("$entry"); fi
+    if [ "$(weight_of "${entry%% *}")" -le 10 ] || [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
+      quick+=("$entry")
+    fi
   done
   selected=(${quick[@]+"${quick[@]}"})
 fi

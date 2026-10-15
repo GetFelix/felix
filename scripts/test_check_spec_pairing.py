@@ -31,6 +31,31 @@ class StripComments(unittest.TestCase):
         self.assertNotEqual(sp.strip_comments(a, ".tla"), sp.strip_comments(b, ".tla"))
 
 
+class Tokenizer(unittest.TestCase):
+    def test_block_opener_inside_line_comment(self):
+        a = "A == 1 \\* see (* x\nB == 2\nC==3 *)\nD==4"
+        got = sp.strip_comments(a, ".tla")
+        self.assertIn("B == 2", got)
+        self.assertIn("C==3", got)
+
+    def test_nested_blocks(self):
+        a = "(* a (* b *) still comment *) X == 1"
+        self.assertEqual(sp.strip_comments(a, ".tla"), "X == 1")
+
+    def test_string_literal_keeps_markers(self):
+        a = 'S == "a \\* b (* c"\nT == 2'
+        got = sp.strip_comments(a, ".tla")
+        self.assertIn("T == 2", got)
+        self.assertIn('"a \\* b (* c"', got)
+
+    def test_line_comment_inside_block(self):
+        a = "(* x \\* y *) Z == 3"
+        self.assertEqual(sp.strip_comments(a, ".tla"), "Z == 3")
+
+    def test_cfg_block_comment(self):
+        self.assertEqual(sp.strip_comments("(* note *)\nINVARIANT A", ".cfg"), "INVARIANT A")
+
+
 class Modelled(unittest.TestCase):
     def test_new_paths(self):
         for path in (
