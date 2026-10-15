@@ -131,6 +131,9 @@ when nothing did. Each workflow ends with a job that always runs, `CI ok` and
 checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
 docs-only change gets both within a minute or two.
 
+`coverage` itself runs only on pushes to main, where it publishes the badge;
+on a pull request it is skipped and `Coverage ok` passes.
+
 Its jobs:
 
 | Job | Runs |
@@ -139,7 +142,8 @@ Its jobs:
 | `images` | Builds `docker/broker.Dockerfile` and `docker/controlplane.Dockerfile`, then checks each image starts, serves `/ready` and does not run as root |
 | `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
 | `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
-| `formal` | `scripts/check_spec_pairing.py` against the PR base, then `scripts/check_tla.sh` (`task tla:check`) |
+| `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
+| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`); main checks all of them |
 | `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
 
 `task deny` runs `cargo-deny check` against
