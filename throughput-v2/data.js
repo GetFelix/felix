@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792040023645,
+  "lastUpdate": 1792041564427,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -29640,6 +29640,58 @@ window.BENCHMARK_DATA = {
             "range": "4521.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811967.46\nmean: 810561.49\nstdev: 4521.33\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cee4a6d90fe1a7f63d6f376eb7f12ddbea329d16",
+          "message": "fix(storage): truncation and reset wait out a background seal (#1222) (#1239)\n\n* fix(storage): never move the durable mark backward (#1220)\n\nA background roll's seal could finish after a flush had covered the new\nsegment and record the mark at that segment's header. On an idle shard no\nlater flush moved it forward, so after a power loss rot in acknowledged\nrecords of the new segment was repaired as a torn tail.\n\nThe mark file now remembers the last mark written and drops writes behind\nit. Truncation and reset remain the only backward moves, and a background\nseal that started before one of them leaves the mark where it put it.\n\n* docs(storage): reflow the durable.mark paragraph\n\n* docs(storage): rolls and seals also write durable.mark\n\n* fix(storage): truncation and reset wait out a background seal (#1222)\n\nA background roll's seal ends with set_len on the retired segment. A\ntruncation into that segment while the seal ran was undone by it, or lost\nthe records appended after it. Truncation, reset and restore now claim the\nroll slot first, which waits for a roll in flight and keeps the next one\nfrom starting until they finish.",
+          "timestamp": "2026-10-14T22:15:06-07:00",
+          "tree_id": "6d94c57c5c1833a20cf76e1813146c426ac784e7",
+          "url": "https://github.com/GetFelix/felix/commit/cee4a6d90fe1a7f63d6f376eb7f12ddbea329d16"
+        },
+        "date": 1792041563533,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341458.73,
+            "range": "4481.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341458.73\nmean: 342212.59\nstdev: 4481.60\ncv: 1.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341458.73,
+            "range": "4481.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341458.73\nmean: 342212.59\nstdev: 4481.60\ncv: 1.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79763.3,
+            "range": "356.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79763.30\nmean: 79773.08\nstdev: 356.66\ncv: 0.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797633.01,
+            "range": "3566.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797633.01\nmean: 797730.79\nstdev: 3566.64\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
