@@ -4,10 +4,11 @@
 //! [`super::AppStateMachine::join_floor`], but a member already in the
 //! membership never asks again: one whose volume was wiped and that restarts
 //! on an older build under the same id would be fed the log and a snapshot it
-//! cannot apply, and part ways with the others. So an append or snapshot to a
-//! member fails as `Unreachable` while there is evidence it is below the
-//! floor. To openraft it is then a follower that is down: commits still need
-//! only a majority.
+//! cannot apply, and part ways with the others. So while there is evidence a
+//! member is below the floor, an append carrying entries or a snapshot to it
+//! fails as `Unreachable`. Commits still need only a majority. Heartbeats
+//! still go, without the commit index, so a held member applies nothing and
+//! does not call an election.
 //!
 //! The evidence is the level the member last reported, which the leader's
 //! version watch ([`super::version`]) keeps fresh in the background; a send
@@ -15,15 +16,16 @@
 //! holding a healthy voter on a slow probe would cost the group its quorum.
 //! A member that answers an append with a conflict below an entry it already
 //! acknowledged has lost its log, possibly to a restart on another build, so
-//! it alone is held until it reports its level again. A conflict on a
-//! replication client's first append, before it has seen any
-//! acknowledgement, cannot tell a lost log from a member that is behind, so
-//! it holds that member only until one probe sent after it settles: a level
-//! at the floor or no answer releases it.
+//! it alone is held until it reports its level again. A conflict before a
+//! replication client has seen any acknowledgement cannot tell a lost log
+//! from a member that is behind, so it holds that member only until one
+//! probe sent after it settles: a level at the floor or no answer releases
+//! it. Each mark is settled by a probe of that member alone, bounded by
+//! [`super::version::ASK_TIMEOUT`], not by the watch's pass over every member.
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use super::version::{Doubt, Versions};
+use super::version::{ASK_TIMEOUT, Asker, Doubt, Versions, probe};
 use super::{AppStateMachine, NodeId};
 
 pub(super) struct Hold {
@@ -31,8 +33,8 @@ pub(super) struct Hold {
     versions: Arc<Mutex<Versions>>,
     /// Held now; logged and counted once per hold.
     held: Mutex<BTreeSet<NodeId>>,
-    /// Asks the leader's version watch to probe the members that lost
-    /// their log.
+    /// Wakes the leader's version watch: to retry a marked member, and to
+    /// clear a hold made by a late send after this member stopped leading.
     pub(super) wake: tokio::sync::Notify,
 }
 
@@ -64,8 +66,8 @@ impl std::fmt::Display for BelowFloor {
             ),
             Why::Doubted(Doubt::Unconfirmed) => write!(
                 f,
-                "held: member conflicted on its first append; asking its metadata version \
-                 against the group's {floor}"
+                "held: member conflicted before acknowledging an append; asking its metadata \
+                 version against the group's {floor}"
             ),
         }
     }
@@ -110,30 +112,48 @@ impl Hold {
     }
 
     /// Member `target` answered a conflict below an entry it had
-    /// acknowledged: hold it until it reports its level again, and have
-    /// that asked now.
-    pub(super) fn lost_log(&self, target: NodeId) {
+    /// acknowledged: hold it until it reports its level again. True when
+    /// the caller should [`Self::ask`] it now.
+    pub(super) fn lost_log(&self, target: NodeId) -> bool {
         if self.app.join_floor() == 0 {
-            return;
+            return false;
         }
         self.versions
             .lock()
             .expect("versions lock")
             .mark_stale(target);
         self.wake.notify_one();
+        true
     }
 
-    /// A new replication client's first append to member `target`
-    /// conflicted: hold it until a probe sent from now on answers or fails.
-    pub(super) fn unconfirmed(&self, target: NodeId) {
+    /// Member `target` conflicted before acknowledging anything to this
+    /// replication client: hold it until a probe sent from now on answers
+    /// or fails. True when the caller should [`Self::ask`] it now; false
+    /// while an earlier mark is still unsettled.
+    pub(super) fn unconfirmed(&self, target: NodeId) -> bool {
         if self.app.join_floor() == 0 {
-            return;
+            return false;
         }
-        self.versions
+        let marked = self
+            .versions
             .lock()
             .expect("versions lock")
             .mark_unconfirmed(target);
-        self.wake.notify_one();
+        if marked {
+            self.wake.notify_one();
+        }
+        marked
+    }
+
+    /// Probe member `target` at `base` for its level and settle its mark
+    /// with the answer, or with silence after [`ASK_TIMEOUT`].
+    pub(super) async fn ask(&self, target: NodeId, client: &reqwest::Client, base: &str) {
+        let asked_at = self.versions.lock().expect("versions lock").epoch();
+        let answer = probe(client, base, &Asker::default(), ASK_TIMEOUT).await;
+        self.versions
+            .lock()
+            .expect("versions lock")
+            .settle(target, answer, asked_at);
     }
 
     /// Forget the marks and holds of members no longer in `members`.
@@ -174,6 +194,7 @@ impl Hold {
     fn hold(&self, target: NodeId, why: Why, floor: u16) -> BelowFloor {
         if self.held.lock().expect("hold lock").insert(target) {
             set_gauge(target, true);
+            self.wake.notify_one();
             match why {
                 Why::Reported(version) => tracing::warn!(
                     member = target,
@@ -192,8 +213,8 @@ impl Hold {
                 Why::Doubted(Doubt::Unconfirmed) => tracing::info!(
                     member = target,
                     floor,
-                    "raft member conflicted on its first append; asking its metadata version \
-                     before replicating to it"
+                    "raft member conflicted before acknowledging an append; asking its metadata \
+                     version before replicating to it"
                 ),
             }
         }

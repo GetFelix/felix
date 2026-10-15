@@ -73,7 +73,6 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             heartbeat: self.heartbeat,
             hold: Arc::clone(&self.hold),
             acknowledged: None,
-            confirmed: false,
         }
     }
 }
@@ -89,10 +88,6 @@ pub(super) struct HttpNetwork {
     /// every membership change), and that leader's log only grows, so a
     /// conflict at or below it means the member lost its log.
     acknowledged: Option<u64>,
-    /// A conflict before any acknowledgement already had the member's level
-    /// asked. Only the first one asks, so the leader's search for where
-    /// their logs match is not slowed at every step.
-    confirmed: bool,
 }
 
 /// The longest wait between retries to an unreachable member, so a member
@@ -148,7 +143,6 @@ impl HttpNetwork {
             heartbeat: Duration::from_millis(150),
             hold,
             acknowledged: None,
-            confirmed: false,
         }
     }
 
@@ -213,6 +207,14 @@ impl HttpNetwork {
             .map_err(|held| Unreachable::new(&held))
     }
 
+    /// Settle a fresh mark with a probe of this member alone, off the send
+    /// path.
+    fn ask(&self) {
+        let hold = Arc::clone(&self.hold);
+        let (client, base, target) = (self.client.clone(), self.base.clone(), self.target);
+        tokio::spawn(async move { hold.ask(target, &client, &base).await });
+    }
+
     fn acknowledged(&mut self, index: Option<u64>) {
         self.acknowledged = self.acknowledged.max(index);
     }
@@ -221,11 +223,19 @@ impl HttpNetwork {
 impl RaftNetwork<TypeConfig> for HttpNetwork {
     async fn append_entries(
         &mut self,
-        rpc: AppendEntriesRequest<TypeConfig>,
+        mut rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>
     {
-        self.hold_back().map_err(RPCError::Unreachable)?;
+        if let Err(held) = self.hold_back() {
+            if !rpc.entries.is_empty() {
+                return Err(RPCError::Unreachable(held));
+            }
+            // A heartbeat still goes, so a held member does not time out and
+            // depose the leader. Without the commit index it applies nothing,
+            // not even entries it was fed before the hold.
+            rpc.leader_commit = None;
+        }
         let response = self.send("append-entries", &rpc).await;
         let prev = rpc.prev_log_id.map(|log_id| log_id.index);
         match &response {
@@ -240,17 +250,18 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
             // one that lost its log conflicts at or below it.
             Ok(AppendEntriesResponse::Conflict) if prev.is_some() && prev <= self.acknowledged => {
                 self.acknowledged = None;
-                self.confirmed = true;
-                self.hold.lost_log(self.target);
+                if self.hold.lost_log(self.target) {
+                    self.ask();
+                }
             }
-            // A fresh client has no acknowledgement to compare with, so a
-            // member that lost its log looks like one that is behind.
+            // With no acknowledgement to compare with, a member that lost its
+            // log looks like one that is behind. It may lose it between two
+            // conflicts, so each one asks again once the last ask settled.
             // Up-to-date members answer success and are never asked.
             Ok(AppendEntriesResponse::Conflict)
-                if self.acknowledged.is_none() && !self.confirmed =>
+                if self.acknowledged.is_none() && self.hold.unconfirmed(self.target) =>
             {
-                self.confirmed = true;
-                self.hold.unconfirmed(self.target);
+                self.ask();
             }
             _ => {}
         }

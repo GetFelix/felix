@@ -491,8 +491,11 @@ upgrade.
 membership is never asked to join again: one whose volume was wiped and
 that restarts on an older build under its old id would otherwise be sent
 the log and a snapshot it cannot apply. So the leader holds a member when
-it has evidence the member is below the floor (`raft/hold.rs`): the send
-fails as unreachable and nothing is written to it. The check reads only
+it has evidence the member is below the floor (`raft/hold.rs`): an append
+carrying entries, or a snapshot, fails as unreachable and nothing is written
+to it. Heartbeats still go, with the commit index removed, so the member
+applies nothing, not even entries it was sent before the hold, and does not
+time out and call an election. The check reads only
 cached state, the floor from an atomic the state machine updates on apply
 and restore and each member's last reported level; a send never waits on a
 probe. The leader keeps those levels fresh in the background
@@ -507,7 +510,7 @@ conflict at or below an entry it had acknowledged to the same replication
 client. A client lives at most one leader's term, during which the
 leader's log only grows, so that conflict means the member lost its log,
 possibly to a restart on another build. It alone is held, and asked at
-once, until it reports a level at the floor; an answer to a probe sent
+once by a probe of it alone, until it reports a level at the floor; an answer to a probe sent
 before the conflict does not count. A member whose level is unknown,
 because it has not been asked yet or did not answer, is fed, and a failed
 probe keeps the last level it reported. Holding on silence would hold
@@ -520,11 +523,16 @@ A new client has nothing acknowledged to compare with. openraft builds one
 for each follower when a leader takes over and again on every membership
 change, and a member that lost its log would otherwise be fed on that
 client's first conflict, with whatever level it reported before the wipe
-still cached. So the first conflict a client sees before any
+still cached. So a conflict a client sees before any
 acknowledgement holds that member until one probe sent after it settles:
 a level at the floor or no answer releases it, a level below keeps it
-held. Up-to-date members answer the first append with success and are
-never asked; a member that is behind pays one probe round trip.
+held. The probe goes to that member alone and gives up after 200 ms, well
+under the election timeout, so it never waits on a pass over the other
+members. Each such conflict asks again once the last probe settled, since
+the member can be wiped between two of them. Up-to-date members answer the
+first append with success and are never asked. A member that is behind pays,
+for each conflict while the leader searches for where their logs match, a
+probe round trip and openraft's retry delay of one heartbeat interval.
 
 Marks and holds belong to the leader that made them. The watch drops a
 member's state once it leaves the membership and clears all of it,
@@ -532,9 +540,9 @@ resetting the gauges, when this member stops leading.
 
 The leader logs the hold once and sets
 `felix_meta_raft_member_below_floor{member}` to 1 until it ends. To openraft
-a held member is a follower that is down, so commits still need only a
-majority, but holding a voter takes one failure off what the group can
-survive until that member is upgraded. Two cases are not caught: a member
+a held member is a follower that stopped taking entries, so commits still
+need only a majority, but holding a voter takes one failure off what the
+group can survive until that member is upgraded. Two cases are not caught: a member
 restarted on an older build with its log intact, which is a rollback,
 covered below; and a member wiped and restarted on an older build whose
 probe fails even though it just answered an append, which is fed because

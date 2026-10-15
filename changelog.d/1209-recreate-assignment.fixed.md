@@ -19,8 +19,9 @@
   older build, as after a lost volume, is no longer sent entries or a
   snapshot once it reports an older version, or while it has lost its log
   and not yet reported one; the leader logs it once and sets
-  `felix_meta_raft_member_below_floor{member}` to 1. A member that is slow
-  or unable to answer is not held. Either member would refuse entries the
+  `felix_meta_raft_member_below_floor{member}` to 1. It still gets
+  heartbeats, so it does not call an election. A member that is slow or
+  unable to answer is not held. Either member would refuse entries the
   others apply and diverge from them. A held voter is one fewer failure the
   group survives until it is upgraded. A group that ran unreleased builds of
   main may have members whose tracked level differs, since those builds

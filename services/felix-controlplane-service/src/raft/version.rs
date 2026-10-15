@@ -27,6 +27,10 @@ use super::{NodeId, RaftHandle};
 /// rises within about this long of the last member upgrading.
 const FRESH_FOR: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bound on the probe that settles one member's fresh mark ([`super::hold`]).
+/// Well under the election timeout, so a member at the floor is fed again
+/// long before anything could time out on it.
+pub(super) const ASK_TIMEOUT: Duration = Duration::from_millis(200);
 /// How often a leader asks every member its level again, for the
 /// replication hold ([`super::hold`]).
 const REFRESH_EVERY: Duration = Duration::from_secs(10);
@@ -57,10 +61,10 @@ pub(super) struct Versions {
 pub(super) enum Doubt {
     /// It conflicted below an entry it acknowledged. Held until it answers.
     LostLog,
-    /// It conflicted on a new replication client's first append, so it may
-    /// have lost its log or just be behind. Held until one probe sent after
-    /// the mark settles it; a probe that fails releases it, since silence
-    /// must never hold a healthy member.
+    /// It conflicted before acknowledging anything to a replication client,
+    /// so it may have lost its log or just be behind. Held until one probe
+    /// sent after the mark settles it; a probe that fails releases it, since
+    /// silence must never hold a healthy member.
     Unconfirmed,
 }
 
@@ -115,13 +119,15 @@ impl Versions {
         self.stale.insert(id, (self.epoch, Doubt::LostLog));
     }
 
-    /// `id` may have lost its log. Never weakens a [`Doubt::LostLog`] mark.
-    pub(super) fn mark_unconfirmed(&mut self, id: NodeId) {
+    /// `id` may have lost its log. False when it is already marked; never
+    /// weakens a [`Doubt::LostLog`] mark.
+    pub(super) fn mark_unconfirmed(&mut self, id: NodeId) -> bool {
         if self.stale.contains_key(&id) {
-            return;
+            return false;
         }
         self.epoch += 1;
         self.stale.insert(id, (self.epoch, Doubt::Unconfirmed));
+        true
     }
 
     pub(super) fn doubt(&self, id: NodeId) -> Option<Doubt> {
@@ -140,12 +146,17 @@ impl Versions {
 }
 
 /// Ask the member at `base` for the level it can apply. `None` when it does
-/// not answer.
-pub(super) async fn probe(client: &reqwest::Client, base: &str, asker: &Asker) -> Option<u16> {
+/// not answer within `timeout`.
+pub(super) async fn probe(
+    client: &reqwest::Client,
+    base: &str,
+    asker: &Asker,
+    timeout: Duration,
+) -> Option<u16> {
     let response = client
         .get(format!("{base}/internal/raft/standing"))
         .query(asker)
-        .timeout(PROBE_TIMEOUT)
+        .timeout(timeout)
         .send()
         .await
         .ok()?;
@@ -256,7 +267,7 @@ impl RaftHandle {
                 continue;
             };
             let (client, asker, id) = (self.forward.clone(), self.asker(), *id);
-            probes.spawn(async move { (id, probe(&client, &base, &asker).await) });
+            probes.spawn(async move { (id, probe(&client, &base, &asker, PROBE_TIMEOUT).await) });
         }
         let mut answers = Vec::new();
         while let Some(joined) = probes.join_next().await {
@@ -275,7 +286,7 @@ impl RaftHandle {
     /// answer. `None` when it does not answer.
     pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
         let asked_at = self.versions.lock().expect("versions lock").epoch();
-        let version = probe(&self.forward, base, &self.asker()).await;
+        let version = probe(&self.forward, base, &self.asker(), PROBE_TIMEOUT).await;
         let mut versions = self.versions.lock().expect("versions lock");
         match version {
             Some(version) => versions.record(id, version, asked_at),
@@ -287,7 +298,8 @@ impl RaftHandle {
     /// While this member leads, keep every member's reported level fresh
     /// for the replication hold: on taking the lead, every
     /// [`REFRESH_EVERY`] ([`HELD_RETRY`] while a member is held), and at
-    /// once when a member lost its log. Returns when the node stops.
+    /// once when a member is marked or held. While not leading, clears
+    /// whatever a late send left. Returns when the node stops.
     pub(super) async fn watch_versions(self) {
         let mut metrics = self.raft.metrics();
         let mut next: Option<Instant> = None;

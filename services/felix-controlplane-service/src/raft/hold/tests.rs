@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use openraft::error::RPCError;
@@ -37,36 +37,43 @@ fn hold_with(floor: Arc<AtomicU16>, versions: Arc<std::sync::Mutex<Versions>>) -
     Arc::new(Hold::new(Arc::new(FloorApp(floor)), versions))
 }
 
-/// A member reporting `version` (`u16::MAX`: not answering) that counts the
-/// appends and probes it is sent and answers appends with a conflict while
-/// `conflict`.
+/// A member reporting `version` (`u16::MAX`: not answering) after
+/// `delay_ms`, that counts the appends and probes it is sent, keeps the last
+/// append, and answers appends with a conflict while `conflict`.
 struct Member {
     version: Arc<AtomicU16>,
+    delay_ms: Arc<AtomicU64>,
     conflict: Arc<AtomicBool>,
     appends: Arc<AtomicUsize>,
     probes: Arc<AtomicUsize>,
+    last: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
     addr: String,
 }
 
 async fn member(version: u16) -> Member {
     let member = Member {
         version: Arc::new(AtomicU16::new(version)),
+        delay_ms: Arc::default(),
         conflict: Arc::default(),
         appends: Arc::default(),
         probes: Arc::default(),
+        last: Arc::default(),
         addr: String::new(),
     };
-    let (version, conflict, appends, probes) = (
+    let (version, delay_ms, conflict, appends, probes, last) = (
         Arc::clone(&member.version),
+        Arc::clone(&member.delay_ms),
         Arc::clone(&member.conflict),
         Arc::clone(&member.appends),
         Arc::clone(&member.probes),
+        Arc::clone(&member.last),
     );
     let app = axum::Router::new()
         .route(
             "/internal/raft/append-entries",
-            axum::routing::post(move || {
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
                 appends.fetch_add(1, Ordering::SeqCst);
+                *last.lock().expect("last lock") = Some(body);
                 let reply = if conflict.load(Ordering::SeqCst) {
                     "Conflict"
                 } else {
@@ -79,8 +86,12 @@ async fn member(version: u16) -> Member {
             "/internal/raft/standing",
             axum::routing::get(move || {
                 probes.fetch_add(1, Ordering::SeqCst);
-                let version = version.load(Ordering::SeqCst);
+                let (version, delay) = (
+                    version.load(Ordering::SeqCst),
+                    delay_ms.load(Ordering::SeqCst),
+                );
                 async move {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
                     if version == u16::MAX {
                         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
                     }
@@ -102,13 +113,18 @@ fn network(addr: &str, hold: Arc<Hold>) -> HttpNetwork {
     HttpNetwork::for_tests(addr, hold)
 }
 
-/// An append after `prev`, carrying entries up to `last`.
-async fn append_at(
+fn log_id(index: u64) -> openraft::LogId<NodeId> {
+    openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), index)
+}
+
+/// An append after `prev`, carrying entries up to `last`, with the leader's
+/// commit index at `commit`.
+async fn send_append(
     network: &mut HttpNetwork,
     prev: Option<u64>,
     last: Option<u64>,
+    commit: Option<u64>,
 ) -> Result<(), String> {
-    let log_id = |index| openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), index);
     let entries = match (prev, last) {
         (_, None) => Vec::new(),
         (prev, Some(last)) => (prev.map_or(1, |prev| prev + 1)..=last)
@@ -122,7 +138,7 @@ async fn append_at(
         vote: openraft::Vote::new(1, 1),
         prev_log_id: prev.map(log_id),
         entries,
-        leader_commit: None,
+        leader_commit: commit.map(log_id),
     };
     match network
         .append_entries(request, RPCOption::new(Duration::from_secs(5)))
@@ -134,8 +150,27 @@ async fn append_at(
     }
 }
 
+async fn append_at(
+    network: &mut HttpNetwork,
+    prev: Option<u64>,
+    last: Option<u64>,
+) -> Result<(), String> {
+    send_append(network, prev, last, None).await
+}
+
+/// An append carrying an entry, which a hold stops.
 async fn append(network: &mut HttpNetwork) -> Result<(), String> {
-    append_at(network, None, None).await
+    append_at(network, None, Some(1)).await
+}
+
+/// Appends until one is let through, for at most `within`.
+async fn until_fed(network: &mut HttpNetwork, within: Duration) -> Duration {
+    let started = std::time::Instant::now();
+    while let Err(held) = append(network).await {
+        assert!(started.elapsed() < within, "still held: {held}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    started.elapsed()
 }
 
 /// What the leader's version watch does with a member's answer.
@@ -145,7 +180,7 @@ fn reports(versions: &std::sync::Mutex<Versions>, id: NodeId, version: u16) {
     versions.record(id, version, now);
 }
 
-/// A member that reported a level below the floor gets nothing until it
+/// A member that reported a level below the floor gets no entries until it
 /// reports the floor.
 #[tokio::test]
 async fn a_member_below_the_floor_is_held_until_it_reports_it() {
@@ -168,6 +203,34 @@ async fn a_member_below_the_floor_is_held_until_it_reports_it() {
     append(&mut network).await.expect("released");
     assert_eq!(member.appends.load(Ordering::SeqCst), 1);
     assert!(!hold.any_held());
+}
+
+/// A held member still gets heartbeats, so it does not call an election,
+/// but without the commit index, so it applies nothing it holds.
+#[tokio::test]
+async fn a_held_member_gets_heartbeats_without_the_commit_index() {
+    let member = member(8).await;
+    let versions = Arc::<std::sync::Mutex<Versions>>::default();
+    let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(&versions));
+    let mut network = network(&member.addr, Arc::clone(&hold));
+    reports(&versions, 2, 8);
+
+    send_append(&mut network, Some(4), None, Some(4))
+        .await
+        .expect("a heartbeat was held");
+    let sent = member.last.lock().expect("last lock").take().expect("sent");
+    assert!(sent["leader_commit"].is_null(), "{sent}");
+    send_append(&mut network, Some(4), Some(5), Some(4))
+        .await
+        .expect_err("entries reached a held member");
+    assert_eq!(member.appends.load(Ordering::SeqCst), 1);
+
+    reports(&versions, 2, 10);
+    send_append(&mut network, Some(4), None, Some(4))
+        .await
+        .expect("heartbeat");
+    let sent = member.last.lock().expect("last lock").take().expect("sent");
+    assert_eq!(sent["leader_commit"]["index"], 4, "{sent}");
 }
 
 /// A member whose level is not known, as after a leader change, is fed:
@@ -200,14 +263,14 @@ async fn a_routine_conflict_does_not_hold() {
     append_at(&mut network, None, Some(5)).await.expect("fed");
 
     member.conflict.store(true, Ordering::SeqCst);
-    append_at(&mut network, Some(9), None)
+    append_at(&mut network, Some(9), Some(10))
         .await
         .expect("answered");
-    append_at(&mut network, Some(7), None)
+    append_at(&mut network, Some(7), Some(10))
         .await
         .expect("answered");
     member.conflict.store(false, Ordering::SeqCst);
-    append_at(&mut network, Some(6), None)
+    append_at(&mut network, Some(6), Some(10))
         .await
         .expect("a routine conflict held the member");
     assert!(!versions.lock().expect("versions lock").is_stale(2));
@@ -215,8 +278,8 @@ async fn a_routine_conflict_does_not_hold() {
 }
 
 /// A member that conflicts at an entry it acknowledged lost its log, maybe
-/// to a restart on an older build. It alone is held, and the watch is
-/// woken to ask it, until it reports a level at the floor.
+/// to a restart on an older build. It alone is held, and asked at once,
+/// until it reports a level at the floor; silence does not release it.
 #[tokio::test]
 async fn a_member_that_lost_its_log_is_held_until_it_reports() {
     let other = member(10).await;
@@ -229,6 +292,7 @@ async fn a_member_that_lost_its_log_is_held_until_it_reports() {
 
     // Asked before the member lost its log: that answer must not release it.
     let asked_before = versions.lock().expect("versions lock").epoch();
+    member.version.store(u16::MAX, Ordering::SeqCst);
     member.conflict.store(true, Ordering::SeqCst);
     append_at(&mut network, Some(5), None)
         .await
@@ -237,7 +301,13 @@ async fn a_member_that_lost_its_log_is_held_until_it_reports() {
         .await
         .expect("the watch was not woken");
     member.conflict.store(false, Ordering::SeqCst);
-    let held = append(&mut network).await.expect_err("held");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while member.probes.load(Ordering::SeqCst) == 0 {
+        assert!(std::time::Instant::now() < deadline, "it was not asked");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(crate::raft::version::ASK_TIMEOUT).await;
+    let held = append(&mut network).await.expect_err("released by silence");
     assert!(held.contains("lost its log"), "{held}");
     append(&mut healthy)
         .await
@@ -275,29 +345,10 @@ async fn nothing_is_held_without_a_floor() {
     assert_eq!(member.appends.load(Ordering::SeqCst), 1);
 }
 
-/// What the leader's version watch does with one probe of member `id`,
-/// sent at `asked_at`.
-async fn probe_at(versions: &std::sync::Mutex<Versions>, id: NodeId, addr: &str, asked_at: u64) {
-    let answer = crate::raft::version::probe(
-        &reqwest::Client::new(),
-        &format!("http://{addr}"),
-        &crate::raft::version::Asker::default(),
-    )
-    .await;
-    versions
-        .lock()
-        .expect("versions lock")
-        .settle(id, answer, asked_at);
-}
-
-async fn probe_now(versions: &std::sync::Mutex<Versions>, id: NodeId, addr: &str) {
-    let asked_at = versions.lock().expect("versions lock").epoch();
-    probe_at(versions, id, addr, asked_at).await;
-}
-
 /// A fresh client's first conflict after `reports(10)`, as when a leader
 /// was wiped and restarted on an older build while the others still hold
-/// the level it reported before: held, and the watch woken.
+/// the level it reported before: held while the member is asked, and the
+/// watch woken.
 async fn first_conflict(
     member: &Member,
     versions: &Arc<std::sync::Mutex<Versions>>,
@@ -305,21 +356,26 @@ async fn first_conflict(
     let hold = hold_with(Arc::new(AtomicU16::new(10)), Arc::clone(versions));
     let mut network = network(&member.addr, Arc::clone(&hold));
     reports(versions, 2, 10);
+    conflict_once(member, &mut network, &hold).await;
+    (hold, network)
+}
+
+/// A conflict on `network`, which leaves the member held while it is asked.
+async fn conflict_once(member: &Member, network: &mut HttpNetwork, hold: &Hold) {
+    let delay = member.delay_ms.fetch_max(50, Ordering::SeqCst);
     member.conflict.store(true, Ordering::SeqCst);
-    append_at(&mut network, Some(5), None)
-        .await
-        .expect("answered");
+    append_at(network, Some(5), None).await.expect("answered");
     tokio::time::timeout(Duration::from_secs(1), hold.wake.notified())
         .await
         .expect("the watch was not woken");
     member.conflict.store(false, Ordering::SeqCst);
-    let held = append(&mut network).await.expect_err("held");
-    assert!(held.contains("first append"), "{held}");
-    (hold, network)
+    let held = append(network).await.expect_err("held");
+    assert!(held.contains("conflicted"), "{held}");
+    member.delay_ms.store(delay, Ordering::SeqCst);
 }
 
 /// A first-append conflict from a member on an older build holds it once
-/// the probe reports a level below the floor, despite the higher level it
+/// its probe reports a level below the floor, despite the higher level it
 /// reported before.
 #[tokio::test]
 async fn a_first_conflict_holds_a_member_the_probe_finds_below_the_floor() {
@@ -327,7 +383,7 @@ async fn a_first_conflict_holds_a_member_the_probe_finds_below_the_floor() {
     let versions = Arc::<std::sync::Mutex<Versions>>::default();
     let (_hold, mut network) = first_conflict(&member, &versions).await;
 
-    probe_now(&versions, 2, &member.addr).await;
+    tokio::time::sleep(crate::raft::version::ASK_TIMEOUT).await;
     let held = append(&mut network).await.expect_err("held");
     assert!(held.contains("supports metadata version 8"), "{held}");
     assert_eq!(
@@ -337,47 +393,72 @@ async fn a_first_conflict_holds_a_member_the_probe_finds_below_the_floor() {
     );
 }
 
-/// A member at the floor that conflicts on a first append is only behind:
-/// one probe releases it, and later conflicts on the same client do not
-/// ask again.
+/// A member at the floor held on a first-append conflict is released by
+/// its own probe within the ask's bound, however long another member's
+/// probe hangs: nothing waits on the watch's pass over every member.
 #[tokio::test]
-async fn a_first_conflict_from_a_member_at_the_floor_costs_one_probe() {
+async fn a_first_conflict_is_settled_by_its_own_probe() {
+    let hanging = member(10).await;
+    hanging.delay_ms.store(5_000, Ordering::SeqCst);
     let member = member(10).await;
     let versions = Arc::<std::sync::Mutex<Versions>>::default();
     let (hold, mut network) = first_conflict(&member, &versions).await;
+    let mut other = HttpNetwork::for_tests_as(3, &hanging.addr, Arc::clone(&hold));
+    conflict_once(&hanging, &mut other, &hold).await;
 
-    probe_now(&versions, 2, &member.addr).await;
-    append(&mut network).await.expect("released");
-    member.conflict.store(true, Ordering::SeqCst);
-    append_at(&mut network, Some(3), None)
-        .await
-        .expect("answered");
-    member.conflict.store(false, Ordering::SeqCst);
-    append(&mut network)
-        .await
-        .expect("a later conflict held the member");
+    let waited = until_fed(&mut network, Duration::from_secs(1)).await;
+    assert!(
+        waited < crate::raft::version::ASK_TIMEOUT,
+        "held for {waited:?}"
+    );
+    // A member that does not answer is released once its ask times out.
+    let waited = until_fed(&mut other, Duration::from_secs(1)).await;
+    assert!(waited < Duration::from_millis(400), "held for {waited:?}");
     assert!(!hold.any_held());
-    assert_eq!(member.probes.load(Ordering::SeqCst), 1);
 }
 
-/// A probe that gets no answer releases a member held on a first-append
-/// conflict: silence never holds. A probe sent before the conflict does
-/// not count.
+/// A member released after a first-append conflict, then wiped and
+/// restarted on an older build before acknowledging anything to the same
+/// client, is asked again on its next conflict and held.
 #[tokio::test]
-async fn a_failed_probe_releases_a_first_conflict() {
-    let member = member(u16::MAX).await;
+async fn a_later_conflict_asks_again() {
+    let member = member(10).await;
     let versions = Arc::<std::sync::Mutex<Versions>>::default();
-    let asked_before = versions.lock().expect("versions lock").epoch();
     let (hold, mut network) = first_conflict(&member, &versions).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while versions.lock().expect("versions lock").is_stale(2) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ask did not settle"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 
-    probe_at(&versions, 2, &member.addr, asked_before).await;
-    append(&mut network)
-        .await
-        .expect_err("released by an older probe");
+    member.version.store(8, Ordering::SeqCst);
+    conflict_once(&member, &mut network, &hold).await;
+    let fed = member.appends.load(Ordering::SeqCst);
+    tokio::time::sleep(crate::raft::version::ASK_TIMEOUT).await;
+    let held = append(&mut network).await.expect_err("held");
+    assert!(held.contains("supports metadata version 8"), "{held}");
+    assert_eq!(
+        member.appends.load(Ordering::SeqCst),
+        fed,
+        "a member restarted below the floor was fed"
+    );
+}
 
-    probe_now(&versions, 2, &member.addr).await;
-    append(&mut network).await.expect("released");
-    assert!(!hold.any_held());
+/// Silence settles a first-append mark only from a probe sent after it.
+#[test]
+fn only_a_later_failed_probe_releases_a_first_conflict() {
+    let mut versions = Versions::default();
+    let asked_before = versions.epoch();
+    assert!(versions.mark_unconfirmed(2));
+    assert!(!versions.mark_unconfirmed(2), "marked twice");
+    versions.settle(2, None, asked_before);
+    assert!(versions.is_stale(2), "released by an older probe");
+    let now = versions.epoch();
+    versions.settle(2, None, now);
+    assert!(!versions.is_stale(2));
 }
 
 /// The gauge as the Prometheus recorder renders it for `member`.
@@ -491,5 +572,19 @@ async fn a_follower_keeps_no_holds() {
     handle.hold.check(7).expect_err("held");
     handle.hold.lost_log(7);
     until_unmarked(&handle, 7).await;
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A send from a term this member no longer leads, landing after the watch
+/// cleared the holds, leaves no hold or mark behind.
+#[tokio::test]
+async fn a_late_send_after_stepping_down_leaves_no_hold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = node(dir.path()).await;
+    reports(&handle.versions, 7, 8);
+    handle.hold.check(7).expect_err("held");
+    until_unmarked(&handle, 7).await;
+    assert!(handle.hold.unconfirmed(8));
+    until_unmarked(&handle, 8).await;
     handle.shutdown().await.expect("shutdown");
 }
