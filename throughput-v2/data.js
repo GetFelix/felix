@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792119824275,
+  "lastUpdate": 1792124539343,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31044,6 +31044,58 @@ window.BENCHMARK_DATA = {
             "range": "5225.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811252.38\nmean: 809850.10\nstdev: 5225.85\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e68a2c2513420ff6f31dd6d762b53de6b70d93f9",
+          "message": "fix(placement): keep identity checks on through a partial Raft level and across move steps (#1279)\n\n* fix(placement): keep identity checks on through a partial Raft level and across move steps\n\nFour gaps in how placement reads replica reports after #1271:\n\n- Under Raft a member that has not answered since this process started\n  counted at level 0, so a restart with one member down dropped storage\n  identities from every registration and report. A wiped follower's\n  registration then cleared its identity and an older report could promote\n  it empty. Such a member now counts at the join floor, the level the\n  applied log already depends on.\n- The API stamps each report with the node that made it and the\n  incarnation each named node is registered at (report.leader,\n  node_incarnations; metadata level 13, Postgres 0031 with a stamped_at\n  marker). A follower without an identity counts only from a fresh report\n  taken at its current incarnation.\n- A dead leader's report is frozen while its leader, at the same\n  incarnation, is still the assignment's leader, not only while the\n  generation is unchanged: a move's steps raise it under the same leader\n  (#1250).\n- A report counts for followers only while its leader is the\n  assignment's. A new leader that dies before its first report leaves the\n  shard waiting, as replication-design.md said; the code promoted on the\n  previous leader's report while it was fresh.\n\n* spec: model the registered identity and the report's incarnation stamp\n\nByLeaderReport now compares a report's identity with the one the follower\nregistered (`registered`), not the one it has, and treats a follower\nregistered without one as unverified: with StampIncarnations it counts only\nfrom a report the control plane stamped (DeliverReport, `incs`) at its\ncurrent registration. Without StripIds the wipe registers the new identity\nat once, so every existing configuration checks what it did. Under StripIds\nthe wiped follower registers in a step of its own and without an identity,\nonce the pass that heard it has ended and nothing is in flight.\n\nStripIds and StampIncarnations are definitions overridden with `<-`, so no\nother configuration has to name them. FelixShardWipeStripped.cfg is\nexpected to pass and FelixShardWipeStrippedNoStamp.cfg to violate\nAckedSurvive. Placement's other narrowing in this PR (a previous leader's\nreport counts for nobody) is stricter than the model, which still promotes\nfrom any stored report.\n\n* spec: every broker learns the new identity before a stripped registration\n\nTLC found FelixShardWipeStripped.cfg losing a record through the leader's\nstale view: still on the wiped follower's old connection, it reported the\nfollower under its old identity after a registration without one, and the\nstamp counted it. That is a real window in the code, bounded by QUIC's idle\ntimeout for a crashed follower, and only for a registration that lost its\nidentity. Register now teaches every broker the new identity, as a redial\ndoes, and the configuration and replication-design.md state both cases the\nstamp leaves out.\n\n* fix(placement): refuse a predecessor's report only for Leader shards; model the #1281 window\n\nReview follow-up. Under Quorum a previous leader's report still promotes:\non the lease the new leader acknowledged nothing before its first stored\nreport, and under majority_ack the next promoted leader's fence takes what\na majority holds. Only a Leader shard waits for a new leader that died\nbefore its first report. CaughtUp gains reported_by; plan.rs checks it.\n\nThe spec's Register no longer orders a stripped registration after every\nbroker redials the follower. FelixShardWipeStripped.cfg now expects the\nAckedSurvive violation through the leader's stale connection (#1281), and\nFelixShardWipeStrippedRedial.cfg checks the stamp with that window ruled\nout by RedialBeforeRegister, a labelled assumption the code does not make.\nFelixShardWipeStrippedNoStamp.cfg runs under the same assumption.\n\nThe stamping test now registers broker-y again after the write and checks\nthat the stamp stays put and placement stops counting it. The docs state\nthe roll-only window and link #1281.",
+          "timestamp": "2026-10-16T04:17:57Z",
+          "tree_id": "d00e49b7f9c80332875a33cfee62b494e0b66ef6",
+          "url": "https://github.com/GetFelix/felix/commit/e68a2c2513420ff6f31dd6d762b53de6b70d93f9"
+        },
+        "date": 1792124538831,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337261.55,
+            "range": "12187.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337261.55\nmean: 337634.30\nstdev: 12187.88\ncv: 3.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337261.55,
+            "range": "12187.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337261.55\nmean: 337634.30\nstdev: 12187.88\ncv: 3.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78685.33,
+            "range": "353.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78685.33\nmean: 78687.92\nstdev: 353.30\ncv: 0.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 786853.32,
+            "range": "3532.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 786853.32\nmean: 786879.26\nstdev: 3532.99\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
