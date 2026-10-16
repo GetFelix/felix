@@ -113,13 +113,14 @@ async fn holding(count: usize) -> (Arc<Broker>, tempfile::TempDir) {
     )
 }
 
-/// **No follower ahead: the copy may be reclaimed**, and the report says so
-/// with this broker's own position beside every follower's.
+/// **Every follower behind: the copy may be reclaimed**, and the report
+/// names nobody caught up, with this broker's own position beside every
+/// follower's.
 #[tokio::test]
 async fn no_follower_ahead_is_reclaimable() {
     let (broker, _dir) = holding(5).await;
     let followers = Followers(HashMap::from([
-        ("broker-b", Some(5)),
+        ("broker-b", Some(4)),
         ("broker-c", Some(3)),
     ]));
 
@@ -138,7 +139,7 @@ async fn no_follower_ahead_is_reclaimable() {
         offsets,
         vec![
             ("broker-a".to_string(), 5),
-            ("broker-b".to_string(), 5),
+            ("broker-b".to_string(), 4),
             ("broker-c".to_string(), 3)
         ]
     );
@@ -152,6 +153,25 @@ async fn no_follower_ahead_is_reclaimable() {
             .node_incarnations
             .contains(&("broker-c".to_string(), Some(7)))
     );
+}
+
+/// **A follower level with this broker is reported caught up**, so placement
+/// promotes it rather than naming this broker again (#1314). The copy stays
+/// reclaimable here: nothing is held beyond it.
+#[tokio::test]
+async fn a_level_follower_is_reported_caught_up() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(5)),
+        ("broker-c", Some(3)),
+    ]));
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("every follower answered");
+
+    assert!(probe.reclaimable);
+    assert_eq!(probe.report.caught_up, vec!["broker-b".to_string()]);
 }
 
 /// **A follower ahead holds what this broker lost**: not reclaimable, and
@@ -184,4 +204,42 @@ async fn a_follower_not_heard_from_reports_nothing() {
             .await
             .is_none()
     );
+}
+
+fn at(not_behind: bool, furthest: &[&str]) -> LogPosition {
+    LogPosition {
+        not_behind,
+        furthest: furthest.iter().map(|node| node.to_string()).collect(),
+    }
+}
+
+/// **A cache is never left with neither a promotion nor a reclaim.** A
+/// follower ahead on the cache log is named, though every follower trails
+/// this broker on the counter log and another is furthest there: the copy
+/// is not reclaimable, so naming nobody would leave the shard waiting.
+#[test]
+fn a_follower_ahead_on_the_cache_log_alone_is_named() {
+    let positions = [at(true, &["broker-b"]), at(false, &["broker-c"])];
+    assert_eq!(caught_up(&positions), vec!["broker-b".to_string()]);
+}
+
+/// A follower furthest on every log is preferred; with none, the furthest on
+/// the shard's own log.
+#[test]
+fn the_follower_furthest_on_every_log_is_named_first() {
+    let both = [at(true, &["broker-b", "broker-c"]), at(true, &["broker-c"])];
+    assert_eq!(caught_up(&both), vec!["broker-c".to_string()]);
+    let split = [at(true, &["broker-b"]), at(true, &["broker-c"])];
+    assert_eq!(caught_up(&split), vec!["broker-b".to_string()]);
+}
+
+/// **A follower behind this broker on the shard's own log is never named**,
+/// however far it is on the counter log: promoting it would lose what this
+/// broker kept, so the shard is reclaimed.
+#[test]
+fn a_follower_behind_on_the_cache_log_is_never_named() {
+    let counters_only = [at(false, &["broker-b"]), at(true, &["broker-c"])];
+    assert!(caught_up(&counters_only).is_empty());
+    let behind_everywhere = [at(false, &["broker-b"]), at(false, &["broker-b"])];
+    assert!(caught_up(&behind_everywhere).is_empty());
 }

@@ -8,7 +8,9 @@ use crate::model::{HaltedCopy, ShardKey};
 /// and data loss: a replica that holds nothing can be promoted perfectly well
 /// and will serve an empty shard.
 pub trait CaughtUp {
-    /// Whether `node_id` is within the catch-up bound for `key`.
+    /// Whether `node_id` is within the catch-up bound for `key`. From a
+    /// given-up leader's report, only on the evidence a reclaim needs: see
+    /// [`Self::reclaimable`].
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool;
 
     /// The node that made the report `key` is judged by, when the report
@@ -39,7 +41,8 @@ pub trait CaughtUp {
     /// copy: a fresh report it made since it last registered, under the
     /// storage identity it registered with, measures every one of
     /// `followers` under the identity and incarnation each is registered at
-    /// now, and none holds more than `leader` does.
+    /// now, and every one is behind `leader`. A follower level with it or
+    /// ahead is promoted instead.
     fn reclaimable(&self, _key: &ShardKey, _leader: &str, _followers: &[&str]) -> bool {
         false
     }

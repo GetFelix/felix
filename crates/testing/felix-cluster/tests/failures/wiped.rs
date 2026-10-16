@@ -330,15 +330,14 @@ async fn a_restarted_follower_is_promoted_past_the_ttl() {
 /// before it is marked down, as for a dead leader otherwise. It then rejoins
 /// as a follower and is copied again under the new id.
 ///
-/// The leader cannot reach `c` once it is back. Otherwise its probe can find
-/// no follower ahead and report that before placement acts on the identity
-/// change, and the shard is rightly reclaimed instead
-/// (`a_crashed_leader_no_follower_is_ahead_of_is_reclaimed`).
+/// Its probe may reach placement before the identity change does. It finds
+/// both followers level with the leader and names them caught up, so a
+/// follower is promoted that way too, never the leader reclaimed (#1314).
 #[tokio::test]
 #[serial]
 async fn a_crashed_leader_that_comes_back_is_replaced() {
     let mut cluster = Cluster::start(config()).await.expect("start");
-    let (leader, _b, c) = written(&cluster).await;
+    let (leader, _b, _c) = written(&cluster).await;
     let before = registered_storage(&cluster, &leader).await;
     felix_cluster::wait::until(
         Duration::from_secs(30),
@@ -356,13 +355,6 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
     .expect("the leader reports its own identity");
     // As a deployment runs it, so the failover does not wait on this test.
     cluster.run_placement(Duration::from_millis(200));
-    cluster
-        .inject(&Fault::Refuse {
-            node: leader.clone(),
-            peers: vec![c.clone()],
-        })
-        .await
-        .expect("inject");
 
     cluster.kill_node(&leader).expect("kill the leader");
     cluster
@@ -398,9 +390,10 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
     cluster.shutdown().await;
 }
 
-/// **A crashed `Leader` leader no follower is ahead of is named again
-/// (#1295).** Its followers lag, so none is caught up and nobody holds
-/// anything it might have lost. It gives its copy up on restart, probes both
+/// **A crashed `Leader` leader every follower is behind is named again
+/// (#1295).** Its followers lag, so none is caught up, nobody holds
+/// anything it might have lost, and none can take over without losing what
+/// it kept. It gives its copy up on restart, probes both
 /// followers, and placement names it leader again at a new generation rather
 /// than leave the shard waiting for an operator. It serves every record it
 /// held and takes new ones.

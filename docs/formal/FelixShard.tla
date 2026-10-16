@@ -271,10 +271,11 @@
 (* under a new identity and leads nothing from that copy, its report       *)
 (* names the identity it reported from, and placement promotes a follower  *)
 (* the report names caught up once the two differ, without waiting for the *)
-(* lease (FelixShardLeaderCrashGivesUp.cfg). With `Reclaims` placement     *)
-(* names it again at the next generation when no follower's log is ahead   *)
-(* of its own (FelixShardLeaderCrashReclaim.cfg); without measuring the    *)
-(* followers TLC finds the record gone                                     *)
+(* lease (FelixShardLeaderCrashGivesUp.cfg). With `Reclaims` the leader    *)
+(* measures every follower, placement promotes one that is furthest and    *)
+(* not behind it, and names it again at the next generation only when      *)
+(* every follower is behind (FelixShardLeaderCrashReclaim.cfg); without    *)
+(* measuring the followers TLC finds the record gone                       *)
 (* (FelixShardLeaderCrashReclaimBlind.cfg).                                *)
 (***************************************************************************)
 
@@ -408,9 +409,10 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* lifecycle.rs), and placement replaces it once its registered identity is
 \* not the one its report names (`leader_replaced` in
 \* services/felix-controlplane-service/src/cluster/placement/plan.rs).
-\* `Reclaims`: placement names a leader that gave its copy up leader again
-\* at the next generation once no follower is ahead of it (Reclaim).
-\* `ReclaimBlind`: it does so without measuring the followers.
+\* `Reclaims`: placement promotes a follower the given-up leader's probe
+\* finds not behind it (ByProbe), and names that leader again at the next
+\* generation once every follower is behind it (Reclaim).
+\* `ReclaimBlind`: it reclaims without measuring the followers.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -640,6 +642,11 @@ Opened(b, g) == IF StartRecord THEN Append(log[b], Start(g)) ELSE log[b]
 OwnGen(b, k) == StartRecord => log[b][k].g = bgen[b]
 
 LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
+
+\* Ahead by (last generation, length), the order promotion by log order uses.
+Ahead(f, b) ==
+    \/ LastGen(f) > LastGen(b)
+    \/ LastGen(f) = LastGen(b) /\ Len(log[f]) > Len(log[b])
 
 \* A move's destination: staged and copying, or named successor by the fence.
 \* Without `FenceEveryChange` it opens without the fence whichever write
@@ -1241,6 +1248,21 @@ LeaderReplaced(v) ==
     /\ registered[v.leader] /= 0
     /\ v.report.sids[v.leader] + 1 /= registered[v.leader]
 
+\* Under `Reclaims`, the given-up leader's probe measures every follower as
+\* it stands, and placement promotes one that is furthest among them and not
+\* behind the leader: it holds whatever any copy holds (`given_up_report` in
+\* crates/server/felix-replication/src/reclaim.rs, `is_caught_up` in
+\* placement/replica_positions.rs). Reclaim is left for when every follower
+\* is behind.
+ByProbe(v, f) ==
+    /\ Reclaims /\ ~ReclaimBlind
+    /\ LeaderReplaced(v)
+    /\ bgen[v.leader] = 0
+    /\ f \in ReplicaSet \ {v.leader}
+    /\ f \notin halted /\ f \notin restarting
+    /\ ~Ahead(v.leader, f)
+    /\ \A o \in ReplicaSet \ {v.leader} : ~Ahead(o, f)
+
 \* Each decision below is made from a read `v` and leaves the planners'
 \* reads as `views`: a held read is used up by the write it decided, one
 \* write per shard per pass. Every write bumps the store's generation.
@@ -1256,7 +1278,7 @@ Promote(v, f, views) ==
     \* the move instead (`promote` in services/felix-controlplane-service/src/
     \* cluster/placement/plan.rs).
     /\ Quorum /\ ~PromoteDestination => ~Incoming(f)
-    /\ CASE Promotion = "leader-report" -> ByLeaderReport(v.report, f)
+    /\ CASE Promotion = "leader-report" -> ByLeaderReport(v.report, f) \/ ByProbe(v, f)
           [] Promotion = "log-order"     -> ByLogOrder(v.leader, f)
           [] Promotion = "any"           -> ByAny(f)
     /\ Cas(v)
@@ -1328,11 +1350,6 @@ Promote(v, f, views) ==
 (* answered. Any majority that acknowledged a record shares a replica with *)
 (* that one, which either held the record when it answered or refused it  *)
 (* after, so no clock is needed to keep the old leader out.                *)
-
-\* Ahead by (last generation, length), the order promotion by log order uses.
-Ahead(f, b) ==
-    \/ LastGen(f) > LastGen(b)
-    \/ LastGen(f) = LastGen(b) /\ Len(log[f]) > Len(log[b])
 
 \* One replica answers the fence, and the leader takes its log if it is ahead.
 \* That is the catch-up: whatever a majority acknowledged is in the answer
@@ -1910,18 +1927,19 @@ CpFlip ==
                     installed, ackGen >>
 
 \* Under `Reclaims`, placement names a leader that gave its copy up leader
-\* again at the next generation, on the same set, when no follower's log is
-\* ahead of its own: every follower measured as it stands now, as the given
+\* again at the next generation, on the same set, when every follower's log
+\* is behind its own: every follower measured as it stands now, as the given
 \* up leader's probe does (`crate::reclaim` in felix-replication,
 \* `reclaimable` in placement/replica_positions.rs). Nothing a client was
-\* promised is then held beyond its copy. The model lets it happen beside a
-\* promotion rather than only when none is possible, which admits more.
-\* `ReclaimBlind` skips the measurement.
+\* promised is then held beyond its copy, and no follower qualifies for
+\* `ByProbe`. The model still lets it happen beside a promotion on the
+\* report from before the crash, which admits more than the code does.
+\* `ReclaimBlind` skips the measurement, and the promotion on it.
 Reclaim(v, views) ==
     /\ Reclaims
     /\ LeaderReplaced(v)
     /\ bgen[v.leader] = 0
-    /\ ReclaimBlind \/ \A f \in ReplicaSet \ {v.leader} : ~Ahead(f, v.leader)
+    /\ ReclaimBlind \/ \A f \in ReplicaSet \ {v.leader} : Ahead(v.leader, f)
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
@@ -1970,9 +1988,10 @@ Wipe(f) ==
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
-\* for. Its directory, and so its identity, is the one it had, unless
-\* `RotateOnCrash` gives it a new one before it registers again. It shares
-\* the wipes' budget.
+\* for. The suffix may be empty: a SIGKILL keeps the page cache, and the
+\* restart is unclean all the same. Its directory, and so its identity, is
+\* the one it had, unless `RotateOnCrash` gives it a new one before it
+\* registers again. It shares the wipes' budget.
 \*
 \* With `CrashLeader` the one that crashes is a broker that believes it
 \* leads, and what it held in memory goes with the process: its queued and
@@ -1984,7 +2003,7 @@ Crash(f) ==
     /\ wipes < Wipes
     /\ IF CrashLeader THEN bgen[f] > 0 ELSE bgen[f] = 0
     /\ Len(log[f]) > 0
-    /\ \E k \in 0..(Len(log[f]) - 1) :
+    /\ \E k \in 0..Len(log[f]) :
           /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
           /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
     /\ wipes' = wipes + 1

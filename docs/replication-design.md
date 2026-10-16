@@ -2299,8 +2299,9 @@ leader, and its log can be short of what it acknowledged. Reopened at its old
 generation, it and a follower that lagged behind the lost records made a
 majority, and wrote over offsets a client had been promised
 ([#1295](https://github.com/GetFelix/felix/issues/1295)). So the broker gives
-that leadership up, and placement promotes a follower or, when no follower
-holds more than the crashed leader, names it again:
+that leadership up. Placement promotes a follower that holds at least what
+the crashed leader kept, and names the crashed leader again only when every
+follower is behind it:
 
 - **On the broker.** A start that rotated the storage id leads no replicated
   shard from a copy that may be short of what it acknowledged: the copy it
@@ -2324,22 +2325,35 @@ holds more than the crashed leader, names it again:
   position beside every follower's, each
   under the storage identity and incarnation it gave on that connection. It
   reports only when every follower answered: one not heard from may hold what
-  this broker lost. When followers are ahead of it, the furthest are reported
-  caught up; every copy is accounted for, so the furthest holds whatever any
-  copy holds (`felix_replication::reclaim`).
+  this broker lost. Copies are compared by (last generation, end). When the
+  furthest follower is level with this broker or ahead, the followers at that
+  position are reported caught up; every copy is accounted for, so they hold
+  whatever any copy holds. For a cache, a follower furthest on both its logs
+  is named first, and when the cache and counter logs are led by different
+  followers, the furthest on the cache log. When every follower is behind on
+  the cache log nobody is named, whatever the counter log says. A `Quorum`
+  cache is not fenced on promotion (`suspects` in
+  `placement/replica_positions.rs` is for streams only), so a promoted
+  follower behind on the counter log can lose counter records a majority
+  acknowledged; that predates the probe (`felix_replication::reclaim`).
 - **In placement.** A report names the leader's own storage identity beside
   its followers'. When the assignment's leader is registered under another
   identity than the shard's last report names for it, or its own report since
   it came back says outright that it gave the shard up, placement treats it as gone without
   waiting for its lease, and promotes a follower the report names caught up,
   keeping the old leader in the set to be copied again (`leader_replaced`,
-  `leader_gave_up`). Failing that, it **reclaims**: it names the same leader
-  on the same set at a new generation when the report is fresh, made by the
-  leader since it last registered and under the identity it registered with,
-  and measures every follower under the identity and incarnation it is
-  registered at now, none holding more than the leader (`reclaimable` in
-  `placement/replica_positions.rs`). Otherwise it writes nothing, and no new
-  generation names the leader. The broker leads a reclaimed copy only at a
+  `leader_gave_up`). A follower named caught up by the probe counts only on
+  the evidence a reclaim needs (below): a fresh report, made by the leader
+  since it last registered and under the identity it registered with, that
+  measured the follower under the identity and incarnation it is registered
+  at now. One named by the report from before the crash counts as for any
+  failover. Failing a promotion, it **reclaims**: it names the same leader
+  on the same set at a new generation when that report measures every
+  follower and names none caught up, so every follower is behind the leader
+  (`reclaimable` in `placement/replica_positions.rs`). A follower the probe
+  names caught up that placement cannot promote, such as one marked down,
+  keeps the shard waiting rather than reclaimed. Otherwise it writes nothing,
+  and no new generation names the leader. The broker leads a reclaimed copy only at a
   generation newer than the one it gave up, and only once its own probe found
   no follower ahead. A report from an older broker names no leader identity
   and is read as before.
@@ -2352,10 +2366,21 @@ holds more than the crashed leader, names it again:
   size is refused, since the set that acknowledged may not be the one the
   routes show now, as during a replacement.
 
+Which of the two happens does not depend on whether placement sees the new
+identity or the probe's report first. A follower the report from before the
+crash names caught up holds at least what the leader kept, unless the leader
+kept records written after that report and held only by it, which under
+`Leader` is the window a failover already has. The probe names that follower
+too, and placement promotes on either. Reclaiming only when every follower is
+behind also moves leadership off the broker that just crashed whenever
+another can take it.
+
 A reclaim never undercuts an acknowledged record. Under `Quorum` a record
 acknowledged on a majority is on some follower or on what the leader kept,
 and a follower holding one the leader lost is ahead of it, so the shard is
-not reclaimed. Under `Leader` a record only the leader held is gone with the
+not reclaimed. Placement reads "behind" from the probe, which compares (last
+generation, end); the offsets in the report alone could rank a follower with
+a newer generation's records below the leader. Under `Leader` a record only the leader held is gone with the
 crash whatever placement does. A report from before the leader registered
 again is never used: it can understate a follower that holds what the leader
 lost.
@@ -2388,7 +2413,8 @@ accepted, or one it followed.
 `FelixShardLeaderCrashKeepsGen.cfg` lets a leader crash and keep its
 generation, and TLC finds the acknowledged record gone;
 `FelixShardLeaderCrashGivesUp.cfg` passes with the give-up and the
-replacement, and `FelixShardLeaderCrashReclaim.cfg` with the reclaim too.
+replacement, and `FelixShardLeaderCrashReclaim.cfg` with the probe's
+promotion and the reclaim too.
 `FelixShardLeaderCrashReclaimBlind.cfg` reclaims without measuring the
 followers and loses the record. None models the fence: the configurations
 with a crash use the lease and the report.

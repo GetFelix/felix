@@ -1170,8 +1170,9 @@ rewritten to name no leader (`DiskLog::give_up_generation`), so no later start
 leads that copy either until a newer leader has shipped to it. Nor does it
 answer a successor's promotion fence from that copy meanwhile. It asks every
 follower where its copy ends and reports that; placement promotes a follower
-that holds more, or, when none does, names the same broker leader again at a
-new generation, and the broker then leads its copy. A shard with no followers
+that holds at least as much as it kept, or, when every follower holds less,
+names the same broker leader again at a new generation, and the broker then
+leads its copy. A shard with no followers
 is led as before, from its only copy. See `docs/replication-design.md`, "A
 leader's own crash", for the whole of it and what it costs.
 

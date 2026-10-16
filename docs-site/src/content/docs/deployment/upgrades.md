@@ -123,8 +123,8 @@ again. The first start on this release finds no record and keeps its id
 unless startup would repair a torn tail, so a roll of brokers stopped with
 SIGTERM changes no id. A leader that crashes that way gives up the shards it
 led instead of reopening them with the shorter log, and the control plane
-promotes a follower for each, or names it again once no follower holds more
-([#1295](https://github.com/GetFelix/felix/issues/1295)). Give the drain time
+promotes a follower for each, or names it again when every follower holds
+less than it kept ([#1295](https://github.com/GetFelix/felix/issues/1295)). Give the drain time
 to finish during a roll; a broker killed partway through costs one copy per
 shard it follows, and a failover per shard it leads. A downgrade and
 upgrade again keeps whatever the newer release last recorded, so a crash on
