@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792109575021,
+  "lastUpdate": 1792110500445,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30732,6 +30732,58 @@ window.BENCHMARK_DATA = {
             "range": "20220.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1167581.27\nmean: 1166266.37\nstdev: 20220.85\ncv: 1.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa2f820e92d42a58b684558a6fd8a38a7506da91",
+          "message": "perf(broker): take the egress share without locking on the fast path, and cache byte gauges (#1275)\n\nEgressShare::hold tries the share first and registers a wakeup only when\nit is full; a written frame notifies only when a feeder is counted as\nwaiting. The egress, subscriber-queue, cache-watch and replay-ring byte\ngauges are resolved once per subscription or ring rather than per batch,\nand a ring reports its gauge once per publish.\n\nWith FELIX_REPLAY_RING_MAX_BYTES_TOTAL set, a ring with nothing left to\nevict now keeps its newest batch past the shared budget, so a busy stream\ncannot starve the other rings. A batch larger than the whole budget is\nstill not kept.\n\nDocs: the claim that a stalled subscription never holds up the others on\nits connection holds only under the drop_new lane policy, and the\nper-subscription egress share shrinks with the subscription count.\n\nSpec-Unaffected: subscriber egress accounting, gauges and the replay ring's byte budget; no lease, replication or routing behaviour changes",
+          "timestamp": "2026-10-15T17:23:48-07:00",
+          "tree_id": "a58e93e2ff5a3efd85a8cb29b2951975b67320c9",
+          "url": "https://github.com/GetFelix/felix/commit/fa2f820e92d42a58b684558a6fd8a38a7506da91"
+        },
+        "date": 1792110499786,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337292.1,
+            "range": "9399.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337292.10\nmean: 338785.04\nstdev: 9399.97\ncv: 2.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337292.1,
+            "range": "9399.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337292.10\nmean: 338785.04\nstdev: 9399.97\ncv: 2.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79851.61,
+            "range": "360.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79851.61\nmean: 80024.19\nstdev: 360.59\ncv: 0.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798516.14,
+            "range": "3605.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798516.14\nmean: 800241.94\nstdev: 3605.89\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
