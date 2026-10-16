@@ -1,1 +1,0 @@
-- A failed replica commit-offset write is retried once a second until it lands, rather than only when the leader's next batch arrives, which never happens on an idle shard. A closed log now refuses to write its replica state (#1248).

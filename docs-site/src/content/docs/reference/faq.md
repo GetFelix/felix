@@ -20,7 +20,7 @@ Not yet. Felix is pre-1.0 and nobody runs it in production yet. Quite a lot
 works: multi-broker clusters, durable replicated
 streams, quorum acknowledgement, failover, consumer groups, the log-backed
 cache, and OIDC auth with RBAC. It is tested hard, including fault-injection
-suites. Releases are tagged (the newest is v0.6.0-preview.7) and publish container images, but
+suites. Releases are tagged (the newest is v0.6.0-preview.8) and publish container images, but
 there is no second implementation of anything, and the faults it is proven
 against are the ones a single machine can produce.
 Use it for prototyping, benchmarking, and contributing.

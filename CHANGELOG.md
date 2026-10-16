@@ -11,6 +11,50 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.8] - 2026-10-16
+
+The eighth preview of 0.6.0. A broker now has a storage identity that its node
+registers, and placement counts a follower toward promotion only while the
+identity its leader reported matches, so a follower that lost its disk is
+never promoted on an old report. Streams get incarnations, and caches get them
+too, so a stream or cache deleted and created again under the same name starts
+empty on every broker; both are behind finalized features. A leader that
+crashed under `FsyncMode::Periodic` or `None` no longer reopens its old
+generation with a log that may be short of what it acknowledged (#1294,
+#1305). The single-publisher fanout path is back to preview.7's throughput,
+with large-payload fanout faster (#1309).
+
+**Upgrade notes.**
+
+- A Raft control plane needs every member upgraded before these take effect,
+  each at its own metadata level. Until then the proposer leaves the new data
+  out, the same on every member:
+  - Level 9: an auth change and its revocation, and a refresh rotation, are
+    single entries. Below it they are written as the two older entries they
+    combine.
+  - Level 10: stream incarnations (an upgraded member refuses the
+    `stream_incarnations` finalize with 409), and deletes that take shard
+    assignments and replica reports.
+  - Level 11: a replica report's `by_round`. Below it, leaders are failed over
+    on their lease.
+  - Level 12: storage identity. Below it, followers read as unverified.
+  - Level 13: a report's `leader` and `node_incarnations`. Below it, placement
+    reads reports as at level 12.
+  - Level 14: cache incarnations (an upgraded member refuses the
+    `cache_incarnations` finalize with 409). Below it, caches are created at
+    incarnation 0 and no cache delete records a tombstone.
+  - Level 15: a report's `given_up`. Below it, placement replaces a leader that
+    gave a shard up only on its storage identity.
+- A Postgres control plane runs migrations `0027` through `0033` on start.
+- `stream_incarnations` and `cache_incarnations` are finalized by an operator
+  after the upgrade: every control-plane member at level 10 and 14, and every
+  broker on this release, first. With Postgres, upgrade every instance before
+  finalizing, since an older instance still running after the finalize cannot
+  create streams or caches. See the upgrades page.
+- A cluster that ran an unreleased build at metadata level 10 to 13 and logged
+  a stream create that names no incarnation, or its delete, replays it
+  differently now and must rebuild those members from a snapshot (#1287).
+
 ### Security
 - The Python and TypeScript SDKs read their CA file with `rustls-pki-types`
   instead of the unmaintained `rustls-pemfile` (RUSTSEC-2025-0134), and
@@ -30,6 +74,42 @@ for what the current release guarantees.
   audience dropped, the subject or groups claim changed, or `jwks_url` or
   `discovery_url` changed), revokes the tenant's sessions, as removing a rule
   that reached an IdP group does. Adding an audience revokes nobody.
+
+### Added
+- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
+  client's seeds can be `host:port` names as well as addresses. `connect` and
+  `connect_with_policy` still take `SocketAddr`s and are unchanged.
+- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
+  start following the feed, then at each good poll) and
+  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
+  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
+  how revocation fails open meanwhile, and the clock-skew bound on revocation
+  cutoffs across control-plane members.
+- Replay rings and cache watch queues are bounded by bytes as well as entries
+  (#1201). `FELIX_REPLAY_RING_MAX_BYTES` (64 MiB per stream shard) drops a
+  ring's oldest records first; `FELIX_CACHE_WATCH_MAX_BYTES` (64 MiB per watch)
+  ends a watch that would go over as lagged, as a full queue does. Each has an
+  optional broker-wide `_TOTAL`. New gauges: `felix_replay_ring_bytes`,
+  `felix_cache_watch_queue_bytes`.
+- Brokers exchange storage identities in the peer handshake, behind a new
+  capability bit, `STORAGE_IDENTITY` (`1 << 10`), so an older peer sees the
+  frames it always did (#1266). A leader asks for each follower's identity at
+  the start of every exchange and starts the follower's cursors over when it
+  changes, so a follower that lost its disk is no longer reported caught up
+  on an idle shard. Replica reports carry the identity each follower was
+  counted under as `replica_storage_ids`, omitted when empty. Placement does
+  not read it yet.
+- Each broker data directory now has a storage identity (#1266): 16 random
+  bytes kept in `<FELIX_DURABLE_STORAGE_DIR>/storage-id`, created on the first
+  start, kept across restarts, and replaced when the file is missing or does
+  not decode. A broker sends it as `storage_id` with its registration; a
+  broker without durable storage sends a new one each start.
+  `felix-broker restore-point` writes a new one.
+- Changelog entries are now collected from `changelog.d/` fragments, one file per
+  change, so pull requests no longer conflict on `CHANGELOG.md`.
+  `scripts/changelog_assemble.py` folds them into the release section, and the
+  release workflow refuses a tag while fragments remain. Entries written directly
+  in `CHANGELOG.md` still work. See `changelog.d/README.md`.
 
 ### Changed
 - A subscription's feeder takes room in its writer-lane share without a lock
@@ -85,17 +165,29 @@ for what the current release guarantees.
 **Upgrade note.** A Raft control plane needs every member at metadata level 9
 before auth changes and their revocations, and refresh rotations, are single
 entries.
-
-### Added
-- `felix_client::Seed` and `ClusterClient::connect_seeds` (#1227): a cluster
-  client's seeds can be `host:port` names as well as addresses. `connect` and
-  `connect_with_policy` still take `SocketAddr`s and are unchanged.
-- Brokers export `felix_revocation_feed_last_success_seconds` (set when they
-  start following the feed, then at each good poll) and
-  `felix_revocation_feed_poll_errors_total`, and log a warning, repeated every
-  minute, while they cannot poll the revocation feed. `docs/auth.md` now states
-  how revocation fails open meanwhile, and the clock-skew bound on revocation
-  cutoffs across control-plane members.
+- `FELIX_SUB_QUEUE_MAX_BYTES` now counts only what waits in a subscriber's
+  broker queue, and its default drops from 256 MiB to 128 MiB (#1195). Frames in
+  the writer lanes count against a new per-connection bound,
+  `FELIX_SUB_EGRESS_MAX_BYTES` (256 MiB), shared out equally among the
+  connection's subscriptions, so one whose stream stalls stops at its share and
+  never holds up the others. It is not a hard ceiling: a subscription with
+  nothing in the lanes always admits one batch, so each can hold the larger of
+  its share and one batch. `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` still covers a
+  batch until it is written. New gauge: `felix_sub_egress_bytes`.
+- **Upgrade notes for the follower-suspicion fixes (#1247).** The order check
+  on finalizing fleet features runs on the control-plane member that serves the
+  `finalize` request. During a rolling control-plane upgrade a member still on
+  the previous release skips it, so finish upgrading every member before
+  finalizing `majority_ack`, `lease_free_reads` or `fenced_caches`, or finalize
+  them in order: `generation_start` first, then `majority_ack`, then the other
+  two. A Raft control plane records a report's `by_round` only once every
+  member is at metadata level 11; until then placement fails a leader over on
+  its lease, not its followers' word. A Postgres control plane runs migration
+  `0029` on start. Remove `FELIX_QUORUM_READS=lease` before upgrading a fleet
+  that has finalized `lease_free_reads`; otherwise each upgraded broker is
+  refused at registration. The refusal names the variable: unset it and
+  restart the broker.
+The PR performance comment now marks a change that is 10% or more worse but not statistically significant as inconclusive rather than passing, and shows each row's trial spread. Before this, a noisy cell could more than double its latency and still get a green mark.
 
 ### Fixed
 - A leader that crashed under `FsyncMode::Periodic` (the default) or `None`
@@ -287,6 +379,214 @@ entries.
   value is a new 33-byte layout, written once the fleet finalizes the new
   `group_cursor_dependencies` feature, and by a single broker from the
   start; an older build cannot read it (#1202).
+- A long counter-log catch-up now reports progress as it goes (#1199). Counters ship
+  in the same five-second slices as records, so placement no longer drops a restore
+  that is still moving as stalled.
+- A stream deleted and created again under the same name no longer reopens
+  the deleted stream's logs once the fleet finalizes the new
+  `stream_incarnations` feature (#1208). Each created stream then gets an
+  `incarnation`, higher for every creation of its name (the control plane's
+  clock, raised above the name's last deleted one), carried in the catalog and
+  the shard assignments, and brokers keep each incarnation's records, group
+  positions and dead letters in directories named with it. Every stream
+  delete after the finalize, cascades included, records a tombstone for the
+  name, kept for good, served in `GET /v1/streams/snapshot` as `tombstones`
+  and on the `Deleted` change as `deleted_through`. A broker deletes a
+  stream's data only on one of those, or on an operator's removal: every
+  incarnation up to the one named goes from every store, through `.deleted/`
+  and a marker under `.streams/` that lets a delete cut short finish at the
+  next start. A broker that was down through a delete and a recreate deletes
+  the old data from the snapshot's tombstones. It never moves a name to a
+  lower incarnation or one the control plane deleted, and refuses a record
+  without the incarnation for a name it has seen incarnated, counting both in
+  `felix_broker_stream_incarnation_refused_total`. A delete from before the
+  finalize keeps the data as before, so a stream created again at
+  incarnation 0 reopens it consistently with the quorum marks kept for it.
+  The first assignment of an incarnated stream's shard takes its change's
+  sequence number as its generation. A control-plane restore can still make
+  that equal to a deleted incarnation's, so leaders keep follower positions
+  and quorum marks per incarnation too, replica reports carry an optional
+  `stream_incarnation` that the control plane checks against the
+  assignment's, and a stream delete takes its shards' replica reports in the
+  in-memory and Raft stores as Postgres already did.
+  A follower refuses replication for an
+  incarnation it does not hold (the new internal `Incarnated` frame, kind
+  40). The catalog sync moves past each change it applies, a shard assigned
+  before its stream registers waits without holding up the others, and a
+  stream whose namespace or tenant was removed first is still removed when
+  its cascading delete arrives. Existing streams are incarnation 0 and keep
+  their directory names.
+  `felix-broker inspect segments` takes `--incarnation`; backup points carry
+  the incarnation, and `restore-point` sets each stream's back to the
+  point's. A broker joining a fleet with many deleted names records their
+  tombstones with one flush, and `POST /v1/resources` answers with the
+  incarnation the store gave each stream. Once incarnations are finalized, a
+  create proposes the clock even while a Raft member has not yet heard from a
+  peer since it restarted. Such a peer counts at level 10 then; a peer that
+  answers with a lower level still holds level-10 commands back.
+- Upgrade notes for `stream_incarnations` (#1208): it needs every Raft
+  control-plane member at metadata level 10 and every broker on this release
+  before it can be finalized. A Postgres control plane runs migration `0028`
+  once for the database. An older Postgres instance still running after the
+  finalize cannot create streams, and the database stamps its shard
+  assignments with the stream's incarnation, but brokers refuse its catalog
+  answers for incarnated streams, so upgrade every instance before
+  finalizing.
+- A cache deleted and created again under the same name no longer serves or
+  replicates the deleted cache's entries and counters once the fleet finalizes
+  the new `cache_incarnations` feature (#1209). Each created cache then gets
+  an `incarnation`, carried in the catalog and its shard assignments, and
+  brokers keep each incarnation's cache and counter logs in directories named
+  with it. Every cache delete after the finalize, cascades included, records a
+  tombstone served in `GET /v1/caches/snapshot` as `tombstones` and on the
+  `Deleted` change as `deleted_through`, and brokers delete a cache's data,
+  from both stores, only on one of those or on an operator's removal, so a
+  broker that was down through the delete still deletes it. Cache and counter
+  replication requests name the incarnation and a follower holding another
+  refuses them. Stale registrations are refused and counted in
+  `felix_broker_cache_incarnation_refused_total`. Finalizing needs every Raft
+  member at metadata version 14; Postgres gets migration 0032. Existing caches
+  stay at incarnation 0 with their directories and data. A broker without
+  durable storage drops a deleted cache's entries.
+- `Broker::remove_cache` is now an operator's removal and deletes the cache's
+  data; the catalog path uses `Broker::remove_cache_from_catalog`.
+- Raft members on different builds no longer diverge when a finalize of
+  `cache_incarnations` or `stream_incarnations` is committed through a member
+  that predates it. Create and delete entries now carry an `incarnations`
+  flag (metadata level 14), set only once every member is at level 14, and
+  apply decides incarnations and tombstones from the entry alone (see
+  `docs/metadata-raft-design.md`).
+- Rolling a `v0.6.0-preview.7` Raft control plane to this release no longer
+  splits it if `stream_incarnations` is finalized through a preview.7 member
+  (which accepts the unknown finalize): a stream create from an older
+  proposer that names no incarnation is stored at 0, and its delete records no
+  tombstone, on every member. Clusters that ran an unreleased build at
+  metadata level 10 to 13 and logged such an entry replay it differently now
+  and must rebuild those members from a snapshot.
+- A broker that held a deleted stream's shard now takes the recreated stream's
+  assignment even when its generation is lower, as after a control-plane
+  restore rewinds the change seq (#1209). Shard ownership is ordered by
+  `(incarnation, generation)`, as the shard lifecycle already was. Deleting a
+  namespace or tenant on the in-memory or Raft control plane now also removes
+  its streams' and caches' shard assignments and replica reports, as deleting
+  the stream itself and Postgres's cascade already did; before, a stream
+  created again under the name was assigned as an update of the deleted one's
+  shard. On Raft, deletes take shard assignments and replica reports this way
+  only once every member is at metadata version 10, the same gate as stream
+  incarnations; below it every member keeps what the older release keeps, so
+  members never disagree.
+- Under Raft, the leader refuses to add a control-plane member whose build is
+  below the metadata version the group already uses, or that reports none;
+  the error names both versions. That version is the one a finalized fleet
+  feature needed (10 for `stream_incarnations`), or the newest one any
+  committed entry needed, which the state machine now tracks and carries in
+  its snapshot (#1209). A member already in the group that comes back on an
+  older build, as after a lost volume, is no longer sent entries or a
+  snapshot once it reports an older version, or while it has lost its log
+  and not yet reported one; the leader logs it once and sets
+  `felix_meta_raft_member_below_floor{member}` to 1. A held member that is
+  behind gets no heartbeats either, so it may call elections the others
+  refuse, and after a long hold it can cost one extra election once
+  released. A member that is slow or unable to answer is not held. Either member would refuse entries the
+  others apply and diverge from them. A held voter is one fewer failure the
+  group survives until it is upgraded. A group that ran unreleased builds of
+  main may have members whose tracked level differs, since those builds
+  applied some entries without raising it; while such a member leads, it can
+  admit or feed a member the others would hold.
+- Truncation, reset and restore are refused on a log that has failed (#1222). A
+  flush that failed to sync a retired segment marked the roll failed while its
+  seal was still running, and a truncation could then cut that segment and
+  report success before the seal padded it back with zeros.
+- A truncation or reset no longer races a background segment roll (#1222). The
+  roll's seal could put back the length a truncation had cut, or cut off records
+  appended after it. Truncation, reset and restore now wait for the seal.
+- Placement takes a follower's word against a leader only when that leader's
+  own replica report says it serves the shard by round (`by_round`): it
+  acknowledges by its followers and confirms its reads by a round (#1247).
+  Before, a leader still reading on its lease could be replaced while that
+  lease was valid and keep serving consumer-group writes and state reads,
+  either because it ran with `FELIX_QUORUM_READS=lease` or because it had not
+  yet heard on a heartbeat that the fleet finalized `lease_free_reads`. A
+  report without the field, from an older broker, reads as the lease. The
+  flag counts only from the leader's current node incarnation, so a leader's
+  report from before a restart no longer counts once it registers again. A
+  placement pass that read the old incarnation can still act on that report,
+  so in a fleet that reads by round a restarted leader refuses consumer-group
+  writes, which it would acknowledge on its lease alone, until a replication
+  pass over the shard made after it registered. A pass that ran before
+  registration answered saw no fleet features and does not count.
+  Under Postgres it counts only with the report that set it, so a control
+  plane on the previous release cannot leave a stale one behind. Postgres
+  migration `0029_replica_report_by_round`; under Raft, metadata level 11.
+- A broker started with `FELIX_QUORUM_READS=lease` no longer reports
+  `lease_free_reads`. The finalize dry run names it, and the finalize is
+  refused while it serves; once the feature is finalized such a broker is
+  refused at registration, like one with `FELIX_INTERNAL_FENCE=false`.
+- Placement fails a `Quorum` stream over on its followers' word only once
+  `generation_start`, `majority_ack` and `lease_free_reads` are all finalized,
+  which is what brokers need to acknowledge and read without the lease
+  (#1247). Before, a fleet with the last two but not `generation_start` could
+  have a live leader replaced while it still served reads on its lease. The
+  control plane now refuses with 409 to finalize `majority_ack` before
+  `generation_start`, and `lease_free_reads` or `fenced_caches` before both;
+  the finalize dry run lists what is missing as `requires`. A fleet that
+  already finalized them out of order fails over on the lease until
+  `generation_start` is finalized.
+- A failed replica commit-offset write is retried once a second until it lands, rather than only when the leader's next batch arrives, which never happens on an idle shard. A closed log now refuses to write its replica state (#1248).
+- A replica commit-offset write that failed was not retried until the offset rose. The next batch carrying the same offset now writes it again. The follower still acknowledges the batch when the write fails, since no acknowledged record depends on the offset (#1248).
+- `felix_broker_promotions_opened_total` now counts a promotion when the
+  shard is let go to serve rather than when its fence finishes, so a refused
+  open that is retried is counted once (#1250).
+- `group_describe` and the dead-letter list now check that the broker still
+  leads the shard, as state reads do (#1252). A deposed leader could answer
+  them from stale state. They are refused with `shard_unavailable` on a lapsed
+  lease, or `leadership_lost` when a round finds a newer leader.
+- A broker promoted before its registration answered no longer opens a shard
+  on the lease (#1261). Until then its fleet view is empty, so on a fleet that
+  finalized `generation_start` and `majority_ack`, an unreachable old leader
+  read as a peer without the fence and the shard opened without fencing a
+  majority, which could lose records the old leader acknowledged. The shard
+  now stays closed until the broker has its fleet view, then fences as usual.
+- A Raft control plane restarted with one member down no longer drops storage
+  identities from registrations and reports until that member answers. A
+  member that has not answered counts at the level the log already depends on,
+  not 0. Before, a wiped follower's registration then cleared its identity and
+  an older report could promote it empty.
+- A follower without a storage identity now counts only from a report taken
+  at its current incarnation. The control plane stamps each report with the
+  leader that made it and every named node's registered incarnation.
+- A leader that dies partway through a move no longer leaves its last report
+  to expire because the move's steps raised the generation (#1250). The
+  report stays believed while its leader is still the assignment's leader.
+- A `Leader` shard is no longer promoted on a previous leader's report once
+  another node leads: what the new leader acknowledged may be on it alone. A
+  new leader that dies before its first report leaves the shard waiting for
+  it; before, it was promoted on the old report for a while and then stalled.
+  `Quorum` shards still promote on it. Postgres migration
+  `0031_replica_report_stamp`; under Raft, metadata level 13.
+- Placement no longer promotes a follower whose storage changed since its
+  leader's last report (#1266). The control plane keeps each broker's
+  registered storage identity and the identity each report names for every
+  follower, and counts a follower only while the two match. A follower that
+  lost its disk comes back under a new identity and is not promoted, even on a
+  fresh report. One that only restarted keeps its identity and still counts.
+  A follower with no identity on either side (an older broker or control
+  plane) is judged by the report's age alone, as before.
+- A dead leader's last replica report no longer expires while placement or the
+  control plane is slow, which left the shard unplaceable until an operator
+  abandoned it (#1250). While the assignment is still at the report's
+  generation and the leader is down, the report's age is measured to the
+  leader's last heartbeat, for followers whose identity matches. A live
+  leader's report still expires. Registration answers 400 for a malformed
+  `storage_id`. Postgres migration `0030_storage_identity`; under Raft,
+  metadata level 12.
+- A `Quorum` leader counts a follower's confirmed position toward the mark only after the follower has answered in the same pass, over a connection carrying the storage identity the position was learned under. A follower level with the tail is sent its last record again while the mark lags its position. A follower wiped after confirming more than the mark, beside another that failed fast, could release records only the leader held. The counter mark follows the same rule (#1266).
+
+### Performance
+- A subscription's feeder gives a batch back to `FELIX_SUB_QUEUE_MAX_BYTES` once
+  its frame is in the writer lanes, not before encoding it. The earlier release
+  sat on the delivery path and cost single-publisher streams 1-2% throughput
+  against 0.6.0-preview.7.
 
 ### Documentation
 - Without `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, each subscriber can hold up to
@@ -297,9 +597,6 @@ entries.
   bounded by entry count only (#1201).
 - The replication design no longer says a lagging non-successor follower is skipped while
   a shard drains: it is not gated on, but the drained pass still ships to it and waits.
-
-### Documentation
-
 - Design for replicas electing a leader while the control plane is down
   (#1009), not built yet: "Electing without the control plane" in
   `docs/replication-design.md`, with pre-vote, stickiness, a joint fence on
