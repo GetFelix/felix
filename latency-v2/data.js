@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792191051334,
+  "lastUpdate": 1792191461393,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40260,6 +40260,72 @@ window.BENCHMARK_DATA = {
             "range": "595.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1443.00\nmean: 1389.00\nstdev: 595.21\ncv: 42.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0e95c73a521c6d6a3f20356fde57ac5bd9fab835",
+          "message": "fix(replication): a copy without a promise answers a fence only as its routing view backs it (#1328)\n\n* fix(replication): a wiped broker answers a fence only as its routing view backs it\n\nA broker whose data directory was wiped has lost the ballots it gave, so it\ncould answer a fence from a leader its old copy had promised to refuse, and\ncount toward a majority the successor had already fenced (#1267). A crash\ndoes not do this: ballot and replica are synced under every fsync mode.\n\nA start that created its storage id now answers a fence for a copy with no\npromise on disk only when the routing view has the shard, and at the view's\ngeneration only from the leader it names. Once the copy takes a generation\nits ballot answers as before. No wire, persisted or control-plane change.\n\nThe model gets a Forget step: FelixShardSuspicionWipeUnbacked.cfg violates\nAckedHeldByLeader through it, FelixShardSuspicionWipeRoutes.cfg passes with\nthe follower answering only what its view backs.\n\n* fix(replication): hold every copy without a promise to its routing view\n\nA wiped broker that restarted again before its copy took anything started on\nthe id the first start wrote, so the fresh-directory flag was gone and the\ncopy answered any fence. Nothing on disk tells such a copy from a new one, so\nthe no-route refusal now applies to every copy with no promise on disk, and\nthe per-process flag is removed.\n\nAdds an end-to-end test over the peer transport: the deposed leader's fence\nis refused after the wipe and after a second restart. Docs link #1331 for\nthe election driver's guard and explain the stale-view gap.",
+          "timestamp": "2026-10-16T22:51:13Z",
+          "tree_id": "fc24745fd296c53e7c540b5b710e8033ca1d5909",
+          "url": "https://github.com/GetFelix/felix/commit/0e95c73a521c6d6a3f20356fde57ac5bd9fab835"
+        },
+        "date": 1792191456360,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "3.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.60\nstdev: 3.91\ncv: 2.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 250,
+            "range": "10.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 244.40\nstdev: 10.16\ncv: 4.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "59.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 332.00\nstdev: 59.83\ncv: 18.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 223,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 222.80\nstdev: 0.84\ncv: 0.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 451,
+            "range": "12.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 451.00\nmean: 449.40\nstdev: 12.30\ncv: 2.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 705,
+            "range": "103.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 705.00\nmean: 720.40\nstdev: 103.21\ncv: 14.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
