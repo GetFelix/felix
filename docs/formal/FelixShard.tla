@@ -277,6 +277,18 @@
 (* every follower is behind (FelixShardLeaderCrashReclaim.cfg); without    *)
 (* measuring the followers TLC finds the record gone                       *)
 (* (FelixShardLeaderCrashReclaimBlind.cfg).                                *)
+(*                                                                         *)
+(* `LosePromises` lets a follower lose its data directory once on the      *)
+(* fenced path, and with it the generation and ballot it promised          *)
+(* (`Forget`, #1267). Its log stays: a deposed leader would copy its own   *)
+(* back into the empty directory anyway, and what a wipe does to the       *)
+(* records is FelixShardWipe.cfg's subject. Answering as if it had never   *)
+(* promised, the follower takes a deposed leader's batch, and TLC finds a  *)
+(* record acknowledged on the two of them that the new leader does not     *)
+(* hold (AckedHeldByLeader, FelixShardSuspicionWipeUnbacked.cfg). With     *)
+(* `PromiseFromRoutes` it answers only what its routing view backs, as the *)
+(* broker does for a copy on a new data directory                          *)
+(* (FelixShardSuspicionWipeRoutes.cfg).                                    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -424,6 +436,19 @@ CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
+\* `LosePromises`: a follower loses its data directory once, with what it
+\* promised (`Forget`).
+\* `PromiseFromRoutes`: a follower on a new data directory answers only what
+\* its routing view backs: `refuse_unbacked` and `check_role` in
+\* crates/server/felix-replication/src/replica.rs.
+LosePromises == FALSE
+PromiseFromRoutes == FALSE
+
+\* The routing view backs a promise only while the control plane issues every
+\* generation, so the lost promise is checked without elections, on the
+\* fenced path, and apart from the wipes of the report path.
+ASSUME LosePromises => /\ Elections = 0 /\ Wipes = 0 /\ AckByFollowers /\ FenceOnPromote
+ASSUME PromiseFromRoutes => LosePromises
 
 VARIABLES
     now,        \* real time
@@ -2042,6 +2067,29 @@ Register(f) ==
     /\ UNCHANGED << handoffVars, fenceVars >>
     /\ UNCHANGED << sid, seen, seenInc, wipes, checked >>
 
+\* `f` loses its data directory, and with it the generation and ballot it
+\* promised. Under `PromiseFromRoutes` it answers what its routing view
+\* backs instead. The control plane issued every generation `f` promised
+\* before the wipe, so the view it seeds on restart names the newest of them
+\* or a later one, with the one leader named there: an older leader is
+\* refused by the view, at its generation only the leader it names is
+\* answered, and a newer generation was never promised. The model seeds the
+\* view at the wipe, the oldest it can be; the code reads it when asked,
+\* which refuses at least as much.
+Forget(f) ==
+    /\ LosePromises
+    /\ wipes = 0
+    /\ bgen[f] = 0
+    /\ wipes' = 1
+    /\ IF PromiseFromRoutes
+       THEN Promise(f, leader, gen)
+       ELSE /\ promised' = [promised EXCEPT ![f] = 0]
+            /\ ballot' = [ballot EXCEPT ![f] = {}]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
+    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting >>
+
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
 \* the new one by dialling again (`Probe`).
@@ -2129,6 +2177,7 @@ Next ==
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
+        \/ Forget(b) /\ UNCHANGED << counterVars, heard >>
         \/ Crash(b) /\ UNCHANGED counterVars
         \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
@@ -2322,6 +2371,6 @@ TypeOK ==
     /\ seenInc \in [Brokers -> [Brokers -> Nat]]
     /\ checked \in [Brokers -> SUBSET Brokers]
     /\ registered \in [Brokers -> Nat] /\ inc \in [Brokers -> Nat] /\ restarting \subseteq Brokers
-    /\ wipes \in 0..Wipes
+    /\ wipes \in 0..(IF LosePromises THEN 1 ELSE Wipes)
 
 =============================================================================

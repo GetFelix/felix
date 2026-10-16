@@ -2,6 +2,7 @@
 //! `Periodic` fsync and so may have lost its unsynced tail, is never promoted
 //! on a report about the copy it had. One that stopped cleanly and restarted
 //! still is. A leader that crashed that way does not lead from its copy again.
+//! A wiped follower still votes in the next leader's fence.
 //!
 //! The leader here cannot reach the follower after it comes back (its peer
 //! requests to it are refused), so its reports keep naming the follower
@@ -268,6 +269,47 @@ async fn not_promoted_after(stop: Stop) {
 #[serial]
 async fn a_wiped_follower_is_not_promoted() {
     not_promoted_after(Stop::Wipe).await;
+}
+
+/// **A wiped follower still votes in the next leader's fence (#1267).** Its
+/// ballots went with the directory, so it answers a fence only as its routing
+/// view backs it. Its leader never reached it after the wipe, so its copy
+/// holds no promise when the successor fences it, and with the old leader dead
+/// the successor's majority needs it.
+#[tokio::test]
+#[serial]
+async fn a_wiped_follower_votes_in_the_next_fence() {
+    let mut cluster = Cluster::start(config()).await.expect("start");
+    let (leader, b, c) = written(&cluster).await;
+    restart_unreached(&mut cluster, &leader, &c, Stop::Wipe).await;
+    cluster.kill_node(&leader).expect("kill the leader");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the control plane to mark the leader down",
+        || async {
+            cluster
+                .placeable_nodes()
+                .await
+                .is_ok_and(|live| !live.contains(&leader))
+        },
+    )
+    .await
+    .expect("the leader is marked down");
+
+    let promoted = promoted_away_from(&cluster, &leader).await;
+    assert_eq!(promoted, b, "the wiped follower was promoted");
+    cluster
+        .publish_keyed_via_settled(
+            &b,
+            STREAM,
+            b"k",
+            b"after-the-fence".to_vec(),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("the new leader fences b and the wiped follower, and serves");
+    assert_eq!(replay(&cluster, &b).await, all_records());
+    cluster.shutdown().await;
 }
 
 /// **A follower that crashed under `Periodic` fsync is not promoted

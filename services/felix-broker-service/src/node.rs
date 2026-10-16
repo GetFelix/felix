@@ -175,12 +175,12 @@ where
         "sub egress lanes ENABLED"
     );
 
-    let (broker, durable_storage, storage_id, unclean) = storage::open(&config)?;
+    let (broker, durable_storage, storage_id, start) = storage::open(&config)?;
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
     let unclean = match (&config.membership, &cluster) {
-        (Some(membership), Some((_, ingress, _, _))) if unclean => {
+        (Some(membership), Some((_, ingress, _, _))) if start.unclean => {
             let unclean = Arc::new(felix_replication::unclean::UncleanStart::new(
                 membership.node_id.as_str(),
             ));
@@ -422,6 +422,7 @@ where
         storage_id,
         registered_watch,
         unclean.clone(),
+        start.fresh,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {

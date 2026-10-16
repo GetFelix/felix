@@ -619,6 +619,72 @@ Evidence: `a_second_leader_at_an_accepted_generation_is_refused`,
 `the_ballot_names_the_peer_that_said_hello` (replica);
 `a_generation_promised_to_another_node_is_not_led` (the leader's side).
 
+#### A directory that lost its ballots
+
+A ballot lives in the shard's directory, so a broker whose data directory was
+wiped or replaced has none, and would answer a leader its old copy had
+promised to refuse ([#1267](https://github.com/GetFelix/felix/issues/1267)).
+Say B is promoted at generation 2 and fences C. C is wiped and comes back
+empty. A, deposed but still running, retries a fence at generation 1, or
+ships a batch: C has nothing on disk that refuses it, and its vote makes
+A's majority. A crash does not do this, whatever the fsync mode: `ballot`
+and `replica` are always synced, so only a lost directory loses them.
+
+The broker cannot get the promise back, but the control plane can bound
+it. Without elections the control plane issues every generation before
+anyone fences for it, so the routing view a wiped broker seeds after it
+restarts names the newest generation it ever promised, or a later one, and
+the one leader named at it. So a broker that created its storage id at this
+start (a new or wiped directory, or one whose id did not decode) answers a
+fence for a copy holding no promise only as that view backs it
+(`refuse_unbacked` in `crates/server/felix-replication/src/replica.rs`):
+
+- With no route for the shard, it refuses with `StaleRoute`, which the leader
+  retries, and writes nothing. The fence normally takes a view behind it,
+  since it usually arrives before the watch does; here it waits.
+- At the view's generation it answers only the leader the view names, and
+  refuses any other with `FencedEpoch`, as a ballot would.
+- An older generation is refused by the view, as on any broker, and a newer
+  one was never promised.
+
+Batches already need the view at their exact generation. Once the copy has
+taken a generation, its ballot answers, and the view is not consulted
+again. A restart that keeps the id keeps the ballots, so it does not apply.
+Nothing new is persisted or sent: the refusals are the ones a fence already
+gets, so old and new peers exchange the same frames.
+
+This rests on the view being no older than the control plane was when the
+directory was lost. A read from a lagging Raft member can break that, as it
+can for a batch's check today. It also does not cover elections: a
+candidate's generation is not in the control plane until it is adopted, so
+no view can back a promise made to one. A wiped broker must not answer a
+candidate's fence at all before [electing without the control
+plane](#electing-without-the-control-plane) ships.
+
+The cost is a fence round trip or a few, while a wiped broker's watch
+catches up, and only for copies it has no promise for. With one replica of a
+set of three wiped the other two make the majority anyway. With a majority
+wiped at once their votes wait for their views; once they have them they
+answer, so the shard is not stuck, but what it acknowledged was on those
+copies and may be gone. That is the loss [Storage identities](#storage-identities)
+and "Who may be promoted" already handle: placement does not promote a
+follower on a report from before its wipe, and the operator's path is the
+one for any lost shard, `felixctl placement abandon` or a restore to a
+backup point.
+
+`FelixShardSuspicionWipeUnbacked.cfg` lets a follower lose its promises
+after taking the successor's fence, and TLC finds the deposed leader's
+write acknowledged on it and lost; `FelixShardSuspicionWipeRoutes.cfg`
+passes with the follower answering only what its view backs
+(`docs/formal/README.md`, "A follower that loses its promises").
+
+Evidence: `a_wiped_copy_takes_no_fence_its_routes_do_not_have`,
+`a_wiped_copy_answers_only_the_routed_leader_at_the_routed_generation` and
+`a_wiped_copy_with_a_promise_since_answers_by_its_ballot` (replica);
+`only_a_directory_without_its_storage_id_starts_fresh` (the start);
+`a_wiped_follower_votes_in_the_next_fence` (cluster: the wiped copy still
+makes the successor's majority once its view has the shard).
+
 ### Every change of leader
 
 Ballots keep one leader per generation only if every leader asks for the
@@ -2405,7 +2471,9 @@ already has when a leader dies.
 
 Not covered: a leader whose data directory was wiped has no ballot to say it
 led the shard, so only placement's check keeps it from serving its old
-generation, and only once it has registered; that is #1267's question too.
+generation, and only once it has registered. Its votes in other leaders'
+fences are held to its routing view (see [A directory that lost its
+ballots](#a-directory-that-lost-its-ballots)).
 With `FELIX_INTERNAL_FENCE=false` brokers keep no ballots, and a rotated
 leader gives up only a generation it is named at that its log had already
 accepted, or one it followed.
