@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792124537177,
+  "lastUpdate": 1792127901593,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39468,6 +39468,72 @@ window.BENCHMARK_DATA = {
             "range": "55.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 620.00\nmean: 628.80\nstdev: 55.62\ncv: 8.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf7ffa36191884028e291d5257545bf0f2ade1e6",
+          "message": "fix(sdk): read the CA file with rustls-pki-types and drop the RUSTSEC-2025-0134 ignore (#1285)\n\nrustls-pemfile is unmaintained and its parsing now lives in pki-types as\nPemObject, which felix-client and the control plane already use. With\nthe SDK lockfiles clean, the repo-wide deny.toml ignore can go.\n\nCloses #1255",
+          "timestamp": "2026-10-16T05:14:33Z",
+          "tree_id": "92af63720ba19b69b03881dff9f88b31dcb24f8a",
+          "url": "https://github.com/GetFelix/felix/commit/bf7ffa36191884028e291d5257545bf0f2ade1e6"
+        },
+        "date": 1792127896550,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.60\nstdev: 1.95\ncv: 1.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 143,
+            "range": "23.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 152.20\nstdev: 23.40\ncv: 15.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 196,
+            "range": "844.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 575.20\nstdev: 844.57\ncv: 146.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 142.20\nstdev: 0.84\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 284,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 284.00\nmean: 283.20\nstdev: 1.64\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 381,
+            "range": "23.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 381.00\nmean: 389.00\nstdev: 23.95\ncv: 6.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
