@@ -166,3 +166,46 @@ fn pooled_bytes_round_to_whole_units_above_four_gib() {
     pool.shrink(2);
     assert_eq!(budget.available(), full);
 }
+
+/// The release races the sender parking: whichever wins, the sender must
+/// wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sender_waiting_on_a_full_queue_wakes_when_its_bytes_are_released() {
+    let sub = bytes(100, 0).for_subscriber();
+    for _ in 0..2_000 {
+        let held = sub.try_hold(100).expect("the queue is empty");
+        let release = std::thread::spawn(move || drop(held));
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), sub.hold(100))
+            .await
+            .expect("woken when the bytes were released");
+        release.join().expect("release");
+        drop(next);
+    }
+    let own = sub.own.as_ref().expect("own bound");
+    assert_eq!(own.waiting.load(Ordering::SeqCst), 0);
+    assert_eq!(sub.own_available(), Some(100));
+}
+
+#[tokio::test]
+async fn a_cancelled_wait_is_no_longer_counted() {
+    let sub = bytes(100, 0).for_subscriber();
+    let held = sub.try_hold(100).expect("fits");
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(10), sub.hold(1)).await;
+    assert!(waited.is_err(), "the queue is full");
+    let own = sub.own.as_ref().expect("own bound");
+    assert_eq!(own.waiting.load(Ordering::SeqCst), 0);
+    drop(held);
+    assert_eq!(sub.own_available(), Some(100));
+}
+
+#[test]
+fn released_subscriber_bytes_go_back_before_the_rest_is_dropped() {
+    let sub = bytes(100, 0).for_subscriber();
+    let mut held = sub.try_hold(60).expect("fits");
+    held.absorb(sub.try_hold(40).expect("fits"));
+    assert_eq!(sub.own_available(), Some(0));
+    held.release_subscriber();
+    assert_eq!(sub.own_available(), Some(100));
+    drop(held);
+    assert_eq!(sub.own_available(), Some(100));
+}

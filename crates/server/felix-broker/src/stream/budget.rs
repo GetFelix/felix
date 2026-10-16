@@ -17,8 +17,9 @@
 //! until the batch is written.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// A pool of queued payload bytes: one subscriber's, or the broker's.
 ///
@@ -84,6 +85,127 @@ impl ByteBudget {
     }
 }
 
+/// One queue's own byte bound.
+///
+/// Not a [`ByteBudget`]: the queue's consumer gives bytes back once per
+/// batch, on the delivery path, and a semaphore takes its lock on every
+/// release. Here a release is one atomic add unless a sender is waiting.
+#[derive(Debug)]
+struct OwnBudget {
+    max: usize,
+    used: AtomicUsize,
+    /// Senders parked in [`Self::take`]. A release notifies only when this
+    /// is nonzero.
+    waiting: AtomicUsize,
+    freed: Notify,
+}
+
+impl OwnBudget {
+    /// `None` for zero, which leaves the queue unbounded by bytes.
+    fn new(max: usize) -> Option<Arc<Self>> {
+        (max > 0).then(|| {
+            Arc::new(Self {
+                max,
+                used: AtomicUsize::new(0),
+                waiting: AtomicUsize::new(0),
+                freed: Notify::new(),
+            })
+        })
+    }
+
+    #[cfg(test)]
+    fn available(&self) -> usize {
+        self.max - self.used.load(Ordering::SeqCst)
+    }
+
+    /// A batch larger than the whole bound takes all of it, so it goes
+    /// through once the queue is empty instead of never.
+    fn try_take(self: &Arc<Self>, bytes: usize) -> Option<OwnHeld> {
+        let want = bytes.min(self.max);
+        let mut used = self.used.load(Ordering::SeqCst);
+        loop {
+            if used.saturating_add(want) > self.max {
+                return None;
+            }
+            match self.used.compare_exchange_weak(
+                used,
+                used + want,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    return Some(OwnHeld {
+                        budget: Arc::clone(self),
+                        bytes: want,
+                    });
+                }
+                Err(now) => used = now,
+            }
+        }
+    }
+
+    async fn take(self: &Arc<Self>, bytes: usize) -> OwnHeld {
+        if let Some(held) = self.try_take(bytes) {
+            return held;
+        }
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let _waiting = Waiting(&self.waiting);
+        loop {
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            // Counted as waiting and registered before the check, so a
+            // release in between either sees the count and notifies, or is
+            // seen by the check.
+            freed.as_mut().enable();
+            if let Some(held) = self.try_take(bytes) {
+                return held;
+            }
+            freed.await;
+        }
+    }
+}
+
+/// Uncounts a parked sender, including one whose wait is cancelled.
+struct Waiting<'a>(&'a AtomicUsize);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Bytes held against one queue's own bound, given back on drop.
+#[derive(Debug)]
+struct OwnHeld {
+    budget: Arc<OwnBudget>,
+    bytes: usize,
+}
+
+impl OwnHeld {
+    /// Panics if `other` is another queue's.
+    fn merge(&mut self, mut other: OwnHeld) {
+        assert!(
+            Arc::ptr_eq(&self.budget, &other.budget),
+            "merged bytes of two queues"
+        );
+        self.bytes += std::mem::take(&mut other.bytes);
+    }
+}
+
+impl Drop for OwnHeld {
+    fn drop(&mut self) {
+        if self.bytes == 0 {
+            return;
+        }
+        // SeqCst pairs with `take`: either its check sees this release, or
+        // this sees it waiting and wakes it.
+        self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
+        if self.budget.waiting.load(Ordering::SeqCst) > 0 {
+            self.budget.freed.notify_waiters();
+        }
+    }
+}
+
 /// The byte bounds every queue of one kind is held to: subscriber queues, or
 /// cache watch queues.
 #[derive(Debug, Clone)]
@@ -109,7 +231,7 @@ impl QueueBytes {
     /// The budgets for one newly registered queue.
     pub(crate) fn for_subscriber(&self) -> SubscriberBytes {
         SubscriberBytes {
-            own: ByteBudget::new(self.per_subscriber),
+            own: OwnBudget::new(self.per_subscriber),
             broker: self.broker.clone(),
             gauge: metrics::gauge!(self.gauge),
         }
@@ -126,7 +248,7 @@ impl Default for QueueBytes {
 /// One queue's budgets.
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriberBytes {
-    own: Option<ByteBudget>,
+    own: Option<Arc<OwnBudget>>,
     broker: Option<ByteBudget>,
     /// Looked up once here rather than on every batch.
     gauge: metrics::Gauge,
@@ -137,14 +259,14 @@ impl SubscriberBytes {
     /// `None` when it has none.
     #[cfg(test)]
     fn own_available(&self) -> Option<usize> {
-        self.own.as_ref().map(ByteBudget::available)
+        self.own.as_deref().map(OwnBudget::available)
     }
 
     /// Hold `bytes` if both budgets have room, without waiting. On failure,
     /// says which one was full and holds nothing.
     pub(crate) fn try_hold(&self, bytes: usize) -> Result<HeldBytes, ByteBound> {
         let own = match &self.own {
-            Some(budget) => Some(budget.try_take(bytes).ok_or(ByteBound::Subscriber)?),
+            Some(own) => Some(own.try_take(bytes).ok_or(ByteBound::Subscriber)?),
             None => None,
         };
         let broker = match &self.broker {
@@ -161,7 +283,7 @@ impl SubscriberBytes {
     /// gives its own bytes back.
     pub(crate) async fn hold(&self, bytes: usize) -> HeldBytes {
         let own = match &self.own {
-            Some(budget) => Some(budget.take(bytes).await),
+            Some(own) => Some(own.take(bytes).await),
             None => None,
         };
         let broker = match &self.broker {
@@ -195,14 +317,14 @@ pub struct HeldBytes {
     /// What the gauge counts: zero once the subscriber's share is released.
     bytes: usize,
     gauge: metrics::Gauge,
-    own: Option<OwnedSemaphorePermit>,
+    own: Option<OwnHeld>,
     _broker: Option<OwnedSemaphorePermit>,
 }
 
 impl HeldBytes {
     fn new(
         bytes: usize,
-        own: Option<OwnedSemaphorePermit>,
+        own: Option<OwnHeld>,
         broker: Option<OwnedSemaphorePermit>,
         gauge: &metrics::Gauge,
     ) -> Self {
@@ -248,7 +370,11 @@ impl HeldBytes {
             self.gauge = std::mem::replace(&mut other.gauge, metrics::Gauge::noop());
         }
         self.bytes += std::mem::take(&mut other.bytes);
-        merge(&mut self.own, other.own.take());
+        match (self.own.as_mut(), other.own.take()) {
+            (Some(held), Some(more)) => held.merge(more),
+            (None, Some(more)) => self.own = Some(more),
+            (_, None) => {}
+        }
         merge(&mut self._broker, other._broker.take());
     }
 }
