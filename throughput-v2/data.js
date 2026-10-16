@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792111496866,
+  "lastUpdate": 1792112036281,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30836,6 +30836,58 @@ window.BENCHMARK_DATA = {
             "range": "41740.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804355.62\nmean: 787968.17\nstdev: 41740.03\ncv: 5.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba0dcb9cd97bb0e6bd931e7840361b6e3f3a3d9b",
+          "message": "fix(storage): one purge worker per root, and retire off the async workers (#1276)\n\nRetiring a directory started a felix-purge-deleted thread every time, each\nlisting and deleting everything in .deleted/. A namespace delete over many\nstreams and shards started a thread per directory, racing on the same\nentries. Now one worker per root drains .deleted/ and lists it again if\nmore arrives while it works; startup still finishes what a crash left.\n\nThe directory renames and fsyncs of a retire, and the broker's stream\nmarker and floor reads and writes, now run on the blocking pool, awaited\nin the same order as before. Broker::restore_stream_marker becomes async.\n\nRegistration and deletion of one name are not locked against each other;\nthe broker service only drives them from its single catalog-sync task,\nafter finish_pending_deletes. Documented where the delete relies on it.\n\nSpec-Unaffected: LogCache::retire still closes the shards and then renames their directories, only the rename runs on the blocking pool; no cursor log state or transition changes.",
+          "timestamp": "2026-10-15T17:49:20-07:00",
+          "tree_id": "6611b176b241928959910b2ec38a0471d4307b7f",
+          "url": "https://github.com/GetFelix/felix/commit/ba0dcb9cd97bb0e6bd931e7840361b6e3f3a3d9b"
+        },
+        "date": 1792112035608,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 330467.83,
+            "range": "7703.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330467.83\nmean: 329768.87\nstdev: 7703.81\ncv: 2.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 330467.83,
+            "range": "7703.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330467.83\nmean: 329768.87\nstdev: 7703.81\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80654.56,
+            "range": "704.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80654.56\nmean: 80438.10\nstdev: 704.61\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806545.57,
+            "range": "7046.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806545.57\nmean: 804381.04\nstdev: 7046.09\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
