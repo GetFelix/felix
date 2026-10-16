@@ -129,13 +129,17 @@ pub(super) async fn delete_namespace(
     cache_keys.sort_by(|a, b| {
         (&a.tenant_id, &a.namespace, &a.cache).cmp(&(&b.tenant_id, &b.namespace, &b.cache))
     });
+    let nodes = store.nodes.read().await;
     for cache_key in &cache_keys {
         if let Some(cache) = caches.remove(cache_key) {
+            let deleted_through =
+                super::caches::record_tombstone(store, &nodes, cache_key, cache.incarnation).await;
             store.cache_changes.write().await.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Deleted,
                 key: cache_key.clone(),
                 cache: Some(cache),
+                deleted_through,
             });
             if cleanup == ShardCleanup::Full {
                 store
@@ -150,6 +154,7 @@ pub(super) async fn delete_namespace(
             }
         }
     }
+    drop(nodes);
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);
     Ok(())
 }

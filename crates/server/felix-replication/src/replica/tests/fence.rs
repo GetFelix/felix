@@ -499,7 +499,7 @@ async fn a_long_tail_is_fetched_over_the_transport() {
 
 /// A router in which `LOCAL` follows the cache shard of the same name at
 /// `generation`.
-fn cache_router(generation: u64) -> Arc<ShardRouter> {
+pub(super) fn cache_router(generation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         LOCAL,
         "us-west-2",
@@ -528,7 +528,7 @@ fn cache_router(generation: u64) -> Arc<ShardRouter> {
 }
 
 /// A broker with a log-backed cache and counters.
-fn cache_broker(dir: &std::path::Path) -> Arc<Broker> {
+pub(super) fn cache_broker(dir: &std::path::Path) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -544,7 +544,7 @@ fn cache_broker(dir: &std::path::Path) -> Arc<Broker> {
     )
 }
 
-fn cache_put(key: &str, value: &str) -> String {
+pub(super) fn cache_put(key: &str, value: &str) -> String {
     let op = felix_storage::cache::CacheOp::Put {
         key: key.to_string(),
         value: Bytes::copy_from_slice(value.as_bytes()),

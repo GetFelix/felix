@@ -1,6 +1,7 @@
 //! Ownership transitions: what this broker serves, and when it stops.
 use super::*;
 
+mod cache_incarnation;
 mod every_change;
 mod promotion;
 

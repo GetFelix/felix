@@ -86,13 +86,14 @@ async fn restore(
         let shard = &cut.shard;
         // Nothing is registered on a stopped broker; the point says which
         // incarnation's logs it describes.
-        if shard.kind == PointKind::Stream {
-            broker.set_stream_incarnation(
-                &shard.tenant_id,
-                &shard.namespace,
-                &shard.name,
-                Some(shard.incarnation),
-            );
+        let (tenant_id, namespace, name) = (&shard.tenant_id, &shard.namespace, &shard.name);
+        match shard.kind {
+            PointKind::Stream => {
+                broker.set_stream_incarnation(tenant_id, namespace, name, Some(shard.incarnation));
+            }
+            PointKind::Cache => {
+                broker.set_cache_incarnation(tenant_id, namespace, name, Some(shard.incarnation));
+            }
         }
         let log = broker
             .shard_log(
@@ -116,13 +117,23 @@ async fn restore(
             cut.offset
         );
     }
-    // The control plane is back at the point, so each stream's incarnation is
-    // the point's again, even below one this broker registered or saw
-    // deleted since; without this it would refuse the point's.
-    for (tenant_id, namespace, name, incarnation) in manifest.streams() {
-        broker
-            .restore_stream_marker(tenant_id, namespace, name, incarnation)
-            .await
+    // The control plane is back at the point, so each stream's and cache's
+    // incarnation is the point's again, even below one this broker registered
+    // or saw deleted since; without this it would refuse the point's.
+    for (kind, tenant_id, namespace, name, incarnation) in manifest.names() {
+        let restored = match kind {
+            PointKind::Stream => {
+                broker
+                    .restore_stream_marker(tenant_id, namespace, name, incarnation)
+                    .await
+            }
+            PointKind::Cache => {
+                broker
+                    .restore_cache_marker(tenant_id, namespace, name, incarnation)
+                    .await
+            }
+        };
+        restored
             .with_context(|| format!("record the incarnation of {tenant_id}/{namespace}/{name}"))?;
     }
     if let Some(storage) = storage {
@@ -141,13 +152,13 @@ pub(crate) struct Manifest {
 }
 
 impl Manifest {
-    /// Each stream the point names, with its incarnation, once.
-    fn streams(&self) -> std::collections::BTreeSet<(&str, &str, &str, u64)> {
+    /// Each stream and cache the point names, with its incarnation, once.
+    fn names(&self) -> std::collections::BTreeSet<(PointKind, &str, &str, &str, u64)> {
         self.shards
             .iter()
-            .filter(|shard| shard.kind == PointKind::Stream)
             .map(|shard| {
                 (
+                    shard.kind,
                     shard.tenant_id.as_str(),
                     shard.namespace.as_str(),
                     shard.name.as_str(),
@@ -254,7 +265,7 @@ impl PointShard {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum PointKind {
     Stream,
@@ -290,11 +301,6 @@ fn log_dir(root: &Path, kind: LogKind, shard: &PointShard) -> PathBuf {
         LogKind::GroupDeadLetters => root.join("dead-letters"),
         LogKind::Counters => root.join("counters"),
     };
-    // A cache's logs and a cache's counters are not a stream's, and stay at 0.
-    let incarnation = match kind {
-        LogKind::Stream | LogKind::GroupCursors | LogKind::GroupDeadLetters => shard.incarnation,
-        LogKind::Cache | LogKind::Counters => 0,
-    };
     incarnation_dir(
         &store,
         &felix_storage::log::ShardKey {
@@ -303,7 +309,7 @@ fn log_dir(root: &Path, kind: LogKind, shard: &PointShard) -> PathBuf {
             stream: shard.name.clone(),
             shard: shard.shard,
         },
-        incarnation,
+        shard.incarnation,
     )
 }
 

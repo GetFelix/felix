@@ -1387,6 +1387,16 @@ on it timed out (issue 881). The commit order now moves only forward
 Lease-free brokers were not affected, because a leader's generation-start record
 resets the order when it opens.
 
+**A recreated cache is another log.** Once the fleet finalized
+`cache_incarnations`, a cache shard's replication state (cursors, quorum marks,
+the follower's verified and mismatched positions) is kept per cache
+incarnation as well as per generation, as it is for streams, and every
+replication request for a cache shard or its counter log names the
+incarnation. A follower holding another incarnation refuses it, so records of
+a recreated cache never land in the deleted one's logs and a mark measured on
+the deleted cache never counts for the new one. See `docs/durable-storage.md`
+("Deleting a cache").
+
 ### Idempotent producers across a leader change
 
 An idempotent producer's sequence has to be wherever the shard's leader is, or

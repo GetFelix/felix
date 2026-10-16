@@ -46,11 +46,12 @@ async fn write_shard_assignment(
     // both: a cache and a stream may share a name, and falling back from one
     // to the other would let a shard of the wrong thing validate.
     //
-    // The stream map stays read-locked until the write lands, so a delete of
-    // the stream waits for it and then takes it away, and one created again
-    // after is read with its own incarnation, never the old one stamped on
-    // an assignment of the new.
+    // The stream and cache maps stay read-locked until the write lands, so a
+    // delete waits for it and then takes it away, and one created again after
+    // is read with its own incarnation, never the old one stamped on an
+    // assignment of the new.
     let streams = store.streams.read().await;
+    let caches = store.caches.read().await;
     let (shards, incarnation) = match assignment.key.kind {
         ShardKind::Stream => streams
             .get(&StreamKey {
@@ -60,16 +61,13 @@ async fn write_shard_assignment(
             })
             .map(|stream| (stream.shards, stream.incarnation))
             .ok_or_else(|| StoreError::NotFound("stream".into()))?,
-        ShardKind::Cache => store
-            .caches
-            .read()
-            .await
+        ShardKind::Cache => caches
             .get(&CacheKey {
                 tenant_id: assignment.key.tenant_id.clone(),
                 namespace: assignment.key.namespace.clone(),
                 cache: assignment.key.stream.clone(),
             })
-            .map(|cache| (cache.shards, 0))
+            .map(|cache| (cache.shards, cache.incarnation))
             .ok_or_else(|| StoreError::NotFound("cache".into()))?,
     };
     assignment.validate_within(shards).map_err(invalid_shard)?;

@@ -480,3 +480,137 @@ async fn storage_identities_apply_identically() {
     restored.restore(&snapshot).await;
     assert_eq!(snapshot, restored.snapshot().await);
 }
+
+/// **A level-13 proposer's cache entries apply as a level-13 member applies
+/// them.** Before `cache_incarnations` is finalized (stream incarnations may
+/// be), they store every cache at 0, write no tombstone, and leave the
+/// snapshot without any level-14 field, so a member still on the release
+/// before restores and replays the same state. Once it is finalized, the
+/// join floor is 14, a create proposing nothing still gets an incarnation,
+/// and a delete's tombstone survives a snapshot.
+#[tokio::test]
+async fn cache_entries_from_level_13_store_what_level_13_stores() {
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    let apply = |command: MetaCommand| {
+        let original = &original;
+        async move {
+            assert!(command.version() <= 13, "{command:?}");
+            let response = original.apply(&encode_command(&command)).await;
+            decode_result(&response)
+                .expect("decodes")
+                .expect("succeeds")
+        }
+    };
+    apply(MetaCommand::CreateTenant {
+        tenant: tenant("acme"),
+    })
+    .await;
+    for name in ["ns", "doomed"] {
+        apply(MetaCommand::CreateNamespace {
+            namespace: namespace("acme", name),
+        })
+        .await;
+    }
+    let streams = felix_common::fleet::STREAM_INCARNATIONS.name().to_string();
+    let mut broker = node("broker-a", 7001);
+    broker.status.features.insert(streams.clone());
+    apply(MetaCommand::RegisterNodeInFleet {
+        node: broker.clone(),
+    })
+    .await;
+    apply(MetaCommand::FinalizeFleetFeature { feature: streams }).await;
+
+    apply(MetaCommand::CreateCache {
+        cache: cache("acme", "ns", "single"),
+    })
+    .await;
+    let batch = apply(MetaCommand::CreateResources {
+        streams: Vec::new(),
+        caches: vec![cache("acme", "ns", "batched")],
+    })
+    .await;
+    assert!(matches!(batch, MetaResponse::Unit), "{batch:?}");
+    apply(MetaCommand::CreateCache {
+        cache: cache("acme", "doomed", "inside"),
+    })
+    .await;
+    apply(MetaCommand::DeleteCache {
+        key: crate::model::CacheKey {
+            tenant_id: "acme".to_string(),
+            namespace: "ns".to_string(),
+            cache: "single".to_string(),
+        },
+        take_reports: true,
+    })
+    .await;
+    apply(MetaCommand::DeleteNamespace {
+        key: NamespaceKey {
+            tenant_id: "acme".to_string(),
+            namespace: "doomed".to_string(),
+        },
+        take_shards: true,
+    })
+    .await;
+
+    let store = original.store();
+    assert!(
+        store
+            .cache_tombstones()
+            .await
+            .expect("tombstones")
+            .is_empty()
+    );
+    for change in store.cache_changes(0).await.expect("changes").items {
+        assert_eq!(change.deleted_through, None, "{change:?}");
+        assert_eq!(change.cache.map(|cache| cache.incarnation).unwrap_or(0), 0);
+    }
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&original.snapshot().await).expect("json");
+    let level = crate::store::raft::command::fields::level_of(
+        &serde_json::json!({ "op": "snapshot", "state": snapshot["state"] }),
+    );
+    assert!(level <= 13, "the snapshot needs level {level}");
+    assert!(original.join_floor() <= 13);
+
+    let caches = felix_common::fleet::CACHE_INCARNATIONS.name().to_string();
+    broker.status.features.insert(caches.clone());
+    apply(MetaCommand::RegisterNodeInFleet { node: broker }).await;
+    original
+        .apply(&encode_command(&MetaCommand::FinalizeFleetFeature {
+            feature: caches,
+        }))
+        .await;
+    assert_eq!(original.join_floor(), 14);
+    let created = apply(MetaCommand::CreateCache {
+        cache: cache("acme", "ns", "single"),
+    })
+    .await;
+    assert!(
+        matches!(&created, MetaResponse::Cache { cache } if cache.incarnation != 0),
+        "{created:?}"
+    );
+
+    // A tombstone is kept across a snapshot.
+    apply(MetaCommand::DeleteCache {
+        key: crate::model::CacheKey {
+            tenant_id: "acme".to_string(),
+            namespace: "ns".to_string(),
+            cache: "single".to_string(),
+        },
+        take_reports: true,
+    })
+    .await;
+    let tombstones = store.cache_tombstones().await.expect("tombstones");
+    assert_eq!(tombstones.len(), 1, "{tombstones:?}");
+    let restored = machine();
+    restored.restore(&original.snapshot().await).await;
+    assert_eq!(
+        restored
+            .store()
+            .cache_tombstones()
+            .await
+            .expect("tombstones"),
+        tombstones
+    );
+}

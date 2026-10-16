@@ -1,4 +1,4 @@
-//! A follower takes a stream shard's records, fence or bootstrap only for the
+//! A follower takes a stream or cache shard's records, fence or bootstrap only for the
 //! incarnation it holds. A broker restarting while its catalog is slow to seed
 //! must not take the new stream's records into a log it will not read, and
 //! one whose catalog still has the deleted stream must not take them into the
@@ -338,4 +338,148 @@ async fn a_mismatch_on_a_deleted_incarnation_does_not_refuse_the_new_ones_rebuil
         "the new incarnation's rebuild was refused for the old one's mismatch: {:?}",
         answer.kind()
     );
+}
+
+async fn register_cache(broker: &Broker, incarnation: u64) {
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+                incarnation,
+            },
+        )
+        .await
+        .expect("register");
+}
+
+/// A batch for the cache shard's entry log or its counter log.
+fn cache_batch(log: felix_broker::LogKind, incarnation: Option<u64>) -> ReplicateRecords {
+    let put = super::fence::cache_put("k", "v");
+    let value = match log {
+        felix_broker::LogKind::Cache => put.as_str(),
+        _ => "d1",
+    };
+    incarnated(4, 0, &[value], incarnation)
+}
+
+const CACHE_LOGS: [felix_broker::LogKind; 2] = [
+    felix_broker::LogKind::Cache,
+    felix_broker::LogKind::Counters,
+];
+
+/// A cache deleted and created again: the follower's catalog still has the
+/// deleted one, so neither its entries nor its counters take the new one's
+/// records. Once the catalog catches up they are taken.
+#[tokio::test]
+async fn a_cache_follower_refuses_an_incarnation_it_does_not_hold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::fence::cache_broker(dir.path());
+    register_cache(&broker, 6).await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(4));
+
+    for log in CACHE_LOGS {
+        let answer = handler.apply(SENDER, cache_batch(log, Some(7)), log).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute, "{log:?}");
+    }
+
+    register_cache(&broker, 7).await;
+    for log in CACHE_LOGS {
+        let answer = handler.apply(SENDER, cache_batch(log, Some(7)), log).await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{log:?}: {:?}",
+            answer.kind()
+        );
+    }
+}
+
+/// A request naming a cache incarnation turns the cache requirement on, and
+/// waits for the catalog rather than landing in the incarnation 0 logs.
+#[tokio::test]
+async fn a_cache_request_naming_an_incarnation_waits_for_the_catalog() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::fence::cache_broker(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(4));
+
+    for log in CACHE_LOGS {
+        let answer = handler.apply(SENDER, cache_batch(log, Some(7)), log).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute, "{log:?}");
+    }
+    assert!(broker.cache_registration_required());
+    assert!(
+        !broker.registration_required(),
+        "a cache incarnation turned on the streams' requirement"
+    );
+}
+
+/// Before cache incarnations nothing names one, and a cache follower takes
+/// entries and counters whether or not its catalog has the cache yet.
+#[tokio::test]
+async fn a_cache_at_incarnation_zero_replicates_as_before() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::fence::cache_broker(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(4));
+    let first = handler
+        .apply(
+            SENDER,
+            cache_batch(felix_broker::LogKind::Cache, None),
+            felix_broker::LogKind::Cache,
+        )
+        .await;
+    assert!(
+        matches!(first, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        first.kind()
+    );
+
+    register_cache(&broker, 0).await;
+    let counters = handler
+        .apply(
+            SENDER,
+            cache_batch(felix_broker::LogKind::Counters, None),
+            felix_broker::LogKind::Counters,
+        )
+        .await;
+    assert!(
+        matches!(counters, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        counters.kind()
+    );
+    assert!(!broker.cache_registration_required());
+}
+
+/// The cache is deleted and created again between the incarnation check and
+/// the open: the deleted one's records must not reach the new cache's logs.
+#[tokio::test]
+async fn a_cache_recreate_between_the_check_and_the_open_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::fence::cache_broker(dir.path());
+    register_cache(&broker, 7).await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(4));
+    let recreated = Arc::clone(&broker);
+    *handler.incarnation_checked.lock() = Some(Box::new(move || {
+        recreated.set_cache_incarnation(TENANT, NAMESPACE, STREAM, Some(8));
+    }));
+
+    for log in CACHE_LOGS {
+        let answer = handler.apply(SENDER, cache_batch(log, Some(7)), log).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute, "{log:?}");
+        let new = broker
+            .shard_log_for(log, TENANT, NAMESPACE, STREAM, 0, None, Some(8))
+            .await
+            .expect("the new cache's log");
+        assert_eq!(
+            new.tail_offset().await.expect("tail"),
+            0,
+            "{log:?} took the deleted cache's records"
+        );
+    }
 }

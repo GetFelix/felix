@@ -1034,6 +1034,12 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn cache_tombstones(
+        &self,
+    ) -> StoreResult<Vec<felix_controlplane_service::model::CacheTombstone>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn cache_changes(&self, _since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -1042,7 +1048,7 @@ impl ControlPlaneStore for FailingStore {
         &self,
         _streams: Vec<Stream>,
         _caches: Vec<Cache>,
-    ) -> StoreResult<Vec<Stream>> {
+    ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

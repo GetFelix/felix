@@ -247,13 +247,15 @@ impl MetadataStateMachine {
                     fleet,
                 })
             }
-            // `Streams` only once a stream has an incarnation, which needs
-            // every member at the level that decodes it; `Unit` before.
+            // Each shape only once something in it has an incarnation, which
+            // needs every member at the level that decodes it; `Unit` before.
             MetaCommand::CreateResources { streams, caches } => store
                 .create_resources(streams, caches)
                 .await
-                .map(|streams| {
-                    if streams.iter().any(|stream| stream.incarnation != 0) {
+                .map(|(streams, caches)| {
+                    if caches.iter().any(|cache| cache.incarnation != 0) {
+                        MetaResponse::Resources { streams, caches }
+                    } else if streams.iter().any(|stream| stream.incarnation != 0) {
                         MetaResponse::Streams { streams }
                     } else {
                         MetaResponse::Unit

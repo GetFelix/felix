@@ -115,6 +115,7 @@ fn cache() -> Cache {
         shards: 2,
         replication_factor: 3,
         consistency: ConsistencyLevel::Quorum,
+        incarnation: 7,
     }
 }
 
@@ -328,6 +329,7 @@ fn exported() -> ExportedState {
             op: CacheChangeOp::Created,
             key: cache_key(),
             cache: Some(cache()),
+            deleted_through: Some(1),
         }),
         idp_issuers: vec![(s("t"), vec![issuer()])],
         tenant_signing_keys: vec![(s("t"), signing_keys())],
@@ -350,6 +352,12 @@ fn exported() -> ExportedState {
             tenant_id: s("t"),
             namespace: s("n"),
             stream: s("s"),
+            incarnation: 1,
+        }],
+        cache_tombstones: vec![crate::model::CacheTombstone {
+            tenant_id: s("t"),
+            namespace: s("n"),
+            cache: s("c"),
             incarnation: 1,
         }],
     }

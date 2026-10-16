@@ -49,6 +49,9 @@ const STORAGE_IDENTITY_LEVEL: u16 = 12;
 /// The metadata level whose members store which node made a replica report
 /// and the incarnations it was taken at.
 const REPORT_STAMP_LEVEL: u16 = 13;
+
+/// The metadata level whose members store a cache's incarnation.
+const CACHE_INCARNATION_LEVEL: u16 = 14;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -350,6 +353,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().cache_snapshot().await
     }
 
+    async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>> {
+        self.local().cache_tombstones().await
+    }
+
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         self.local().cache_changes(since).await
     }
@@ -358,29 +365,47 @@ impl ControlPlaneStore for RaftStore {
         &self,
         streams: Vec<Stream>,
         caches: Vec<Cache>,
-    ) -> StoreResult<Vec<Stream>> {
+    ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
+        // Before a finalize, everything in the batch is stored at 0, and the
+        // answer leaves out what has none.
+        let at_zero = |caches: Vec<Cache>| {
+            caches
+                .into_iter()
+                .map(|cache| Cache {
+                    incarnation: 0,
+                    ..cache
+                })
+                .collect::<Vec<_>>()
+        };
         match self
             .propose(MetaCommand::CreateResources {
                 streams: streams.clone(),
-                caches,
+                caches: caches.clone(),
             })
             .await?
         {
-            MetaResponse::Streams { streams } => Ok(streams),
-            // Before the finalize, every stream is stored at incarnation 0.
-            MetaResponse::Unit => Ok(streams
-                .into_iter()
-                .map(|stream| Stream {
-                    incarnation: 0,
-                    ..stream
-                })
-                .collect()),
+            MetaResponse::Resources { streams, caches } => Ok((streams, caches)),
+            MetaResponse::Streams { streams } => Ok((streams, at_zero(caches))),
+            MetaResponse::Unit => Ok((
+                streams
+                    .into_iter()
+                    .map(|stream| Stream {
+                        incarnation: 0,
+                        ..stream
+                    })
+                    .collect(),
+                at_zero(caches),
+            )),
             _ => Err(unexpected_shape("streams")),
         }
     }
 
     async fn takes_incarnation_proposals(&self) -> bool {
         self.handle.cluster_version().await >= INCARNATION_LEVEL
+    }
+
+    async fn takes_cache_incarnation_proposals(&self) -> bool {
+        self.handle.cluster_version().await >= CACHE_INCARNATION_LEVEL
     }
 
     async fn create_resources_ready(&self) -> bool {

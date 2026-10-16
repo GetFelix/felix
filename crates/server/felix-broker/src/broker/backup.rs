@@ -20,8 +20,8 @@ pub struct CommittedOffsets {
     pub group_dead_letters: Option<u64>,
     /// A cache shard's counters, when this broker keeps them.
     pub counters: Option<u64>,
-    /// Which incarnation of the stream the logs belong to. 0 for a cache,
-    /// and for a stream from before incarnations.
+    /// Which incarnation of the stream or cache the logs belong to. 0 for
+    /// one from before incarnations.
     pub incarnation: u64,
 }
 
@@ -93,7 +93,9 @@ impl Broker {
                     group_cursors: None,
                     group_dead_letters: None,
                     counters,
-                    incarnation: 0,
+                    incarnation: self
+                        .cache_incarnation(tenant_id, namespace, name)
+                        .unwrap_or(0),
                 }))
             }
             other => Err(BrokerError::Storage(format!(

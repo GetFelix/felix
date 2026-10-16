@@ -420,6 +420,7 @@ fn a_quorum_cache_restore_waits_for_the_counter_log() {
         shards: 1,
         replication_factor: 3,
         consistency: ConsistencyLevel::Quorum,
+        incarnation: 0,
     };
     let decide = |reports: &Reports| {
         let plan = plan(

@@ -251,6 +251,11 @@ pub struct CacheListResponse {
 pub struct CacheSnapshotResponse {
     pub items: Vec<Cache>,
     pub next_seq: u64,
+    /// For each deleted name, the incarnation through which it is deleted:
+    /// a broker that missed the delete deletes the data from these. Left out
+    /// while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tombstones: Vec<crate::model::CacheTombstone>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]

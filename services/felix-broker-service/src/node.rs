@@ -201,6 +201,14 @@ where
     if let Err(err) = broker.finish_pending_deletes().await {
         tracing::error!(error = %err, "could not finish deleting streams; retrying as they are named again");
     }
+    // The same for caches, which carry incarnations of their own.
+    if let Err(err) = broker.require_cache_registration_if_in_play() {
+        tracing::error!(error = %err, "could not tell whether caches here carry incarnations; requiring registration");
+        broker.require_registered_caches();
+    }
+    if let Err(err) = broker.finish_pending_cache_deletes().await {
+        tracing::error!(error = %err, "could not finish deleting caches; retrying as they are named again");
+    }
     // A cursor that carries its dependency is a value an older build refuses,
     // so a cluster waits for its fleet. A lone broker writes them from the
     // start: it has no older replica to read them.

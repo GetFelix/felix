@@ -190,7 +190,7 @@ impl QuorumMarks {
         self.serving().caches_by_followers
     }
 
-    /// Check stream marks against `broker`'s registered incarnations from
+    /// Check stream and cache marks against `broker`'s registered incarnations from
     /// here on. Only the first call counts.
     pub(crate) fn track_incarnations(&self, broker: &Arc<felix_broker::Broker>) {
         if self.incarnations.get().is_none() {
@@ -208,7 +208,10 @@ impl QuorumMarks {
         match self.incarnations.get() {
             Some(Incarnations(broker)) => crate::incarnation::current(
                 broker,
-                key.kind == crate::ShardKind::Stream,
+                match key.kind {
+                    crate::ShardKind::Stream => felix_router::ShardKind::Stream,
+                    crate::ShardKind::Cache => felix_router::ShardKind::Cache,
+                },
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
@@ -340,8 +343,8 @@ pub struct MarkTable {
 
 #[derive(Debug)]
 struct ShardMark {
-    /// The stream incarnation whose log the mark was measured on; 0 for a
-    /// cache and before incarnations.
+    /// The stream or cache incarnation whose log the mark was measured on;
+    /// 0 before incarnations.
     incarnation: u64,
     generation: u64,
     offset: watch::Sender<u64>,

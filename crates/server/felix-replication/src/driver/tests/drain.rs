@@ -580,6 +580,7 @@ async fn a_new_cache_leader_names_no_follower_missing_inherited_counters() {
             STREAM,
             felix_broker::CacheMetadata {
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await

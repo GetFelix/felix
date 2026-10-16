@@ -234,7 +234,7 @@ pub(crate) async fn jump_hash_finalized(state: &AppState) -> Result<bool, ApiErr
     fleet_finalized(state, felix_common::fleet::JUMP_HASH_ROUTING).await
 }
 
-async fn fleet_finalized(
+pub(crate) async fn fleet_finalized(
     state: &AppState,
     feature: felix_common::fleet::FleetFeature,
 ) -> Result<bool, ApiError> {

@@ -347,3 +347,89 @@ fn unhex(value: &str) -> Option<String> {
         .collect::<Option<Vec<u8>>>()?;
     String::from_utf8(bytes).ok()
 }
+
+/// The markers, floors and in-play record under one store's root, with the
+/// floors file read once and kept.
+#[derive(Debug)]
+pub(crate) struct MarkerFiles {
+    root: PathBuf,
+    floors: parking_lot::Mutex<Option<Floors>>,
+}
+
+impl MarkerFiles {
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            floors: parking_lot::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn read(&self, tenant: &str, namespace: &str, name: &str) -> Result<MarkerRead> {
+        read(&self.root, tenant, namespace, name)
+    }
+
+    pub(crate) fn write(&self, marker: &StreamMarker) -> Result<()> {
+        write(&self.root, marker)
+    }
+
+    pub(crate) fn remove(&self, tenant: &str, namespace: &str, name: &str) -> Result<()> {
+        remove(&self.root, tenant, namespace, name)
+    }
+
+    pub(crate) fn retiring(&self) -> Result<Vec<StreamMarker>> {
+        retiring(&self.root)
+    }
+
+    pub(crate) fn all(&self) -> Result<Vec<StreamMarker>> {
+        all(&self.root)
+    }
+
+    pub(crate) fn in_play(&self) -> Result<bool> {
+        in_play(&self.root)
+    }
+
+    pub(crate) fn record_in_play(&self) -> Result<()> {
+        record_in_play(&self.root)
+    }
+
+    pub(crate) fn floor(&self, tenant: &str, namespace: &str, name: &str) -> Result<Option<u64>> {
+        let mut held = self.floors.lock();
+        if held.is_none() {
+            *held = Some(read_floors(&self.root)?);
+        }
+        let key = (tenant.to_string(), namespace.to_string(), name.to_string());
+        Ok(held.as_ref().and_then(|floors| floors.get(&key).copied()))
+    }
+
+    /// Raise the floors of many names with one flush. A floor never goes down.
+    pub(crate) fn record_floors(&self, floors: &[(&str, &str, &str, u64)]) -> Result<()> {
+        let mut held = self.floors.lock();
+        let mut next = match held.as_ref() {
+            Some(floors) => floors.clone(),
+            None => read_floors(&self.root)?,
+        };
+        for &(tenant, namespace, name, deleted) in floors {
+            let floor = next
+                .entry((tenant.to_string(), namespace.to_string(), name.to_string()))
+                .or_insert(deleted);
+            *floor = (*floor).max(deleted);
+        }
+        write_floors(&self.root, &next)?;
+        *held = Some(next);
+        Ok(())
+    }
+
+    pub(crate) fn clear_floor(&self, tenant: &str, namespace: &str, name: &str) -> Result<()> {
+        let mut held = self.floors.lock();
+        let mut next = match held.as_ref() {
+            Some(floors) => floors.clone(),
+            None => read_floors(&self.root)?,
+        };
+        let key = (tenant.to_string(), namespace.to_string(), name.to_string());
+        if next.remove(&key).is_some() {
+            write_floors(&self.root, &next)?;
+        }
+        *held = Some(next);
+        Ok(())
+    }
+}

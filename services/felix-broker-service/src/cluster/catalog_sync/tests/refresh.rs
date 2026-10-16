@@ -61,6 +61,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(CacheSnapshotResponse {
                     items: vec![],
                     next_seq: 1,
+                    tombstones: Vec::new(),
                 })
             }),
         )

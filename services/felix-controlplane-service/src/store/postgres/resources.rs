@@ -11,7 +11,7 @@ pub(super) async fn create_resources(
     store: &PostgresStore,
     streams: Vec<Stream>,
     caches: Vec<Cache>,
-) -> StoreResult<Vec<Stream>> {
+) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
     let (_gates, mut tx) =
         begin_feed_write(store, &[CatalogFeed::Streams, CatalogFeed::Caches]).await?;
     let mut parents: Vec<(&str, &str)> = streams
@@ -33,18 +33,20 @@ pub(super) async fn create_resources(
         insert_stream(&mut tx, &mut stream).await?;
         stored.push(stream);
     }
-    for cache in &caches {
-        insert_cache(&mut tx, cache).await?;
+    let mut stored_caches = Vec::with_capacity(caches.len());
+    for mut cache in caches {
+        insert_cache(&mut tx, &mut cache).await?;
+        stored_caches.push(cache);
     }
     tx.commit().await?;
     if !stored.is_empty() {
         metrics::counter!("felix_stream_changes_total", "op" => "created")
             .increment(stored.len() as u64);
     }
-    if !caches.is_empty() {
+    if !stored_caches.is_empty() {
         metrics::counter!("felix_cache_changes_total", "op" => "created")
-            .increment(caches.len() as u64);
+            .increment(stored_caches.len() as u64);
     }
     store.refresh_counts().await?;
-    Ok(stored)
+    Ok((stored, stored_caches))
 }

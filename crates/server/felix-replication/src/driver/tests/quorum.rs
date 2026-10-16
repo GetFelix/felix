@@ -652,7 +652,10 @@ pub(super) async fn cache_leader(
             TENANT,
             NAMESPACE,
             STREAM,
-            felix_broker::CacheMetadata { consistency },
+            felix_broker::CacheMetadata {
+                consistency,
+                ..Default::default()
+            },
         )
         .await
         .expect("cache");

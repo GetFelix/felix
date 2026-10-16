@@ -407,6 +407,34 @@ the name is deleted again after the finalize.
 - **What clients see.** Nothing. Stream answers carry `incarnation` once it
   is not 0.
 
+#### `cache_incarnations`
+
+The same as `stream_incarnations`, for caches. Once finalized, every cache the
+control plane creates gets an incarnation, and brokers keep each
+incarnation's entries and counters in directories of their own, so a cache
+deleted and created again starts empty on every broker, including one that
+was down for the delete.
+
+- **Upgrade every control-plane instance first.** Under the Raft backend the
+  finalize is refused with 409 until every member is at metadata version 14.
+  With Postgres, the first upgraded instance runs migration 0032. An older
+  instance still running after the finalize cannot create caches, its deletes
+  still record tombstones, and the database stamps its cache shard
+  assignments with the incarnation.
+- **Every broker must report it.** A broker that predates it would open a new
+  cache in the directories a deleted cache of that name used.
+- **Nothing moves on disk.** Existing caches keep incarnation 0, their
+  directory names and their data. Before the finalize a deleted cache's data
+  stays and a cache created again under the name reopens it, as before.
+- **Brokers check it.** Once a broker has seen a cache with an incarnation it
+  opens a cache's logs only at the registered incarnation, refuses stale
+  registrations (`felix_broker_cache_incarnation_refused_total`), and a
+  follower refuses cache and counter records for an incarnation it does not
+  hold.
+- **The finalize is one-way.**
+- **What clients see.** Nothing. Cache answers carry `incarnation` once it is
+  not 0.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata

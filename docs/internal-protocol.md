@@ -725,6 +725,12 @@ in a log it never reads, or in the deleted stream's logs, which it deletes
 once its catalog catches up, after the leader counted them. See
 `docs/durable-storage.md`, "Deleting a stream".
 
+Cache shards work the same way once the fleet finalized `cache_incarnations`:
+a request for a cache shard (cache records, counter records, their bootstraps,
+`Fence` and `ReplicateFetch`) names the cache's incarnation when it is not 0,
+and a follower that has not registered the cache or holds another incarnation
+answers `StaleRoute`. See `docs/durable-storage.md`, "Deleting a cache".
+
 ### Pinging a leader
 
 A follower asks each broker that leads a shard it follows whether it is there:

@@ -29,6 +29,20 @@ pub(super) struct StreamTombstone {
 pub(super) struct CacheSnapshotResponse {
     pub(super) items: Vec<Cache>,
     pub(super) next_seq: u64,
+    /// For each deleted name, the incarnation through which it is deleted.
+    /// Absent from a control plane that predates them.
+    #[serde(default)]
+    pub(super) tombstones: Vec<CacheTombstone>,
+}
+
+/// Every incarnation of a cache up to and including `incarnation` is
+/// deleted.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct CacheTombstone {
+    pub(super) tenant_id: String,
+    pub(super) namespace: String,
+    pub(super) cache: String,
+    pub(super) incarnation: u64,
 }
 
 /// Full snapshot response for tenants; used to seed a cold-start broker.
@@ -135,6 +149,10 @@ pub(super) struct CacheChange {
     pub(super) op: CacheChangeOp,
     pub(super) key: CacheKey,
     pub(super) cache: Option<Cache>,
+    /// On a `Deleted` change once cache incarnations are finalized: every
+    /// incarnation of the name up to this one is deleted.
+    #[serde(default)]
+    pub(super) deleted_through: Option<u64>,
 }
 
 /// Represents a tenant as registered in the broker registry.
@@ -216,6 +234,20 @@ pub(super) struct Cache {
     /// as `Leader`, the only guarantee a cache had before.
     #[serde(default)]
     pub(super) consistency: Option<String>,
+    /// Which creation of this name the cache is. Absent from a control plane
+    /// that predates cache incarnations, which reads as 0.
+    #[serde(default)]
+    pub(super) incarnation: u64,
+}
+
+impl Cache {
+    /// What the broker registers this cache with.
+    pub(super) fn metadata(&self) -> anyhow::Result<felix_broker::CacheMetadata> {
+        Ok(felix_broker::CacheMetadata {
+            consistency: super::apply::read_consistency(self.consistency.as_deref())?,
+            incarnation: self.incarnation,
+        })
+    }
 }
 
 /// Identifies a stream (tenant_id, namespace, stream).

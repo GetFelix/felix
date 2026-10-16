@@ -57,8 +57,8 @@ pub struct ShardAssignment {
     /// the stream. Absent is modulo, which is all an older control plane knows.
     #[serde(default)]
     pub routing: felix_wire::routing::ShardRouting,
-    /// Which incarnation of the stream the assignment is for, stamped by the
-    /// control plane from the stream. Absent is 0: a stream from before
+    /// Which incarnation of the stream or cache the assignment is for, stamped
+    /// by the control plane from it. Absent is 0: one from before
     /// incarnations, or a control plane that predates them.
     #[serde(default)]
     pub incarnation: u64,
@@ -107,9 +107,9 @@ impl ShardOwnership {
     /// harmless, and a stale generation — from a retry, a reordered poll, or a
     /// control plane that was behind — cannot roll ownership back.
     ///
-    /// Assignments are ordered by stream incarnation first, as the lifecycle
-    /// orders them: a recreated stream's shard is a new one, and its first
-    /// generation can be below the deleted stream's after a control-plane
+    /// Assignments are ordered by incarnation first, as the lifecycle orders
+    /// them: a recreated stream's or cache's shard is a new one, and its first
+    /// generation can be below the deleted one's after a control-plane
     /// restore rewound the change seq it starts at.
     pub fn apply(&mut self, key: &ShardKey, assignment: Option<ShardAssignment>) -> bool {
         match assignment {

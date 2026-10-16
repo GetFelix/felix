@@ -496,6 +496,13 @@ lists them as `tombstones`, left out while empty:
 and a stream's `Deleted` change carries the same value as `deleted_through`.
 Brokers delete a stream's data only on one of these.
 
+Caches get the same once the fleet has finalized `cache_incarnations`: a
+created cache carries an `incarnation` (left out when 0), cache shard
+assignments carry it, and after the finalize a cache delete records a
+tombstone, listed by `GET /v1/caches/snapshot` as `tombstones` with a `cache`
+field in place of `stream`, and carried on the cache's `Deleted` change as
+`deleted_through`.
+
 A cache takes `consistency` the same way, `"Leader"` when omitted. Under
 `"Quorum"`, puts, deletes and counter adds are acknowledged only once a
 majority of the shard's replicas hold them. How gets confirm the leader is set

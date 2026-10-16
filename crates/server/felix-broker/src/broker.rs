@@ -7,6 +7,7 @@
 //! replication needs.
 
 mod backup;
+mod cache_incarnation;
 mod commit;
 mod incarnation;
 mod inspect;
@@ -121,6 +122,7 @@ pub struct Broker {
     durable_storage: Option<DurableStorage>,
     /// See [`Broker::require_registered_streams`].
     registration_required: std::sync::atomic::AtomicBool,
+    cache_registration_required: std::sync::atomic::AtomicBool,
     /// See [`Broker::request_catalog_refresh`].
     catalog_wanted: Arc<tokio::sync::Notify>,
     /// Serves consumer groups, when this broker keeps their positions.
@@ -210,6 +212,7 @@ impl Broker {
             next_stream_handle: AtomicU64::new(1),
             durable_storage: None,
             registration_required: Default::default(),
+            cache_registration_required: Default::default(),
             catalog_wanted: Default::default(),
             consumer_groups: None,
             group_reader: None,
@@ -352,6 +355,9 @@ impl Broker {
 
     /// Where counters keep their logs.
     pub fn with_counters(mut self, counters: Arc<felix_storage::CounterStore>) -> Self {
+        if self.cache_registration_required() {
+            counters.require_registration();
+        }
         self.counters = Some(counters);
         self
     }

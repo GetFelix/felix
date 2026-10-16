@@ -12,7 +12,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 
 use crate::api::AppState;
-use crate::api::caches::{cache_key, cache_object, new_cache};
+use crate::api::caches::{
+    cache_key, cache_object, new_cache, proposes_cache_incarnation, same_cache,
+};
 use crate::api::ensure_tenant_namespace;
 use crate::api::error::{
     ApiError, api_conflict, api_error, api_internal, api_not_found, api_validation_error,
@@ -121,10 +123,18 @@ pub(crate) async fn create_resources(
             .map(|stream| (stream, asked))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let cache_incarnations = !body.caches.is_empty() && proposes_cache_incarnation(&state).await?;
     let caches: Vec<Cache> = body
         .caches
         .into_iter()
-        .map(|item| new_cache(tenant_id.clone(), namespace.clone(), item))
+        .map(|item| {
+            new_cache(
+                tenant_id.clone(),
+                namespace.clone(),
+                item,
+                cache_incarnations,
+            )
+        })
         .collect();
 
     for _ in 0..ATTEMPTS {
@@ -144,7 +154,7 @@ pub(crate) async fn create_resources(
             .create_resources(plan.new_streams, plan.new_caches)
             .await
         {
-            Ok(stored) => {
+            Ok((stored, stored_caches)) => {
                 // The store decides the incarnation, so answer with its copy.
                 let mut response = plan.response;
                 for item in &mut response.streams {
@@ -155,6 +165,16 @@ pub(crate) async fn create_resources(
                     }) && matches!(item.status, BatchItemStatus::Created)
                     {
                         item.stream = stored.clone();
+                    }
+                }
+                for item in &mut response.caches {
+                    if let Some(stored) = stored_caches.iter().find(|stored| {
+                        stored.tenant_id == item.cache.tenant_id
+                            && stored.namespace == item.cache.namespace
+                            && stored.cache == item.cache.cache
+                    }) && matches!(item.status, BatchItemStatus::Created)
+                    {
+                        item.cache = stored.clone();
                     }
                 }
                 return Ok((StatusCode::CREATED, Json(response)));
@@ -262,7 +282,7 @@ async fn plan(
     }
     for cache in caches {
         match state.store.get_cache(&cache_key(cache)).await {
-            Ok(existing) if existing == *cache => {
+            Ok(existing) if same_cache(&existing, cache) => {
                 plan.response.caches.push(BatchCache {
                     status: BatchItemStatus::Unchanged,
                     cache: existing,

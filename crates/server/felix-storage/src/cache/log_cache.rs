@@ -37,7 +37,7 @@ use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
-use crate::{Result, StorageError};
+use crate::{MarkerRead, Result, StorageError, StreamMarker};
 
 /// A cache backed by the same log streams are.
 #[derive(Debug)]
@@ -52,10 +52,13 @@ pub struct LogCache {
     /// Whether each cache's logs are held at the commit offset, keyed by
     /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
     holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
-    /// Which incarnation of each name to open. Only consumer-group state and
-    /// dead letters set one, being a stream's; a cache's shards stay at 0.
+    /// Which incarnation of each name to open: a cache's own, or for
+    /// consumer-group state and dead letters, their stream's.
     incarnations: crate::incarnation::Incarnations,
     dirs: Arc<crate::incarnation::DirIndex>,
+    /// Markers and floors under `.streams/` in this store's root, for a
+    /// store whose names are caches; see `crate::incarnation::marker`.
+    markers: Arc<crate::incarnation::marker::MarkerFiles>,
 }
 
 impl LogCache {
@@ -70,6 +73,7 @@ impl LogCache {
         crate::io::create_dir_all_durable(&root).map_err(StorageError::Io)?;
         crate::incarnation::purge_in_background(root.clone());
         Ok(Self {
+            markers: Arc::new(crate::incarnation::marker::MarkerFiles::new(root.clone())),
             root,
             config,
             shards: ShardSlots::new(),
@@ -727,6 +731,87 @@ impl LogCache {
         self.incarnations.registered(tenant, namespace, name)
     }
 
+    /// Open no name's shards until [`Self::set_incarnation`] names its
+    /// incarnation. See [`crate::DiskLogProvider::require_registration`].
+    pub fn require_registration(&self) {
+        self.incarnations.require_registration();
+    }
+
+    /// This store's marker for `name`. Markers, floors and the in-play record
+    /// work as the stream store's do (see [`crate::DiskLogProvider`]), kept
+    /// under this store's root for the caches it holds.
+    pub async fn marker(&self, tenant: &str, namespace: &str, name: &str) -> Result<MarkerRead> {
+        let (tenant, namespace, name) = owned(tenant, namespace, name);
+        self.on_markers(move |markers| markers.read(&tenant, &namespace, &name))
+            .await
+    }
+
+    /// Replace a name's marker, durably.
+    pub async fn write_marker(&self, marker: &StreamMarker) -> Result<()> {
+        let marker = marker.clone();
+        self.on_markers(move |markers| markers.write(&marker)).await
+    }
+
+    /// Remove a name's marker, durably.
+    pub async fn remove_marker(&self, tenant: &str, namespace: &str, name: &str) -> Result<()> {
+        let (tenant, namespace, name) = owned(tenant, namespace, name);
+        self.on_markers(move |markers| markers.remove(&tenant, &namespace, &name))
+            .await
+    }
+
+    /// Every marker whose delete has not finished.
+    pub async fn retiring_markers(&self) -> Result<Vec<StreamMarker>> {
+        self.on_markers(|markers| markers.retiring()).await
+    }
+
+    /// The deleted floor recorded for `name` with [`Self::record_floors`].
+    pub async fn floor(&self, tenant: &str, namespace: &str, name: &str) -> Result<Option<u64>> {
+        let (tenant, namespace, name) = owned(tenant, namespace, name);
+        self.on_markers(move |markers| markers.floor(&tenant, &namespace, &name))
+            .await
+    }
+
+    /// Raise the deleted floors of many names with one flush.
+    pub async fn record_floors(&self, floors: Vec<(String, String, String, u64)>) -> Result<()> {
+        self.on_markers(move |markers| {
+            let floors: Vec<_> = floors
+                .iter()
+                .map(|(t, n, c, through)| (t.as_str(), n.as_str(), c.as_str(), *through))
+                .collect();
+            markers.record_floors(&floors)
+        })
+        .await
+    }
+
+    /// Forget a name's recorded floor, as a restore to a backup point does.
+    pub async fn clear_floor(&self, tenant: &str, namespace: &str, name: &str) -> Result<()> {
+        let (tenant, namespace, name) = owned(tenant, namespace, name);
+        self.on_markers(move |markers| markers.clear_floor(&tenant, &namespace, &name))
+            .await
+    }
+
+    /// Whether this store has seen a name with an incarnation: recorded by
+    /// [`Self::record_incarnations_in_play`], or shown by a marker naming one.
+    /// Reads the markers in place; for a start, before anything is served.
+    pub fn incarnations_in_play(&self) -> Result<bool> {
+        self.markers.in_play()
+    }
+
+    /// Record, durably, that names here carry incarnations. Writes in place,
+    /// once per store.
+    pub fn record_incarnations_in_play(&self) -> Result<()> {
+        self.markers.record_in_play()
+    }
+
+    /// Marker files are small, but each write flushes a file and a directory.
+    async fn on_markers<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&crate::incarnation::marker::MarkerFiles) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let markers = Arc::clone(&self.markers);
+        crate::task::blocking(move || work(&markers)).await
+    }
+
     /// Close every shard of one incarnation of `name` and move all its
     /// directories out of service. See
     /// [`crate::DiskLogProvider::retire_stream`].
@@ -1047,6 +1132,10 @@ impl StorageApi for LogCache {
         true
     }
 
+    fn as_log_cache(&self) -> Option<&LogCache> {
+        Some(self)
+    }
+
     async fn shard_log(
         &self,
         tenant_id: &str,
@@ -1222,6 +1311,10 @@ impl StorageApi for LogCache {
 /// are part of the identity because each is a separate log in a separate
 /// directory.
 type CacheId = (String, String, String, u32, u64);
+
+fn owned(tenant: &str, namespace: &str, name: &str) -> (String, String, String) {
+    (tenant.to_string(), namespace.to_string(), name.to_string())
+}
 
 /// When [`LogCache::delete_entry`] writes its delete.
 #[derive(Clone, Copy)]

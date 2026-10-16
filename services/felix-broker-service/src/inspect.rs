@@ -42,8 +42,8 @@ with: --repair-checksum-tail (FELIX_DURABLE_REPAIR_CHECKSUM_TAIL),
 --index-spacing (FELIX_DURABLE_INDEX_SPACING_BYTES) and --verify-all-on-open
 (FELIX_DURABLE_VERIFY_ALL_ON_OPEN).
 
-A named stream shard is looked for at incarnation 0, a stream from before
-incarnations, unless --incarnation gives the one the catalog shows.
+A named stream or cache shard is looked for at incarnation 0, one from
+before incarnations, unless --incarnation gives the one the catalog shows.
 
 A shard you name, shards with findings, and with --segments every shard, get
 their segments listed. --json prints one line per shard.

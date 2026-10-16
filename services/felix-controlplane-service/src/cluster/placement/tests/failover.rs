@@ -487,6 +487,7 @@ fn cache_of(consistency: crate::model::ConsistencyLevel) -> Cache {
         shards: 1,
         replication_factor: 3,
         consistency,
+        incarnation: 0,
     }
 }
 

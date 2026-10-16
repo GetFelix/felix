@@ -2,7 +2,7 @@
 use serde_json::Value;
 use sqlx::FromRow;
 
-use super::codec::{DbCache, consistency_to_str, parse_consistency};
+use super::codec::{DbCache, cache_from_db, consistency_to_str};
 use super::{
     CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
     is_unique_violation, page_fetch,
@@ -19,6 +19,7 @@ struct CacheChangeRow {
     namespace: String,
     cache: String,
     payload: Option<Value>,
+    deleted_through: Option<i64>,
 }
 
 pub(super) async fn list_caches(
@@ -27,7 +28,7 @@ pub(super) async fn list_caches(
     namespace: &str,
 ) -> StoreResult<Vec<Cache>> {
     let rows = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2 ORDER BY cache"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 ORDER BY cache"#,
     )
     .bind(tenant_id)
     .bind(namespace)
@@ -46,14 +47,14 @@ pub(super) async fn list_caches_page(
     let fetch = page_fetch(page.limit);
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbCache>(
-            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches
+            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches
                WHERE tenant_id = $1 AND namespace = $2 ORDER BY cache LIMIT $3"#,
         )
         .bind(tenant_id)
         .bind(namespace)
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbCache>(
-            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches
+            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches
                WHERE tenant_id = $1 AND namespace = $2 AND cache > $3 ORDER BY cache LIMIT $4"#,
         )
         .bind(tenant_id)
@@ -70,21 +71,9 @@ pub(super) async fn list_caches_page(
     Ok(Page::from_overfetch(items, page.limit))
 }
 
-fn cache_from_db(row: DbCache) -> StoreResult<Cache> {
-    Ok(Cache {
-        tenant_id: row.tenant_id,
-        namespace: row.namespace,
-        cache: row.cache,
-        display_name: row.display_name,
-        shards: row.shards as u32,
-        replication_factor: row.replication_factor as u32,
-        consistency: parse_consistency(&row.consistency)?,
-    })
-}
-
 pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<Cache> {
     let row = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
@@ -93,23 +82,15 @@ pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreRes
     .await
     ?;
     match row {
-        Some(row) => Ok(Cache {
-            tenant_id: row.tenant_id,
-            namespace: row.namespace,
-            cache: row.cache,
-            display_name: row.display_name,
-            shards: row.shards as u32,
-            replication_factor: row.replication_factor as u32,
-            consistency: parse_consistency(&row.consistency)?,
-        }),
+        Some(row) => cache_from_db(row),
         None => Err(StoreError::NotFound("cache".into())),
     }
 }
 
-pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreResult<Cache> {
+pub(super) async fn create_cache(store: &PostgresStore, mut cache: Cache) -> StoreResult<Cache> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     super::ensure_namespace(&mut tx, &cache.tenant_id, &cache.namespace).await?;
-    insert_cache(&mut tx, &cache).await?;
+    insert_cache(&mut tx, &mut cache).await?;
     tx.commit().await?;
     metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
     store.refresh_counts().await?;
@@ -119,13 +100,21 @@ pub(super) async fn create_cache(store: &PostgresStore, cache: Cache) -> StoreRe
 /// The row and its `Created` change, inside the caller's transaction, which
 /// must hold the feed lock (`begin_feed_write`).
 /// `Conflict` when the cache exists.
+///
+/// The cache's incarnation is decided by the row's insert trigger (migration
+/// 0032), against the finalize and the name's tombstone as they stand inside
+/// this transaction, and read back into `cache`. This side only proposes one.
 pub(super) async fn insert_cache(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    cache: &Cache,
+    cache: &mut Cache,
 ) -> StoreResult<()> {
-    let insert = sqlx::query(
-        r#"INSERT INTO caches (tenant_id, namespace, cache, display_name, shards, replication_factor, consistency)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+    if cache.incarnation == 0 {
+        cache.incarnation = crate::model::proposed_incarnation();
+    }
+    let insert = sqlx::query_scalar::<_, i64>(
+        r#"INSERT INTO caches (tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING incarnation"#,
     )
     .bind(&cache.tenant_id)
     .bind(&cache.namespace)
@@ -134,16 +123,18 @@ pub(super) async fn insert_cache(
     .bind(cache.shards as i32)
     .bind(cache.replication_factor as i32)
     .bind(consistency_to_str(&cache.consistency))
-    .execute(&mut **tx)
+    .bind(cache.incarnation as i64)
+    .fetch_one(&mut **tx)
     .await;
-    if let Err(err) = insert {
-        if is_unique_violation(&err) {
+    match insert {
+        Ok(incarnation) => cache.incarnation = incarnation as u64,
+        Err(err) if is_unique_violation(&err) => {
             return Err(StoreError::Conflict(format!(
                 "cache {} exists",
                 cache.cache
             )));
         }
-        return Err(StoreError::Unexpected(err.into()));
+        Err(err) => return Err(StoreError::Unexpected(err.into())),
     }
 
     sqlx::query(
@@ -153,7 +144,7 @@ pub(super) async fn insert_cache(
     .bind(&cache.tenant_id)
     .bind(&cache.namespace)
     .bind(&cache.cache)
-    .bind(serde_json::to_value(cache).ok())
+    .bind(serde_json::to_value(&*cache).ok())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -166,7 +157,7 @@ pub(super) async fn patch_cache(
 ) -> StoreResult<Cache> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
     let current = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR UPDATE"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
@@ -175,15 +166,7 @@ pub(super) async fn patch_cache(
     .await
     ?;
     let mut cache = match current {
-        Some(row) => Cache {
-            tenant_id: row.tenant_id,
-            namespace: row.namespace,
-            cache: row.cache,
-            display_name: row.display_name,
-            shards: row.shards as u32,
-            replication_factor: row.replication_factor as u32,
-            consistency: parse_consistency(&row.consistency)?,
-        },
+        Some(row) => cache_from_db(row)?,
         None => return Err(StoreError::NotFound("cache".into())),
     };
 
@@ -221,16 +204,20 @@ pub(super) async fn patch_cache(
 
 pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<()> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
-    let removed =
-        sqlx::query(r#"DELETE FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3"#)
-            .bind(&key.tenant_id)
-            .bind(&key.namespace)
-            .bind(&key.cache)
-            .execute(&mut *tx)
-            .await?;
-    if removed.rows_affected() == 0 {
+    let removed = sqlx::query_as::<_, DbCache>(
+        r#"DELETE FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3
+               RETURNING tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation"#,
+    )
+    .bind(&key.tenant_id)
+    .bind(&key.namespace)
+    .bind(&key.cache)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(removed) = removed else {
         return Err(StoreError::NotFound("cache".into()));
-    }
+    };
+    let payload = crate::model::deleted_cache_payload(cache_from_db(removed)?)
+        .and_then(|cache| serde_json::to_value(cache).ok());
 
     sqlx::query(
         r#"INSERT INTO cache_changes (op, tenant_id, namespace, cache, payload) VALUES ($1, $2, $3, $4, $5)"#,
@@ -239,10 +226,9 @@ pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> Store
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.cache)
-    .bind(Option::<Value>::None)
+    .bind(payload)
     .execute(&mut *tx)
-    .await
-    ?;
+    .await?;
 
     tx.commit().await?;
     metrics::counter!("felix_cache_changes_total", "op" => "deleted").increment(1);
@@ -256,24 +242,14 @@ pub(super) async fn cache_snapshot(store: &PostgresStore) -> StoreResult<Snapsho
     let mut tx = store.pool.begin().await?;
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches ORDER BY tenant_id, namespace, cache"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches ORDER BY tenant_id, namespace, cache"#,
     )
     .fetch_all(&mut *tx)
     .await
     ?;
     let items = rows
         .into_iter()
-        .map(|row| {
-            Ok(Cache {
-                tenant_id: row.tenant_id,
-                namespace: row.namespace,
-                cache: row.cache,
-                display_name: row.display_name,
-                shards: row.shards as u32,
-                replication_factor: row.replication_factor as u32,
-                consistency: parse_consistency(&row.consistency)?,
-            })
-        })
+        .map(cache_from_db)
         .collect::<StoreResult<Vec<_>>>()?;
     let next_seq = feed_head(&mut tx, CatalogFeed::Caches).await?;
     tx.commit().await?;
@@ -289,7 +265,7 @@ pub(super) async fn cache_changes(
     let mut tx = store.pool.begin().await?;
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, CacheChangeRow>(
-        r#"SELECT seq, op, tenant_id, namespace, cache, payload FROM cache_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
+        r#"SELECT seq, op, tenant_id, namespace, cache, payload, deleted_through FROM cache_changes WHERE seq >= $1 ORDER BY seq ASC LIMIT $2"#,
     )
     .bind(since as i64)
     .bind(store.limit())
@@ -315,6 +291,7 @@ pub(super) async fn cache_changes(
                 cache: row.cache,
             },
             cache,
+            deleted_through: row.deleted_through.map(|through| through as u64),
         });
     }
     let head = feed_head(&mut tx, CatalogFeed::Caches).await?;
@@ -325,4 +302,26 @@ pub(super) async fn cache_changes(
         head,
         |change| change.seq,
     ))
+}
+
+pub(super) async fn cache_tombstones(
+    store: &PostgresStore,
+) -> StoreResult<Vec<crate::model::CacheTombstone>> {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        r#"SELECT tenant_id, namespace, cache, incarnation FROM cache_tombstones
+               ORDER BY tenant_id, namespace, cache"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(tenant_id, namespace, cache, incarnation)| crate::model::CacheTombstone {
+                tenant_id,
+                namespace,
+                cache,
+                incarnation: incarnation as u64,
+            },
+        )
+        .collect())
 }

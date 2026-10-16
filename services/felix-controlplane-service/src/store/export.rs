@@ -87,6 +87,9 @@ pub struct ExportedState {
     /// as for `moves_paused`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) stream_tombstones: Vec<crate::model::StreamTombstone>,
+    /// Cache tombstones, ordered by name, kept for the same reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) cache_tombstones: Vec<crate::model::CacheTombstone>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -305,6 +308,7 @@ pub async fn export_state_from(
         replica_reports: store.list_replica_reports().await?,
         principal_revocations: all_principal_revocations(store).await?,
         stream_tombstones: store.stream_tombstones().await?,
+        cache_tombstones: store.cache_tombstones().await?,
     })
 }
 

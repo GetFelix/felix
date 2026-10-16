@@ -4,12 +4,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use felix_broker::{Broker, BrokerError, CacheMetadata};
+use felix_broker::{Broker, BrokerError};
 
 use super::SyncState;
-use super::apply::{
-    apply_cache_upsert, apply_namespace_create, apply_stream_upsert, read_consistency,
-};
+use super::apply::{apply_cache_upsert, apply_namespace_create, apply_stream_upsert};
 use super::fetch::*;
 use super::wire::*;
 use crate::cluster::feed_cursor::{BehindCursor, Verdict};
@@ -97,10 +95,22 @@ pub(super) async fn sync_into(
     if !state.seeded.caches {
         match fetch_cache_snapshot(client, base_url, bearer).await {
             Ok(snapshot) => {
+                // Deletes first, as for streams.
+                let tombstones: Vec<_> = snapshot
+                    .tombstones
+                    .iter()
+                    .map(|tombstone| {
+                        (
+                            tombstone.tenant_id.as_str(),
+                            tombstone.namespace.as_str(),
+                            tombstone.cache.as_str(),
+                            tombstone.incarnation,
+                        )
+                    })
+                    .collect();
+                broker.apply_cache_tombstones(&tombstones).await?;
                 for cache in snapshot.items {
-                    let metadata = CacheMetadata {
-                        consistency: read_consistency(cache.consistency.as_deref())?,
-                    };
+                    let metadata = cache.metadata()?;
                     apply_cache_upsert(
                         broker,
                         cache.tenant_id,
@@ -294,9 +304,7 @@ pub(super) async fn sync_into(
                     match change.op {
                         CacheChangeOp::Created | CacheChangeOp::Updated => {
                             if let Some(cache) = change.cache {
-                                let metadata = CacheMetadata {
-                                    consistency: read_consistency(cache.consistency.as_deref())?,
-                                };
+                                let metadata = cache.metadata()?;
                                 apply_cache_upsert(
                                     broker,
                                     cache.tenant_id,
@@ -308,11 +316,19 @@ pub(super) async fn sync_into(
                             }
                         }
                         CacheChangeOp::Deleted => {
+                            // As for streams: a delete naming no incarnation
+                            // is of a cache from before them, whose data stays.
+                            let incarnation = change.deleted_through.or(change
+                                .cache
+                                .as_ref()
+                                .map(|cache| cache.incarnation)
+                                .filter(|incarnation| *incarnation != 0));
                             match broker
-                                .remove_cache(
+                                .remove_cache_from_catalog(
                                     &change.key.tenant_id,
                                     &change.key.namespace,
                                     &change.key.cache,
+                                    incarnation,
                                 )
                                 .await
                             {

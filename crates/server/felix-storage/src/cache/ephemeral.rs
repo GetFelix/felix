@@ -269,6 +269,13 @@ impl StorageApi for EphemeralCache {
             .map(|entry| entry.value))
     }
 
+    async fn forget_cache(&self, tenant_id: &str, namespace: &str, cache: &str) -> Result<()> {
+        self.inner.write().await.retain(|key, _| {
+            key.tenant_id != tenant_id || key.namespace != namespace || key.cache != cache
+        });
+        Ok(())
+    }
+
     async fn len(&self) -> usize {
         let guard: tokio::sync::RwLockReadGuard<HashMap<CacheKey, CacheEntry>> =
             self.inner.read().await;

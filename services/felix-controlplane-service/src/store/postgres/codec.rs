@@ -48,6 +48,20 @@ pub(super) struct DbCache {
     pub(super) shards: i32,
     pub(super) replication_factor: i32,
     pub(super) consistency: String,
+    pub(super) incarnation: i64,
+}
+
+pub(super) fn cache_from_db(row: DbCache) -> StoreResult<crate::model::Cache> {
+    Ok(crate::model::Cache {
+        tenant_id: row.tenant_id,
+        namespace: row.namespace,
+        cache: row.cache,
+        display_name: row.display_name,
+        shards: row.shards as u32,
+        replication_factor: row.replication_factor as u32,
+        consistency: parse_consistency(&row.consistency)?,
+        incarnation: row.incarnation as u64,
+    })
 }
 
 pub(super) fn stream_from_db(row: DbStream) -> StoreResult<Stream> {

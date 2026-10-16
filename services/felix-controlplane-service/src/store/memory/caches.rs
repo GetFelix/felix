@@ -51,12 +51,18 @@ pub(super) async fn create_cache(store: &InMemoryStore, cache: Cache) -> StoreRe
     if caches.contains_key(&key) {
         return Err(StoreError::Conflict("cache exists".into()));
     }
+    // Held until the cache is in, so a finalize cannot land between the read
+    // and the write: nothing is created at 0 after it.
+    let nodes = store.nodes.read().await;
+    let mut cache = cache;
+    cache.incarnation = incarnation_for(store, &nodes, &key, cache.incarnation).await;
     caches.insert(key.clone(), cache.clone());
     store.cache_changes.write().await.record(|seq| CacheChange {
         seq,
         op: CacheChangeOp::Created,
         key,
         cache: Some(cache.clone()),
+        deleted_through: None,
     });
     metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);
@@ -82,6 +88,7 @@ pub(super) async fn patch_cache(
         op: CacheChangeOp::Updated,
         key: key.clone(),
         cache: Some(updated.clone()),
+        deleted_through: None,
     });
     metrics::counter!("felix_cache_changes_total", "op" => "updated").increment(1);
     Ok(updated)
@@ -93,10 +100,11 @@ pub(super) async fn delete_cache(
     cleanup: ShardCleanup,
 ) -> StoreResult<()> {
     let mut caches = store.caches.write().await;
-    let removed = caches.remove(key);
-    if removed.is_none() {
+    let Some(removed) = caches.remove(key) else {
         return Err(StoreError::NotFound("cache".into()));
-    }
+    };
+    let nodes = store.nodes.read().await;
+    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation).await;
     store
         .drop_shard_assignments_for(
             ShardKind::Cache,
@@ -110,7 +118,8 @@ pub(super) async fn delete_cache(
         seq,
         op: CacheChangeOp::Deleted,
         key: key.clone(),
-        cache: None,
+        cache: crate::model::deleted_cache_payload(removed),
+        deleted_through,
     });
     metrics::counter!("felix_cache_changes_total", "op" => "deleted").increment(1);
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);
@@ -139,4 +148,67 @@ pub(super) async fn cache_changes(
         .read()
         .await
         .page(since, store.limit(), |change| change.seq))
+}
+
+pub(super) async fn cache_tombstones(store: &InMemoryStore) -> Vec<crate::model::CacheTombstone> {
+    let mut tombstones: Vec<_> = store
+        .cache_tombstones
+        .read()
+        .await
+        .iter()
+        .map(|(key, incarnation)| crate::model::CacheTombstone {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            cache: key.cache.clone(),
+            incarnation: *incarnation,
+        })
+        .collect();
+    tombstones.sort_by(|a, b| {
+        (&a.tenant_id, &a.namespace, &a.cache).cmp(&(&b.tenant_id, &b.namespace, &b.cache))
+    });
+    tombstones
+}
+
+/// Whether the fleet finalized `cache_incarnations`, from the node state the
+/// caller holds: held across the write it decides, a finalize cannot land in
+/// between.
+fn incarnations_finalized(nodes: &super::NodeState) -> bool {
+    nodes
+        .fleet_enabled
+        .contains(felix_common::fleet::CACHE_INCARNATIONS.name())
+}
+
+/// The incarnation a cache created now under `key` gets, from the `proposed`
+/// one its request carried. 0 until the finalize; after it, never 0 and above
+/// every earlier incarnation of the name.
+pub(super) async fn incarnation_for(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &CacheKey,
+    proposed: u64,
+) -> u64 {
+    if !incarnations_finalized(nodes) {
+        return 0;
+    }
+    let deleted = store.cache_tombstones.read().await.get(key).copied();
+    crate::model::next_incarnation(proposed, deleted)
+}
+
+/// Record the delete of `incarnation` of `key` once incarnations are
+/// finalized, returning what the `Deleted` change carries. Nothing before the
+/// finalize: a cache created again at 0 then still opens the deleted one's
+/// data, so it must stay.
+pub(super) async fn record_tombstone(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &CacheKey,
+    incarnation: u64,
+) -> Option<u64> {
+    if !incarnations_finalized(nodes) {
+        return None;
+    }
+    let mut tombstones = store.cache_tombstones.write().await;
+    let through = tombstones.entry(key.clone()).or_default();
+    *through = (*through).max(incarnation);
+    Some(*through)
 }

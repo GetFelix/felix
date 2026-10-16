@@ -222,8 +222,9 @@ impl Broker {
     /// request, or an assignment. With `Some`, a stream's own and group logs
     /// open only when that incarnation is the registered one, checked by the
     /// open itself, so a delete and create landing after the caller's own
-    /// check cannot hand it (or create) the new stream's log. A cache's logs
-    /// have no incarnation and ignore it.
+    /// check cannot hand it (or create) the new stream's log. A cache's and
+    /// its counters' logs are checked against the cache's incarnation the
+    /// same way.
     #[allow(clippy::too_many_arguments)]
     pub async fn shard_log_for(
         &self,
@@ -254,7 +255,20 @@ impl Broker {
             return None;
         }
         match kind {
-            LogKind::Cache | LogKind::Counters => any().await,
+            LogKind::Cache => self
+                .cache
+                .as_log_cache()?
+                .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .await
+                .ok()
+                .map(StreamLog::from_log),
+            LogKind::Counters => self
+                .counters
+                .as_ref()?
+                .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .await
+                .ok()
+                .map(StreamLog::from_log),
             LogKind::Stream => self
                 .durable_storage
                 .as_ref()?
@@ -279,18 +293,21 @@ impl Broker {
     }
 
     /// Whether a log of `kind` for `name` may be opened here now. On a broker
-    /// that learns its streams from the control plane, a stream's logs only
-    /// once it knows which incarnation to open: before that, records shipped
-    /// to it would land in a log the registration then deletes.
+    /// that learns its streams and caches from the control plane, their logs
+    /// only once it knows which incarnation to open: before that, records
+    /// shipped to it would land in a log the registration then deletes.
     fn may_open(&self, kind: LogKind, tenant_id: &str, namespace: &str, name: &str) -> bool {
-        if !self.registration_required() {
-            return true;
-        }
         match kind {
-            LogKind::Cache | LogKind::Counters => true,
-            LogKind::Stream | LogKind::GroupCursors | LogKind::GroupDeadLetters => self
-                .stream_incarnation(tenant_id, namespace, name)
-                .is_some(),
+            LogKind::Cache | LogKind::Counters => {
+                !self.cache_registration_required()
+                    || self.cache_incarnation(tenant_id, namespace, name).is_some()
+            }
+            LogKind::Stream | LogKind::GroupCursors | LogKind::GroupDeadLetters => {
+                !self.registration_required()
+                    || self
+                        .stream_incarnation(tenant_id, namespace, name)
+                        .is_some()
+            }
         }
     }
 

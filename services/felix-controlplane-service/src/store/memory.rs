@@ -100,6 +100,9 @@ pub struct InMemoryStore {
     stream_tombstones: Arc<RwLock<HashMap<StreamKey, u64>>>,
     /// Authoritative caches keyed by `(tenant_id, namespace, cache)`.
     caches: Arc<RwLock<HashMap<CacheKey, Cache>>>,
+    /// As `stream_tombstones`, for caches, once the fleet finalized
+    /// `cache_incarnations`.
+    cache_tombstones: Arc<RwLock<HashMap<CacheKey, u64>>>,
     /// Broker membership keyed by `node_id`, with its change log.
     ///
     /// One lock over both, unlike the entities above: a snapshot has to read
@@ -231,6 +234,7 @@ impl InMemoryStore {
             streams: Arc::new(RwLock::new(HashMap::new())),
             stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
             caches: Arc::new(RwLock::new(HashMap::new())),
+            cache_tombstones: Arc::new(RwLock::new(HashMap::new())),
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::new(),
                 changes: ChangeLog::new(capacity),
@@ -442,6 +446,10 @@ impl ControlPlaneStore for InMemoryStore {
         caches::cache_snapshot(self).await
     }
 
+    async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>> {
+        Ok(caches::cache_tombstones(self).await)
+    }
+
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         caches::cache_changes(self, since).await
     }
@@ -450,7 +458,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         streams: Vec<Stream>,
         caches: Vec<Cache>,
-    ) -> StoreResult<Vec<Stream>> {
+    ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
         resources::create_resources(self, streams, caches).await
     }
 

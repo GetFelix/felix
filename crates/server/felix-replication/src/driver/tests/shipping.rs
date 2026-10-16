@@ -380,6 +380,7 @@ async fn a_quorum_cache_put_ships_without_waiting_for_the_tick() {
             STREAM,
             felix_broker::CacheMetadata {
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await

@@ -355,7 +355,7 @@ impl Broker {
         tenant_id: impl Into<String>,
         namespace: impl Into<String>,
         cache: impl Into<String>,
-        metadata: CacheMetadata,
+        mut metadata: CacheMetadata,
     ) -> Result<()> {
         // Fast-path guard: reject unknown scopes before attempting to create the cache.
         let tenant_id = tenant_id.into();
@@ -372,6 +372,22 @@ impl Broker {
             });
         }
         let key = CacheKey::new(tenant_id, namespace, cache);
+        // Before anything opens: which incarnation's logs this registration
+        // means, with any other incarnation this broker holds out of service.
+        let previous = self
+            .caches
+            .read()
+            .await
+            .get(&key)
+            .map(|existing| existing.incarnation);
+        match self
+            .settle_cache_incarnation(&key, previous, &metadata)
+            .await?
+        {
+            Some(incarnation) => metadata.incarnation = incarnation,
+            // Refused; the cache stays as it is.
+            None => return Ok(()),
+        }
         // Held before a write is acknowledged under `Quorum`; only on a
         // change, as for a stream.
         let previous = self
@@ -395,20 +411,28 @@ impl Broker {
         Ok(())
     }
 
-    /// Remove a cache. `false` if it was not registered.
+    /// Remove a cache and delete its entries and counters on this broker.
+    /// `false` if it was not registered. For an operator or a tool: the
+    /// caller is the evidence. The control plane's deletes go through
+    /// [`Broker::remove_cache_from_catalog`].
+    ///
+    /// A cache still registered is removed even when its tenant or namespace
+    /// was removed first, as a cascading delete does.
     pub async fn remove_cache(
         &self,
         tenant_id: &str,
         namespace: &str,
         cache: &str,
     ) -> Result<bool> {
-        // Fast-path guard: reject unknown scopes before attempting to remove the cache.
-        if !self.tenants.read().await.contains_key(tenant_id) {
-            return Err(BrokerError::TenantNotFound(tenant_id.to_string()));
-        }
-        self.assert_namespace_exists(tenant_id, namespace).await?;
         let key = CacheKey::new(tenant_id, namespace, cache);
-        Ok(self.caches.write().await.remove(&key).is_some())
+        if !self.caches.read().await.contains_key(&key) {
+            // Fast-path guard: reject unknown scopes.
+            if !self.tenants.read().await.contains_key(tenant_id) {
+                return Err(BrokerError::TenantNotFound(tenant_id.to_string()));
+            }
+            self.assert_namespace_exists(tenant_id, namespace).await?;
+        }
+        self.remove_registered_cache(&key).await
     }
 
     /// Whether the cache and its tenant and namespace are all registered.

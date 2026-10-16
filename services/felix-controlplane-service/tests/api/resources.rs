@@ -331,3 +331,145 @@ async fn a_single_create_repeated_as_asked_is_not_a_conflict() {
     let (status, _) = send(&h, json_request_as("POST", caches, &admin(&h), zero)).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// Once the fleet finalized `cache_incarnations`, a created cache answers
+/// with the incarnation the store gave it, single or batched; a retry keeps
+/// it; and a delete is named on its change and in the snapshot's tombstones.
+/// Before the finalize none of the new fields appear.
+#[tokio::test]
+async fn a_cache_answers_its_incarnation_and_its_delete_is_tombstoned() {
+    use felix_controlplane_service::model::{
+        Node, NodeCapacity, NodeLifecycle, NodeSpec, NodeStatus,
+    };
+    let h = harness().await;
+    let caches = "/v1/tenants/t1/namespaces/payments/caches";
+    let broker = h.credentials.broker();
+
+    let (status, early) = send(
+        &h,
+        json_request_as("POST", caches, &admin(&h), cache_body("early")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(early.get("incarnation").is_none(), "{early}");
+
+    let feature = felix_common::fleet::CACHE_INCARNATIONS.name();
+    h.store
+        .register_node(Node {
+            node_id: "broker-a".to_string(),
+            spec: NodeSpec {
+                advertise_addr: "10.0.0.4:7000".to_string(),
+                client_addr: None,
+                kafka_addr: None,
+                region: "us-west-2".to_string(),
+                zone: None,
+                labels: Default::default(),
+                capacity: NodeCapacity::default(),
+            },
+            status: NodeStatus {
+                lifecycle: NodeLifecycle::Live,
+                last_heartbeat_at_millis: 1,
+                registered_at_millis: 1,
+                incarnation: 0,
+                features: [feature.to_string()].into(),
+                storage_id: None,
+            },
+        })
+        .await
+        .expect("node");
+    h.store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let (status, created) = send(
+        &h,
+        json_request_as("POST", caches, &admin(&h), cache_body("cursors")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let incarnation = created["incarnation"].as_u64().expect("an incarnation");
+    let (status, again) = send(
+        &h,
+        json_request_as("POST", caches, &admin(&h), cache_body("cursors")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["incarnation"], incarnation);
+
+    // A name deleted at an incarnation above the clock: the batch's
+    // proposal is raised, and the answer must carry the raised one.
+    let presence = CacheKey {
+        tenant_id: "t1".to_string(),
+        namespace: "payments".to_string(),
+        cache: "presence".to_string(),
+    };
+    let mut high = again.clone();
+    high["cache"] = "presence".into();
+    high["incarnation"] = (1u64 << 60).into();
+    h.store
+        .create_cache(serde_json::from_value(high).expect("cache"))
+        .await
+        .expect("create");
+    h.store.delete_cache(&presence).await.expect("delete");
+
+    let (status, batched) = send(
+        &h,
+        json_request_as(
+            "POST",
+            BATCH,
+            &admin(&h),
+            batch(&[], &[cache_body("cursors"), cache_body("presence")]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{batched}");
+    assert_eq!(statuses(&batched, "caches"), ["unchanged", "created"]);
+    assert_eq!(batched["caches"][0]["cache"]["incarnation"], incarnation);
+    let stored = h.store.get_cache(&presence).await.expect("stored");
+    assert!(stored.incarnation > 1 << 60, "{}", stored.incarnation);
+    assert_eq!(
+        batched["caches"][1]["cache"]["incarnation"],
+        stored.incarnation
+    );
+
+    let deleted = h
+        .app
+        .clone()
+        .oneshot(crate::common::request_as(
+            "DELETE",
+            &format!("{caches}/cursors"),
+            &admin(&h),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    let (status, changes) = send(
+        &h,
+        crate::common::request_as("GET", "/v1/caches/changes?since=0", &broker),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deleted = changes["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|change| change["op"] == "deleted" && change["key"]["cache"] == "cursors")
+        .expect("the delete's change");
+    assert_eq!(deleted["deleted_through"], incarnation, "{deleted}");
+    let (status, snapshot) = send(
+        &h,
+        crate::common::request_as("GET", "/v1/caches/snapshot", &broker),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        snapshot["tombstones"],
+        serde_json::json!([
+            { "tenant_id": "t1", "namespace": "payments", "cache": "cursors",
+              "incarnation": incarnation },
+            { "tenant_id": "t1", "namespace": "payments", "cache": "presence",
+              "incarnation": 1u64 << 60 },
+        ])
+    );
+}

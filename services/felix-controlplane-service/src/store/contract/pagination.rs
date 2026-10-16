@@ -108,6 +108,7 @@ fn cache(name: &str, shards: u32) -> Cache {
         shards,
         replication_factor: 1,
         consistency: ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 

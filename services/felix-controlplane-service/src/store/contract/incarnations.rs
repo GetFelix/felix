@@ -124,7 +124,7 @@ async fn a_batch_create_answers_the_incarnation_it_stored(store: &dyn ControlPla
         .delete_stream(&key(NAMESPACE, "batched"))
         .await
         .expect("delete");
-    let created = store
+    let (created, _) = store
         .create_resources(vec![stream(NAMESPACE, "batched", 5)], Vec::new())
         .await
         .expect("create in a batch");

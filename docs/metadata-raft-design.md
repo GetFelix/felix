@@ -670,6 +670,14 @@ data too. Below level 13 the proposer drops them, and placement reads the
 report as it did at level 12: from any leader, and an unverified follower
 however often it restarted.
 
+Level 14 is cache incarnations, the same change as level 10 for caches: a
+cache's `incarnation`, a cache change's `deleted_through`, the snapshot's
+`cache_tombstones`, and a `create_resources` answer carrying the caches as
+stored. Finalizing `cache_incarnations` needs every member at level 14. Below
+it the proposer leaves the incarnation out of every cache create, so every
+cache is created at 0 and no cache delete writes a tombstone, on every member
+alike.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -695,6 +703,7 @@ the field itself, on every member alike, or refuses the command:
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 | node `storage_id`, replica report `follower_storage`, and both in the snapshot | 12 | the registration and the report are proposed without them, which placement reads as unverified |
 | replica report `report.leader` and `node_incarnations`, and both in the snapshot | 13 | the report is proposed without them, which placement reads as at level 12 |
+| cache `incarnation`, cache change `deleted_through`, snapshot `cache_tombstones` | 14 | finalizing `cache_incarnations` is refused with 409, so every cache is created at incarnation 0 and no delete writes a tombstone |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

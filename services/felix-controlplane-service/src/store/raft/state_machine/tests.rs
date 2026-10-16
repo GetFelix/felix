@@ -77,6 +77,7 @@ fn cache(tenant_id: &str, namespace: &str, name: &str) -> Cache {
         shards: 1,
         replication_factor: 1,
         consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 

@@ -212,6 +212,7 @@ async fn namespace_stream_cache_errors_and_cascades() {
             shards: 1,
             replication_factor: 1,
             consistency: crate::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await
         .expect("cache");
@@ -273,6 +274,13 @@ async fn backend_health_and_identity() {
 async fn satisfies_the_incarnation_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::incarnations::run_incarnation_contract(store).await;
+}
+
+/// The same suite Postgres runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_cache_incarnation_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::cache_incarnations::run_cache_incarnation_contract(store).await;
 }
 
 /// The same suite Postgres runs.
@@ -411,6 +419,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
         shards: 1,
         replication_factor: 1,
         consistency: ConsistencyLevel::Leader,
+        incarnation: 0,
     };
     let cache_key = CacheKey {
         tenant_id: "t".to_string(),
@@ -428,6 +437,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
             op: CacheChangeOp::Created,
             key: cache_key.clone(),
             cache: Some(cache.clone()),
+            deleted_through: None,
         }
     );
 }

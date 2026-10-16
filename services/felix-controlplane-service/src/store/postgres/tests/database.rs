@@ -217,7 +217,8 @@ async fn reset_db(url: &str, schema: &str) -> Result<(), sqlx::Error> {
          {schema_ident}.tenant_signing_keys, {schema_ident}.nodes, \
          {schema_ident}.node_changes, {schema_ident}.shard_assignments, \
          {schema_ident}.shard_assignment_changes, {schema_ident}.tenants, \
-         {schema_ident}.fleet_features, {schema_ident}.stream_tombstones RESTART IDENTITY CASCADE",
+         {schema_ident}.fleet_features, {schema_ident}.stream_tombstones, \
+         {schema_ident}.cache_tombstones RESTART IDENTITY CASCADE",
     );
     // Same as `ensure_schema`: the interpolated identifier is our own generated schema name,
     // which cannot be passed as a bind parameter.
@@ -434,6 +435,18 @@ async fn satisfies_the_incarnation_contract() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// On a database of its own, for the same reason.
+#[tokio::test]
+#[serial]
+async fn satisfies_the_cache_incarnation_contract() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, _pool) = fleet_store(&url).await?;
+    crate::store::contract::cache_incarnations::run_cache_incarnation_contract(store).await;
+    Ok(())
+}
+
 /// The same signing-key suite the memory store runs. A pool wider than the
 /// default so the racing callers really hold separate connections, as they
 /// would on separate control-plane instances.
@@ -601,6 +614,7 @@ fn feed_cache(name: &str) -> Cache {
         shards: 1,
         replication_factor: 1,
         consistency: ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 
@@ -1186,6 +1200,7 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: crate::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     store
@@ -1623,6 +1638,298 @@ async fn a_create_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
     assert_ne!(
         created.incarnation, 0,
         "a stream was created at 0 after the finalize committed"
+    );
+    Ok(())
+}
+
+/// [`incarnation_store`], with the broker reporting `cache_incarnations`.
+async fn cache_incarnation_store(
+    url: &str,
+) -> anyhow::Result<(std::sync::Arc<PostgresStore>, sqlx::PgPool)> {
+    use crate::store::contract::nodes::{node, with_features};
+    let (store, pool) = incarnation_store(url).await?;
+    store
+        .register_node(with_features(
+            node("broker-a", 7001),
+            &[felix_common::fleet::CACHE_INCARNATIONS.name()],
+        ))
+        .await?;
+    Ok((store, pool))
+}
+
+fn incarnation_cache(name: &str) -> crate::model::Cache {
+    crate::model::Cache {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        cache: name.to_string(),
+        display_name: name.to_string(),
+        shards: 1,
+        replication_factor: 1,
+        consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 0,
+    }
+}
+
+/// What an instance from before cache incarnations writes: no incarnation,
+/// so the column's default of 0.
+const OLD_CACHE_INSERT: &str = "INSERT INTO caches (tenant_id, namespace, cache, display_name, \
+    shards, replication_factor, consistency) VALUES ('t', 'n', $1, $1, 1, 1, 'Leader')";
+
+/// An instance that predates cache incarnations can create a cache at 0
+/// before the finalize and not after it, and a cache it deletes after the
+/// finalize gets its tombstone and a change naming it all the same.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_cache_incarnations_cannot_create_at_0_after_the_finalize()
+-> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = cache_incarnation_store(&url).await?;
+    sqlx::query(OLD_CACHE_INSERT)
+        .bind("before")
+        .execute(&pool)
+        .await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::CACHE_INCARNATIONS.name())
+        .await?;
+
+    let refused = sqlx::query(OLD_CACHE_INSERT)
+        .bind("after")
+        .execute(&pool)
+        .await;
+    assert!(
+        refused.is_err(),
+        "a cache was created at 0 after the finalize"
+    );
+
+    // Its delete, as it writes it: the row, then a change without a payload.
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM caches WHERE tenant_id = 't' AND namespace = 'n' AND cache = 'before'",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO cache_changes (op, tenant_id, namespace, cache, payload) \
+         VALUES ('Deleted', 't', 'n', 'before', NULL)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let changes = store.cache_changes(0).await?;
+    let deleted = changes
+        .items
+        .iter()
+        .find(|change| {
+            change.key.cache == "before"
+                && matches!(change.op, crate::model::CacheChangeOp::Deleted)
+        })
+        .expect("the delete's change");
+    assert_eq!(deleted.deleted_through, Some(0));
+    assert_eq!(
+        store.cache_tombstones().await?,
+        vec![crate::model::CacheTombstone {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            cache: "before".to_string(),
+            incarnation: 0,
+        }]
+    );
+    Ok(())
+}
+
+/// The same older instance assigning a shard of an incarnated cache writes
+/// incarnation 0 and generation 0. The row and its change still name the
+/// cache's incarnation and take the change's seq as the generation.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_cache_incarnations_assigns_the_live_incarnation() -> anyhow::Result<()>
+{
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = cache_incarnation_store(&url).await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::CACHE_INCARNATIONS.name())
+        .await?;
+    let created = store.create_cache(incarnation_cache("old")).await?;
+    assert_ne!(created.incarnation, 0);
+
+    let key = ShardKey {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: "old".to_string(),
+        shard: 0,
+        kind: ShardKind::Cache,
+    };
+    let written = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-a".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, \
+         replicas, generation, state) VALUES ('t', 'n', 'old', 0, 'cache', 'broker-a', \
+         '[]'::jsonb, 0, 'assigning')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let seq: i64 = sqlx::query_scalar(
+        "UPDATE shard_assignment_change_seq SET next_seq = next_seq + 1 RETURNING next_seq - 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO shard_assignment_changes (seq, op, tenant_id, namespace, stream, shard, \
+         kind, payload) VALUES ($1, 'assigned', 't', 'n', 'old', 0, 'cache', $2)",
+    )
+    .bind(seq)
+    .bind(serde_json::to_value(&written)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let stored = store.get_shard_assignment(&key).await?;
+    assert_eq!(stored.incarnation, created.incarnation);
+    assert_eq!(stored.generation, seq as u64);
+    let changes = store.shard_assignment_changes(0).await?;
+    let change = changes
+        .items
+        .iter()
+        .find(|change| change.seq == seq as u64)
+        .and_then(|change| change.assignment.as_ref())
+        .expect("the assignment's change");
+    assert_eq!(change.incarnation, created.incarnation);
+    assert_eq!(change.generation, seq as u64);
+    Ok(())
+}
+
+/// The same older instance updating that assignment writes incarnation 0
+/// over it, as its upsert always did. The row keeps the cache's incarnation,
+/// and the change names it, so brokers do not order the update below the
+/// assignment it replaces.
+#[tokio::test]
+#[serial]
+async fn an_instance_before_cache_incarnations_keeps_the_incarnation_on_update()
+-> anyhow::Result<()> {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = cache_incarnation_store(&url).await?;
+    store
+        .finalize_fleet_feature(felix_common::fleet::CACHE_INCARNATIONS.name())
+        .await?;
+    let created = store.create_cache(incarnation_cache("old")).await?;
+    let key = ShardKey {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: "old".to_string(),
+        shard: 0,
+        kind: ShardKind::Cache,
+    };
+    let first = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-a".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+    };
+    let held = store.put_shard_assignment(first.clone()).await?;
+    assert_eq!(held.incarnation, created.incarnation);
+
+    // Its update path: the row upserted at incarnation 0 and the next
+    // generation, then a seq taken and the change written.
+    let written = ShardAssignment {
+        generation: held.generation + 1,
+        state: ShardState::Active,
+        incarnation: 0,
+        ..first
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, \
+         replicas, generation, state, successor, joining, move_started_at_millis, move_reason, \
+         incarnation) VALUES ('t', 'n', 'old', 0, 'cache', 'broker-a', '[]'::jsonb, $1, \
+         'active', NULL, NULL, NULL, NULL, 0) \
+         ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE SET \
+         leader = EXCLUDED.leader, replicas = EXCLUDED.replicas, \
+         generation = EXCLUDED.generation, state = EXCLUDED.state, \
+         successor = EXCLUDED.successor, joining = EXCLUDED.joining, \
+         move_started_at_millis = EXCLUDED.move_started_at_millis, \
+         move_reason = EXCLUDED.move_reason, incarnation = EXCLUDED.incarnation, \
+         updated_at = now()",
+    )
+    .bind(written.generation as i64)
+    .execute(&mut *tx)
+    .await?;
+    let seq: i64 = sqlx::query_scalar(
+        "UPDATE shard_assignment_change_seq SET next_seq = next_seq + 1 RETURNING next_seq - 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO shard_assignment_changes (seq, op, tenant_id, namespace, stream, shard, \
+         kind, payload) VALUES ($1, 'updated', 't', 'n', 'old', 0, 'cache', $2)",
+    )
+    .bind(seq)
+    .bind(serde_json::to_value(&written)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let stored = store.get_shard_assignment(&key).await?;
+    assert_eq!(stored.incarnation, created.incarnation);
+    assert_eq!(stored.generation, written.generation);
+    let changes = store.shard_assignment_changes(0).await?;
+    let change = changes
+        .items
+        .iter()
+        .find(|change| change.seq == seq as u64)
+        .and_then(|change| change.assignment.as_ref())
+        .expect("the update's change");
+    assert_eq!(change.incarnation, created.incarnation);
+    assert_eq!(change.generation, written.generation);
+    Ok(())
+}
+
+/// A cache create racing the finalize's commit waits for it and then gives
+/// an incarnation, as a stream create does.
+#[tokio::test]
+#[serial]
+async fn a_cache_create_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = cache_incarnation_store(&url).await?;
+    let mut finalizing = pool.begin().await?;
+    sqlx::query("INSERT INTO fleet_features (feature) VALUES ('cache_incarnations')")
+        .execute(&mut *finalizing)
+        .await?;
+    let create = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.create_cache(incarnation_cache("raced")).await }).await
+    };
+    finalizing.commit().await?;
+    let created = create.await??;
+    assert_ne!(
+        created.incarnation, 0,
+        "a cache was created at 0 after the finalize committed"
     );
     Ok(())
 }

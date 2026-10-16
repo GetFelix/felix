@@ -1,6 +1,7 @@
 //! Tests cover error tolerance (skipping on fetch errors), deletion propagation, and cursor advancement.
 
 mod apply;
+mod cache_incarnation;
 mod consistency;
 mod fetch;
 mod incarnation;

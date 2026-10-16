@@ -1018,7 +1018,59 @@ What this does not cover:
   deleted stream's shard ignores until it resnapshots
   ([#1209](https://github.com/GetFelix/felix/issues/1209)). Incarnated
   streams start above the deleted one's generations.
-- Caches have the same problem and do not have incarnations yet (#1209).
+
+### Deleting a cache
+
+Once the fleet has finalized `cache_incarnations`, a cache deleted and created
+again under the same name is a new cache: no entries, no counters, on every
+broker, including one that was down for the delete. It is the stream design
+above, applied to the cache store (`caches/`) and the counter store
+(`counters/`):
+
+- **Each creation has its own directories.** The control plane gives each
+  cache it creates an incarnation, and each cache shard assignment carries it
+  (see `docs/control-plane.md`). A cache shard's directory, and its counter
+  shard's, end in the incarnation; a cache from before the finalize is
+  incarnation 0 and keeps the directory names it always had, so upgrading
+  moves nothing and an existing cache's entries and counters stay readable
+  (`a_cache_from_before_incarnations_survives_the_upgrade_until_deleted`).
+- **A marker records what the broker holds.** One per cache under `.streams/`
+  in the cache store's root, in the stream marker's format, with the floors
+  file and the in-play record beside it. None is written for a cache at
+  incarnation 0 that has none yet, so nothing new lands on disk before the
+  finalize.
+- **A name never moves back.** A registration below the held incarnation, at
+  or below a deleted one, or without an incarnation for a name seen
+  incarnated is refused and counted in
+  `felix_broker_cache_incarnation_refused_total`
+  (`an_older_incarnation_is_refused`,
+  `a_deleted_incarnation_is_not_registered_again`). A higher incarnation
+  closes the held one's logs, ends its watches, and keeps its data until a
+  delete covers it.
+- **Data goes only on the control plane's word**: a `Deleted` change with
+  `deleted_through` (or a payload naming a non-zero incarnation), a snapshot
+  tombstone, applied before the snapshot's caches, or an operator's
+  `Broker::remove_cache`. Every covered incarnation goes from both stores
+  through a retiring marker and `.deleted/`, and a delete cut short is
+  finished at the next start (`a_recreated_cache_starts_empty`,
+  `a_tombstone_deletes_a_cache_deleted_while_the_broker_was_down`,
+  `a_delete_cut_short_is_finished_at_start`). A delete from before the
+  finalize names no incarnation and keeps the data, as before
+  (`a_delete_naming_no_incarnation_keeps_the_data`).
+- **Nothing opens a cache at the wrong incarnation.** Once a broker has seen a
+  cache with an incarnation it records that on disk, and from then on opens a
+  cache's and its counters' logs only at the registered incarnation
+  (`logs_open_only_for_the_registered_incarnation`). Cache and counter
+  replication requests name the incarnation, and a follower holding another
+  one refuses them as a stale route, as for streams.
+- **A cache store with no log** (a broker without durable storage) drops a
+  deleted cache's entries when the delete finishes or a different incarnation
+  registers.
+- **Restoring to a backup point** rewrites each cache's marker to the
+  incarnation the point names, as for streams.
+
+Forwarded cache operations are still checked by generation only, as are
+forwarded publishes (#1209).
 
 ## Observability
 

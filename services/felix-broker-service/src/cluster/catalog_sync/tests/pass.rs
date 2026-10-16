@@ -60,6 +60,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(CacheSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -167,6 +168,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(CacheSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -271,6 +273,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                     Json(CacheSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        tombstones: Vec::new(),
                     })
                 }),
             )
@@ -336,8 +339,10 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 namespace: "ns1".to_string(),
                                 cache: "c1".to_string(),
                                 consistency: None,
+                                incarnation: 0,
                             }),
                             seq: None,
+                            deleted_through: None,
                         }],
                         next_seq: 2,
                     })
@@ -435,6 +440,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(CacheSnapshotResponse {
                         items: vec![],
                         next_seq: 0,
+                        tombstones: Vec::new(),
                     })
                 }),
             )

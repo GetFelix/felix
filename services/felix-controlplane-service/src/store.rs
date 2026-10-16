@@ -103,22 +103,29 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn patch_cache(&self, key: &CacheKey, patch: CachePatchRequest) -> StoreResult<Cache>;
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()>;
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>>;
+    /// Every cache tombstone, as [`Self::stream_tombstones`] for streams.
+    async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>>;
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>>;
 
     /// Create every stream and cache in one write: all of them, or none.
     ///
     /// `NotFound` when an item's namespace does not exist, and `Conflict` when
     /// one already exists or the batch names it twice. Either way nothing is
-    /// written. Returns the streams as stored, with the incarnations the
-    /// store gave them.
+    /// written. Returns the streams and caches as stored, with the
+    /// incarnations the store gave them.
     async fn create_resources(
         &self,
         streams: Vec<Stream>,
         caches: Vec<Cache>,
-    ) -> StoreResult<Vec<Stream>>;
-    /// Whether a create may carry a proposed incarnation. Only a Raft group
-    /// with a member below the metadata level that stores one answers no.
+    ) -> StoreResult<(Vec<Stream>, Vec<Cache>)>;
+    /// Whether a stream create may carry a proposed incarnation. Only a Raft
+    /// group with a member below the metadata level that stores one answers
+    /// no.
     async fn takes_incarnation_proposals(&self) -> bool {
+        true
+    }
+    /// [`Self::takes_incarnation_proposals`], for a cache create.
+    async fn takes_cache_incarnation_proposals(&self) -> bool {
         true
     }
 
