@@ -205,3 +205,40 @@ async fn a_follower_not_heard_from_reports_nothing() {
             .is_none()
     );
 }
+
+fn at(not_behind: bool, furthest: &[&str]) -> LogPosition {
+    LogPosition {
+        not_behind,
+        furthest: furthest.iter().map(|node| node.to_string()).collect(),
+    }
+}
+
+/// **A cache is never left with neither a promotion nor a reclaim.** A
+/// follower ahead on the cache log is named, though every follower trails
+/// this broker on the counter log and another is furthest there: the copy
+/// is not reclaimable, so naming nobody would leave the shard waiting.
+#[test]
+fn a_follower_ahead_on_the_cache_log_alone_is_named() {
+    let positions = [at(true, &["broker-b"]), at(false, &["broker-c"])];
+    assert_eq!(caught_up(&positions), vec!["broker-b".to_string()]);
+}
+
+/// A follower furthest on every log is preferred; with none, the furthest on
+/// the first log not behind this broker.
+#[test]
+fn the_follower_furthest_on_every_log_is_named_first() {
+    let both = [at(true, &["broker-b", "broker-c"]), at(true, &["broker-c"])];
+    assert_eq!(caught_up(&both), vec!["broker-c".to_string()]);
+    let split = [at(true, &["broker-b"]), at(true, &["broker-c"])];
+    assert_eq!(caught_up(&split), vec!["broker-b".to_string()]);
+    let counters_only = [at(false, &["broker-b"]), at(true, &["broker-c"])];
+    assert_eq!(caught_up(&counters_only), vec!["broker-c".to_string()]);
+}
+
+/// Nobody is named only when every follower is behind on every log, the one
+/// case placement reclaims.
+#[test]
+fn nobody_is_named_when_every_follower_is_behind_on_every_log() {
+    let positions = [at(false, &["broker-b"]), at(false, &["broker-b"])];
+    assert!(caught_up(&positions).is_empty());
+}

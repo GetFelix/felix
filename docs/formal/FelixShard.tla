@@ -1988,9 +1988,10 @@ Wipe(f) ==
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
-\* for. Its directory, and so its identity, is the one it had, unless
-\* `RotateOnCrash` gives it a new one before it registers again. It shares
-\* the wipes' budget.
+\* for. The suffix may be empty: a SIGKILL keeps the page cache, and the
+\* restart is unclean all the same. Its directory, and so its identity, is
+\* the one it had, unless `RotateOnCrash` gives it a new one before it
+\* registers again. It shares the wipes' budget.
 \*
 \* With `CrashLeader` the one that crashes is a broker that believes it
 \* leads, and what it held in memory goes with the process: its queued and
@@ -2002,7 +2003,7 @@ Crash(f) ==
     /\ wipes < Wipes
     /\ IF CrashLeader THEN bgen[f] > 0 ELSE bgen[f] = 0
     /\ Len(log[f]) > 0
-    /\ \E k \in 0..(Len(log[f]) - 1) :
+    /\ \E k \in 0..Len(log[f]) :
           /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
           /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
     /\ wipes' = wipes + 1

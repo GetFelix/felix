@@ -33,6 +33,17 @@ pub struct Probe {
     pub reclaimable: bool,
 }
 
+/// Where the followers stand on one of the shard's logs. Compared by (last
+/// generation, end): an end alone can rank a copy that holds a newer
+/// generation's records below one that does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogPosition {
+    /// The furthest follower is level with this broker or ahead.
+    not_behind: bool,
+    /// The followers at the furthest position among them.
+    furthest: Vec<String>,
+}
+
 /// A follower's answer to the probe: its node id, where its copy ends, and
 /// the identity it answered under.
 type Answer = (String, felix_wire::internal::FenceOk, StorageId, u64);
@@ -62,9 +73,7 @@ pub async fn probe<R: PeerRequester>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let mut reclaimable = true;
     let mut report: Option<ShardReport> = None;
-    // Followers that hold at least this broker's copy and every other
-    // follower's on each log, so on all of them.
-    let mut furthest_on_every_log: Option<Vec<String>> = None;
+    let mut positions = Vec::with_capacity(logs.len());
     for &kind in logs {
         let Some(log) = broker
             .shard_log_for(
@@ -113,16 +122,17 @@ pub async fn probe<R: PeerRequester>(
             .max()
             .unwrap_or_default();
         reclaimable &= furthest <= own;
-        let caught_up = furthest_followers(own, furthest, &answers);
-        furthest_on_every_log = Some(match furthest_on_every_log {
-            None => caught_up,
-            Some(before) => before
-                .into_iter()
-                .filter(|node| caught_up.contains(node))
+        positions.push(LogPosition {
+            not_behind: furthest >= own,
+            furthest: answers
+                .iter()
+                .filter(|(_, ok, _, _)| (ok.last_generation, ok.log_end) == furthest)
+                .map(|(node, ..)| node.clone())
                 .collect(),
         });
         // The shard's own log gives the report's positions; a counter log
-        // only narrows who is caught up and whether the copy is reclaimable.
+        // only weighs in on who is caught up and whether the copy is
+        // reclaimable.
         if report.is_none() {
             report = Some(given_up_report(
                 key,
@@ -134,7 +144,7 @@ pub async fn probe<R: PeerRequester>(
         }
     }
     let mut report = report?;
-    report.caught_up = furthest_on_every_log.unwrap_or_default();
+    report.caught_up = caught_up(&positions);
     let report = report.at_incarnation(crate::incarnation::of(broker, key));
     Some(Probe {
         report,
@@ -142,18 +152,32 @@ pub async fn probe<R: PeerRequester>(
     })
 }
 
-/// The followers at `furthest`, when that is not behind `own`. Compared by
-/// (last generation, end): an end alone can rank a copy that holds a newer
-/// generation's records below one that does not.
-fn furthest_followers(own: (u64, u64), furthest: (u64, u64), answers: &[Answer]) -> Vec<String> {
-    if furthest < own {
+/// Who the probe names caught up, from each of the shard's logs, the
+/// shard's own first.
+///
+/// Nobody when every follower is behind this broker on every log: that is
+/// the only case placement reclaims. Otherwise the followers furthest on
+/// every log, which hold whatever any copy holds. When no follower is
+/// furthest on every log (a cache whose cache and counter logs are led by
+/// different followers), the furthest on the first log that is not behind
+/// this broker, the shard's own log when it qualifies, as before a level
+/// follower was named: a shard is never left with neither a promotion nor a
+/// reclaim.
+fn caught_up(positions: &[LogPosition]) -> Vec<String> {
+    let Some(first) = positions.iter().find(|log| log.not_behind) else {
         return Vec::new();
-    }
-    answers
+    };
+    let on_every_log: Vec<String> = first
+        .furthest
         .iter()
-        .filter(|(_, ok, _, _)| (ok.last_generation, ok.log_end) == furthest)
-        .map(|(node, ..)| node.clone())
-        .collect()
+        .filter(|node| positions.iter().all(|log| log.furthest.contains(node)))
+        .cloned()
+        .collect();
+    if on_every_log.is_empty() {
+        first.furthest.clone()
+    } else {
+        on_every_log
+    }
 }
 
 /// The report on a probe, naming nobody caught up; the caller fills that in.

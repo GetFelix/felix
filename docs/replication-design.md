@@ -2328,8 +2328,11 @@ follower is behind it:
   this broker lost. Copies are compared by (last generation, end). When the
   furthest follower is level with this broker or ahead, the followers at that
   position are reported caught up; every copy is accounted for, so they hold
-  whatever any copy holds. A cache's followers must be furthest on both its
-  logs (`felix_replication::reclaim`).
+  whatever any copy holds. For a cache, a follower furthest on both its logs
+  is named first; when the cache and counter logs are led by different
+  followers, the furthest on the cache log is named, or on the counter log
+  when only that one is not behind, so the shard always has a way out
+  (`felix_replication::reclaim`).
 - **In placement.** A report names the leader's own storage identity beside
   its followers'. When the assignment's leader is registered under another
   identity than the shard's last report names for it, or its own report since
