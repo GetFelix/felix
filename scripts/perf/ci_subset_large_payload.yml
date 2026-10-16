@@ -1,7 +1,6 @@
 {
-  "_comment": "The other subsets send payloads of 1 KiB or less, which never reach the subscriber byte bounds (FELIX_SUB_QUEUE_MAX_BYTES, FELIX_SUB_EGRESS_MAX_BYTES). 64 batches of 64 KiB at fanout 10 do.",
   "defaults": {
-    "trials": 5
+    "trials": 12
   },
   "workload": {
     "fanout": [
@@ -29,7 +28,9 @@
         "FELIX_EVENT_BATCH_MAX_DELAY_US": "250",
         "FELIX_PUBLISH_CHUNK_BYTES": "16384",
         "FELIX_CACHE_CONN_POOL": "8",
-        "FELIX_CACHE_STREAMS_PER_CONN": "4"
+        "FELIX_CACHE_STREAMS_PER_CONN": "4",
+        "FELIX_SUB_EGRESS_MAX_BYTES": "0",
+        "FELIX_REPLAY_RING_MAX_BYTES": "0"
       }
     }
   },
