@@ -1557,14 +1557,15 @@ The exchanges run concurrently, and the pass recounts the mark as each one
 lands, so a follower whose exchange has not got that far still carries the
 old copy's `confirmed`. Counted there, it could release records only the
 leader holds: a wiped follower that had confirmed more than the mark, beside
-one that fails at once. So the mark, the counter mark, and who a report
-offers as caught up count only followers whose identity the pass has checked
-and found unchanged (`checked_only`). Any other follower counts as holding
-nothing until its exchange hands back a reset cursor, or until a later pass
-checks it. A follower that is down counts for nothing either, though what it
-confirmed may well still be on its disk; the majority that answers carries
-the mark. Its reported offset, which placement reads for progress, is left
-alone.
+one that fails at once. So the mark and the counter mark count only
+followers whose identity the pass has checked and found unchanged
+(`checked_only`). Any other follower counts as holding nothing until its
+exchange hands back a reset cursor, or until a later pass checks it. A
+follower that is down counts for nothing either, though what it confirmed
+may well still be on its disk; the majority that answers carries the mark.
+The report is left alone: a leader cut off from its followers names them as
+they last stood, which is what failover reads, and the identity each was
+counted under goes with it.
 
 ```mermaid
 sequenceDiagram

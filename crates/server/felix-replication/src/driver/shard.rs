@@ -495,13 +495,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // The followers whose storage identity this pass has checked against
     // their cursor. Exchanges run concurrently, so a follower not yet probed
     // may be a wiped copy still carrying the old copy's `confirmed`; until it
-    // is checked it counts as holding nothing. See [`checked_only`].
+    // is checked the marks count it as holding nothing. The report still
+    // offers it: a leader cut off from its followers names them as they last
+    // stood, and failover needs that. See [`checked_only`].
     let checked: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
     let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
     let counter_mark = counter_log.clone().filter(|_| acks_at_quorum);
-    let counters_of = |followers: Vec<FollowerCursor>| {
+    let counters_of = |followers: &[FollowerCursor]| {
         let counter_mark = counter_mark.clone();
         let (log, learner) = (log.clone(), learner.clone());
+        let (counted, followers) = (view(followers), followers.to_vec());
         async move {
             counter_level(
                 marks,
@@ -509,6 +512,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 route,
                 &log,
                 &counter_mark?,
+                &counted,
                 &followers,
                 learner.as_deref(),
                 by_followers,
@@ -523,8 +527,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let groups_of = |aux: &AuxCursors| {
         let (group_log, dead_letter_log) = group_logs.clone();
         let followers = (
-            view(&aux.group.followers),
-            view(&aux.dead_letters.followers),
+            aux.group.followers.clone(),
+            aux.dead_letters.followers.clone(),
         );
         let learner = learner.clone();
         async move {
@@ -760,7 +764,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         route.generation,
                         tail,
                         acknowledged(tail, &counted),
-                        &counted,
+                        &positions,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -768,7 +772,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     &aux.counters.followers,
                 ),
                 offset,
-                counters_of(view(&aux.counters.followers)).await,
+                counters_of(&aux.counters.followers).await,
                 groups_of(&aux).await,
             ));
         }
@@ -824,7 +828,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         let tail = log.tail_offset().await.unwrap_or(tail);
         let counted = view(&positions);
         let offset = held_offset(tail, &counted);
-        let counters = counters_of(view(&aux.counters.followers)).await;
+        let counters = counters_of(&aux.counters.followers).await;
         // With counters riding along, a majority that has answered is all
         // this pass can wait for: the cache log may have nothing to count (a
         // cache used only for counters), and the rest may include a follower
@@ -843,7 +847,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         route.generation,
                         tail,
                         acknowledged(tail, &counted),
-                        &counted,
+                        &positions,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -1036,7 +1040,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             route.generation,
             tail,
             acknowledged(tail, &counted),
-            &counted,
+            &entry.followers,
             drained,
         )
         .at_incarnation(incarnation)
@@ -1048,7 +1052,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
-    let counters = counters_of(view(&aux.counters.followers)).await;
+    let counters = counters_of(&aux.counters.followers).await;
     if let Some(counters) = &counters {
         counters.limit(&mut settled);
     }
@@ -1302,7 +1306,9 @@ async fn aux_cursors(
 ///
 /// Counted under the shard's own rules: only past where this leader's
 /// generation begins once the fleet finalized `generation_start`, and on the
-/// followers' answers at this generation with `by_followers`.
+/// followers' answers at this generation with `by_followers`. The mark counts
+/// `counted`, the followers whose identity the pass has checked; the
+/// candidates are drawn from all of `followers`.
 #[allow(clippy::too_many_arguments)]
 async fn counter_level(
     marks: &QuorumMarks,
@@ -1310,6 +1316,7 @@ async fn counter_level(
     route: &Route,
     cache_log: &felix_broker::StreamLog,
     log: &felix_broker::StreamLog,
+    counted: &[FollowerCursor],
     followers: &[FollowerCursor],
     learner: Option<&str>,
     by_followers: bool,
@@ -1321,9 +1328,9 @@ async fn counter_level(
         // writes next is in no fence answer.
         let current = cache_log.accepted_generation() <= route.generation
             && log.accepted_generation() <= route.generation;
-        crate::quorum::held_at_generation(tail, current, followers, learner)
+        crate::quorum::held_at_generation(tail, current, counted, learner)
     } else {
-        quorum_offset_without(tail, followers, learner)
+        quorum_offset_without(tail, counted, learner)
     };
     let start = log
         .generations()
@@ -1752,8 +1759,8 @@ pub(super) fn staged_learner(previous: Option<&ShardCursors>, route: &Route) -> 
     added.then(|| successor.clone())
 }
 
-/// `followers` as this pass may count them: one whose storage identity it
-/// has not checked holds nothing.
+/// `followers` as this pass may count them toward a mark: one whose storage
+/// identity it has not checked holds nothing.
 ///
 /// A cursor's `confirmed` is what the copy it was learned from holds. Until
 /// the follower is asked who it is, that copy may be gone, and counting it
