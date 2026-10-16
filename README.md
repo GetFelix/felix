@@ -1,6 +1,19 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/GetFelix/felix/main/docs/assets/logo.PNG" alt="Felix logo" width="360" />
 </p>
+
+Felix is a replicated log over QUIC that serves streams, caches and queues from one system.
+
+- **Fanout.** Each publish is encoded once, however many subscribers read it, and every subscriber has its
+  own bounded queue. By default a slow consumer drops records instead of holding up a publisher or anyone else.
+- **Streams, caches and queues.** A stream is the log read forward, a cache is its latest value per key, and a
+  queue is a durable cursor over it, with one client, one wire protocol and one access model.
+- **Replication.** Quorum acknowledgement and fenced failover, with the protocol model-checked
+  in TLA+ and fault-injection tests that kill brokers and simulate power loss mid-write.
+
+**Try it:** the [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) runs a broker and
+publishes your first message. **Read more:** [docs.getfelix.dev](https://docs.getfelix.dev).
+
 <p align="center">
   <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">
     <img src="https://github.com/GetFelix/felix/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status" />
