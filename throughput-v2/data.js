@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792191054175,
+  "lastUpdate": 1792191464543,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31720,6 +31720,58 @@ window.BENCHMARK_DATA = {
             "range": "8459.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814712.15\nmean: 812784.36\nstdev: 8459.85\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0e95c73a521c6d6a3f20356fde57ac5bd9fab835",
+          "message": "fix(replication): a copy without a promise answers a fence only as its routing view backs it (#1328)\n\n* fix(replication): a wiped broker answers a fence only as its routing view backs it\n\nA broker whose data directory was wiped has lost the ballots it gave, so it\ncould answer a fence from a leader its old copy had promised to refuse, and\ncount toward a majority the successor had already fenced (#1267). A crash\ndoes not do this: ballot and replica are synced under every fsync mode.\n\nA start that created its storage id now answers a fence for a copy with no\npromise on disk only when the routing view has the shard, and at the view's\ngeneration only from the leader it names. Once the copy takes a generation\nits ballot answers as before. No wire, persisted or control-plane change.\n\nThe model gets a Forget step: FelixShardSuspicionWipeUnbacked.cfg violates\nAckedHeldByLeader through it, FelixShardSuspicionWipeRoutes.cfg passes with\nthe follower answering only what its view backs.\n\n* fix(replication): hold every copy without a promise to its routing view\n\nA wiped broker that restarted again before its copy took anything started on\nthe id the first start wrote, so the fresh-directory flag was gone and the\ncopy answered any fence. Nothing on disk tells such a copy from a new one, so\nthe no-route refusal now applies to every copy with no promise on disk, and\nthe per-process flag is removed.\n\nAdds an end-to-end test over the peer transport: the deposed leader's fence\nis refused after the wipe and after a second restart. Docs link #1331 for\nthe election driver's guard and explain the stale-view gap.",
+          "timestamp": "2026-10-16T22:51:13Z",
+          "tree_id": "fc24745fd296c53e7c540b5b710e8033ca1d5909",
+          "url": "https://github.com/GetFelix/felix/commit/0e95c73a521c6d6a3f20356fde57ac5bd9fab835"
+        },
+        "date": 1792191463401,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351291.57,
+            "range": "10040.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351291.57\nmean: 352027.45\nstdev: 10040.82\ncv: 2.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351291.57,
+            "range": "10040.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351291.57\nmean: 352027.45\nstdev: 10040.82\ncv: 2.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80575.14,
+            "range": "702.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80575.14\nmean: 80703.66\nstdev: 702.15\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805751.42,
+            "range": "7021.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805751.42\nmean: 807036.58\nstdev: 7021.47\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
