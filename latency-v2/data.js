@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792109572303,
+  "lastUpdate": 1792110496672,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39006,6 +39006,72 @@ window.BENCHMARK_DATA = {
             "range": "680.10",
             "unit": "us",
             "extra": "trials: 5\nmedian: 468.00\nmean: 803.60\nstdev: 680.10\ncv: 84.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa2f820e92d42a58b684558a6fd8a38a7506da91",
+          "message": "perf(broker): take the egress share without locking on the fast path, and cache byte gauges (#1275)\n\nEgressShare::hold tries the share first and registers a wakeup only when\nit is full; a written frame notifies only when a feeder is counted as\nwaiting. The egress, subscriber-queue, cache-watch and replay-ring byte\ngauges are resolved once per subscription or ring rather than per batch,\nand a ring reports its gauge once per publish.\n\nWith FELIX_REPLAY_RING_MAX_BYTES_TOTAL set, a ring with nothing left to\nevict now keeps its newest batch past the shared budget, so a busy stream\ncannot starve the other rings. A batch larger than the whole budget is\nstill not kept.\n\nDocs: the claim that a stalled subscription never holds up the others on\nits connection holds only under the drop_new lane policy, and the\nper-subscription egress share shrinks with the subscription count.\n\nSpec-Unaffected: subscriber egress accounting, gauges and the replay ring's byte budget; no lease, replication or routing behaviour changes",
+          "timestamp": "2026-10-15T17:23:48-07:00",
+          "tree_id": "a58e93e2ff5a3efd85a8cb29b2951975b67320c9",
+          "url": "https://github.com/GetFelix/felix/commit/fa2f820e92d42a58b684558a6fd8a38a7506da91"
+        },
+        "date": 1792110492440,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "4.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 181.00\nstdev: 4.24\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "5.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 241.20\nstdev: 5.31\ncv: 2.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 306,
+            "range": "13.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 306.00\nmean: 303.60\nstdev: 13.03\ncv: 4.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "4.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 221.20\nstdev: 4.55\ncv: 2.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 450,
+            "range": "87.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 450.00\nmean: 492.40\nstdev: 87.91\ncv: 17.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 642,
+            "range": "426.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 642.00\nmean: 876.80\nstdev: 426.66\ncv: 48.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
