@@ -171,8 +171,7 @@ are already working.
 
 ## Where it stands
 
-Felix is pre-1.0 and in active development. **It has not been run in production by
-anyone**, including its author.
+Felix is pre-1.0 and in active development.
 
 What exists today: multi-broker clusters, a durable log with crash recovery,
 replication with fenced failover and majority acknowledgement, online rebalancing (live shard

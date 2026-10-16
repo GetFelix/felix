@@ -33,8 +33,7 @@
 
 ---
 
-Felix is pre-1.0. Nobody runs it in production yet, and APIs can still change between
-releases. The [status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
+Felix is pre-1.0: APIs can still change between releases. The [status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
 marks what is built and what is planned.
 
 ## System Overview
@@ -227,7 +226,7 @@ checks publish, subscribe and cache behaviour against the protocol. With
 catalogue every Felix client is held to, which is how the Python and TypeScript
 clients prove they behave like the Rust one.
 
-Felix runs as a cluster of brokers over a control plane, and as a single broker for development. Neither has been run in production by anyone.
+Felix runs as a cluster of brokers over a control plane, and as a single broker for development.
 
 ---
 
