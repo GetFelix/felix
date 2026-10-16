@@ -113,13 +113,14 @@ async fn holding(count: usize) -> (Arc<Broker>, tempfile::TempDir) {
     )
 }
 
-/// **No follower ahead: the copy may be reclaimed**, and the report says so
-/// with this broker's own position beside every follower's.
+/// **Every follower behind: the copy may be reclaimed**, and the report
+/// names nobody caught up, with this broker's own position beside every
+/// follower's.
 #[tokio::test]
 async fn no_follower_ahead_is_reclaimable() {
     let (broker, _dir) = holding(5).await;
     let followers = Followers(HashMap::from([
-        ("broker-b", Some(5)),
+        ("broker-b", Some(4)),
         ("broker-c", Some(3)),
     ]));
 
@@ -138,7 +139,7 @@ async fn no_follower_ahead_is_reclaimable() {
         offsets,
         vec![
             ("broker-a".to_string(), 5),
-            ("broker-b".to_string(), 5),
+            ("broker-b".to_string(), 4),
             ("broker-c".to_string(), 3)
         ]
     );
@@ -152,6 +153,25 @@ async fn no_follower_ahead_is_reclaimable() {
             .node_incarnations
             .contains(&("broker-c".to_string(), Some(7)))
     );
+}
+
+/// **A follower level with this broker is reported caught up**, so placement
+/// promotes it rather than naming this broker again (#1314). The copy stays
+/// reclaimable here: nothing is held beyond it.
+#[tokio::test]
+async fn a_level_follower_is_reported_caught_up() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(5)),
+        ("broker-c", Some(3)),
+    ]));
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("every follower answered");
+
+    assert!(probe.reclaimable);
+    assert_eq!(probe.report.caught_up, vec!["broker-b".to_string()]);
 }
 
 /// **A follower ahead holds what this broker lost**: not reclaimable, and

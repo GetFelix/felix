@@ -9,8 +9,10 @@
 //! heard from may hold what this broker lost. When none is ahead of this
 //! broker's copy, nothing a client was promised is held beyond it, and
 //! placement may name this broker leader again at a new generation. When one
-//! is ahead, the furthest are reported caught up: every copy is accounted
-//! for, so the furthest holds whatever any copy holds.
+//! is level with it or ahead, the furthest are reported caught up and
+//! placement promotes one of them instead: every copy is accounted for, so
+//! the furthest holds whatever any copy holds. Reclaim is only for when every
+//! follower is behind.
 
 use std::sync::Arc;
 
@@ -30,6 +32,10 @@ pub struct Probe {
     /// No follower's copy is ahead of this broker's on any of the shard's logs.
     pub reclaimable: bool,
 }
+
+/// A follower's answer to the probe: its node id, where its copy ends, and
+/// the identity it answered under.
+type Answer = (String, felix_wire::internal::FenceOk, StorageId, u64);
 
 /// Probe every follower `route` names for the shard this broker gave up at
 /// `route.generation`. `None` when the shard has no followers, or any of
@@ -56,6 +62,9 @@ pub async fn probe<R: PeerRequester>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let mut reclaimable = true;
     let mut report: Option<ShardReport> = None;
+    // Followers that hold at least this broker's copy and every other
+    // follower's on each log, so on all of them.
+    let mut furthest_on_every_log: Option<Vec<String>> = None;
     for &kind in logs {
         let Some(log) = broker
             .shard_log_for(
@@ -104,45 +113,57 @@ pub async fn probe<R: PeerRequester>(
             .max()
             .unwrap_or_default();
         reclaimable &= furthest <= own;
-        // The shard's own log is what placement reads; a counter log only
-        // decides whether the copy can be reclaimed.
+        let caught_up = furthest_followers(own, furthest, &answers);
+        furthest_on_every_log = Some(match furthest_on_every_log {
+            None => caught_up,
+            Some(before) => before
+                .into_iter()
+                .filter(|node| caught_up.contains(node))
+                .collect(),
+        });
+        // The shard's own log gives the report's positions; a counter log
+        // only narrows who is caught up and whether the copy is reclaimable.
         if report.is_none() {
             report = Some(given_up_report(
                 key,
                 route.generation,
                 local_node_id,
                 tail,
-                own,
-                furthest,
                 &answers,
             ));
         }
     }
-    let report = report?.at_incarnation(crate::incarnation::of(broker, key));
+    let mut report = report?;
+    report.caught_up = furthest_on_every_log.unwrap_or_default();
+    let report = report.at_incarnation(crate::incarnation::of(broker, key));
     Some(Probe {
         report,
         reclaimable,
     })
 }
 
+/// The followers at `furthest`, when that is not behind `own`. Compared by
+/// (last generation, end): an end alone can rank a copy that holds a newer
+/// generation's records below one that does not.
+fn furthest_followers(own: (u64, u64), furthest: (u64, u64), answers: &[Answer]) -> Vec<String> {
+    if furthest < own {
+        return Vec::new();
+    }
+    answers
+        .iter()
+        .filter(|(_, ok, _, _)| (ok.last_generation, ok.log_end) == furthest)
+        .map(|(node, ..)| node.clone())
+        .collect()
+}
+
+/// The report on a probe, naming nobody caught up; the caller fills that in.
 fn given_up_report(
     key: &ShardKey,
     generation: u64,
     local_node_id: &str,
     tail: u64,
-    own: (u64, u64),
-    furthest: (u64, u64),
-    answers: &[(String, felix_wire::internal::FenceOk, StorageId, u64)],
+    answers: &[Answer],
 ) -> ShardReport {
-    let caught_up = if furthest > own {
-        answers
-            .iter()
-            .filter(|(_, ok, _, _)| (ok.last_generation, ok.log_end) == furthest)
-            .map(|(node, ..)| node.clone())
-            .collect()
-    } else {
-        Vec::new()
-    };
     let mut offsets: Vec<(String, u64)> = answers
         .iter()
         .map(|(node, ok, _, _)| (node.clone(), ok.log_end))
@@ -151,7 +172,7 @@ fn given_up_report(
     ShardReport {
         key: key.clone(),
         generation,
-        caught_up,
+        caught_up: Vec::new(),
         offsets,
         tail,
         drained: false,

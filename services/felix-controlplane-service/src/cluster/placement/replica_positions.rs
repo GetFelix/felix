@@ -342,6 +342,25 @@ impl ReplicaPositions {
             && self.same_incarnation(report, leader)
     }
 
+    /// Whether the given-up leader's probe names `node_id` caught up, on the
+    /// evidence a reclaim needs: fresh, made at the assignment's generation
+    /// by the leader registered now under the identity it reported, with
+    /// `node_id` measured under its own registered identity and incarnation.
+    /// A probe report that falls short of that promotes nobody.
+    fn probed(&self, key: &ShardKey, node_id: &str) -> bool {
+        let Some(report) = self.fresh(key) else {
+            return false;
+        };
+        let Some((generation, leader)) = self.assignments.get(key) else {
+            return false;
+        };
+        self.gave_up(report, *generation, leader)
+            && self.identity(report, leader) == Identity::Match
+            && self.identity(report, node_id) == Identity::Match
+            && self.same_incarnation(report, node_id)
+            && report.caught_up.contains(node_id)
+    }
+
     /// The report for `key`, if it may say anything about `node_id`.
     ///
     /// A matching identity is believed as long as the report is, a mismatched one never, and an
@@ -413,6 +432,10 @@ impl CaughtUp for ReplicaPositions {
         generation.is_some_and(|generation| self.gave_up(report, generation, leader))
             && self.identity(report, leader) == Identity::Match
             && !followers.is_empty()
+            // The probe names a follower caught up when it is level or ahead
+            // by (last generation, end), which an offset alone cannot tell.
+            // Such a follower is promoted instead, or waited for.
+            && report.caught_up.is_empty()
             && followers.iter().all(|follower| {
                 self.identity(report, follower) == Identity::Match
                     && self.same_incarnation(report, follower)
@@ -424,6 +447,12 @@ impl CaughtUp for ReplicaPositions {
     }
 
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
+        let Some(report) = self.reports.get(key) else {
+            return false;
+        };
+        if report.given_up {
+            return self.probed(key, node_id);
+        }
         self.counted(key, node_id)
             .is_some_and(|report| report.caught_up.contains(node_id))
     }

@@ -1872,8 +1872,8 @@ crashes (anything but a clean SIGTERM stop) starts again under a new storage
 id, and its leaders copy each shard it follows again; under `on_commit` it
 keeps its id. A leader that crashes that way does not lead its replicated
 shards from the shorter log: it gives them up, and the control plane promotes
-a follower or, when none holds more, names it again
-([#1295](https://github.com/GetFelix/felix/issues/1295)).
+a follower that holds at least what it kept or, when every follower holds
+less, names it again ([#1295](https://github.com/GetFelix/felix/issues/1295)).
 
 ### `FELIX_DURABLE_FSYNC_INTERVAL_MS`
 
