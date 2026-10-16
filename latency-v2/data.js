@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792111493076,
+  "lastUpdate": 1792112032994,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39138,6 +39138,72 @@ window.BENCHMARK_DATA = {
             "range": "119.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 707.00\nmean: 718.20\nstdev: 119.82\ncv: 16.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba0dcb9cd97bb0e6bd931e7840361b6e3f3a3d9b",
+          "message": "fix(storage): one purge worker per root, and retire off the async workers (#1276)\n\nRetiring a directory started a felix-purge-deleted thread every time, each\nlisting and deleting everything in .deleted/. A namespace delete over many\nstreams and shards started a thread per directory, racing on the same\nentries. Now one worker per root drains .deleted/ and lists it again if\nmore arrives while it works; startup still finishes what a crash left.\n\nThe directory renames and fsyncs of a retire, and the broker's stream\nmarker and floor reads and writes, now run on the blocking pool, awaited\nin the same order as before. Broker::restore_stream_marker becomes async.\n\nRegistration and deletion of one name are not locked against each other;\nthe broker service only drives them from its single catalog-sync task,\nafter finish_pending_deletes. Documented where the delete relies on it.\n\nSpec-Unaffected: LogCache::retire still closes the shards and then renames their directories, only the rename runs on the blocking pool; no cursor log state or transition changes.",
+          "timestamp": "2026-10-15T17:49:20-07:00",
+          "tree_id": "6611b176b241928959910b2ec38a0471d4307b7f",
+          "url": "https://github.com/GetFelix/felix/commit/ba0dcb9cd97bb0e6bd931e7840361b6e3f3a3d9b"
+        },
+        "date": 1792112028642,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.80\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "3.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 244.60\nstdev: 3.97\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 318,
+            "range": "21.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 318.00\nmean: 319.40\nstdev: 21.71\ncv: 6.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "6.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 223.80\nstdev: 6.98\ncv: 3.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 444,
+            "range": "422.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 444.00\nmean: 630.20\nstdev: 422.53\ncv: 67.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1020.9999999999999,
+            "range": "962.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1021.00\nmean: 1399.00\nstdev: 962.57\ncv: 68.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
