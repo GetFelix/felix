@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792186101260,
+  "lastUpdate": 1792191054175,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31668,6 +31668,58 @@ window.BENCHMARK_DATA = {
             "range": "95086.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1545063.81\nmean: 1497620.10\nstdev: 95086.58\ncv: 6.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68714cdd8288f7489bd3f093c0affd40f02345e5",
+          "message": "ci: pair storage identity, clean-stop and handshake code with the spec (#1339)\n\nThe model now describes which copy a follower counts as and when an\nunclean start rotates it; changes there should come with the spec.\n\nCloses #1337",
+          "timestamp": "2026-10-16T22:44:33Z",
+          "tree_id": "1ed0743340d48c29e33740da2230116269370308",
+          "url": "https://github.com/GetFelix/felix/commit/68714cdd8288f7489bd3f093c0affd40f02345e5"
+        },
+        "date": 1792191053755,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345126.34,
+            "range": "10551.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345126.34\nmean: 349434.02\nstdev: 10551.28\ncv: 3.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345126.34,
+            "range": "10551.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345126.34\nmean: 349434.02\nstdev: 10551.28\ncv: 3.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81471.21,
+            "range": "845.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81471.21\nmean: 81278.44\nstdev: 845.98\ncv: 1.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814712.15,
+            "range": "8459.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814712.15\nmean: 812784.36\nstdev: 8459.85\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
