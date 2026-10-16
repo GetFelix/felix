@@ -122,6 +122,7 @@ pub(super) fn bind_peer_listener(
     known_capabilities: Option<peer::KnownCapabilities>,
     storage_id: felix_storage::StorageId,
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
+    unclean: Option<Arc<replication::unclean::UncleanStart>>,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -140,7 +141,17 @@ pub(super) fn bind_peer_listener(
                             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
                             Arc::clone(auth),
                         ),
-                        replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router)),
+                        match unclean {
+                            Some(unclean) => replication::ReplicaHandler::new(
+                                Arc::clone(broker),
+                                Arc::clone(router),
+                            )
+                            .with_unclean_start(unclean),
+                            None => replication::ReplicaHandler::new(
+                                Arc::clone(broker),
+                                Arc::clone(router),
+                            ),
+                        },
                     )),
                     peer_tls.clone(),
                 )
@@ -201,6 +212,11 @@ pub(super) struct ShardTaskDeps<'a> {
     /// This process's node incarnation, which membership sets once it
     /// registers. Reports carry it.
     pub(super) incarnation: &'a Arc<std::sync::atomic::AtomicU64>,
+    /// This broker's storage id, with durable storage. Reports carry it.
+    pub(super) storage_id: Option<felix_storage::StorageId>,
+    /// Set after a start that rotated the storage id; see
+    /// `replication::unclean`.
+    pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -223,6 +239,8 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         fleet,
         suspects,
         incarnation,
+        storage_id,
+        unclean,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -271,6 +289,10 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
                         });
+                    let store = match unclean {
+                        Some(unclean) => store.with_unclean_start(Arc::clone(unclean)),
+                        None => store,
+                    };
                     // Ballots ride with the fence, as its peers are told
                     // (`PeerCapabilities::BALLOTS`).
                     Arc::new(match (&config.peer_transport, &config.membership) {
@@ -350,6 +372,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                                         as Arc<dyn replication::reporter::Credential>
                                 }),
                                 incarnation: Arc::clone(incarnation),
+                                storage_id,
                             },
                             sync_shutdown.clone(),
                         );

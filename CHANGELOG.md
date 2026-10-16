@@ -98,6 +98,25 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A leader that crashed under `FsyncMode::Periodic` (the default) or `None`
+  and restarted before it was failed over no longer reopens its old
+  generation with a log that may be short of what it acknowledged (#1295).
+  Under `Quorum` it and a follower that lagged behind the lost records made a
+  majority and could write over acknowledged offsets. A start that rotated
+  the storage id now leads no replicated shard from a copy it led before the
+  crash: the open is refused before it writes anything, and the copy is given
+  up on disk as a ballot naming no leader (`DiskLog::give_up_generation`), so
+  no later start leads it either until a newer leader ships to it.
+  Replication passes over such a shard meanwhile, so nothing ships, reports or
+  counts toward a mark at the old generation, and the broker refuses a
+  successor's promotion fence from that copy in a replica set of odd size.
+  Replica reports name the leader's own storage id
+  (`replica_storage_ids`), and placement promotes a follower the report names
+  caught up once the leader is registered under another, without waiting for
+  its lease; with no such follower it writes nothing and the shard waits. A
+  shard with no followers is led from its only copy as before, and a clean
+  restart is unchanged. TLA+: `FelixShardLeaderCrashKeepsGen.cfg` (violates
+  `AckedSurvive`) and `FelixShardLeaderCrashGivesUp.cfg` (passes).
 - A follower that crashed under `FsyncMode::Periodic` (the default) or `None`
   is no longer counted, or promoted, on records it acknowledged before the
   crash and may have lost (#1284). The broker now keeps
@@ -108,8 +127,8 @@ entries.
   leaders copy the follower again and placement stops counting its old
   reports. A clean stop, and a crash under `OnCommit`, keep the id. The
   first start on this release rotates only if startup would repair a shard,
-  so an orderly roll keeps every id. A leader's own crash is not covered yet: it
-  reopens its old generation with the shorter log (#1295). `felix-broker restore-point` records a
+  so an orderly roll keeps every id. A leader's own crash is covered by #1295,
+  below. `felix-broker restore-point` records a
   clean stop when it finishes. The shutdown drain now flushes the cache,
   consumer-group, dead-letter and counter logs too, not only stream logs
   (`Broker::shutdown_storage`, `StorageApi::shutdown`). TLA+:

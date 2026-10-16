@@ -482,6 +482,12 @@ no leader. A file that is present and does not decode fails the open, as
 `replica` does. A separate file so that a build that predates ballots ignores
 it and still opens the shard.
 
+An empty leader (`leader_len` 0) is a generation given up: a broker back from
+a crash that may have cost it records it acknowledged writes it over its own
+ballot, so no leader is accepted at that generation, this broker included,
+and only a newer one replaces it (`DiskLog::give_up_generation`; see
+`docs/replication-design.md`, "A leader's own crash").
+
 ## `offload.manifest`: segments with a copy in the object store
 
 A stream shard whose broker runs with offload on (see `docs/durable-storage.md`,

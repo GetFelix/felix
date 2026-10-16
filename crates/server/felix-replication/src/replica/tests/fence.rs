@@ -823,3 +823,96 @@ async fn the_ballot_names_the_peer_that_said_hello() {
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
     shutdown.cancel();
 }
+
+/// `LOCAL` as it led the shard at generation 5 before a crash: a record, and
+/// its own ballot.
+async fn led_before_a_crash(dir: &std::path::Path) {
+    let broker = broker_on(dir);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(5, Some(LOCAL)).await.expect("lead");
+}
+
+fn unclean() -> Arc<crate::unclean::UncleanStart> {
+    Arc::new(crate::unclean::UncleanStart::new(LOCAL))
+}
+
+/// **A leader that came back from a crash answers no promotion fence from
+/// the copy it led (#1295)**, not after a clean restart either, until a newer
+/// leader ships to it. Its tail may be short of what it acknowledged, and
+/// counted in its successor's majority it could stand in for a follower that
+/// holds the lost records.
+#[tokio::test]
+async fn a_crashed_leaders_copy_takes_no_fence_until_a_newer_leader_ships() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    {
+        let broker = broker_on(dir.path());
+        let handler =
+            ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+                .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(6)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+
+    // Restarted cleanly: the refusal was kept on disk.
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6));
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+
+    // The new leader opened on a majority without it, and ships.
+    let answer = handler
+        .apply(
+            SENDER,
+            batch(6, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    taken(&handler.fence(SENDER, fence(7)).await);
+}
+
+/// In a set of two the other copy holds every record a majority
+/// acknowledged, so the crashed leader still takes its fence: refusing would
+/// leave the shard with no majority at all.
+#[tokio::test]
+async fn a_crashed_leader_of_two_copies_takes_the_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_unclean_start(unclean());
+    taken(&handler.fence(SENDER, fence(6)).await);
+}
+
+/// A copy this broker only followed before the crash is answered for as
+/// before.
+#[tokio::test]
+async fn a_followed_copy_takes_the_fence_after_an_unclean_start() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        handler
+            .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+            .await;
+    }
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_unclean_start(unclean());
+    taken(&handler.fence(SENDER, fence(6)).await);
+}

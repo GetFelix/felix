@@ -359,12 +359,24 @@ pub(super) fn plan_abandoning(
                 && promote(&key, existing, &eligible, caught_up).is_some()
         });
 
+        // The leader came back on a data directory that is not the one its
+        // last report counted: a crash that may have cost it records it
+        // acknowledged, or a wipe. It does not lead from that copy (#1295),
+        // so the shard fails over as if it were down, or waits for one that
+        // holds the log. A shard with no followers has no other copy.
+        let replaced = current.get(&key).is_some_and(|existing| {
+            durable
+                && existing.replicas.iter().any(|r| *r != existing.leader)
+                && caught_up.leader_replaced(&key, &existing.leader)
+        });
+
         // The leader is still serving: a move, not a reassignment, unless
         // there is no log to move.
         if let Some(existing) = current.get(&key)
             && is_serving(&existing.leader)
             && (durable || is_live(&existing.leader))
             && !deposed
+            && !replaced
         {
             let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(

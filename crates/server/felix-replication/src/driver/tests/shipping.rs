@@ -593,3 +593,50 @@ async fn a_slow_follower_does_not_cost_one_delay_per_shard() {
          shards; the shards were shipped one after another",
     );
 }
+
+/// Withholds every shard, as an unclean start does until each open decides.
+struct WithholdsAll;
+
+impl crate::driver::WriteFence for WithholdsAll {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn withheld(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
+}
+
+/// **A shard this broker withholds ships nothing, reports nothing and keeps
+/// no mark** (#1295). A leader back from a crash that may have lost part of
+/// its log would otherwise count that log toward a mark at its old
+/// generation, and report it to placement as the shard's.
+#[tokio::test]
+async fn a_withheld_shard_ships_reports_and_marks_nothing() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let follower = AcceptingFollower::default();
+    let marks = QuorumMarks::new();
+    marks.publish(&watch_key(&key()), 4, 1);
+
+    let pass = replicate_once_with(
+        &follower,
+        &broker,
+        &router,
+        &WithholdsAll,
+        &crate::promotion::NoGate,
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
+    )
+    .await;
+
+    assert!(follower.batches().is_empty(), "{:?}", follower.batches());
+    assert!(pass.reports.is_empty(), "{:?}", pass.reports);
+    assert_eq!(marks.offset(&watch_key(&key()), 4), None);
+}

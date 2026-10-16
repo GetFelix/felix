@@ -1,7 +1,7 @@
 //! A follower that lost its data directory, or crashed under the default
 //! `Periodic` fsync and so may have lost its unsynced tail, is never promoted
 //! on a report about the copy it had. One that stopped cleanly and restarted
-//! still is.
+//! still is. A leader that crashed that way does not lead from its copy again.
 //!
 //! The leader here cannot reach the follower after it comes back (its peer
 //! requests to it are refused), so its reports keep naming the follower
@@ -319,5 +319,69 @@ async fn a_restarted_follower_is_promoted_past_the_ttl() {
     // The fence needs a majority: c and b.
     cluster.restart_node(&b).await.expect("restart b");
     assert_eq!(replay(&cluster, &c).await, all_records());
+    cluster.shutdown().await;
+}
+
+/// **A leader that crashed under `Periodic` fsync is replaced, though it came
+/// back, and nothing it acknowledged is lost (#1295).** It may have
+/// acknowledged records from the tail the crash cost it, so it starts under a
+/// new storage id and leads nothing from its copy. Placement promotes a
+/// follower its last report names caught up: on the new id if it registers
+/// before it is marked down, as for a dead leader otherwise. It then rejoins
+/// as a follower and is copied again under the new id.
+#[tokio::test]
+#[serial]
+async fn a_crashed_leader_that_comes_back_is_replaced() {
+    let mut cluster = Cluster::start(config()).await.expect("start");
+    let (leader, _b, _c) = written(&cluster).await;
+    let before = registered_storage(&cluster, &leader).await;
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a report naming the leader's own storage identity",
+        || async {
+            cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| report.follower_storage.get(&leader) == Some(&before))
+        },
+    )
+    .await
+    .expect("the leader reports its own identity");
+    // As a deployment runs it, so the failover does not wait on this test.
+    cluster.run_placement(Duration::from_millis(200));
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    cluster
+        .restart_node(&leader)
+        .await
+        .expect("restart the leader");
+    let after = registered_storage(&cluster, &leader).await;
+    assert_ne!(
+        before, after,
+        "a crash under Periodic rotates the storage id"
+    );
+
+    let promoted = promoted_away_from(&cluster, &leader).await;
+    assert_eq!(replay(&cluster, &promoted).await, all_records());
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the old leader to be copied again under its new identity",
+        || async {
+            cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| {
+                    report.leader.as_deref() == Some(promoted.as_str())
+                        && report.caught_up.contains(&leader)
+                        && report.follower_storage.get(&leader) == Some(&after)
+                })
+        },
+    )
+    .await
+    .expect("the old leader rejoins as a follower");
     cluster.shutdown().await;
 }

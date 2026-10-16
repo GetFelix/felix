@@ -377,6 +377,14 @@ impl CaughtUp for ReplicaPositions {
                 .is_some_and(|suspicion| suspicion.suspects.contains(leader))
     }
 
+    fn leader_replaced(&self, key: &ShardKey, leader: &str) -> bool {
+        // Whoever made the report: the leader names its own identity, and a
+        // predecessor's report names it as a follower.
+        self.reports
+            .get(key)
+            .is_some_and(|report| self.identity(report, leader) == Identity::Mismatch)
+    }
+
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
         self.counted(key, node_id)
             .is_some_and(|report| report.caught_up.contains(node_id))

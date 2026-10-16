@@ -98,6 +98,10 @@ pub struct ReportTo {
     /// registration (0 before the first). The control plane keeps a report's
     /// `by_round` only from the node's current incarnation.
     pub incarnation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// This broker's own storage identity, sent beside its followers' so
+    /// placement can tell when the leader's data directory is no longer the
+    /// one it reported from. `None` without durable storage.
+    pub storage_id: Option<StorageId>,
 }
 
 /// The token a report is sent with.
@@ -327,6 +331,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .storage_ids
                     .iter()
                     .map(|(node_id, id)| (node_id.clone(), id.to_hex()))
+                    .chain(to.storage_id.map(|id| (to.node_id.clone(), id.to_hex())))
                     .collect(),
                 replica_incarnations: report.node_incarnations.iter().cloned().collect(),
             })

@@ -47,6 +47,7 @@ fn counting_control_plane(
             node_id: "broker-a".to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            storage_id: None,
         },
         sizes,
         server,
@@ -312,6 +313,7 @@ fn judging_control_plane(
             node_id: "broker-a".to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            storage_id: None,
         },
         server,
     )
@@ -362,6 +364,55 @@ async fn an_answer_that_does_not_match_the_request_lands_nothing() {
     assert_eq!(
         send_reports(&renamed, &[report("led-a"), report("led-b")]).await,
         vec![false, true]
+    );
+    server.abort();
+}
+
+/// **A report names the leader's own storage identity beside its
+/// followers'** (#1295), so placement can tell a leader that came back on a
+/// data directory that may have lost what it reported from.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_names_the_leaders_own_storage_identity() {
+    let bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&bodies);
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/replica-status",
+        axum::routing::post(move |body: axum::Json<serde_json::Value>| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.lock().push(body.0);
+                axum::http::StatusCode::NO_CONTENT
+            }
+        }),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("addr");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("adopt");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+    let own = StorageId::from_bytes([7; 16]);
+    let to = ReportTo {
+        client: reqwest::Client::new(),
+        base_url: format!("http://{addr}"),
+        node_id: "broker-a".to_string(),
+        token: None,
+        incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        storage_id: Some(own),
+    };
+    let mut sent = report("s");
+    sent.storage_ids = vec![("broker-b".to_string(), StorageId::from_bytes([9; 16]))];
+
+    assert_eq!(send_reports(&to, &[sent]).await, vec![true]);
+
+    let bodies = bodies.lock().clone();
+    let ids = &bodies[0]["shards"][0]["replica_storage_ids"];
+    assert_eq!(ids["broker-a"], own.to_hex(), "{ids}");
+    assert_eq!(
+        ids["broker-b"],
+        StorageId::from_bytes([9; 16]).to_hex(),
+        "{ids}"
     );
     server.abort();
 }

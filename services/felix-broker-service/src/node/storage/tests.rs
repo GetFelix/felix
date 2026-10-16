@@ -78,12 +78,14 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
             fsync_mode,
             ..Default::default()
         };
-        let first = begin_run(root.path(), &log).expect("first run");
+        let first = begin_run(root.path(), &log).expect("first run").id;
         mark_clean_stop(root.path(), first).expect("clean stop");
-        let second = begin_run(root.path(), &log).expect("after a clean stop");
+        let second = begin_run(root.path(), &log).expect("after a clean stop").id;
         assert_eq!(second, first, "{fsync_mode:?}: a clean stop kept the id");
         // No clean stop: the process died.
         let third = begin_run(root.path(), &log).expect("after a crash");
+        assert_eq!(third.rotated, rotates, "{fsync_mode:?}");
+        let third = third.id;
         assert_eq!(third != second, rotates, "{fsync_mode:?}");
         assert_eq!(
             storage_id(Some(root.path())).expect("load"),

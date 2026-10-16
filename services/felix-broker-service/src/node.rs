@@ -175,7 +175,20 @@ where
         "sub egress lanes ENABLED"
     );
 
-    let (broker, durable_storage, storage_id) = storage::open(&config)?;
+    let (broker, durable_storage, storage_id, unclean) = storage::open(&config)?;
+    // Before anything can lead or answer a fence: a copy this broker led
+    // before a crash that may have cost it acknowledged records is not one it
+    // can lead from or vouch for (#1295).
+    let unclean = match (&config.membership, &cluster) {
+        (Some(membership), Some((_, ingress, _, _))) if unclean => {
+            let unclean = Arc::new(felix_replication::unclean::UncleanStart::new(
+                membership.node_id.as_str(),
+            ));
+            ingress.fence().bind_unclean_start(Arc::clone(&unclean));
+            Some(unclean)
+        }
+        _ => None,
+    };
     // A record with its publisher is storage format v6, which an older build
     // refuses to open, so a cluster waits for its fleet to finalize it and a
     // lone broker for its operator to ask.
@@ -408,6 +421,7 @@ where
         peers.as_ref().map(|pool| pool.known_capabilities().clone()),
         storage_id,
         registered_watch,
+        unclean.clone(),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -425,6 +439,8 @@ where
         fleet: &fleet,
         suspects: &suspects,
         incarnation: &incarnation,
+        storage_id: durable_storage.as_ref().map(|_| storage_id),
+        unclean: &unclean,
         sync_shutdown: &sync_shutdown,
     });
 

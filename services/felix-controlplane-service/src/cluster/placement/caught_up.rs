@@ -17,6 +17,16 @@ pub trait CaughtUp {
         None
     }
 
+    /// Whether `leader`, the leader of `key`, is registered with another
+    /// storage identity than the one the shard's last report names for it:
+    /// it came back after a crash that may have cost it records it
+    /// acknowledged, or on a wiped disk. Its copy can be short of what it
+    /// reported, so it does not keep the shard. False when either side has
+    /// no identity.
+    fn leader_replaced(&self, _key: &ShardKey, _leader: &str) -> bool {
+        false
+    }
+
     /// How far `node_id` had got, as last reported.
     ///
     /// Used to choose *between* caught-up replicas. "Caught up" is only ever

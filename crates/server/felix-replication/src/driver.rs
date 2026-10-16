@@ -28,7 +28,8 @@ use super::reporter::ShardReport;
 use super::status::ShardStatusBoard;
 use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
-use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard, watch_key};
+pub(crate) use shard::watch_key;
+use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard};
 use shards::{Context, Event, Shards};
 
 /// How many shards a pass ships at the same time.
@@ -290,6 +291,14 @@ pub trait WriteFence: Send + Sync {
     /// A follower refused `key`'s ships at `generation` because it accepted a
     /// newer leader. Called on every pass while the refusal stands.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
+
+    /// This broker does not lead `key` at `generation`, though the route says
+    /// it does: it gave the generation up after a crash, or has not yet
+    /// decided whether it can lead it (`crate::unclean`). Nothing ships,
+    /// reports or counts toward a mark for it.
+    fn withheld(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.
@@ -388,7 +397,9 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     let mut work = Vec::new();
     let mut unreplicated = Vec::new();
     for (key, route) in table.iter() {
-        if route.leader.node_id != router.local_node_id() {
+        if route.leader.node_id != router.local_node_id()
+            || fence.withheld(&watch_key(key), route.generation)
+        {
             continue;
         }
         live_shards.push(key.clone());

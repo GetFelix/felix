@@ -121,10 +121,12 @@ crashed, or whose SIGTERM drain ran past `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`,
 starts under a new storage id, and its leaders copy each shard it follows
 again. The first start on this release finds no record and keeps its id
 unless startup would repair a torn tail, so a roll of brokers stopped with
-SIGTERM changes no id. This covers followers only; a leader that crashes and restarts
-before failover reopens its shards with the shorter log
-([#1295](https://github.com/GetFelix/felix/issues/1295)). Give the drain time to finish during a roll; a broker
-killed partway through costs one copy per shard it follows. A downgrade and
+SIGTERM changes no id. A leader that crashes that way gives up the shards it
+led instead of reopening them with the shorter log, and the control plane
+promotes a follower for each
+([#1295](https://github.com/GetFelix/felix/issues/1295)). Give the drain time
+to finish during a roll; a broker killed partway through costs one copy per
+shard it follows, and a failover per shard it leads. A downgrade and
 upgrade again keeps whatever the newer release last recorded, so a crash on
 the older release in between is not detected.
 

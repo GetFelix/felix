@@ -711,6 +711,20 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// Give up the accepted generation, so no leader is accepted at it here
+    /// again. See `DiskLog::give_up_generation`.
+    pub async fn give_up_generation(&self) -> Result<u64> {
+        self.log
+            .give_up_generation()
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Whether the accepted generation was given up. See `DiskLog::gave_up`.
+    pub fn gave_up(&self) -> bool {
+        self.log.gave_up()
+    }
+
     /// One past the last record known committed; truncation and rebuild
     /// refuse to cut below it.
     pub fn commit_offset(&self) -> Offset {

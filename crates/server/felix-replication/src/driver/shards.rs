@@ -208,14 +208,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
+    /// Whether `route` names this broker as the leader, and it leads.
+    fn leads(&self, key: &ShardKey, route: &felix_router::Route) -> bool {
+        route.leader.node_id == self.cx.router.local_node_id()
+            && !self.cx.fence.withheld(&watch_key(key), route.generation)
+    }
+
     /// Give every shard led here a pass, and forget the ones that are not.
     pub(super) fn scan(&mut self) {
         self.scan += 1;
         let table = self.cx.router.snapshot();
-        let local = self.cx.router.local_node_id();
         let live: Vec<ShardKey> = table
             .iter()
-            .filter(|(_, route)| route.leader.node_id == local)
+            .filter(|(key, route)| self.leads(key, route))
             .map(|(key, _)| key.clone())
             .collect();
         for key in &live {
@@ -316,10 +321,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// Start a pass for `key`, or ask for one once the pass under way ends.
     fn start(&mut self, key: &ShardKey) {
         let table = self.cx.router.snapshot();
-        let Some(route) = table
-            .get(key)
-            .filter(|route| route.leader.node_id == self.cx.router.local_node_id())
-        else {
+        let Some(route) = table.get(key).filter(|route| self.leads(key, route)) else {
             return;
         };
         let state = self.states.entry(key.clone()).or_default();
@@ -506,7 +508,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .router
             .snapshot()
             .get(&key)
-            .is_some_and(|route| route.leader.node_id == self.cx.router.local_node_id());
+            .is_some_and(|route| self.leads(&key, route));
         if !self.states.contains_key(&key) {
             return;
         }

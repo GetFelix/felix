@@ -1870,8 +1870,9 @@ NVMe), amortised across concurrent publishers by group commit. `periodic` adds
 no measurable append latency at all. Under `periodic` and `none` a broker that
 crashes (anything but a clean SIGTERM stop) starts again under a new storage
 id, and its leaders copy each shard it follows again; under `on_commit` it
-keeps its id. A leader's own crash is not covered: it reopens its shards with
-the shorter log ([#1295](https://github.com/GetFelix/felix/issues/1295)).
+keeps its id. A leader that crashes that way does not lead its replicated
+shards from the shorter log: it gives them up and the control plane promotes
+a follower ([#1295](https://github.com/GetFelix/felix/issues/1295)).
 
 ### `FELIX_DURABLE_FSYNC_INTERVAL_MS`
 

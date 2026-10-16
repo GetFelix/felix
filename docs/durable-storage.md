@@ -1160,16 +1160,24 @@ that one start. A downgrade leaves the record as this release wrote it, and
 an older release ignores it; a crash under the older release before moving up
 again is not detected either.
 
-**A leader's own crash is not covered yet**
-([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id only
-changes how peers count the broker as a follower. A leader that crashes and
-restarts before the control plane fails its shard over is still the shard's
-leader, and reopens its old generation with the shorter log, so records it
-acknowledged from the lost tail are gone. Only `OnCommit` closes that today.
+**A start that rotated the id leads nothing from a copy it led before the
+crash** ([#1295](https://github.com/GetFelix/felix/issues/1295)). The broker
+may have acknowledged records from the tail it lost, so it gives each such
+replicated shard up instead of reopening its old generation with the shorter
+log: the open is refused before it writes anything, and the shard's ballot is
+rewritten to name no leader (`DiskLog::give_up_generation`), so no later
+start leads that copy either until a newer leader has shipped to it. Nor does
+it answer a successor's promotion fence from that copy meanwhile. The leader's
+replica reports name its own id, and placement, seeing it registered under
+another, promotes a follower that holds the records. A shard with no
+followers is led as before, from its only copy. See
+`docs/replication-design.md`, "A leader's own crash", for the whole of it and
+what it costs.
 
-Rotating the id does not reset a follower's election promises: the accepted
+Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
-them.
+them. Giving a copy up only narrows them: the ballot it writes accepts no
+leader at the generation it had already accepted.
 
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has

@@ -57,6 +57,7 @@ mod ship;
 pub mod status;
 pub mod suspicion;
 mod throttle;
+pub mod unclean;
 
 pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, RebuildBackoff, caught_up, lag_records};
 pub use quorum::{majority_of, quorum_offset, quorum_offset_without};

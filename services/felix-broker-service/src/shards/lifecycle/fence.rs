@@ -61,6 +61,13 @@ pub struct ShardFence {
     /// [`Self::take_deposals`].
     deposals: parking_lot::Mutex<Vec<(ShardKey, u64)>>,
     deposal: Notify,
+    /// Set on a start after a crash that may have lost acknowledged records:
+    /// a shard this broker is routed as leading is withheld from replication
+    /// until its open has decided this process leads it there.
+    unclean: OnceLock<Arc<felix_replication::unclean::UncleanStart>>,
+    /// Shards whose open was refused because this broker gave up the
+    /// generation, and the generation.
+    gave_up: RwLock<HashMap<ShardKey, u64>>,
 }
 
 impl ShardFence {
@@ -68,6 +75,18 @@ impl ShardFence {
     /// at startup, before any shard is opened; a second call is ignored.
     pub fn bind_lease(&self, lease: Arc<LeaseState>) {
         let _ = self.lease.set(lease);
+    }
+
+    /// Withhold every shard from replication until its open says this
+    /// process leads it. Called once, at startup, before any shard is opened.
+    pub fn bind_unclean_start(&self, unclean: Arc<felix_replication::unclean::UncleanStart>) {
+        let _ = self.unclean.set(unclean);
+    }
+
+    /// `key`'s open at `generation` was refused: this broker gave the
+    /// generation up.
+    pub(crate) fn gave_up(&self, key: &ShardKey, generation: u64) {
+        self.gave_up.write().insert(key.clone(), generation);
     }
 
     /// The lease bound with [`Self::bind_lease`], if any.
@@ -328,6 +347,14 @@ impl felix_replication::driver::WriteFence for ShardFence {
 
     fn deposed(&self, key: &ShardKey, generation: u64) {
         self.depose(key, generation);
+    }
+
+    fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gave_up.read().get(key) == Some(&generation)
+            || self
+                .unclean
+                .get()
+                .is_some_and(|unclean| !unclean.leads_at(key, generation))
     }
 }
 

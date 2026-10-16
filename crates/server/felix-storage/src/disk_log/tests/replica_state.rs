@@ -119,6 +119,40 @@ async fn a_ballot_written_before_a_crash_is_taken_at_open() {
     );
 }
 
+/// A broker that gave up the generation it led takes no leader at it again,
+/// itself included, across a restart; a newer generation replaces it (#1295).
+#[tokio::test]
+async fn a_given_up_generation_takes_no_leader_until_a_newer_one() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept");
+        assert!(!log.gave_up());
+        assert_eq!(log.give_up_generation().await.expect("give up"), 5);
+        assert!(log.gave_up());
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert!(log.gave_up(), "kept across a restart");
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Promised {
+            leader: String::new()
+        }
+    );
+    assert_eq!(
+        log.accept_generation(6, Some("broker-b"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Raised
+    );
+    assert!(!log.gave_up());
+}
+
 #[tokio::test]
 async fn a_generation_accepted_without_a_leader_takes_the_first_one_named() {
     let dir = tempdir().expect("tempdir");

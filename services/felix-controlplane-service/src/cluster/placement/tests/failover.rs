@@ -908,3 +908,96 @@ fn a_previous_leaders_report_still_promotes_on_a_quorum_shard() {
         "a Quorum shard waited on a report its fence makes unnecessary",
     );
 }
+
+const A_STORAGE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const A_CRASHED: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+/// [`last_report`] naming the leader's own identity, as a leader that
+/// reports it does.
+fn report_naming_the_leader() -> crate::model::ReplicaReport {
+    let mut report = last_report();
+    report
+        .follower_storage
+        .insert("broker-a".to_string(), A_STORAGE.to_string());
+    report
+}
+
+/// broker-a live and registered under `a_storage`, and both followers live
+/// under the identities the report names.
+fn live_leader_under(a_storage: &str) -> Vec<Node> {
+    let mut nodes =
+        cluster_after_report(NodeLifecycle::Live, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    nodes[0].status.storage_id = Some(a_storage.to_string());
+    nodes
+}
+
+/// What placement decides for `orders`, replicated `factor` times, from
+/// `report`, a second after it.
+fn plan_from(nodes: &[Node], report: crate::model::ReplicaReport, factor: u32) -> Plan {
+    let replicas: &[&str] = if factor > 1 {
+        &["broker-b", "broker-c"]
+    } else {
+        &[]
+    };
+    let streams = vec![replicated_stream("orders", 1, factor)];
+    let existing = vec![assigned("orders", "broker-a", replicas)];
+    let positions = ReplicaPositions::new(vec![report], &report_liveness(), REPORTED_AT + 1_000)
+        .with_nodes(nodes, &existing);
+    plan(&streams, &[], nodes, &existing, &positions)
+}
+
+/// **A leader back on a new storage identity is replaced (#1295).** It
+/// restarted after a crash that may have cost it records it acknowledged,
+/// so it gives the shard up, and placement promotes a follower the report
+/// names caught up, though the leader is live and heartbeating.
+#[test]
+fn a_leader_back_on_a_new_storage_identity_is_replaced() {
+    let plan = plan_from(&live_leader_under(A_CRASHED), report_naming_the_leader(), 3);
+    let (_, leader, replicas) = plan.to_place().next().expect("promoted");
+    assert_eq!(leader, "broker-c");
+    assert!(
+        replicas.iter().any(|replica| replica == "broker-a"),
+        "the old leader stays in the set to be copied again: {replicas:?}",
+    );
+}
+
+/// The same leader under the identity it reported from keeps the shard.
+#[test]
+fn a_leader_on_the_identity_it_reported_from_keeps_the_shard() {
+    let plan = plan_from(&live_leader_under(A_STORAGE), report_naming_the_leader(), 3);
+    assert_eq!(plan.to_place().count(), 0);
+    assert_eq!(plan.unplaceable().count(), 0);
+}
+
+/// **With nobody caught up the shard waits.** The leader will not lead from
+/// its copy, and no follower holds the log, so placement writes nothing: in
+/// particular no new generation naming the same leader, which would lead
+/// from the short copy.
+#[test]
+fn a_replaced_leader_with_nobody_caught_up_waits() {
+    let mut report = report_naming_the_leader();
+    report.caught_up.clear();
+    let plan = plan_from(&live_leader_under(A_CRASHED), report, 3);
+    assert_eq!(plan.to_place().count(), 0);
+    assert_eq!(plan.moves().count(), 0);
+    assert!(
+        plan.unplaceable()
+            .any(|(_, why)| matches!(why, Unplaceable::NoCaughtUpReplica)),
+    );
+}
+
+/// A report that does not name the leader's identity, from a broker that
+/// predates it, is read as before.
+#[test]
+fn a_report_without_the_leaders_identity_keeps_the_leader() {
+    let plan = plan_from(&live_leader_under(A_CRASHED), last_report(), 3);
+    assert_eq!(plan.to_place().count(), 0);
+}
+
+/// An only copy is led whatever it lost: there is no other to promote.
+#[test]
+fn an_unreplicated_leader_back_on_a_new_identity_keeps_the_shard() {
+    let plan = plan_from(&live_leader_under(A_CRASHED), report_naming_the_leader(), 1);
+    assert_eq!(plan.to_place().count(), 0);
+    assert_eq!(plan.unplaceable().count(), 0);
+}

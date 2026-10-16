@@ -386,7 +386,9 @@ records, bootstraps, rebuilds, and gap answers, restarts included, whatever its
 routing view says. The shard's cursor, dead-letter and counter logs check the
 shard's own log as well as their own. It answers with how far its log reaches,
 its commit offset, and the generation its last record was written at, which is
-how the model orders logs (`Ahead`).
+how the model orders logs (`Ahead`). A leader back from a crash that may have
+cost it records refuses instead, for the copy it led, until a newer leader has
+shipped to it; see [A leader's own crash](#a-leaders-own-crash).
 
 It is negotiated, not assumed. A broker offers the `FENCE` capability in the
 peer handshake, and a peer that did not offer it is never sent `Fence`
@@ -1482,16 +1484,11 @@ Raft stores). A slow request can otherwise land after a newer one and put back
 a view in which a follower that has since fallen behind still looks caught up.
 A report from a generation older than the assignment's is refused as stale.
 
-A restarted leader whose unsynced tail was lost can report a lower tail than
-the one held for the same generation; those reports are refused until its tail
-passes the old one, and its `Quorum` publishes wait meanwhile. That is a
-liveness cost, not a safety one: the held report describes records the
-followers do have.
-
-That covers the report, not the records. The restarted leader itself serves
-its old generation without the lost tail, and acknowledgements it made from
-that tail can be gone from it; see the storage-identity note below and
-[#1295](https://github.com/GetFelix/felix/issues/1295).
+A leader that lost an unsynced tail in a crash does not report on that
+generation again: it comes back under a new storage identity and leads
+nothing from the copy it led, so the report its previous process made stays
+the one placement promotes from. See [A leader's own crash](#a-leaders-own-crash)
+below.
 
 **A follower counts only for what it has answered.** The mark and the report
 count each follower up to the last offset it answered holding at the leader's
@@ -1676,7 +1673,8 @@ incarnation as the report arrives instead and loses the record, and
 `FelixShardCrashKeepsId.cfg` replaces the wipe with a crash that keeps the
 directory and the identity and loses the record. The passing case with the
 new identity and a partial suffix loss is too large for the CI job and is not
-model-checked (see `docs/formal/README.md`).
+model-checked (see `docs/formal/README.md`). A leader's crash has a pair of
+its own, under [A leader's own crash](#a-leaders-own-crash).
 
 ### Divergence and truncation
 
@@ -1977,7 +1975,8 @@ The identity catches a tail a follower lost in a crash under a relaxed
 starts under a new one after such a crash. The price is availability after
 correlated crashes: when the leader dies and every follower it reported has
 crashed and come back under a new id, nobody matches the report, and the
-shard is `NoCaughtUpReplica`. It resolves if the old leader returns. If it
+shard is `NoCaughtUpReplica`. It resolves if the old leader returns, unless
+it crashed that way too ([A leader's own crash](#a-leaders-own-crash)). If it
 cannot, an operator either gives up the log with `felixctl placement abandon
 <stream> <shard> --yes` (`felix-controlplane admin abandon`; records only the
 old copies held are lost) or restores the shard from a backup point with
@@ -1986,14 +1985,6 @@ docs site). Under `OnCommit` an acknowledged record is on disk, so a crash
 keeps the id. A crash of an older release, or one the first start on this
 release finds no torn tail for, is not detected (see
 `docs/durable-storage.md`).
-
-**A leader's own crash is not covered yet**
-([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id changes
-how peers count a broker as a follower. A leader that crashes under
-`Periodic` or `None` and restarts before placement fails the shard over is
-still the assignment's leader, and it reopens its old generation with a log
-shorter than what it acknowledged; nothing makes it step aside or fence its
-followers first. Until that is fixed, only `OnCommit` closes it.
 
 A new leader that dies before its first report leaves only its predecessor's
 report, which predates whatever the new leader acknowledged. Under `Leader`
@@ -2299,6 +2290,73 @@ consequence is that a second control-plane instance starts knowing nothing and
 cannot promote until leaders have reported to it, which matters for M7's
 multi-instance work and not before.
 
+#### A leader's own crash
+
+A new storage identity changes how a broker is counted as a follower (see
+"Storage identities" above). A leader that crashes under `Periodic` or
+`None` and restarts before placement fails it over is still the assignment's
+leader, and its log can be short of what it acknowledged. Reopened at its old generation, it and a follower that lagged
+behind the lost records made a majority, and wrote over offsets a client had
+been promised ([#1295](https://github.com/GetFelix/felix/issues/1295)). So
+the broker gives that leadership up and placement promotes a follower:
+
+- **On the broker.** A start that rotated the storage id leads nothing from a
+  copy it led before the crash: a replicated shard whose log's accepted
+  generation carries this broker's own ballot, or, with no ballot, the
+  generation it is named leader at. The open refuses before it writes
+  anything and the shard stays `failed`. The copy is given up on disk, as a
+  ballot naming no leader, so no later start, clean or not, leads it again at
+  any generation until a newer leader has shipped to it. Until each shard's
+  open has decided, replication passes over every shard the routes say this
+  broker leads: nothing ships, reports or counts toward a mark at the old
+  generation, and nothing is served from it (`may_lead` in
+  `shards/lifecycle.rs`, `felix_replication::unclean`).
+- **In placement.** A report names the leader's own storage identity beside
+  its followers'. When the assignment's leader is registered under another
+  identity than the shard's last report names for it, placement treats it as
+  gone, without waiting for its lease: it promotes the follower the report
+  names caught up, and keeps the old leader in the set to be copied again
+  (`leader_replaced` in `placement/plan.rs`). With nobody caught up it writes
+  nothing, so no new generation names the same leader. A report from an
+  older broker names no leader identity and is read as before.
+- **In the successor's fence.** The crashed leader answers no promotion fence
+  from that copy until a newer leader has shipped to it, since counted in the
+  successor's majority its short log could stand in for the follower that
+  holds the lost records. It refuses with `Unavailable`, which the successor
+  retries. Not in a set of even size: there every majority without it still
+  meets every majority that acknowledged, and in a set of two refusing would
+  leave no majority at all.
+
+A shard with no followers is led as before, since its only copy is the one
+there is. A clean stop, and a crash under `OnCommit`, keep the storage id and
+the fast path.
+
+The cost is availability. Placement promotes only from a report it still
+believes, so the leader has to come back and register within the report's
+lifetime (twice the expiry timeout plus a heartbeat); one that takes longer is
+marked down first, and its report is frozen as for any dead leader. When no
+follower is caught up (a `Leader` stream whose followers lagged, a report that
+expired, or followers that lost their identity too), nothing else holds what
+the crashed leader acknowledged, and the shard waits as `NoCaughtUpReplica`.
+Restarting the leader does not bring it back. An operator who accepts the loss
+stops that broker, abandons the log (`felixctl placement abandon`), and starts
+it again; it rejoins as a follower. A `Leader` stream promoted this way loses
+what its leader acknowledged after its last report, the window `Leader`
+already has when a leader dies.
+
+Not covered: a leader whose data directory was wiped has no ballot to say it
+led the shard, so only placement's check keeps it from serving its old
+generation, and only once it has registered; that is #1267's question too.
+With `FELIX_INTERNAL_FENCE=false` brokers keep no ballots, and a rotated
+leader gives up only a generation it is named at that its log had already
+accepted.
+
+`FelixShardLeaderCrashKeepsGen.cfg` lets a leader crash and keep its
+generation, and TLC finds the acknowledged record gone;
+`FelixShardLeaderCrashGivesUp.cfg` passes with the give-up and the
+replacement. Neither models the fence: the configurations with a crash use
+the lease and the report.
+
 ## Failure model
 
 | Situation | Behaviour |
@@ -2307,6 +2365,7 @@ multi-instance work and not before.
 | Leader of a `Quorum` stream or cache fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
 | A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
 | A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
+| Leader crashes under `Periodic` or `None` and restarts before it is failed over | It comes back under a new storage identity and leads nothing from the copy it led, which may have lost records it acknowledged. Placement sees the identity change and promotes a follower the last report names caught up, without waiting for the lease; with none, the shard waits. See [A leader's own crash](#a-leaders-own-crash). |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |

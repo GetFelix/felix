@@ -140,8 +140,10 @@ pub struct ShardReplicaStatus {
     pub by_round: bool,
     /// The storage identity each follower gave the leader, as 32 lowercase
     /// hex digits, keyed by node id. The positions above describe that copy
-    /// of a follower's log. A follower that gives none is absent. Omitted
-    /// when empty, and by brokers that predate it.
+    /// of a follower's log. A follower that gives none is absent. The leader
+    /// names its own too, so placement can tell when it comes back on a data
+    /// directory that is no longer the one it reported from. Omitted when
+    /// empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replica_storage_ids: BTreeMap<String, String>,
     /// The node incarnation each follower gave the leader in the handshake

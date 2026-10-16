@@ -2102,7 +2102,7 @@ pub(super) fn compare_from(generations: &[felix_storage::log::Epoch], generation
 /// The watch's key for a route, carrying the kind across rather than assuming
 /// it. A cache shard filed under a stream key would take the mark belonging to
 /// the stream of the same name.
-pub(super) fn watch_key(key: &ShardKey) -> crate::ShardKey {
+pub(crate) fn watch_key(key: &ShardKey) -> crate::ShardKey {
     crate::ShardKey {
         tenant_id: key.tenant_id.clone(),
         namespace: key.namespace.clone(),
