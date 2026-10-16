@@ -871,7 +871,8 @@ them.
 **The model.** `SetCheck`, `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and
 `PreVote` in `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set
 check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
-set at a cut-over by more than one member with the joint fence and passes;
+set at a cut-over by more than one member with the joint fence; it has not
+completed a run yet and runs nightly;
 `FelixShardElectSwapNoJoint.cfg` without it loses a record.
 `FelixShardElectStaleSet.cfg` without the set check finds a replica that left
 opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under

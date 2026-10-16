@@ -213,7 +213,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
-| `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants (not yet measured) |
+| `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants (has not completed a run: it hit the 150-minute job limit on main; runs nightly, see below) |
 | `FelixShardElectSwapNoJoint.cfg` | the same without the joint configuration: the cut-over fences, ships and acknowledges on the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
@@ -258,8 +258,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardReportUnpaired.cfg` | followers measured at the majority's offset, but the report claiming the whole log | violate `AckedSurvive` |
 | `FelixShardReportFromAnswers.cfg` | followers counted by what they answered, as the broker counts them, with two promotions in a row and no floor under the report | violate `AckedSurvive` |
 | `FelixShardReportFloor.cfg` | the same, with no follower named short of the log the leader inherited | pass |
-| `FelixShardWipe.cfg` | `FelixShardReportFloor.cfg` with a follower that loses its disk, the leader learning each follower's storage identity and placement promoting a follower only under the identity it has now | pass (not yet run; added with #1266) |
-| `FelixShardWipeNoIds.cfg` | the same without storage identities: a wiped follower stays counted on an idle shard | violate `AckedSurvive` (not yet run) |
+| `FelixShardWipe.cfg` | `FelixShardReportFloor.cfg` with a follower that loses its disk, the leader learning each follower's storage identity and placement promoting a follower only under the identity it has now | pass (35 min on a four-core CI runner) |
+| `FelixShardWipeNoIds.cfg` | the same without storage identities: a wiped follower stays counted on an idle shard | violate `AckedSurvive` (found in seconds) |
 | `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.39M distinct states) |
 | `FelixShardHandoffNoWait.cfg` | the same move cutting over without waiting for the drained report | violate `AtMostOneServing` |
 | `FelixShardStalePlannerCas.cfg` | two instances moving the shard, one acting on a held read; writes conditional on the generation read | pass every invariant (3.30M distinct states) |
@@ -572,7 +572,8 @@ the next, but a move's cut-over does not: `replicas_after_cut_over` keeps
 some of the staying replicas and tops the set up from brokers outside it, so
 {X, b, c} can become {Y, X, Z}. `Swap` models that cut-over, the destination
 leading on a set that differs from the old one by more than one member.
-`FelixShardElectSwap.cfg` passes with the joint fence, and
+`FelixShardElectSwap.cfg` is the same check with the joint fence; it has
+not completed a run yet (it runs nightly), and
 `FelixShardElectSwapNoJoint.cfg`, fencing the new set alone, finds a
 replica left on the old set standing at the new leader's generation, opening
 on a majority of the old set that the new leader never fenced, and
@@ -1068,13 +1069,15 @@ workflow's dispatch (`tla_configs`) when the change is risky.
 Whether a code change still matches the spec is a separate, quick check on
 every pull request that touches code (`scripts/check_spec_pairing.py`).
 
-Seven configurations are too big for that hour, and run nightly instead, each in
-its own job with a five-hour limit (the `exhaustive` job in
-`.github/workflows/tla-walk.yml`): `FelixShardElectHandoff.cfg`,
+Eight configurations are too big for that hour, and run nightly instead, each in
+its own job with a six-hour limit (the `exhaustive` job in
+`.github/workflows/tla-walk.yml`): `FelixShardElectSwap.cfg`,
+`FelixShardElectHandoff.cfg`,
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
-`FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
+`FelixShardFencedAckMoveCancel.cfg`. Each must pass; `FelixShardElectSwap.cfg`
+has not yet finished a run. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.

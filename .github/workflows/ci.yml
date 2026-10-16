@@ -42,6 +42,7 @@ jobs:
     outputs:
       code: ${{ steps.code.outputs.code }}
       formal: ${{ steps.formal.outputs.code }}
+      docs: ${{ steps.docs.outputs.code }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,6 +60,40 @@ jobs:
         with:
           ignore: '.*'
           keep: '^docs/formal/|^scripts/check_tla\.sh$|^\.github/workflows/ci\.yml$'
+
+      # The docs checks need only Python, so a docs-only change runs them too.
+      - id: docs
+        uses: ./.github/actions/code-changed
+        with:
+          ignore: '.*'
+          keep: '^docs/|^docs-site/|\.md$|^scripts/check_|^scripts/test_check_'
+
+  # `checks` runs docs:evidence on a code change; this is the same check for a
+  # change that is docs alone, which `checks` skips. A cited test or a table
+  # of env vars can go stale from a prose edit.
+  docs-evidence:
+    needs: changes
+    if: >-
+      needs.changes.outputs.docs == 'true' &&
+      needs.changes.outputs.code != 'true' &&
+      github.event_name != 'workflow_dispatch'
+    name: Documentation evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Task
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.53.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Documentation evidence
+        run: task docs:evidence
 
   # The Dockerfiles, built on every change that could break them.
   #
@@ -644,6 +679,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # HEAD^1, the base, for TLA_CHANGED_BASE.
+          fetch-depth: 2
 
       - name: Java
         uses: actions/setup-java@v6
@@ -656,6 +693,9 @@ jobs:
           TLA_SHARD: ${{ matrix.shard }}/7
           TLA_CONFIGS: ${{ inputs.tla_configs }}
           TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}
+          # The merge commit's first parent is main; a changed .cfg runs
+          # whatever its weight.
+          TLA_CHANGED_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
 
@@ -735,7 +775,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, test, cluster, checks, chart, python, typescript, spec-pairing, formal, fuzz]
+    needs: [changes, images, test, cluster, checks, docs-evidence, chart, python, typescript, spec-pairing, formal, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

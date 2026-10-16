@@ -296,6 +296,8 @@ tasks:
       # it names a project-board row the reader has never seen — so unlike the
       # status-claim report this one can fail.
       - "python3 scripts/check_public_docs_refs.py"
+      # The spec-pairing check's own tests; Python only, so they run with the rest.
+      - "python3 -m unittest scripts/test_check_spec_pairing.py"
   tla:check:
     desc: "Model-check the lease, replication and promotion protocol (docs/formal) with TLC"
     # Java, Docker or Podman; the TLA+ tools are fetched once, pinned, into target/tla.
