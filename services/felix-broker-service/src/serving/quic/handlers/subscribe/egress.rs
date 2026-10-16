@@ -150,8 +150,7 @@ pub(crate) struct EgressBytes {
 impl EgressBytes {
     /// Take over a batch's broker queue hold, giving back its share of the
     /// subscriber's queue bound: the batch is counted here now.
-    pub(super) fn carry(&mut self, mut queue: HeldBytes) {
-        queue.release_subscriber();
+    pub(super) fn carry(&mut self, queue: HeldBytes) {
         self.queue.absorb(queue);
     }
 
