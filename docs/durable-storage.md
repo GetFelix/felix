@@ -1160,19 +1160,20 @@ that one start. A downgrade leaves the record as this release wrote it, and
 an older release ignores it; a crash under the older release before moving up
 again is not detected either.
 
-**A start that rotated the id leads nothing from a copy it led before the
-crash** ([#1295](https://github.com/GetFelix/felix/issues/1295)). The broker
-may have acknowledged records from the tail it lost, so it gives each such
-replicated shard up instead of reopening its old generation with the shorter
-log: the open is refused before it writes anything, and the shard's ballot is
-rewritten to name no leader (`DiskLog::give_up_generation`), so no later
-start leads that copy either until a newer leader has shipped to it. Nor does
-it answer a successor's promotion fence from that copy meanwhile. The leader's
-replica reports name its own id, and placement, seeing it registered under
-another, promotes a follower that holds the records. A shard with no
-followers is led as before, from its only copy. See
-`docs/replication-design.md`, "A leader's own crash", for the whole of it and
-what it costs.
+**A start that rotated the id leads nothing from a copy that may be short
+of what it acknowledged** ([#1295](https://github.com/GetFelix/felix/issues/1295)):
+the copy it led before the crash, and one it followed at an older generation
+than it is named leader at, until a leader has shipped to it again. It gives
+each such replicated shard up instead of reopening it with the shorter log:
+the open is refused before it writes anything, and the shard's ballot is
+rewritten to name no leader (`DiskLog::give_up_generation`), so no later start
+leads that copy either until a newer leader has shipped to it. Nor does it
+answer a successor's promotion fence from that copy meanwhile. It asks every
+follower where its copy ends and reports that; placement promotes a follower
+that holds more, or, when none does, names the same broker leader again at a
+new generation, and the broker then leads its copy. A shard with no followers
+is led as before, from its only copy. See `docs/replication-design.md`, "A
+leader's own crash", for the whole of it and what it costs.
 
 Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps

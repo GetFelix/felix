@@ -7,7 +7,7 @@
 //! vote, and the records only the lost tail held can be overwritten. See
 //! "A leader's own crash" in `docs/replication-design.md` (#1295).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ShardKey;
@@ -19,6 +19,9 @@ pub struct UncleanStart {
     /// The generation this process took leadership of each shard at. A ballot
     /// at that generation naming this broker is this process's own.
     led: parking_lot::Mutex<HashMap<ShardKey, u64>>,
+    /// Shards a leader has shipped to this process: their copies have been
+    /// compared with a leader's since the crash.
+    vouched: parking_lot::Mutex<HashSet<ShardKey>>,
 }
 
 impl UncleanStart {
@@ -26,7 +29,34 @@ impl UncleanStart {
         Self {
             node_id: node_id.into(),
             led: parking_lot::Mutex::new(HashMap::new()),
+            vouched: parking_lot::Mutex::new(HashSet::new()),
         }
+    }
+
+    /// A leader shipped `key` to this process, so its copy has been compared
+    /// with a leader's since the crash.
+    pub fn vouch(&self, key: &ShardKey) {
+        self.vouched.lock().insert(key.clone());
+    }
+
+    /// Whether `log`, `key`'s copy, may be short of what this broker
+    /// acknowledged before the crash and has not been compared with a
+    /// leader's since, while this broker is asked to lead it at `generation`:
+    /// the copy it led ([`Self::led_before`]), or one it followed at an
+    /// older generation, as a follower named leader that crashed before it
+    /// took the generation would.
+    pub fn unvouched(
+        &self,
+        key: &ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> bool {
+        let accepted = log.accepted_generation();
+        self.led_before(key, log, generation)
+            || (accepted > 0
+                && accepted < generation
+                && !self.leads_at(key, accepted)
+                && !self.vouched.lock().contains(key))
     }
 
     /// This process leads `key` at `generation`.

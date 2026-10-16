@@ -271,7 +271,11 @@
 (* under a new identity and leads nothing from that copy, its report       *)
 (* names the identity it reported from, and placement promotes a follower  *)
 (* the report names caught up once the two differ, without waiting for the *)
-(* lease (FelixShardLeaderCrashGivesUp.cfg).                               *)
+(* lease (FelixShardLeaderCrashGivesUp.cfg). With `Reclaims` placement     *)
+(* names it again at the next generation when no follower's log is ahead   *)
+(* of its own (FelixShardLeaderCrashReclaim.cfg); without measuring the    *)
+(* followers TLC finds the record gone                                     *)
+(* (FelixShardLeaderCrashReclaimBlind.cfg).                                *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -404,6 +408,9 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* lifecycle.rs), and placement replaces it once its registered identity is
 \* not the one its report names (`leader_replaced` in
 \* services/felix-controlplane-service/src/cluster/placement/plan.rs).
+\* `Reclaims`: placement names a leader that gave its copy up leader again
+\* at the next generation once no follower is ahead of it (Reclaim).
+\* `ReclaimBlind`: it does so without measuring the followers.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -413,6 +420,8 @@ CrashLoses == FALSE
 RotateOnCrash == FALSE
 CrashLeader == FALSE
 GiveUpOnCrash == FALSE
+Reclaims == FALSE
+ReclaimBlind == FALSE
 
 VARIABLES
     now,        \* real time
@@ -1900,13 +1909,41 @@ CpFlip ==
                     promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
                     installed, ackGen >>
 
+\* Under `Reclaims`, placement names a leader that gave its copy up leader
+\* again at the next generation, on the same set, when no follower's log is
+\* ahead of its own: every follower measured as it stands now, as the given
+\* up leader's probe does (`crate::reclaim` in felix-replication,
+\* `reclaimable` in placement/replica_positions.rs). Nothing a client was
+\* promised is then held beyond its copy. The model lets it happen beside a
+\* promotion rather than only when none is possible, which admits more.
+\* `ReclaimBlind` skips the measurement.
+Reclaim(v, views) ==
+    /\ Reclaims
+    /\ LeaderReplaced(v)
+    /\ bgen[v.leader] = 0
+    /\ ReclaimBlind \/ \A f \in ReplicaSet \ {v.leader} : ~Ahead(f, v.leader)
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ cpExpiry' = now + L
+    /\ bgen' = [bgen EXCEPT ![v.leader] = gen + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![v.leader] = clock[v.leader] + L]
+    /\ report' = NoReport
+    /\ confirmed' = [confirmed EXCEPT ![v.leader] = [m \in Brokers |-> 0]]
+    /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, log, hwm, halted,
+                    queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << draining, successor, stopped, moves, staged, out, mine,
+                    joining, leaving, joinedAt >>
+    /\ UNCHANGED << promised, fencing, answered, ballot, opened, setVars, ackGen >>
+
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
     \/ Promote(v, f, views)
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
-          \/ Swap(v, f, views) \/ CpAdopt(v, f, views)
+          \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED counterVars
 
 -----------------------------------------------------------------------------

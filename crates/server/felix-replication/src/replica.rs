@@ -696,6 +696,14 @@ impl ReplicaHandler {
                 )
             }
             Ok(Ok(applied)) => {
+                if let Some(unclean) = &self.unclean
+                    && matches!(
+                        log_kind,
+                        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+                    )
+                {
+                    unclean.vouch(&crate::driver::watch_key(&key));
+                }
                 // Held like the leader's copy: this one counts toward the mark,
                 // and if it led, it would be the copy a client was promised.
                 if matches!(
@@ -1196,8 +1204,7 @@ impl ReplicaHandler {
     ///
     /// Judged on the shard's own log, which a group or counter log follows.
     /// On an unclean start a copy whose ballot names this broker is given up
-    /// on disk here, so a later restart still refuses. Only for a replica
-    /// set of odd size, as this broker's routes have it.
+    /// on disk here, so a later restart still refuses. Not in a set of two.
     async fn refuse_short_copy(
         &self,
         correlation_id: u64,
@@ -1239,10 +1246,11 @@ impl ReplicaHandler {
         if !log.gave_up() && !led_before {
             return None;
         }
-        // In a set of even size every majority without this broker still
-        // meets every majority that acknowledged a record, so its vote cannot
-        // stand in for one it lost. Refusing there would leave a two-copy
-        // shard with no majority at all.
+        // In a set of two the other copy holds every record a majority of the
+        // two acknowledged, so this broker's vote cannot stand in for one it
+        // lost, and refusing would leave the shard with no majority at all.
+        // Any other size is refused: the set that acknowledged may not be the
+        // one the routes show now, as during a replacement.
         let set_size = self.router.snapshot().get(key).map(|route| {
             1 + route
                 .replicas
@@ -1250,7 +1258,7 @@ impl ReplicaHandler {
                 .filter(|replica| replica.node_id != route.leader.node_id)
                 .count()
         });
-        if set_size.is_some_and(|size| size % 2 == 0) {
+        if set_size == Some(2) {
             return None;
         }
         if led_before

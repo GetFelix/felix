@@ -385,3 +385,105 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
     .expect("the old leader rejoins as a follower");
     cluster.shutdown().await;
 }
+
+/// **A crashed `Leader` leader no follower is ahead of is named again
+/// (#1295).** Its followers lag, so none is caught up and nobody holds
+/// anything it might have lost. It gives its copy up on restart, probes both
+/// followers, and placement names it leader again at a new generation rather
+/// than leave the shard waiting for an operator. It serves every record it
+/// held and takes new ones.
+#[tokio::test]
+#[serial]
+async fn a_crashed_leader_no_follower_is_ahead_of_is_reclaimed() {
+    let mut cluster = Cluster::start(ClusterConfig {
+        streams: vec![StreamSpec::replicated(STREAM, 1, 3)],
+        ..config()
+    })
+    .await
+    .expect("start");
+    let leader = cluster.owner(STREAM).await.expect("owner");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != leader)
+        .collect();
+    let cut = Fault::Refuse {
+        node: leader.clone(),
+        peers: followers.clone(),
+    };
+    cluster.inject(&cut).await.expect("cut the followers off");
+    for i in 0..RECORDS {
+        cluster
+            .publish_via(&leader, STREAM, format!("record-{i}").into_bytes())
+            .await
+            .expect("acknowledged by the leader alone");
+    }
+    let before = registered_storage(&cluster, &leader).await;
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a report naming no follower caught up, under the leader's own identity",
+        || async {
+            cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| {
+                    report.caught_up.is_empty()
+                        && report.follower_storage.get(&leader) == Some(&before)
+                })
+        },
+    )
+    .await
+    .expect("the leader reports");
+    let generation = cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .into_values()
+        .next()
+        .expect("the shard")
+        .generation;
+    cluster.run_placement(Duration::from_millis(200));
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    cluster.heal(&cut).await.expect("heal");
+    cluster
+        .restart_node(&leader)
+        .await
+        .expect("restart the leader");
+    assert_ne!(
+        registered_storage(&cluster, &leader).await,
+        before,
+        "a crash under Periodic rotates the storage id"
+    );
+
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "placement to name the leader again at a new generation",
+        || async {
+            cluster
+                .shard_assignments()
+                .await
+                .ok()
+                .and_then(|assignments| assignments.into_values().next())
+                .is_some_and(|assignment| {
+                    assignment.leader == leader && assignment.generation > generation
+                })
+        },
+    )
+    .await
+    .expect("the leader is reclaimed");
+    cluster
+        .publish_keyed_via_settled(
+            &leader,
+            STREAM,
+            b"k",
+            b"record-after".to_vec(),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("the reclaimed leader serves");
+    assert_eq!(replay(&cluster, &leader).await, all_records());
+    cluster.shutdown().await;
+}

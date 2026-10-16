@@ -916,3 +916,62 @@ async fn a_followed_copy_takes_the_fence_after_an_unclean_start() {
         .with_unclean_start(unclean());
     taken(&handler.fence(SENDER, fence(6)).await);
 }
+
+/// In a set of four, during a replacement or not, the set that acknowledged
+/// may have been three, where this broker's vote could stand in for a record
+/// it lost: refused, as in any set but two.
+#[tokio::test]
+async fn a_crashed_leader_of_four_copies_refuses_the_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_with(&[LOCAL, "broker-c", "broker-d"], 6),
+    )
+    .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// A batch a leader ships after an unclean start vouches for the copy: a
+/// leader has compared it since the crash.
+#[tokio::test]
+async fn a_batch_vouches_for_the_copy_after_an_unclean_start() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        handler
+            .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+            .await;
+    }
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+    assert!(
+        start.unvouched(&shard, &log, 6),
+        "followed at 5, named at 6"
+    );
+
+    let answer = handler
+        .apply(
+            SENDER,
+            batch(5, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(!start.unvouched(&shard, &log, 6));
+}

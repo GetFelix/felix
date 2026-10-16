@@ -56,6 +56,7 @@ fn router_with(replicas: &[&str], generation: u64) -> Arc<ShardRouter> {
         ("broker-a".to_string(), node("broker-a", 7001)),
         (LOCAL.to_string(), node(LOCAL, 7002)),
         ("broker-c".to_string(), node("broker-c", 7003)),
+        ("broker-d".to_string(), node("broker-d", 7004)),
     ]
     .into_iter()
     .collect();

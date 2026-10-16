@@ -299,6 +299,18 @@ pub trait WriteFence: Send + Sync {
     fn withheld(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
         false
     }
+
+    /// The generation this broker gave `key` up at, when it refused to lead
+    /// the shard from its copy. Such a shard is probed instead of shipped
+    /// (`crate::reclaim`).
+    fn gave_up_at(&self, _key: &crate::ShardKey) -> Option<u64> {
+        None
+    }
+
+    /// A probe of every follower at `generation`, the one `key` was given
+    /// up at, found none ahead of this broker's copy (`reclaimable`), or
+    /// found one ahead.
+    fn probed(&self, _key: &crate::ShardKey, _generation: u64, _reclaimable: bool) {}
 }
 
 /// A fence that holds nothing back: every shard is quiet.

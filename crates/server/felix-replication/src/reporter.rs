@@ -148,6 +148,11 @@ pub struct ShardReport {
     /// `None` for one that had not registered yet, for every follower that
     /// sends one. Like `storage_ids`, it names who the positions describe.
     pub node_incarnations: Vec<(String, Option<u64>)>,
+    /// This broker gave the shard up after a crash and measured where every
+    /// follower's copy ends (`crate::reclaim`). Sent drained and without a
+    /// tail, so it replaces the report its previous process made whatever
+    /// that one's tail; its own position is in `offsets` under its node id.
+    pub given_up: bool,
 }
 
 impl ShardReport {
@@ -212,6 +217,7 @@ pub(super) fn shard_report(
                 Some((follower.node_id.clone(), at))
             })
             .collect(),
+        given_up: false,
     }
 }
 
@@ -300,7 +306,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 generation: report.generation,
                 caught_up: report.caught_up.to_vec(),
                 drained: report.drained,
-                leader_offset: Some(report.tail),
+                leader_offset: (!report.given_up).then_some(report.tail),
                 replica_offsets: report
                     .offsets
                     .iter()

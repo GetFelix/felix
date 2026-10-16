@@ -27,6 +27,23 @@ pub trait CaughtUp {
         false
     }
 
+    /// Whether `leader` reported at `generation` that it gave the shard up:
+    /// back from a crash that may have cost it records, it leads nothing
+    /// from its copy, and its report says where every follower's copy ends
+    /// instead (`felix_replication::reclaim`).
+    fn leader_gave_up(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
+        false
+    }
+
+    /// Whether `leader`, which gave the shard up, may lead it again from its
+    /// copy: a fresh report it made since it last registered, under the
+    /// storage identity it registered with, measures every one of
+    /// `followers` under the identity and incarnation each is registered at
+    /// now, and none holds more than `leader` does.
+    fn reclaimable(&self, _key: &ShardKey, _leader: &str, _followers: &[&str]) -> bool {
+        false
+    }
+
     /// How far `node_id` had got, as last reported.
     ///
     /// Used to choose *between* caught-up replicas. "Caught up" is only ever

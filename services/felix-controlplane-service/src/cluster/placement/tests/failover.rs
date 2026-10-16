@@ -1001,3 +1001,99 @@ fn an_unreplicated_leader_back_on_a_new_identity_keeps_the_shard() {
     assert_eq!(plan.to_place().count(), 0);
     assert_eq!(plan.unplaceable().count(), 0);
 }
+
+/// What broker-a reports once it came back under [`A_CRASHED`], gave the
+/// shard up and measured both followers: drained, no tail of its own, its
+/// position beside theirs, each under the identity and incarnation it is
+/// registered at.
+fn given_up_report(a: u64, b: u64, c: u64) -> crate::model::ReplicaReport {
+    crate::model::ReplicaReport {
+        caught_up: BTreeSet::new(),
+        offsets: BTreeMap::from([
+            ("broker-a".to_string(), a),
+            ("broker-b".to_string(), b),
+            ("broker-c".to_string(), c),
+        ]),
+        drained: true,
+        leader_offset: None,
+        leader: Some("broker-a".to_string()),
+        node_incarnations: BTreeMap::from([
+            ("broker-a".to_string(), 1),
+            ("broker-b".to_string(), 2),
+            ("broker-c".to_string(), 2),
+        ]),
+        follower_storage: BTreeMap::from([
+            ("broker-a".to_string(), A_CRASHED.to_string()),
+            ("broker-b".to_string(), B_STORAGE.to_string()),
+            ("broker-c".to_string(), C_STORAGE.to_string()),
+        ]),
+        ..last_report()
+    }
+}
+
+/// **A leader that gave up is named again when no follower holds more than
+/// it does (#1295).** Nobody else holds anything it lost, so waiting for an
+/// operator gains nothing: placement names it at a new generation, on the
+/// same set.
+#[test]
+fn a_leader_that_gave_up_with_no_follower_ahead_is_reclaimed() {
+    let plan = plan_from(&live_leader_under(A_CRASHED), given_up_report(10, 4, 10), 3);
+    let (_, leader, replicas) = plan.to_place().next().expect("reclaimed");
+    assert_eq!(leader, "broker-a");
+    assert_eq!(replicas, ["broker-b".to_string(), "broker-c".to_string()]);
+}
+
+/// A follower ahead of a leader that gave up holds what it lost, and the
+/// probe names the furthest caught up: promoted, not reclaimed.
+#[test]
+fn a_follower_ahead_of_a_leader_that_gave_up_is_promoted() {
+    let mut report = given_up_report(10, 4, 12);
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_from(&live_leader_under(A_CRASHED), report, 3);
+    let (_, leader, _) = plan.to_place().next().expect("promoted");
+    assert_eq!(leader, "broker-c");
+}
+
+/// **Only a fresh measurement of every follower, each under its registered
+/// identity, reclaims.** A stale report can understate a follower holding
+/// what the leader lost; one that misses a follower, or measured an older
+/// copy of it, says nothing about what that follower holds now.
+#[test]
+fn a_reclaim_needs_every_follower_measured_since_the_crash() {
+    let stale = || {
+        let mut report = given_up_report(10, 4, 10);
+        report.reported_at_millis = 0;
+        report
+    };
+    let unmeasured = || {
+        let mut report = given_up_report(10, 4, 10);
+        report.offsets.remove("broker-c");
+        report
+    };
+    let older_copy = || {
+        let mut report = given_up_report(10, 4, 10);
+        report
+            .follower_storage
+            .insert("broker-c".to_string(), C_WIPED.to_string());
+        report
+    };
+    let older_process = || {
+        let mut report = given_up_report(10, 4, 10);
+        report.node_incarnations.insert("broker-b".to_string(), 1);
+        report
+    };
+    for (what, report) in [
+        ("stale", stale()),
+        ("unmeasured", unmeasured()),
+        ("older copy", older_copy()),
+        ("older process", older_process()),
+    ] {
+        let plan = plan_from(&live_leader_under(A_CRASHED), report, 3);
+        assert_eq!(plan.to_place().count(), 0, "{what}: reclaimed");
+        assert!(
+            plan.unplaceable()
+                .any(|(_, why)| matches!(why, Unplaceable::NoCaughtUpReplica)),
+            "{what}: the shard should wait",
+        );
+    }
+}

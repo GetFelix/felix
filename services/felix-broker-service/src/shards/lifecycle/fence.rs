@@ -68,6 +68,9 @@ pub struct ShardFence {
     /// Shards whose open was refused because this broker gave up the
     /// generation, and the generation.
     gave_up: RwLock<HashMap<ShardKey, u64>>,
+    /// Given-up shards whose last probe found no follower ahead of this
+    /// broker's copy, and the generation they were given up at.
+    reclaimable: RwLock<HashMap<ShardKey, u64>>,
 }
 
 impl ShardFence {
@@ -87,6 +90,12 @@ impl ShardFence {
     /// generation up.
     pub(crate) fn gave_up(&self, key: &ShardKey, generation: u64) {
         self.gave_up.write().insert(key.clone(), generation);
+    }
+
+    /// The generation `key` was given up at, if its last probe found no
+    /// follower ahead of this broker's copy. See `felix_replication::reclaim`.
+    pub(crate) fn reclaimable_at(&self, key: &ShardKey) -> Option<u64> {
+        self.reclaimable.read().get(key).copied()
     }
 
     /// The lease bound with [`Self::bind_lease`], if any.
@@ -347,6 +356,18 @@ impl felix_replication::driver::WriteFence for ShardFence {
 
     fn deposed(&self, key: &ShardKey, generation: u64) {
         self.depose(key, generation);
+    }
+
+    fn gave_up_at(&self, key: &ShardKey) -> Option<u64> {
+        self.gave_up.read().get(key).copied()
+    }
+
+    fn probed(&self, key: &ShardKey, generation: u64, reclaimable: bool) {
+        if reclaimable {
+            self.reclaimable.write().insert(key.clone(), generation);
+        } else {
+            self.reclaimable.write().remove(key);
+        }
     }
 
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {

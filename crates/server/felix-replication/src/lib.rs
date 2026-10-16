@@ -50,6 +50,7 @@ pub mod metrics;
 pub mod promotion;
 pub mod quorum;
 mod rebuild;
+pub mod reclaim;
 pub mod replica;
 pub mod reporter;
 mod shard;

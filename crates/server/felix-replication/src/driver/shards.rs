@@ -186,6 +186,8 @@ pub(super) struct Shards<'a, R> {
     pub(super) exchanges: FuturesUnordered<BoxFuture<'a, Answered>>,
     /// Shards led here with no other copy, by when each last reported.
     alone: HashMap<ShardKey, Alone>,
+    /// When each shard this broker gave up was last probed.
+    probed: HashMap<ShardKey, tokio::time::Instant>,
     pub(super) reports: FuturesUnordered<BoxFuture<'a, Reported>>,
 }
 
@@ -204,6 +206,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             fences: FuturesUnordered::new(),
             exchanges: FuturesUnordered::new(),
             alone: HashMap::new(),
+            probed: HashMap::new(),
             reports: FuturesUnordered::new(),
         }
     }
@@ -223,6 +226,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .filter(|(key, route)| self.leads(key, route))
             .map(|(key, _)| key.clone())
             .collect();
+        let given_up: Vec<(ShardKey, felix_router::Route)> = table
+            .iter()
+            .filter(|(key, route)| {
+                route.leader.node_id == self.cx.router.local_node_id()
+                    && self.cx.fence.gave_up_at(&watch_key(key)) == Some(route.generation)
+            })
+            .map(|(key, route)| (key.clone(), route.clone()))
+            .collect();
+        self.probed
+            .retain(|key, _| given_up.iter().any(|(given, _)| given == key));
+        for (key, route) in given_up {
+            self.probe(key, route);
+        }
         for key in &live {
             self.start(key);
         }
@@ -453,6 +469,40 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 generation,
                 incarnation,
                 tail,
+            }
+        }));
+    }
+
+    /// Probe the followers of a shard this broker gave up, each tick, and
+    /// report what they hold. See `crate::reclaim`.
+    fn probe(&mut self, key: ShardKey, route: felix_router::Route) {
+        let Some(reporter) = self.cx.reporter else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        if self
+            .probed
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < self.cx.refresh / 2)
+        {
+            return;
+        }
+        self.probed.insert(key.clone(), now);
+        let cx = self.cx;
+        self.reports.push(Box::pin(async move {
+            let local = cx.router.local_node_id();
+            if let Some(probe) =
+                crate::reclaim::probe(cx.requester, cx.broker, local, &key, &route).await
+            {
+                cx.fence
+                    .probed(&watch_key(&key), route.generation, probe.reclaimable);
+                reporter.submit(probe.report);
+            }
+            Reported {
+                key,
+                generation: route.generation,
+                incarnation: 0,
+                tail: 0,
             }
         }));
     }

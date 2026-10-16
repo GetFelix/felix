@@ -138,10 +138,13 @@ over may have acknowledged records from the tail it lost. It does not reopen
 its old generation with the shorter log: it gives up each replicated shard it
 led, on disk, so no later start leads that copy either, and does not vote
 with it in its successor's fence. Its reports name its own storage id, so the
-control plane sees the new one and promotes a follower that holds the records
-without waiting for the lease. With no such follower the shard waits rather
-than lose them; a shard with no followers is led from its only copy as
-before ([#1295](https://github.com/GetFelix/felix/issues/1295)). The full
+control plane sees the new one and promotes a follower that holds more
+without waiting for the lease. The broker asks every follower where its copy
+ends: when none holds more than it does, the control plane names it leader
+again at a new generation. When it cannot hear from every follower and none
+is known to be caught up, the shard waits rather than lose what such a
+follower holds. A shard with no followers is led from its only copy as before
+([#1295](https://github.com/GetFelix/felix/issues/1295)). The full
 rules are in
 [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#storage-identity).
 

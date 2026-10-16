@@ -288,7 +288,8 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                         .with_generation_starts(shard_lifecycle::GenerationStarts {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
-                        });
+                        })
+                        .with_fence(Arc::clone(ingress.fence()));
                     let store = match unclean {
                         Some(unclean) => store.with_unclean_start(Arc::clone(unclean)),
                         None => store,

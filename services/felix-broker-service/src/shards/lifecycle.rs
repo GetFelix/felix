@@ -1183,6 +1183,9 @@ pub struct DurableShardStore {
     /// Set when this process started after a crash that may have cost it
     /// records it acknowledged.
     unclean: Option<std::sync::Arc<felix_replication::unclean::UncleanStart>>,
+    /// The lifecycle's write fence, which keeps what probes of given-up
+    /// shards found.
+    fence: Option<std::sync::Arc<fence::ShardFence>>,
 }
 
 /// What a leader needs to write its generation-start record: the broker it
@@ -1208,7 +1211,15 @@ impl DurableShardStore {
             generation_starts: None,
             ballot: None,
             unclean: None,
+            fence: None,
         }
+    }
+
+    /// Read what probes of given-up shards found from `fence`, so a copy no
+    /// follower is ahead of can be led again. See `felix_replication::reclaim`.
+    pub fn with_fence(mut self, fence: std::sync::Arc<fence::ShardFence>) -> Self {
+        self.fence = Some(fence);
+        self
     }
 
     /// Lead no shard from a copy this broker led before an unclean start.
@@ -1440,10 +1451,11 @@ impl ShardStore for DurableShardStore {
     }
 
     /// A copy given up after a crash is not led again, after any restart,
-    /// until a newer leader has shipped to it. On an unclean start the copy
-    /// this broker led before is given up here, before the open writes
-    /// anything: its tail may be short of what it acknowledged, and leading
-    /// from it, at the old generation or a new one, would count it.
+    /// until a newer leader has shipped to it or a probe found no follower
+    /// ahead of it. On an unclean start a copy that may be short of what this
+    /// broker acknowledged is given up here, before the open writes anything:
+    /// the copy it led, and one it followed at an older generation that no
+    /// leader has shipped to since. Leading from either would count it.
     async fn may_lead(
         &self,
         key: &ShardKey,
@@ -1452,15 +1464,28 @@ impl ShardStore for DurableShardStore {
         replicated: bool,
     ) -> anyhow::Result<()> {
         let Some(log) = self.own_log(key, incarnation).await? else {
+            if let Some(unclean) = &self.unclean {
+                unclean.lead(key, generation);
+            }
             return Ok(());
         };
-        if replicated && log.gave_up() {
+        // Reclaimed: a probe of every follower since the give-up found none
+        // ahead of this copy, so nothing a client was promised is held beyond
+        // it. Only at a newer generation, which placement names for it.
+        let accepted = log.accepted_generation();
+        let reclaimed = log.gave_up()
+            && generation > accepted
+            && self
+                .fence
+                .as_ref()
+                .is_some_and(|fence| fence.reclaimable_at(key) == Some(accepted));
+        if replicated && log.gave_up() && !reclaimed {
             return Err(GaveUp { generation }.into());
         }
         let Some(unclean) = &self.unclean else {
             return Ok(());
         };
-        if replicated && unclean.led_before(key, &log, generation) {
+        if replicated && !reclaimed && unclean.unvouched(key, &log, generation) {
             log.give_up_generation()
                 .await
                 .map_err(|err| anyhow::anyhow!("give up the generation it led: {err}"))?;
@@ -1468,7 +1493,7 @@ impl ShardStore for DurableShardStore {
                 stream = %key.stream,
                 shard = key.shard,
                 generation,
-                "not leading the shard from the copy this broker led before its crash",
+                "not leading the shard from a copy that may have lost records in this broker's crash",
             );
             return Err(GaveUp { generation }.into());
         }

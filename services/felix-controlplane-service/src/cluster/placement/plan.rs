@@ -364,10 +364,16 @@ pub(super) fn plan_abandoning(
         // acknowledged, or a wipe. It does not lead from that copy (#1295),
         // so the shard fails over as if it were down, or waits for one that
         // holds the log. A shard with no followers has no other copy.
+        // Or the leader said so itself, in a report it made since it came
+        // back. Outside a move, where `drained` means what the move made it.
         let replaced = current.get(&key).is_some_and(|existing| {
             durable
                 && existing.replicas.iter().any(|r| *r != existing.leader)
-                && caught_up.leader_replaced(&key, &existing.leader)
+                && (caught_up.leader_replaced(&key, &existing.leader)
+                    || (existing.successor.is_none()
+                        && existing.joining.is_none()
+                        && existing.state != ShardState::Draining
+                        && caught_up.leader_gave_up(&key, existing.generation, &existing.leader)))
         });
 
         // The leader is still serving: a move, not a reassignment, unless
@@ -456,6 +462,31 @@ pub(super) fn plan_abandoning(
             });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
+        }
+
+        // A leader that gave its copy up leads again at a new generation when
+        // a report it made since it came back shows no follower holding more
+        // than it does: nothing a client was promised is held beyond its copy.
+        if let Some(previous) = current.get(&key)
+            && replaced
+        {
+            let followers: Vec<&str> = previous
+                .replicas
+                .iter()
+                .map(String::as_str)
+                .filter(|replica| *replica != previous.leader)
+                .collect();
+            if caught_up.reclaimable(&key, &previous.leader, &followers) {
+                for node in previous.nodes() {
+                    *load.entry(node.as_str()).or_default() += 1;
+                }
+                shards.push(ShardPlan {
+                    key,
+                    decision: Decision::Place(previous.leader.clone(), previous.replicas.clone()),
+                });
+                note_spread(&mut unspread, shards.last(), &current, &eligible);
+                continue;
+            }
         }
 
         // Nothing that holds the log can lead. Placing the shard on a node
