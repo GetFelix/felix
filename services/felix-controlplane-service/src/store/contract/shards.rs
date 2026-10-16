@@ -1171,6 +1171,8 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         drained: false,
         leader_offset: Some(10),
         halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     store
@@ -1305,6 +1307,8 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                         stream_incarnation: None,
                         by_round: false,
                         leader_incarnation: None,
+                        leader: None,
+                        node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                     },
                     "broker-x",

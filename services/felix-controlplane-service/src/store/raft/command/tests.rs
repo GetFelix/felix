@@ -98,6 +98,8 @@ fn a_replica_report_is_restamped() {
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
@@ -150,6 +152,8 @@ fn a_report_without_a_leader_is_the_old_wire_form() {
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {

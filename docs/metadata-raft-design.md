@@ -463,7 +463,13 @@ route. A member proposes a command only when every member of the current
 membership, learners included, reports at least that command's level, in
 the manner of KRaft's `metadata.version`. A member that reports nothing
 predates this and counts as level 0; one that cannot be reached counts at
-what it last reported, or 0 if it never has. The member asking gives its
+what it last reported. One that has not answered since this process started
+counts at the group's floor (below), the level the applied log already
+depends on. A member below it could not apply what the log already holds,
+so counting one at the floor lets through no level above what it was
+already sent. Counted at 0, a
+restart with one member down dropped every field the group had been storing,
+such as a node's storage identity, until that member answered again. The member asking gives its
 own level on that probe, so every member has heard the leader's: when the
 leader dies, the member elected next still counts it at its level. Without
 that, a dead leader was an unknown to its successor, and the new leader fell
@@ -657,6 +663,13 @@ follower as unverified: counted while the report is fresh, and never from a
 dead leader's report past its TTL (see
 [replication-design.md](replication-design.md#who-may-be-promoted)).
 
+Level 13 is a replica report's `report.leader`, the node that made it, and
+its `node_incarnations`, the incarnation each node it names was registered at
+when the API took it. The API fills both before proposing, so they are plain
+data too. Below level 13 the proposer drops them, and placement reads the
+report as it did at level 12: from any leader, and an unverified follower
+however often it restarted.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -681,6 +694,7 @@ the field itself, on every member alike, or refuses the command:
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 | node `storage_id`, replica report `follower_storage`, and both in the snapshot | 12 | the registration and the report are proposed without them, which placement reads as unverified |
+| replica report `report.leader` and `node_incarnations`, and both in the snapshot | 13 | the report is proposed without them, which placement reads as at level 12 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

@@ -18,6 +18,8 @@ pub(super) async fn a_replica_report_is_kept_and_read_back(store: &dyn ControlPl
     let recorded = ReplicaReport {
         by_round: true,
         leader_incarnation: Some(1),
+        leader: Some(LEADER.to_string()),
+        node_incarnations: [(LEADER.to_string(), 2), ("broker-b".to_string(), 4)].into(),
         ..report(shard, generation(store, shard).await, &["broker-b"], 5_000)
     };
     assert_eq!(
@@ -385,6 +387,8 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     }
 }

@@ -153,10 +153,20 @@ pub(crate) async fn report_replica_status(
         None
     };
 
+    let incarnations = registered_incarnations(&state, &node_id, &request.shards).await?;
+
     // Grown, not sized from the request: the shard count is the caller's.
     let mut outcomes = Vec::new();
     for shard in request.shards {
-        let outcome = record_one(&state, &node_id, now, leader_incarnation, &shard).await?;
+        let outcome = record_one(
+            &state,
+            &node_id,
+            now,
+            leader_incarnation,
+            &incarnations,
+            &shard,
+        )
+        .await?;
         if !outcome.accepted() {
             metrics::counter!(
                 "felix_replica_status_rejected_total",
@@ -195,6 +205,48 @@ async fn current_incarnation(
     }
 }
 
+/// The incarnation every node the request names is registered at, read
+/// before any report in it is stored. A registration landing after this read
+/// leaves the node at a newer incarnation than the report says, which only
+/// ever counts it for less.
+async fn registered_incarnations(
+    state: &AppState,
+    node_id: &str,
+    shards: &[ShardReplicaStatus],
+) -> Result<std::collections::BTreeMap<String, u64>, ApiError> {
+    let mut named = std::collections::BTreeSet::from([node_id]);
+    for shard in shards {
+        named.extend(named_nodes(shard));
+    }
+    let mut incarnations = std::collections::BTreeMap::new();
+    for id in named {
+        match state.store.get_node(id).await {
+            Ok(node) => {
+                incarnations.insert(id.to_string(), node.status.incarnation);
+            }
+            Err(StoreError::NotFound(_)) => {}
+            Err(ref other) => return Err(api_internal("read the node", other)),
+        }
+    }
+    Ok(incarnations)
+}
+
+/// Every follower one shard's report says something about.
+fn named_nodes(shard: &ShardReplicaStatus) -> impl Iterator<Item = &str> {
+    shard
+        .caught_up
+        .iter()
+        .map(String::as_str)
+        .chain(shard.replica_offsets.iter().map(|r| r.node_id.as_str()))
+        .chain(
+            shard
+                .replica_counter_offsets
+                .iter()
+                .map(|r| r.node_id.as_str()),
+        )
+        .chain(shard.replica_storage_ids.keys().map(String::as_str))
+}
+
 /// Judge one shard's report and, if it passes, store it. `by_round` is kept
 /// only with `leader_incarnation`, the reporting process's incarnation.
 async fn record_one(
@@ -202,6 +254,7 @@ async fn record_one(
     node_id: &str,
     now: u64,
     leader_incarnation: Option<u64>,
+    incarnations: &std::collections::BTreeMap<String, u64>,
     shard: &ShardReplicaStatus,
 ) -> Result<ReportOutcome, ApiError> {
     let key = crate::model::ShardKey {
@@ -306,6 +359,11 @@ async fn record_one(
         stream_incarnation: Some(shard.stream_incarnation),
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
+        leader: Some(node_id.to_string()),
+        node_incarnations: std::iter::once(node_id)
+            .chain(named_nodes(shard))
+            .filter_map(|id| Some((id.to_string(), *incarnations.get(id)?)))
+            .collect(),
         // A malformed identity is no evidence either way, so it is left out
         // and the follower is judged as one that sent none.
         follower_storage: shard

@@ -1840,42 +1840,76 @@ placement holds that against the identity the follower is registered with now:
   acknowledged by {A, B, C}, a C that comes back empty and is promoted when A
   dies forms the promotion fence's majority with D and E (the new leader's own
   log counts as a vote) without the record.
-- **Either missing:** an older broker on one side. The follower counts while
-  the report is fresh, as before identities existed. Only a mismatch is
-  evidence; a missing identity excludes nothing.
+- **Either missing:** a broker on one side that predates identities, or a
+  registration or report written through a control plane that dropped them.
+  The follower counts while the report is fresh and only if the report was
+  taken at the incarnation the follower is registered at now. Without an
+  identity, a restart is the only evidence the follower may have lost its
+  disk, so a report from before it says nothing about what it holds.
+
+The control plane stamps each report with the node that made it and the
+incarnation every node it names was registered at, read before the report is
+stored (`report.leader`, `node_incarnations`). A registration landing after
+that read leaves a node at a newer incarnation than the stamp, which counts it
+for less, never more. What the stamp cannot see is a report the leader
+measured before the follower restarted that reaches the control plane after
+the follower registered again: it is stamped at the new incarnation. That is
+one report in flight, and the leader's next pass reports the follower as it is
+now.
+
+The incarnation check costs availability in one case: an unverified follower
+that restarts after its leader's last report, whose leader then dies, is not
+promoted on that report, and the shard waits for the leader. A follower with a
+matching identity is not affected, so the case closes once both sides carry
+identities.
 
 Once the leader is marked down, nothing will refresh its last report, and a
 report measured against now would expire if placement or the control plane was
 slow around the death, leaving the shard unplaceable for good (#1250). So while
-the assignment is still at the report's generation and its leader is `down` or
-`left`, the report's age is measured to the leader's last heartbeat instead of
-now, for followers whose identity matches. A follower that only restarted keeps
-its identity and still counts, however long ago the report was made. A live
-leader's report keeps ageing, so one that stopped reporting still expires.
+the report's leader is still the assignment's leader, at the incarnation it
+reported from, and is `down` or `left`, the report's age is measured to the
+leader's last heartbeat instead of now, for followers whose identity matches.
+That holds across the generations a move's steps write under the same leader
+(stage, fence, restore, seat), so a leader that dies mid-move does not leave
+its report to expire. A report without a stamp (from a control plane that
+predates it) is frozen only while the assignment is at its generation. A
+follower that only restarted keeps its identity and still counts, however
+long ago the report was made. A live leader's report keeps ageing, so one that
+stopped reporting still expires.
 What the report says of the shard as a whole (its generation, the leader's
 tail, whether it drained, which copies halted) is read for as long as the
 report is believed, so promotion can work from a dead leader's report.
 
 The registered identity is the current registration's: a registration without
 one clears it, and the Postgres store reads it only while it was written at the
-node's current incarnation. Until a restarted broker's registration lands, its
-record still carries the identity its previous process registered. So a
-follower that is wiped before the control plane marks it down, whose leader
-dies before the restarted broker registers again, can still be counted on the
-old identity. Placement does not treat a missing heartbeat as evidence to close
-that window.
+node's current incarnation. A registration cleared that way leaves the
+follower unverified, and the incarnation check above keeps every report from
+before it out. Under Raft a member that has not answered since the leader
+restarted counts at the group's floor rather than at 0, so a restart with one
+member down does not start dropping identities the group was already storing
+([metadata-raft-design.md](metadata-raft-design.md)). Until a restarted
+broker's registration lands, its record still carries the identity and
+incarnation its previous process registered. So a follower that is wiped
+before the control plane marks it down, whose leader dies before the restarted
+broker registers again, can still be counted on the old identity. Placement
+does not treat a missing heartbeat as evidence to close that window.
 
 The identity catches a lost data directory, not a tail lost in a crash under a
 relaxed `FsyncMode`. Keeping a dead leader's report believed for longer widens
 that exposure; under `OnCommit` an acknowledged record is on disk, so there is
 none.
 
-A leader that dies before its first report at its generation leaves no report
-to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.
-Placement does not guess in that case. At a later generation the acknowledged
-records may be on the dead leader alone, and with no report a caught-up replica
-cannot be told from a lagging one. The window runs from the assignment, through
-the promotion fence, to the first replication pass.
+A new leader that dies before its first report leaves no report to promote on,
+and the shard is `NoCaughtUpReplica` until that broker returns. The previous
+leader's report is still held, but it counts for nobody once another node
+leads: it predates whatever the new leader acknowledged. Under `Leader` that
+can be on the new leader alone. Under `Quorum` on the lease nothing is
+acknowledged before the new leader's first stored report, and under
+`majority_ack` the next promotion's fence would find it, but placement does
+not tell the levels apart here. The window runs from the assignment, through
+the promotion fence, to the first replication pass. A report without a stamp
+(from a control plane that predates it) is read as before: any report counts
+while it is fresh.
 
 A halted follower is never reported as a candidate, however close its last
 position was. It has stopped rather than fallen behind. The report names it

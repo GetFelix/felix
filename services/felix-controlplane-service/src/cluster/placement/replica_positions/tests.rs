@@ -52,6 +52,8 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     }
 }
@@ -230,6 +232,8 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 drained: false,
                 leader_offset: None,
                 halted: Default::default(),
+                leader: None,
+                node_incarnations: Default::default(),
                 follower_storage: Default::default(),
             },
             "broker-x",
@@ -559,6 +563,8 @@ fn dead_leader(storage: Option<&str>) -> Vec<crate::model::Node> {
 /// A report naming broker-b under [`B_STORAGE`].
 fn identified(reported_at_millis: u64) -> ReplicaReport {
     ReplicaReport {
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: [("broker-b".to_string(), B_STORAGE.to_string())].into(),
         ..report("orders", &["broker-b"], reported_at_millis)
     }

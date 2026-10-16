@@ -40,18 +40,26 @@
 //! nothing about what it holds now. So a follower counts from a report only
 //! while the two identities match, and never once they differ, however fresh
 //! the report. When either side has none (a broker that predates them) the
-//! follower is judged by the report's age alone, as before.
+//! follower counts only while the report is fresh and was taken at the
+//! follower's current incarnation: a restart is then the only evidence it
+//! may have lost its log.
+//!
+//! # Why only the current leader's report counts
+//!
+//! A report from before a promotion predates whatever the new leader
+//! acknowledged, which under `Leader` may be on the new leader alone. So a
+//! new leader that dies before its first report leaves nothing to promote on.
 //!
 //! # Why a dead leader's report stops ageing
 //!
 //! Only the leader reports on its shard, so once it dies nothing refreshes
 //! its last report. Measured against now, that report would expire while
 //! placement or the control plane was slow, and the shard would stay
-//! unplaceable for good. So once the leader is down, and the assignment is
-//! still at the report's generation, the report's age is measured to the
-//! leader's last heartbeat instead. That holds only for a follower whose
-//! identity matches: one that lost its log since the report would otherwise
-//! still look caught up.
+//! unplaceable for good. So once the leader is down, and it is the process
+//! that made the report, the report's age is measured to the leader's last
+//! heartbeat instead, through any move steps it took since. That holds only
+//! for a follower whose identity matches: one that lost its log since the
+//! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeSet, HashMap};
@@ -127,6 +135,7 @@ pub struct ReplicaPositions {
 /// What reading a report needs of a node.
 struct NodeView {
     storage_id: Option<String>,
+    incarnation: u64,
     down: bool,
     last_heartbeat_at_millis: u64,
 }
@@ -172,6 +181,7 @@ impl ReplicaPositions {
             .map(|node| {
                 let view = NodeView {
                     storage_id: node.status.storage_id.clone(),
+                    incarnation: node.status.incarnation,
                     down: matches!(
                         node.status.lifecycle,
                         NodeLifecycle::Down | NodeLifecycle::Left
@@ -266,20 +276,57 @@ impl ReplicaPositions {
     /// The instant `report`'s age is measured to: now, or the last heartbeat
     /// of a leader that is down and will not report again.
     ///
-    /// Only while the assignment is at the report's generation: the store
-    /// took the report from that generation's leader, so the down node is
-    /// the one that made it. A live leader's report keeps ageing, so one that
-    /// stopped reporting still expires.
+    /// Only while the assignment's leader is the process that made the
+    /// report: same node, same incarnation. A move's steps raise the
+    /// generation under the same leader, and a leader that dies mid-move
+    /// leaves its report at the step before (#1250). A report that does not
+    /// say who made it is only placed by the generation: at the
+    /// assignment's, the store took it from that generation's leader. A live
+    /// leader's report keeps ageing, so one that stopped reporting still
+    /// expires.
     fn aged_to(&self, key: &ShardKey, report: &ReplicaReport) -> u64 {
-        let Some((generation, leader)) = self.assignments.get(key) else {
+        let Some((generation, leader_id)) = self.assignments.get(key) else {
             return self.now_millis;
         };
-        match self.nodes.get(leader) {
-            Some(leader) if *generation == report.generation && leader.down => {
-                leader.last_heartbeat_at_millis.min(self.now_millis)
+        let Some(leader) = self.nodes.get(leader_id) else {
+            return self.now_millis;
+        };
+        let made_it = match &report.leader {
+            Some(reporter) => {
+                reporter == leader_id
+                    && report.node_incarnations.get(leader_id) == Some(&leader.incarnation)
             }
-            _ => self.now_millis,
+            None => *generation == report.generation,
+        };
+        if made_it && leader.down {
+            leader.last_heartbeat_at_millis.min(self.now_millis)
+        } else {
+            self.now_millis
         }
+    }
+
+    /// Whether `report` may speak for the shard's followers: it was made by
+    /// the assignment's leader, or does not say who made it.
+    ///
+    /// A previous leader's report predates whatever its successor
+    /// acknowledged. Under `Leader` that can be on the successor alone, so a
+    /// successor that dies before its first report leaves nothing to promote
+    /// on rather than its predecessor's view.
+    fn made_by_current_leader(&self, key: &ShardKey, report: &ReplicaReport) -> bool {
+        match (&report.leader, self.assignments.get(key)) {
+            (Some(reporter), Some((_, leader))) => reporter == leader,
+            _ => true,
+        }
+    }
+
+    /// Whether `report` was taken while `node_id` was at the incarnation it
+    /// is registered at now. A report that does not say is read as before.
+    fn same_incarnation(&self, report: &ReplicaReport, node_id: &str) -> bool {
+        if report.leader.is_none() {
+            return true;
+        }
+        let current = self.nodes.get(node_id).map(|node| node.incarnation);
+        current.is_some() && report.node_incarnations.get(node_id).copied() == current
     }
 
     /// How the identity `report` names for `node_id` compares with the one
@@ -299,16 +346,23 @@ impl ReplicaPositions {
 
     /// The report for `key`, if it may say anything about `node_id`.
     ///
-    /// A matching identity is believed as long as the report is, a
-    /// mismatched one never, and an unverified one only while the report
-    /// is fresh: without an identity, a report held past its TTL could
-    /// vouch for a follower that has lost its log since.
+    /// Only the current leader's report counts. Then a matching identity is
+    /// believed as long as the report is, a mismatched one never, and an
+    /// unverified one only while the report is fresh and was taken at the
+    /// follower's current incarnation: without an identity, a restart is the
+    /// only evidence the follower may have lost its log, and a report held
+    /// past its TTL could vouch for one that has.
     fn counted(&self, key: &ShardKey, node_id: &str) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
+        if !self.made_by_current_leader(key, report) {
+            return None;
+        }
         match self.identity(report, node_id) {
             Identity::Match => self.believed(key),
             Identity::Mismatch => None,
-            Identity::Unverified => self.fresh(key),
+            Identity::Unverified => self
+                .fresh(key)
+                .filter(|report| self.same_incarnation(report, node_id)),
         }
     }
 }

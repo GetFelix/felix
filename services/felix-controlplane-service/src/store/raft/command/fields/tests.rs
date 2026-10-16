@@ -200,6 +200,8 @@ fn report() -> ReplicaReport {
         stream_incarnation: Some(1),
         by_round: true,
         leader_incarnation: Some(1),
+        leader: Some(s("n")),
+        node_incarnations: any_map(1),
         follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
     }
 }

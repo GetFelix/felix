@@ -601,6 +601,8 @@ fn last_report() -> crate::model::ReplicaReport {
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: BTreeMap::from([
             ("broker-b".to_string(), B_STORAGE.to_string()),
             ("broker-c".to_string(), C_STORAGE.to_string()),
@@ -748,4 +750,113 @@ fn a_live_leaders_old_report_still_expires() {
         );
         assert_eq!(positions.reported_offset(&key, "broker-c"), None);
     }
+}
+
+/// [`last_report`] as a control plane that stamps reports records it:
+/// made by broker-a at incarnation 1, with broker-b at 2 and broker-c at
+/// `c_incarnation`.
+fn stamped_report(c_incarnation: u64) -> crate::model::ReplicaReport {
+    crate::model::ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        node_incarnations: BTreeMap::from([
+            ("broker-a".to_string(), 1),
+            ("broker-b".to_string(), 2),
+            ("broker-c".to_string(), c_incarnation),
+        ]),
+        ..last_report()
+    }
+}
+
+/// What placement does with `orders`, held by `existing`, at `now`.
+fn place_on(
+    report: crate::model::ReplicaReport,
+    nodes: &[Node],
+    existing: ShardAssignment,
+    now: u64,
+) -> Option<String> {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![existing];
+    let positions =
+        ReplicaPositions::new(vec![report], &report_liveness(), now).with_nodes(nodes, &existing);
+    let plan = plan(&streams, &[], nodes, &existing, &positions);
+    plan.to_place()
+        .next()
+        .map(|(_, leader, _)| leader.to_string())
+}
+
+/// **A leader that dies mid-move still freezes its report (#1250).** Each
+/// step of a move writes a new generation under the same leader, so its last
+/// report can be a step behind the assignment. It is still that leader's
+/// report, and nothing else will report on the shard.
+#[test]
+fn a_leader_that_dies_mid_move_freezes_its_report() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    let mut stepped = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    stepped.generation += 1;
+    assert_eq!(
+        place_on(
+            stamped_report(2),
+            &nodes,
+            stepped.clone(),
+            REPORTED_AT + report_ttl() * 10
+        )
+        .as_deref(),
+        Some("broker-c"),
+        "the report from the step before expired and the shard stayed unplaced",
+    );
+
+    // A restart since the report is another process: its report ages.
+    let mut restarted = nodes.clone();
+    restarted[0].status.incarnation = 2;
+    assert_eq!(
+        place_on(
+            stamped_report(2),
+            &restarted,
+            stepped,
+            REPORTED_AT + report_ttl() * 10
+        ),
+        None,
+        "a report from the leader's previous process was frozen",
+    );
+}
+
+/// **A previous leader's report promotes nobody.** broker-a reported at
+/// generation 3 and broker-b was promoted at 4; broker-b died before its
+/// first report. What broker-b acknowledged may be on broker-b alone, so
+/// broker-a's view, however fresh, says nothing about it.
+#[test]
+fn a_previous_leaders_report_promotes_nobody() {
+    let mut nodes =
+        cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    nodes[1].status.lifecycle = NodeLifecycle::Down;
+    let mut promoted = assigned("orders", "broker-b", &["broker-c"]);
+    promoted.generation += 1;
+    for now in [REPORTED_AT + 1_000, REPORTED_AT + report_ttl() * 10] {
+        assert_eq!(
+            place_on(stamped_report(2), &nodes, promoted.clone(), now),
+            None,
+            "at {now}, broker-c was promoted on the previous leader's report",
+        );
+    }
+}
+
+/// **An unverified follower that restarted since the report is not
+/// counted.** Without an identity a restart is the only evidence it may have
+/// lost its log, as when a wiped follower registers on a control plane that
+/// drops identities, which clears the one it had registered.
+#[test]
+fn an_unverified_follower_that_restarted_since_the_report_is_not_counted() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 3, None);
+    let existing = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    let now = REPORTED_AT + 1_000;
+    assert_eq!(
+        place_on(stamped_report(2), &nodes, existing.clone(), now),
+        None,
+        "broker-c was counted from a report taken before it restarted",
+    );
+    assert_eq!(
+        place_on(stamped_report(3), &nodes, existing, now).as_deref(),
+        Some("broker-c"),
+        "a report taken at broker-c's current incarnation did not count",
+    );
 }

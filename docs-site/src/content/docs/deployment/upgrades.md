@@ -91,17 +91,23 @@ way.
 its data directory, and its replica reports name the identity each follower
 was counted under. Placement never promotes a follower whose two identities
 differ, and keeps a dead leader's last report believed past the usual window
-for one whose identities match. A Postgres control plane runs migration `0030` on start. Until every
-instance runs this release, a registration or report written through an older
-instance carries no identity and reads as unverified: that follower is judged
-by the report's age alone, as on the previous release, until a current
-instance takes the broker's next registration or the leader's next report. A
-Raft control plane stores identities only once every member is at metadata
-level 12, and reads every follower as unverified until then. A broker on the
-previous release registers without an identity and is read the same way. So
-until both the control plane and the brokers are rolled, a follower that lost
-its disk can still be promoted on what it reported before, and a leader that
-dies while placement is slow can leave its shard unplaceable, as before.
+for one whose identities match. The control plane also stamps each report
+with the leader that made it and the incarnation of every node it names, and
+counts a follower without an identity only from a fresh report taken since it
+last registered. A Postgres control plane runs migrations `0030` and `0031` on
+start. Until every instance runs this release, a registration or report
+written through an older instance carries neither identity nor stamp: that
+follower is judged by the report's age alone, as on the previous release,
+until a current instance takes the broker's next registration or the leader's
+next report. A Raft control plane stores identities once every member is at
+metadata level 12, and the stamps at level 13; until then a follower reads as
+unverified and a report as unstamped. A broker on the previous release
+registers without an identity, so its followers count only through the stamp.
+So until both the control plane and the brokers are rolled, a follower that
+lost its disk can still be promoted: before the control plane, on what was
+reported before it restarted, and before the brokers, on what a leader that
+cannot see its identity reports after. A leader that dies while placement is
+slow can leave its shard unplaceable, as before.
 
 ### Fleet features: on only when an operator finalizes them
 

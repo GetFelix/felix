@@ -263,6 +263,8 @@ pub(super) async fn report(
                 drained,
                 leader_offset: None,
                 halted: Default::default(),
+                leader: None,
+                node_incarnations: Default::default(),
                 follower_storage: Default::default(),
             },
             &leader,

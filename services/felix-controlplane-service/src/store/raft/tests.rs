@@ -619,6 +619,8 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         stream_incarnation: None,
                         by_round: false,
                         leader_incarnation: None,
+                        leader: None,
+                        node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                     },
                     "broker-x",
@@ -812,6 +814,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             },
         )]
         .into(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     let held = || async {
@@ -920,6 +924,8 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             },
         )]
         .into(),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     let held = || async {
@@ -1039,6 +1045,8 @@ async fn storage_ids_wait_for_every_member() {
         drained: false,
         leader_offset: Some(3),
         halted: Default::default(),
+        leader: Some("broker-x".to_string()),
+        node_incarnations: [("broker-y".to_string(), 1)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
     };
     let held = || async {
@@ -1060,6 +1068,8 @@ async fn storage_ids_wait_for_every_member() {
     );
     let first = held().await;
     assert!(first.follower_storage.is_empty());
+    assert_eq!(first.leader, None);
+    assert!(first.node_incarnations.is_empty());
     assert!(first.by_round);
 
     version.store(
@@ -1082,11 +1092,62 @@ async fn storage_ids_wait_for_every_member() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(held().await.follower_storage, report.follower_storage);
+    assert_eq!(held().await.leader, report.leader);
+    assert_eq!(held().await.node_incarnations, report.node_incarnations);
     let registered = store
         .register_node(with_id("broker-y", 7102))
         .await
         .expect("register");
     assert_eq!(registered.status.storage_id, Some(id.clone()));
+}
+
+/// Once the log holds a storage identity, a restart with a peer down keeps
+/// storing them. Counted at 0, the silent peer dropped every identity a
+/// registration or report carried, and a wiped follower's registration then
+/// cleared the identity its old one was checked against. A peer that
+/// answers with a lower level still holds them back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn identities_are_kept_past_a_peer_that_never_answered() {
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) =
+        store_with_member_at(dir.path(), crate::store::raft::command::METADATA_VERSION).await;
+    let with_id = || {
+        let mut node = crate::store::contract::nodes::node("broker-y", 7102);
+        node.status.storage_id = Some(id.clone());
+        node
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .register_node(with_id())
+        .await
+        .expect("register")
+        .status
+        .storage_id
+        .is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // As after a restart with the peer down: it has never answered.
+    version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    let registered = store.register_node(with_id()).await.expect("register");
+    assert_eq!(
+        registered.status.storage_id,
+        Some(id.clone()),
+        "a peer that never answered dropped the identity"
+    );
+
+    // A peer that says it is below the level holds it back.
+    version.store(11, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    let registered = store.register_node(with_id()).await.expect("register");
+    assert_eq!(registered.status.storage_id, None);
 }
 
 /// A member before pair narrowing would drop `permissions` from a refresh
