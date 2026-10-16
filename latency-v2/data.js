@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792157636965,
+  "lastUpdate": 1792160168269,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39996,6 +39996,72 @@ window.BENCHMARK_DATA = {
             "range": "34.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 619.00\nmean: 613.40\nstdev: 34.08\ncv: 5.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8c5c5d04cd5849596337067c79f27fc8c9779ba",
+          "message": "fix(placement): promote a caught-up follower before reclaiming a crashed leader (#1315)\n\n* fix(placement): promote a caught-up follower before reclaiming a crashed leader\n\nThe given-up leader's probe now names followers level with it caught up,\nand placement reclaims only when every follower is behind. A follower\ncounts from the probe only when measured under its current identity and\nincarnation. Closes #1314.\n\n* test(cluster): let the replacement test's probe reach placement first\n\nWith the probe naming a level follower caught up, the outcome no longer\ndepends on the order, so the fault that kept the probe out goes.\n\n* fix(placement): keep a cache's way out and make the reclaim model reachable\n\nThe probe names a cache follower furthest on both logs first, else the\nfurthest on the first log not behind the leader, so a split between the\ncache and counter logs never leaves the shard waiting. Crash in the model\nmay lose nothing, so a leader can return holding a record no follower has\nand Reclaim fires with one write.\n\n* fix(placement): reclaim when every follower is behind on the cache log\n\nA follower ahead only on the counter log is behind on what the leader\nkept, so the probe names nobody and the shard is reclaimed.",
+          "timestamp": "2026-10-16T14:12:40Z",
+          "tree_id": "84fe0e0f347ff9c82ffab47646096310b1a23108",
+          "url": "https://github.com/GetFelix/felix/commit/b8c5c5d04cd5849596337067c79f27fc8c9779ba"
+        },
+        "date": 1792160164580,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.40\nstdev: 1.14\ncv: 1.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 95,
+            "range": "26.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 105.80\nstdev: 26.40\ncv: 24.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 122,
+            "range": "49.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 142.00\nstdev: 49.34\ncv: 34.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.40\nstdev: 1.67\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "6.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 213.20\nstdev: 6.30\ncv: 2.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 552,
+            "range": "578.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 552.00\nmean: 718.00\nstdev: 578.83\ncv: 80.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
