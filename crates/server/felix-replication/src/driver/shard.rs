@@ -787,7 +787,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // the cursor now describes. One from another copy starts the
                 // cursor over, as a new identity in the probe would.
                 let answered = requester.answered();
-                let other = answered.iter().find(|seen| **seen != cursor.identity());
+                let before = cursor.identity();
+                let other = answered.iter().find(|seen| **seen != before);
                 if let Some(&seen) = other {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
@@ -795,7 +796,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cursor,
                     rode,
                     cut: cut || counters_cut,
-                    checked: !answered.is_empty() && other.is_none(),
+                    checked: !answered.is_empty()
+                        && answered.iter().all(|seen| same_copy(*seen, before)),
                 }
             });
             exchange
@@ -2008,18 +2010,29 @@ fn checked_only(followers: &[FollowerCursor], checked: &HashSet<String>) -> Vec<
         .collect()
 }
 
+/// Whether two identities name the same copy of a follower's log. The same
+/// storage identity does, whatever process holds it. Without one on both
+/// sides only the same incarnation does: a restart may have lost the log.
+fn same_copy(a: PeerIdentity, b: PeerIdentity) -> bool {
+    match (a.storage, b.storage) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Start `cursor` over at `base` unless it already describes the copy of
-/// the log, and the process holding it, that `seen` names. Whatever it said
-/// about another, including that it held everything, is not true of this
-/// one. An incarnation alone changing counts too: a follower whose storage
-/// identity is unknown can lose its log across a restart.
+/// the log that `seen` names. Whatever it said about another copy, including
+/// that it held everything, is not true of this one. A new incarnation on
+/// the same storage is the same copy: only the incarnation is updated, so a
+/// re-registration keeps the follower's position, halts and rebuild.
 pub(super) fn follow_storage(
     cursor: &mut FollowerCursor,
     seen: PeerIdentity,
     base: u64,
     rebuilds: &Rebuilds,
 ) {
-    if cursor.identity() == seen {
+    if same_copy(cursor.identity(), seen) {
+        cursor.incarnation = seen.incarnation;
         return;
     }
     if cursor.rebuilding {

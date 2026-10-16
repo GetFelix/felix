@@ -1900,8 +1900,9 @@ Register(f) ==
 \* the new one by dialling again (`Probe`).
 Shown(f) == IF f \in restarting THEN 0 ELSE inc[f] + 1
 
-\* The leader learns `f`'s identity and incarnation from the handshake, and
-\* a change in either starts `f`'s count over: `follow_storage` in
+\* The leader learns `f`'s identity and incarnation from the handshake. A
+\* new identity starts `f`'s count over; a new incarnation on the same one
+\* is the same copy and only updates it: `follow_storage` in
 \* crates/server/felix-replication/src/driver/shard.rs, at the start of each
 \* exchange, so an idle shard learns it too.
 Probe(b, f) ==
@@ -1910,8 +1911,10 @@ Probe(b, f) ==
     /\ (seen[b][f] /= sid[f] \/ seenInc[b][f] /= Shown(f))
     /\ seen' = [seen EXCEPT ![b][f] = sid[f]]
     /\ seenInc' = [seenInc EXCEPT ![b][f] = Shown(f)]
-    /\ confirmed' = [confirmed EXCEPT ![b][f] = 0]
-    /\ checked' = [checked EXCEPT ![b] = @ \ {f}]
+    /\ IF seen[b][f] /= sid[f]
+       THEN /\ confirmed' = [confirmed EXCEPT ![b][f] = 0]
+            /\ checked' = [checked EXCEPT ![b] = @ \ {f}]
+       ELSE UNCHANGED << confirmed, checked >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
@@ -1920,15 +1923,14 @@ Probe(b, f) ==
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
 \* A connection opened to the process before a wipe answers nothing. One
-\* opened before the process registered can still answer until the close
-\* lands, naming no incarnation. Only the current leader, and only a follower
-\* whose answer would count, which keeps the state space down.
+\* opened to the current copy answers whatever incarnation it named, since
+\* the copy is what an answer vouches for. Only the current leader, and only
+\* a follower whose answer would count, which keeps the state space down.
 Answer(b, f) ==
     /\ StorageIds /\ Wipes > 0
     /\ leader = b /\ bgen[b] = gen
     /\ f /= b /\ f \notin checked[b] /\ confirmed[b][f] > 0
     /\ seen[b][f] = sid[f]
-    /\ seenInc[b][f] \in {0, Shown(f)}
     /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>

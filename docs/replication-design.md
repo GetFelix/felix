@@ -1610,14 +1610,25 @@ back over the old connection.
 
 The handshake also carries the follower's node incarnation, the number the
 control plane gave it at its last registration (`NODE_INCARNATION`, see
-`docs/internal-protocol.md`). The cursor's identity is the pair, and a change
-in either starts it over. That covers a follower that gives no storage
-identity: its incarnation still changes across a restart, so the leader no
-longer counts a restarted process on its predecessor's position. A process
-answers "not registered yet" until it registers, and then closes the
-connections it answered that way, so its leaders dial again and learn the
-number. A follower that predates the bit gives none, and its cursor is kept
-across a restart as before.
+`docs/internal-protocol.md`). A new storage identity starts the cursor over.
+A new incarnation on the same storage identity is the same copy, so only the
+incarnation is updated: a broker marked down that registers again keeps its
+position, its halts and any rebuild under way. A follower that gives no
+storage identity is held to its incarnation alone, and a new one starts its
+cursor over, so the leader no longer counts a restarted process on its
+predecessor's position. A process answers "not registered yet" until it
+registers, and closes the connections it answered with another value each
+time it registers, so its leaders dial again and learn the number. A
+follower that predates the bit gives none, and its cursor is kept across a
+restart as before.
+
+Closing the connections also drops forwarded publishes in flight on them,
+since peer connections are not split by purpose. It happens only at a
+registration: at startup, before the broker leads anything, and after the
+control plane marked it down, past its lease, when placement is replacing it
+as a leader anyway. Keeping the
+connections would leave a leader reporting the old incarnation for as long
+as the connection lived, and an unverified follower uncounted for as long.
 
 Each report names the identity every follower was counted under
 (`replica_storage_ids`, lowercase hex, omitted when empty). A follower that
@@ -1877,15 +1888,19 @@ measured before it registered is left out, and so never counts on its
 incarnation. `FelixShardWipeStripped.cfg` checks this with the wiped follower
 registering again without an identity.
 
-A follower that predates the handshake's incarnation sends none, and for it the
-control plane falls back to the incarnation the follower is registered at when
-the report arrives, read before the report is stored. That stamp cannot see a
-report measured before the follower restarted that arrives after it registered
-again, nor a stale connection's report, so it leaves the window open for such a
-follower whose registration also lost its identity. Both only happen while
-brokers or control-plane instances are being rolled: an older broker, or an
-older control-plane instance that does not read `replica_incarnations` and
-stamps every follower. `FelixShardWipeStrippedOnArrival.cfg` is that window.
+When the report carries no incarnation for a follower, the control plane
+falls back to the one the follower is registered at when the report arrives,
+read before the report is stored. That happens when the leader is an older
+broker, when the follower was an older broker when the leader's connection opened
+(including one wiped and restarted on the current release onto a fresh
+volume, whose leader is still on the old process's connection), and when
+the report reaches an older control-plane instance that does not read
+`replica_incarnations`. The stamp cannot see a report measured before the
+follower restarted that arrives after it registered again, nor a stale
+connection's report, so for a follower whose registration also lost its
+identity the window stays open. Every one of these needs an older broker or
+control-plane instance, so only while a roll is under way.
+`FelixShardWipeStrippedOnArrival.cfg` is that window.
 
 The incarnation check costs availability in one case: an unverified follower
 that restarts after its leader's last report, whose leader then dies, is not

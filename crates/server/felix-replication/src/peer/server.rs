@@ -485,7 +485,10 @@ async fn serve_connection(
                             at = current;
                             // The caller keeps what it was told for the life
                             // of the connection, so a new registration has to
-                            // end the connection for the caller to learn it.
+                            // end the connection for the caller to learn it in
+                            // bounded time. Forwarded publishes on it go too;
+                            // a broker registers only at startup or once it
+                            // was marked down, when it is not leading.
                             let closer = connection.clone();
                             connection.spawn_pump(async move {
                                 tokio::select! {

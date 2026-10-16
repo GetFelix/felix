@@ -226,6 +226,62 @@ async fn a_new_incarnation_on_the_same_storage_starts_the_copy_over() {
     );
 }
 
+/// **A re-registration on the same storage keeps the follower's place.** A
+/// broker marked down registers again without restarting: same copy, new
+/// incarnation. Its position still counts, under the new incarnation, and a
+/// halt a rebuild would clear is kept rather than started over.
+#[tokio::test]
+async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let at = |incarnation| PeerIdentity {
+        storage: Some(id(1)),
+        incarnation,
+    };
+    let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+
+    follower.restart_at(at(Incarnation::At(2)));
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+    assert_eq!(
+        report.node_incarnations,
+        vec![("broker-b".to_string(), Some(2))]
+    );
+
+    let addr = nodes()["broker-b"].advertise_addr;
+    let mut halted = FollowerCursor {
+        halted: Some(crate::Halt::NeedsBootstrap),
+        confirmed: 2,
+        next_offset: 2,
+        storage_id: Some(id(1)),
+        incarnation: Incarnation::At(2),
+        ..FollowerCursor::new("broker-b", addr, 0)
+    };
+    super::shard::follow_storage(&mut halted, at(Incarnation::At(3)), 0, &rebuilds);
+    assert_eq!(halted.halted, Some(crate::Halt::NeedsBootstrap));
+    assert_eq!((halted.confirmed, halted.next_offset), (2, 2));
+    assert_eq!(halted.incarnation, Incarnation::At(3));
+}
+
 /// **A new identity resets the logs that ride the shard too, and gives back
 /// a rebuild slot the old copy held.** The slot is otherwise only recounted
 /// at the next pass, and the cursors would keep vouching for the old copy.

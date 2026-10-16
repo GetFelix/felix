@@ -101,8 +101,8 @@ entries.
   the follower's registration lost its storage identity. A follower now gives
   its node incarnation in the peer handshake beside its storage identity (the
   new `NODE_INCARNATION` peer bit), the leader starts a follower's copy over
-  when either changes, including for a follower that sends no storage
-  identity, and reports carry the incarnation it measured
+  when its storage identity changes, or its incarnation when it sends no
+  storage identity, and reports carry the incarnation it measured
   (`replica_incarnations`). A follower that sends none still gets the
   incarnation registered when the report arrives. `PeerRequester::storage_identity`
   is now `identity`, returning a `PeerIdentity`.
