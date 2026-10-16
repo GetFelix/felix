@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792112036281,
+  "lastUpdate": 1792113080678,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30888,6 +30888,58 @@ window.BENCHMARK_DATA = {
             "range": "7046.09",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806545.57\nmean: 804381.04\nstdev: 7046.09\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "493bda735e810f62f1e60d88ef69da1136572c9e",
+          "message": "fix(storage): keep purging a root after a worker panics; scan group dirs off the async workers (#1277)\n\nA purge worker that panicked kept its root's slot, so nothing purged that\nroot again until a restart; a guard now frees it on a panic. If the thread\ncannot be spawned the purge runs inline instead of dropping the work.\n\nLogCache::dirs_on_disk, used by the group cursor and dead-letter stores\nduring deletes and tombstones, now runs on the blocking pool like the\nrecords store's lookup: the first call reads the whole root.\n\nSpec-Unaffected: LogCache only moves a read-only directory listing onto the blocking pool; no cursor log state or transition changes.",
+          "timestamp": "2026-10-16T01:07:15Z",
+          "tree_id": "caa6bb87ced029717f22ca939179998f220cd18f",
+          "url": "https://github.com/GetFelix/felix/commit/493bda735e810f62f1e60d88ef69da1136572c9e"
+        },
+        "date": 1792113079841,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 476548.71,
+            "range": "10038.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476548.71\nmean: 479076.10\nstdev: 10038.46\ncv: 2.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 476548.71,
+            "range": "10038.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476548.71\nmean: 479076.10\nstdev: 10038.46\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 109127.69,
+            "range": "4521.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 109127.69\nmean: 107657.93\nstdev: 4521.46\ncv: 4.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1091276.89,
+            "range": "45214.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1091276.89\nmean: 1076579.28\nstdev: 45214.59\ncv: 4.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
