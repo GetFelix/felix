@@ -33,8 +33,9 @@
 
 ---
 
-Felix is in early active development. This README is brief because the design and
-implementation are still moving quickly.
+Felix is pre-1.0. Nobody runs it in production yet, and APIs can still change between
+releases. The [status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
+marks what is built and what is planned.
 
 ## System Overview
 

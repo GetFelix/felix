@@ -16,8 +16,8 @@ tail latency, high fanout, and strict slow-consumer isolation. The
 
 ## Is Felix production-ready?
 
-No. Felix is in early active development and has not been run in production
-by anyone. Quite a lot works: multi-broker clusters, durable replicated
+Not yet. Felix is pre-1.0 and nobody runs it in production yet. Quite a lot
+works: multi-broker clusters, durable replicated
 streams, quorum acknowledgement, failover, consumer groups, the log-backed
 cache, and OIDC auth with RBAC. It is tested hard, including fault-injection
 suites. Releases are tagged (the newest is v0.6.0-preview.7) and publish container images, but

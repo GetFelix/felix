@@ -1,7 +1,7 @@
 # Security Policy
 
-Felix is pre-1.0 and in early active development. It has not been through an
-external security review. This document says how to report a vulnerability, what
+Felix is pre-1.0 and has not been through an
+external security review yet. This document says how to report a vulnerability, what
 we consider one, and what we already know is missing so you don't spend time
 reporting it.
 
