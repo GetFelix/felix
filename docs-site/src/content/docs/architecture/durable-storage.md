@@ -273,6 +273,22 @@ waits without holding up other shards, and a follower refuses records for an
 incarnation it does not hold. See `docs/durable-storage.md` ("Deleting a
 stream") for the whole mechanism and what it does not cover yet.
 
+### Deleting a cache, and creating it again
+
+Caches follow the same design once the fleet has finalized
+`cache_incarnations`, a feature of its own. A cache deleted and created again
+starts with no entries and no counters. Each creation of a cache name gets a
+higher incarnation, and its shard directories under `caches/` and
+`counters/` carry it. Caches from before keep incarnation 0 and their
+directories, so an upgrade moves nothing. A marker per cache under the cache
+store's `.streams/` records what the broker holds. Stale registrations are
+refused and counted in `felix_broker_cache_incarnation_refused_total`, and
+data goes only on a `Deleted` change with `deleted_through`, a snapshot
+tombstone or an operator's removal, from both stores at once. Replication of a
+cache shard and its counter log names the incarnation, and a follower holding
+another refuses it. A broker without durable storage drops a deleted cache's
+entries from memory. See `docs/durable-storage.md` ("Deleting a cache").
+
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/architecture/storage-format/).
 

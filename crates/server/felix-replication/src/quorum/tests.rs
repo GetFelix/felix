@@ -523,6 +523,7 @@ async fn quorum_cache_broker(dir: &std::path::Path) -> felix_broker::Broker {
             "sessions",
             felix_broker::CacheMetadata {
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await

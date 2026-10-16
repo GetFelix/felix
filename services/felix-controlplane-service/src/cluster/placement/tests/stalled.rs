@@ -324,6 +324,7 @@ fn a_restore_copying_only_counters_is_moving() {
         shards: 1,
         replication_factor: 3,
         consistency: ConsistencyLevel::Quorum,
+        incarnation: 0,
     };
     let nodes = live(&["broker-a", "broker-b", "broker-c"]);
     let report = |counters: u64, now: u64| ReplicaReport {

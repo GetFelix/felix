@@ -289,6 +289,7 @@ async fn pg_delete_namespace_emits_cascades() {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await
         .expect("cache");
@@ -731,6 +732,7 @@ async fn pg_store_cache_conflict_and_not_found() {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await
         .expect_err("missing namespace");
@@ -744,6 +746,7 @@ async fn pg_store_cache_conflict_and_not_found() {
         shards: 1,
         replication_factor: 1,
         consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+        incarnation: 0,
     };
     store.create_cache(cache.clone()).await.expect("cache");
     let err = store.create_cache(cache).await.expect_err("conflict");
@@ -858,6 +861,7 @@ async fn pg_store_list_get_and_exists_roundtrip() {
             // Not the default, so reading it back proves the column round-trips
             // rather than the default filling it in.
             consistency: ConsistencyLevel::Quorum,
+            incarnation: 0,
         })
         .await
         .expect("cache");

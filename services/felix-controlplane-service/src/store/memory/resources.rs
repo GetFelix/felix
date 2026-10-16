@@ -1,7 +1,7 @@
 //! Streams and caches created together, all or none.
 use std::collections::HashSet;
 
-use super::InMemoryStore;
+use super::{Decide, InMemoryStore};
 use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, NamespaceKey, Stream, StreamChange,
     StreamChangeOp, StreamKey,
@@ -12,7 +12,8 @@ pub(super) async fn create_resources(
     store: &InMemoryStore,
     streams: Vec<Stream>,
     caches: Vec<Cache>,
-) -> StoreResult<Vec<Stream>> {
+    decide: Decide,
+) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
     // Same lock order as the namespace and tenant cascades. Holding all three
     // while checking means nothing can land between the check and the insert.
     let namespaces = store.namespaces.read().await;
@@ -54,6 +55,7 @@ pub(super) async fn create_resources(
     }
 
     let mut stored = Vec::with_capacity(streams.len());
+    let mut stored_caches = Vec::with_capacity(caches.len());
     if !streams.is_empty() {
         // Held until every stream is in, as for a single create.
         let nodes = store.nodes.read().await;
@@ -61,7 +63,8 @@ pub(super) async fn create_resources(
         for mut stream in streams {
             let key = stream_key(&stream);
             stream.incarnation =
-                super::streams::incarnation_for(store, &nodes, &key, stream.incarnation).await;
+                super::streams::incarnation_for(store, &nodes, &key, stream.incarnation, decide)
+                    .await;
             stream_map.insert(key.clone(), stream.clone());
             stored.push(stream.clone());
             changes.record(|seq| StreamChange {
@@ -76,21 +79,27 @@ pub(super) async fn create_resources(
         metrics::gauge!("felix_streams_total").set(stream_map.len() as f64);
     }
     if !caches.is_empty() {
+        let nodes = store.nodes.read().await;
         let mut changes = store.cache_changes.write().await;
-        for cache in caches {
+        for mut cache in caches {
             let key = cache_key(&cache);
+            cache.incarnation =
+                super::caches::incarnation_for(store, &nodes, &key, cache.incarnation, decide)
+                    .await;
             cache_map.insert(key.clone(), cache.clone());
+            stored_caches.push(cache.clone());
             changes.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Created,
                 key,
                 cache: Some(cache),
+                deleted_through: None,
             });
             metrics::counter!("felix_cache_changes_total", "op" => "created").increment(1);
         }
         metrics::gauge!("felix_caches_total").set(cache_map.len() as f64);
     }
-    Ok(stored)
+    Ok((stored, stored_caches))
 }
 
 fn stream_key(stream: &Stream) -> StreamKey {

@@ -212,6 +212,7 @@ async fn namespace_stream_cache_errors_and_cascades() {
             shards: 1,
             replication_factor: 1,
             consistency: crate::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await
         .expect("cache");
@@ -273,6 +274,13 @@ async fn backend_health_and_identity() {
 async fn satisfies_the_incarnation_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::incarnations::run_incarnation_contract(store).await;
+}
+
+/// The same suite Postgres runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_cache_incarnation_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::cache_incarnations::run_cache_incarnation_contract(store).await;
 }
 
 /// The same suite Postgres runs.
@@ -411,6 +419,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
         shards: 1,
         replication_factor: 1,
         consistency: ConsistencyLevel::Leader,
+        incarnation: 0,
     };
     let cache_key = CacheKey {
         tenant_id: "t".to_string(),
@@ -428,6 +437,111 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
             op: CacheChangeOp::Created,
             key: cache_key.clone(),
             cache: Some(cache.clone()),
+            deleted_through: None,
         }
     );
+}
+
+/// A shard write holds the cache it read until it lands: a delete and
+/// recreate of the cache that starts once the write has read it waits for
+/// the write, so the new cache never gets an assignment naming the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_write_holds_its_cache_until_it_lands() {
+    use crate::model::{
+        Cache, CacheKey, ConsistencyLevel, ShardAssignment, ShardKey, ShardKind, ShardState,
+    };
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::shards::seed(store.as_ref()).await;
+    let feature = felix_common::fleet::CACHE_INCARNATIONS.name();
+    for (i, id) in ["broker-x", "broker-y"].iter().enumerate() {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, 7500 + i as u16),
+                &[feature],
+            ))
+            .await
+            .expect("node");
+    }
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let cache = |incarnation| Cache {
+        tenant_id: "shard-t".to_string(),
+        namespace: "shard-ns".to_string(),
+        cache: "held".to_string(),
+        display_name: "held".to_string(),
+        shards: 1,
+        replication_factor: 1,
+        consistency: ConsistencyLevel::Leader,
+        incarnation,
+    };
+    let key = CacheKey {
+        tenant_id: "shard-t".to_string(),
+        namespace: "shard-ns".to_string(),
+        cache: "held".to_string(),
+    };
+    store.create_cache(cache(1)).await.expect("create");
+
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (resume, resume_rx) = tokio::sync::oneshot::channel();
+    *store.faults.shard_write_pause.lock().expect("pause") = Some(super::ShardWritePause {
+        reached,
+        resume: resume_rx,
+    });
+    let shard = ShardKey {
+        tenant_id: "shard-t".to_string(),
+        namespace: "shard-ns".to_string(),
+        stream: "held".to_string(),
+        shard: 0,
+        kind: ShardKind::Cache,
+    };
+    let assign = {
+        let store = std::sync::Arc::clone(&store);
+        let shard = shard.clone();
+        tokio::spawn(async move {
+            store
+                .put_shard_assignment(ShardAssignment {
+                    key: shard,
+                    leader: "broker-x".to_string(),
+                    replicas: Vec::new(),
+                    generation: 0,
+                    state: ShardState::Active,
+                    successor: None,
+                    joining: None,
+                    move_started_at_millis: None,
+                    move_reason: None,
+                    incarnation: 0,
+                })
+                .await
+                .expect("assign")
+        })
+    };
+    reached_rx.await.expect("the write read the cache");
+    let recreate = {
+        let store = std::sync::Arc::clone(&store);
+        tokio::spawn(async move {
+            store.delete_cache(&key).await.expect("delete");
+            store.create_cache(cache(2)).await.expect("create again");
+            let _ = resume.send(());
+        })
+    };
+    assign.await.expect("assign");
+    recreate.await.expect("recreate");
+
+    let current = store
+        .get_cache(&CacheKey {
+            tenant_id: "shard-t".to_string(),
+            namespace: "shard-ns".to_string(),
+            cache: "held".to_string(),
+        })
+        .await
+        .expect("cache")
+        .incarnation;
+    if let Ok(held) = store.get_shard_assignment(&shard).await {
+        assert_eq!(
+            held.incarnation, current,
+            "an assignment of the new cache names the old one"
+        );
+    }
 }

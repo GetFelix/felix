@@ -66,6 +66,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     FENCED_CACHES,
     STREAM_INCARNATIONS,
     GROUP_CURSOR_DEPENDENCIES,
+    CACHE_INCARNATIONS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -129,6 +130,14 @@ pub const STREAM_INCARNATIONS: FleetFeature = FleetFeature::new("stream_incarnat
 /// An older build refuses such a cursor value, so it waits for the whole
 /// fleet. See `docs/storage-format.md` ("Consumer-group cursor values").
 pub const GROUP_CURSOR_DEPENDENCIES: FleetFeature = FleetFeature::new("group_cursor_dependencies");
+
+/// Caches created once this is enabled carry an incarnation, kept in cache
+/// and counter directories of their own, so a cache deleted and created
+/// again under the same name starts empty. Separate from
+/// [`STREAM_INCARNATIONS`] because a broker that has that one but predates
+/// this would open an incarnated cache's records in the deleted cache's
+/// directories. See `docs/durable-storage.md` ("Deleting a cache").
+pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnations");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

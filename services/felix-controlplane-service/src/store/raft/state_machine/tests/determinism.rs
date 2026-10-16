@@ -180,6 +180,7 @@ async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
         },
         MetaCommand::CreateStream {
             stream: stream("t-a", "ns-1", "orders"),
+            incarnations: false,
         },
         MetaCommand::RegisterNode {
             node: node("broker-0", 7_000),
@@ -267,7 +268,10 @@ async fn a_restored_stream_keeps_its_routing() {
     let mut jumpy = stream("t-a", "ns-3", "jumpy");
     jumpy.routing = crate::model::StreamRouting::JumpHash;
     original
-        .dispatch(MetaCommand::CreateStream { stream: jumpy })
+        .dispatch(MetaCommand::CreateStream {
+            stream: jumpy,
+            incarnations: false,
+        })
         .await
         .expect("create");
     let snapshot = crate::raft::AppStateMachine::snapshot(&original).await;
@@ -330,6 +334,7 @@ async fn a_level_10_field_raises_the_mark_and_survives_a_snapshot() {
     let flagged = MetaCommand::DeleteTenant {
         tenant_id: "missing".to_string(),
         take_shards: true,
+        incarnations: false,
     };
     assert_eq!(flagged.version(), 10);
     original.apply(&encode_command(&flagged)).await;
@@ -436,6 +441,7 @@ async fn storage_identities_apply_identically() {
         },
         MetaCommand::CreateStream {
             stream: stream("t-a", "ns-1", "orders"),
+            incarnations: false,
         },
         MetaCommand::RegisterNode {
             node: node("broker-0", 7_000),
@@ -479,4 +485,329 @@ async fn storage_identities_apply_identically() {
     let restored = machine();
     restored.restore(&snapshot).await;
     assert_eq!(snapshot, restored.snapshot().await);
+}
+
+/// **A level-13 proposer's cache entries apply as a level-13 member applies
+/// them, even after `cache_incarnations` is finalized.** A member at 13
+/// accepts that finalize (it reads the unknown name as level 2), so an
+/// unflagged create or delete must not decide from it: every cache stays at
+/// 0, with no tombstone and no `deleted_through`, and the snapshot carries
+/// nothing above level 13 from them. Flagged entries decide from their own
+/// fields, and a tombstone survives a snapshot.
+#[tokio::test]
+async fn cache_entries_from_level_13_store_what_level_13_stores() {
+    use crate::model::CacheKey;
+    use crate::raft::AppStateMachine;
+    let original = machine();
+    let apply = |command: MetaCommand| {
+        let original = &original;
+        async move {
+            let response = original.apply(&encode_command(&command)).await;
+            decode_result(&response)
+                .expect("decodes")
+                .expect("succeeds")
+        }
+    };
+    let key = |namespace: &str, cache: &str| CacheKey {
+        tenant_id: "acme".to_string(),
+        namespace: namespace.to_string(),
+        cache: cache.to_string(),
+    };
+    apply(MetaCommand::CreateTenant {
+        tenant: tenant("acme"),
+    })
+    .await;
+    for name in ["ns", "doomed"] {
+        apply(MetaCommand::CreateNamespace {
+            namespace: namespace("acme", name),
+        })
+        .await;
+    }
+    let mut broker = node("broker-a", 7001);
+    broker.status.features = [
+        felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
+        felix_common::fleet::CACHE_INCARNATIONS.name().to_string(),
+    ]
+    .into();
+    apply(MetaCommand::RegisterNodeInFleet { node: broker }).await;
+    for feature in [
+        felix_common::fleet::STREAM_INCARNATIONS,
+        felix_common::fleet::CACHE_INCARNATIONS,
+    ] {
+        apply(MetaCommand::FinalizeFleetFeature {
+            feature: feature.name().to_string(),
+        })
+        .await;
+    }
+    let before = serde_json::to_value(original.store().export_state().await).expect("json");
+
+    // As a level-13 proposer writes them: no flag, no incarnation.
+    let legacy = [
+        MetaCommand::CreateCache {
+            cache: cache("acme", "ns", "single"),
+            incarnations: false,
+        },
+        MetaCommand::CreateResources {
+            streams: Vec::new(),
+            caches: vec![cache("acme", "ns", "batched")],
+            incarnations: false,
+        },
+        MetaCommand::DeleteCache {
+            key: key("ns", "single"),
+            take_reports: true,
+            incarnations: false,
+        },
+        MetaCommand::CreateCache {
+            cache: cache("acme", "doomed", "inside"),
+            incarnations: false,
+        },
+        MetaCommand::DeleteNamespace {
+            key: NamespaceKey {
+                tenant_id: "acme".to_string(),
+                namespace: "doomed".to_string(),
+            },
+            take_shards: true,
+            incarnations: false,
+        },
+    ];
+    for command in legacy {
+        assert!(command.version() <= 13, "{command:?}");
+        let answer = apply(command).await;
+        assert!(
+            !matches!(&answer, MetaResponse::Cache { cache } if cache.incarnation != 0),
+            "{answer:?}"
+        );
+    }
+    let store = original.store();
+    assert!(
+        store
+            .cache_tombstones()
+            .await
+            .expect("tombstones")
+            .is_empty()
+    );
+    for cache in store.list_caches("acme", "ns").await.expect("caches") {
+        assert_eq!(cache.incarnation, 0, "{cache:?}");
+    }
+    for change in store.cache_changes(0).await.expect("changes").items {
+        assert_eq!(change.deleted_through, None, "{change:?}");
+        assert_eq!(change.cache.map(|cache| cache.incarnation).unwrap_or(0), 0);
+    }
+    // Nothing above level 13 entered the state beyond what the finalizes did.
+    let after = serde_json::to_value(store.export_state().await).expect("json");
+    let level = |state: &serde_json::Value| {
+        crate::store::raft::command::fields::level_of(
+            &serde_json::json!({ "op": "snapshot", "state": state }),
+        )
+    };
+    assert_eq!(level(&after), level(&before));
+    assert!(
+        level(&after) <= 13,
+        "the state needs level {}",
+        level(&after)
+    );
+
+    // Flagged entries decide from their own fields.
+    let unproposed = apply(MetaCommand::CreateCache {
+        cache: cache("acme", "ns", "unproposed"),
+        incarnations: true,
+    })
+    .await;
+    assert!(
+        matches!(&unproposed, MetaResponse::Cache { cache } if cache.incarnation == 0),
+        "{unproposed:?}"
+    );
+    let created = apply(MetaCommand::CreateCache {
+        cache: Cache {
+            incarnation: 7,
+            ..cache("acme", "ns", "single")
+        },
+        incarnations: true,
+    })
+    .await;
+    assert!(
+        matches!(&created, MetaResponse::Cache { cache } if cache.incarnation == 7),
+        "{created:?}"
+    );
+    apply(MetaCommand::DeleteCache {
+        key: key("ns", "single"),
+        take_reports: true,
+        incarnations: true,
+    })
+    .await;
+    let tombstones = store.cache_tombstones().await.expect("tombstones");
+    assert_eq!(tombstones.len(), 1, "{tombstones:?}");
+    assert_eq!(tombstones[0].incarnation, 7);
+    let restored = machine();
+    restored.restore(&original.snapshot().await).await;
+    assert_eq!(
+        restored
+            .store()
+            .cache_tombstones()
+            .await
+            .expect("tombstones"),
+        tombstones
+    );
+}
+
+/// Streams: after the finalize a create gets an incarnation only if it
+/// proposed one, flagged or not. An unflagged 0 is what a level-8 member
+/// writes and stores as 0; levels 10 to 13 gave it tombstone + 1, which only
+/// unreleased builds logged.
+#[tokio::test]
+async fn a_flagged_stream_create_decides_from_its_proposal() {
+    let original = machine();
+    let apply = |command: MetaCommand| {
+        let original = &original;
+        async move {
+            let response =
+                crate::raft::AppStateMachine::apply(original, &encode_command(&command)).await;
+            decode_result(&response)
+                .expect("decodes")
+                .expect("succeeds")
+        }
+    };
+    apply(MetaCommand::CreateTenant {
+        tenant: tenant("acme"),
+    })
+    .await;
+    apply(MetaCommand::CreateNamespace {
+        namespace: namespace("acme", "ns"),
+    })
+    .await;
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name().to_string();
+    let mut broker = node("broker-a", 7001);
+    broker.status.features.insert(feature.clone());
+    apply(MetaCommand::RegisterNodeInFleet { node: broker }).await;
+    apply(MetaCommand::FinalizeFleetFeature { feature }).await;
+
+    let incarnation = |answer: MetaResponse| match answer {
+        MetaResponse::Stream { stream } => stream.incarnation,
+        other => panic!("{other:?}"),
+    };
+    let flagged = apply(MetaCommand::CreateStream {
+        stream: stream("acme", "ns", "flagged"),
+        incarnations: true,
+    })
+    .await;
+    assert_eq!(incarnation(flagged), 0);
+    let unflagged = apply(MetaCommand::CreateStream {
+        stream: stream("acme", "ns", "unflagged"),
+        incarnations: false,
+    })
+    .await;
+    assert_eq!(incarnation(unflagged), 0);
+}
+
+/// **Stream entries from a preview.7 proposer apply as preview.7 applies
+/// them, even after `stream_incarnations` is finalized through it.** A
+/// level-8 member reads that unknown finalize as level 2 and accepts it, and
+/// it knows nothing of incarnations: every stream it creates is at 0 and no
+/// delete writes a tombstone. A level-14 member must store the same, or the
+/// two diverge for good. An unflagged create that does propose one keeps the
+/// meaning levels 10 to 13 gave it, so their logs replay unchanged.
+#[tokio::test]
+async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
+    use crate::model::StreamKey;
+    let original = machine();
+    let apply = |command: MetaCommand| {
+        let original = &original;
+        async move {
+            let response = original.apply(&encode_command(&command)).await;
+            decode_result(&response)
+                .expect("decodes")
+                .expect("succeeds")
+        }
+    };
+    let key = |namespace: &str, stream: &str| StreamKey {
+        tenant_id: "acme".to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+    };
+    apply(MetaCommand::CreateTenant {
+        tenant: tenant("acme"),
+    })
+    .await;
+    for name in ["ns", "doomed"] {
+        apply(MetaCommand::CreateNamespace {
+            namespace: namespace("acme", name),
+        })
+        .await;
+    }
+    let mut broker = node("broker-a", 7001);
+    broker.status.features = [felix_common::fleet::STREAM_INCARNATIONS.name().to_string()].into();
+    apply(MetaCommand::RegisterNodeInFleet { node: broker }).await;
+
+    // As a level-8 proposer writes them.
+    let level_8 = [
+        MetaCommand::FinalizeFleetFeature {
+            feature: felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
+        },
+        MetaCommand::CreateStream {
+            stream: stream("acme", "ns", "single"),
+            incarnations: false,
+        },
+        MetaCommand::CreateResources {
+            streams: vec![stream("acme", "ns", "batched")],
+            caches: Vec::new(),
+            incarnations: false,
+        },
+        MetaCommand::DeleteStream {
+            key: key("ns", "single"),
+            take_reports: false,
+            incarnations: false,
+        },
+        MetaCommand::CreateStream {
+            stream: stream("acme", "doomed", "inside"),
+            incarnations: false,
+        },
+        MetaCommand::DeleteNamespace {
+            key: NamespaceKey {
+                tenant_id: "acme".to_string(),
+                namespace: "doomed".to_string(),
+            },
+            take_shards: false,
+            incarnations: false,
+        },
+    ];
+    for command in level_8 {
+        // A level-8 build reads the finalize as level 2; this build knows it
+        // needs 10, which is the gap.
+        let finalize = matches!(command, MetaCommand::FinalizeFleetFeature { .. });
+        assert!(finalize || command.version() <= 8, "{command:?}");
+        let answer = apply(command).await;
+        assert!(
+            !matches!(&answer, MetaResponse::Stream { stream } if stream.incarnation != 0),
+            "{answer:?}"
+        );
+    }
+    let store = original.store();
+    assert!(
+        store
+            .stream_tombstones()
+            .await
+            .expect("tombstones")
+            .is_empty()
+    );
+    for stream in store.list_streams("acme", "ns").await.expect("streams") {
+        assert_eq!(stream.incarnation, 0, "{stream:?}");
+    }
+    for change in store.stream_changes(0).await.expect("changes").items {
+        assert_eq!(change.deleted_through, None, "{change:?}");
+        assert_eq!(change.stream.map(|s| s.incarnation).unwrap_or(0), 0);
+    }
+
+    // An unflagged create that proposes one, as levels 10 to 13 wrote it.
+    let proposed = apply(MetaCommand::CreateStream {
+        stream: Stream {
+            incarnation: 9,
+            ..stream("acme", "ns", "proposed")
+        },
+        incarnations: false,
+    })
+    .await;
+    assert!(
+        matches!(&proposed, MetaResponse::Stream { stream } if stream.incarnation == 9),
+        "{proposed:?}"
+    );
 }

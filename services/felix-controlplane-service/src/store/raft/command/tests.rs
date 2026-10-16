@@ -202,6 +202,7 @@ fn an_already_stamped_command_keeps_its_id() {
     let encoded = encode_command(&MetaCommand::DeleteTenant {
         tenant_id: "acme".to_string(),
         take_shards: false,
+        incarnations: false,
     });
     let stamped = stamp_request_id(&encoded, "first").expect("stamps");
     assert!(
@@ -218,6 +219,7 @@ fn an_unstamped_command_has_no_request_id() {
     let encoded = encode_command(&MetaCommand::DeleteTenant {
         tenant_id: "acme".to_string(),
         take_shards: false,
+        incarnations: false,
     });
     assert_eq!(request_id_of(&encoded), None);
     // And it must not appear on the wire at all, so an older peer sees the

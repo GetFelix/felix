@@ -46,6 +46,9 @@ pub struct CounterStore {
     config: LogConfig,
     shards: ShardSlots<CounterId, Arc<CounterShard>>,
     compactor: Arc<Compactor>,
+    /// Which incarnation of each cache's counters to open, as the cache's.
+    incarnations: crate::incarnation::Incarnations,
+    dirs: Arc<crate::incarnation::DirIndex>,
 }
 
 impl CounterStore {
@@ -57,11 +60,15 @@ impl CounterStore {
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         crate::io::create_dir_all_durable(&root).map_err(StorageError::Io)?;
+        // Whatever a delete left before a crash or restart.
+        crate::incarnation::purge_in_background(root.clone());
         Ok(Self {
             root,
             config,
             shards: ShardSlots::new(),
             compactor: Arc::new(Compactor::from_env()),
+            incarnations: Default::default(),
+            dirs: Default::default(),
         })
     }
 
@@ -149,9 +156,120 @@ impl CounterStore {
         base_offset: u64,
     ) -> Result<DiskLog> {
         Ok(self
-            .shard_with_base(tenant_id, namespace, scope, shard, Some(base_offset))?
+            .shard_with_base(tenant_id, namespace, scope, shard, Some(base_offset), None)?
             .current_log()
             .await)
+    }
+
+    /// [`CounterStore::shard_log`], or [`CounterStore::shard_log_at`] with a
+    /// base, only when `incarnation` is the one set for `scope`: refused with
+    /// [`StorageError::Closed`] otherwise, before anything is created.
+    pub async fn shard_log_for(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: u64,
+    ) -> Result<DiskLog> {
+        Ok(self
+            .shard_with_base(
+                tenant_id,
+                namespace,
+                scope,
+                shard,
+                base_offset,
+                Some(incarnation),
+            )?
+            .current_log()
+            .await)
+    }
+
+    /// Open `scope`'s counters at `incarnation` from here on, or nothing with
+    /// `None`. See [`crate::LogCache::set_incarnation`].
+    pub fn set_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        incarnation: Option<u64>,
+    ) {
+        match incarnation {
+            Some(incarnation) => self
+                .incarnations
+                .set(tenant_id, namespace, scope, incarnation),
+            None => self.incarnations.retire(tenant_id, namespace, scope),
+        }
+    }
+
+    /// The incarnation set for `scope`, or `None` when none is set or it was
+    /// retired.
+    pub fn incarnation(&self, tenant_id: &str, namespace: &str, scope: &str) -> Option<u64> {
+        self.incarnations.registered(tenant_id, namespace, scope)
+    }
+
+    /// Open no scope's counters until [`Self::set_incarnation`] names its
+    /// incarnation.
+    pub fn require_registration(&self) {
+        self.incarnations.require_registration();
+    }
+
+    /// Close every shard of one incarnation of `scope` and move all its
+    /// directories out of service. Safe to repeat.
+    pub async fn retire(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.close_incarnation(tenant_id, namespace, scope, incarnation)
+            .await?;
+        self.dirs
+            .retire_stream_off_runtime(&self.root, tenant_id, namespace, scope, incarnation)
+            .await
+    }
+
+    /// Close every shard of one incarnation of `scope`, keeping its
+    /// directories.
+    pub async fn close_incarnation(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        for (id, _) in self.shards.open_entries() {
+            if id.0 == tenant_id && id.1 == namespace && id.2 == scope && id.4 == incarnation {
+                self.close_id(&id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The shard and incarnation of every directory of `scope` here. Runs on
+    /// the blocking pool: the first lookup reads the whole root.
+    pub async fn dirs_on_disk(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+    ) -> Result<Vec<(u32, u64)>> {
+        let (dirs, root) = (Arc::clone(&self.dirs), self.root.clone());
+        let (tenant, namespace, scope) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            scope.to_string(),
+        );
+        crate::task::blocking(move || {
+            Ok(dirs
+                .stream_dirs(&root, &tenant, &namespace, &scope)?
+                .into_iter()
+                .map(|(shard, incarnation, _)| (shard, incarnation))
+                .collect())
+        })
+        .await
     }
 
     /// Close one counter shard's log and forget it, for a shard this broker
@@ -165,14 +283,17 @@ impl CounterStore {
         scope: &str,
         shard: u32,
     ) -> Result<()> {
-        let id = (
-            tenant_id.to_string(),
-            namespace.to_string(),
-            scope.to_string(),
-            shard,
-        );
+        for (id, _) in self.shards.open_entries() {
+            if id.0 == tenant_id && id.1 == namespace && id.2 == scope && id.3 == shard {
+                self.close_id(&id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn close_id(&self, id: &CounterId) -> Result<()> {
         self.shards
-            .close(&id, |shard: Arc<CounterShard>| async move {
+            .close(id, |shard: Arc<CounterShard>| async move {
                 let mut state = shard.state.lock().await;
                 state.closed = true;
                 state.log.close().await
@@ -213,7 +334,7 @@ impl CounterStore {
         scope: &str,
         shard: u32,
     ) -> Result<Arc<CounterShard>> {
-        self.shard_with_base(tenant_id, namespace, scope, shard, None)
+        self.shard_with_base(tenant_id, namespace, scope, shard, None, None)
     }
 
     fn shard_with_base(
@@ -223,12 +344,21 @@ impl CounterStore {
         scope: &str,
         shard: u32,
         base_offset: Option<u64>,
+        expected: Option<u64>,
     ) -> Result<Arc<CounterShard>> {
+        let incarnation = self
+            .incarnations
+            .resolve(tenant_id, namespace, scope)
+            .filter(|incarnation| expected.is_none_or(|expected| expected == *incarnation))
+            .ok_or_else(|| {
+                StorageError::Closed(format!("{tenant_id}/{namespace}/{scope}/{shard}"))
+            })?;
         let id = (
             tenant_id.to_string(),
             namespace.to_string(),
             scope.to_string(),
             shard,
+            incarnation,
         );
         let key = || ShardKey {
             tenant: tenant_id.to_string(),
@@ -240,8 +370,15 @@ impl CounterStore {
             &id,
             || {
                 let key = key();
-                let dir = layout::shard_dir(&self.root, &key);
+                // Again under the slot's lock, so an open racing a delete
+                // cannot recreate the directory the delete moved away.
+                if self.incarnations.resolve(tenant_id, namespace, scope) != Some(incarnation) {
+                    return Err(StorageError::Closed(layout::shard_label(&key)));
+                }
+                let dir = layout::incarnation_dir(&self.root, &key, incarnation);
                 let label = layout::shard_label(&key);
+                self.dirs
+                    .created(&layout::incarnation_dir_name(&key, incarnation));
                 crate::legacy_swap::recover_legacy_swap(&dir)?;
                 let log = match base_offset {
                     Some(base) => {
@@ -265,9 +402,9 @@ impl CounterStore {
     }
 }
 
-/// Tenant, namespace, scope, shard — each one a separate log in a separate
-/// directory, exactly as the cache lays its shards out.
-type CounterId = (String, String, String, u32);
+/// Tenant, namespace, scope, shard and incarnation — each one a separate log
+/// in a separate directory, exactly as the cache lays its shards out.
+type CounterId = (String, String, String, u32, u64);
 
 /// One shard's log and the sum folded from it.
 struct CounterShard {

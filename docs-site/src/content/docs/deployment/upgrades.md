@@ -375,7 +375,14 @@ would be judged by what the brokers kept for the old one. That data goes once
 the name is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
-  finalize is refused with 409 until every member is at metadata version 10.
+  finalize is refused with 409 until every member is at metadata version 10,
+  when proposed through an upgraded member. A member below version 10, such
+  as one still on `v0.6.0-preview.7`, does not know the feature and accepts
+  it. That is safe from version 14 on: until every member is at 14, streams
+  are created at incarnation 0 and no delete of one records a tombstone, on
+  every member. A cluster that ran an unreleased build between versions 10
+  and 13 may need members rebuilt from a snapshot; see
+  `docs/metadata-raft-design.md`.
   With Postgres, the first upgraded instance runs migration 0028 for the whole
   database. An instance from before this release that is still running after
   the finalize cannot create streams (the database refuses a stream without an
@@ -406,6 +413,39 @@ the name is deleted again after the finalize.
   undone, and a broker that does not report it is refused from then on.
 - **What clients see.** Nothing. Stream answers carry `incarnation` once it
   is not 0.
+
+#### `cache_incarnations`
+
+The same as `stream_incarnations`, for caches. Once finalized, every cache the
+control plane creates gets an incarnation, and brokers keep each
+incarnation's entries and counters in directories of their own, so a cache
+deleted and created again starts empty on every broker, including one that
+was down for the delete.
+
+- **Upgrade every control-plane instance first.** Under the Raft backend an
+  upgraded member refuses the finalize with 409 until every member is at
+  metadata version 14. A member still on the older release does not know
+  the feature and accepts it. That is safe, because the members still apply
+  every entry alike. Until every member is at version 14, caches are created
+  at incarnation 0 and no cache delete records a tombstone; a cache create
+  through an upgraded member is refused with 409 meanwhile. Finalize through
+  an upgraded member anyway. With Postgres, the first upgraded instance runs migration 0032. An older
+  instance still running after the finalize cannot create caches, its deletes
+  still record tombstones, and the database stamps its cache shard
+  assignments with the incarnation.
+- **Every broker must report it.** A broker that predates it would open a new
+  cache in the directories a deleted cache of that name used.
+- **Nothing moves on disk.** Existing caches keep incarnation 0, their
+  directory names and their data. Before the finalize a deleted cache's data
+  stays and a cache created again under the name reopens it, as before.
+- **Brokers check it.** Once a broker has seen a cache with an incarnation it
+  opens a cache's logs only at the registered incarnation, refuses stale
+  registrations (`felix_broker_cache_incarnation_refused_total`), and a
+  follower refuses cache and counter records for an incarnation it does not
+  hold.
+- **The finalize is one-way.**
+- **What clients see.** Nothing. Cache answers carry `incarnation` once it is
+  not 0.
 
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature

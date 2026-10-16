@@ -41,8 +41,8 @@ pub struct ReplicaHandler {
     /// batch. See [`unverified_from`].
     verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
-    /// this broker holds as committed, per log, with the stream incarnation
-    /// it shipped. A rebuild from that leader would only find the same
+    /// this broker holds as committed, per log, with the stream or cache
+    /// incarnation it shipped. A rebuild from that leader would only find the same
     /// disagreement again; a recreated stream at the same generation is
     /// another log.
     mismatched:
@@ -57,8 +57,8 @@ pub struct ReplicaHandler {
 #[derive(Debug, Clone, Copy)]
 struct Verified {
     generation: u64,
-    /// The stream incarnation whose log was compared; 0 for a cache and
-    /// before incarnations.
+    /// The stream or cache incarnation whose log was compared; 0 before
+    /// incarnations.
     incarnation: u64,
     through: u64,
 }
@@ -1164,7 +1164,7 @@ impl ReplicaHandler {
         })
     }
 
-    /// Refuse a request for a stream shard at an incarnation this broker does
+    /// Refuse a request for a shard at an incarnation this broker does
     /// not hold, as a stale route: retried, and taken once the catalog here
     /// has caught up. See `crate::incarnation`.
     ///
@@ -1193,8 +1193,7 @@ impl ReplicaHandler {
     /// `sent`, once this broker requires registration; `None` opens whatever
     /// is registered, as before incarnations.
     fn expected_incarnation(&self, key: &felix_router::ShardKey, sent: Option<u64>) -> Option<u64> {
-        (key.kind == felix_router::ShardKind::Stream && self.broker.registration_required())
-            .then(|| sent.unwrap_or(0))
+        crate::incarnation::registration_required(&self.broker, key.kind).then(|| sent.unwrap_or(0))
     }
 
     /// May this broker store anything for `key` at `generation`?

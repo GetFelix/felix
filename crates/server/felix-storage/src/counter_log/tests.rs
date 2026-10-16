@@ -393,3 +393,72 @@ async fn a_forgotten_sum_is_folded_from_the_log_as_it_now_is() {
 
     assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(5));
 }
+
+/// Each incarnation of a cache's counters is its own log: 0 keeps the
+/// directory it always had, a later one starts empty in a directory of its
+/// own, and retiring one takes only its directories.
+#[tokio::test]
+async fn each_incarnation_has_its_own_directories() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.add(T, NS, C, 0, "k", 5).await.expect("add at 0");
+    let legacy = layout::shard_dir(
+        dir.path(),
+        &ShardKey {
+            tenant: T.into(),
+            namespace: NS.into(),
+            stream: C.into(),
+            shard: 0,
+        },
+    );
+    assert!(
+        legacy.exists(),
+        "incarnation 0 keeps the old directory name"
+    );
+
+    store.set_incarnation(T, NS, C, Some(7));
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), None);
+    store.add(T, NS, C, 0, "k", 2).await.expect("add at 7");
+    let mut on_disk = store.dirs_on_disk(T, NS, C).await.expect("dirs");
+    on_disk.sort();
+    assert_eq!(on_disk, vec![(0, 0), (0, 7)]);
+
+    store.retire(T, NS, C, 0).await.expect("retire 0");
+    assert!(!legacy.exists(), "the retired directory is moved away");
+    assert_eq!(
+        store.dirs_on_disk(T, NS, C).await.expect("dirs"),
+        vec![(0, 7)]
+    );
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(2));
+}
+
+/// A retired scope, an unregistered one once registration is required, and a
+/// request naming another incarnation open nothing and create nothing.
+#[tokio::test]
+async fn opens_only_the_registered_incarnation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.require_registration();
+    assert!(matches!(
+        store.add(T, NS, C, 0, "k", 1).await,
+        Err(StorageError::Closed(_))
+    ));
+    store.set_incarnation(T, NS, C, Some(3));
+    assert!(matches!(
+        store.shard_log_for(T, NS, C, 0, None, 2).await,
+        Err(StorageError::Closed(_))
+    ));
+    store
+        .shard_log_for(T, NS, C, 0, None, 3)
+        .await
+        .expect("the registered incarnation opens");
+    store.set_incarnation(T, NS, C, None);
+    assert!(matches!(
+        store.get(T, NS, C, 0, "k").await,
+        Err(StorageError::Closed(_))
+    ));
+    assert_eq!(
+        store.dirs_on_disk(T, NS, C).await.expect("dirs"),
+        vec![(0, 3)]
+    );
+}

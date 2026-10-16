@@ -155,8 +155,8 @@ struct ShardOffsets {
     shard: u32,
     kind: &'static str,
     generation: u64,
-    /// Which incarnation of the stream the logs belong to, so a restore cuts
-    /// that incarnation's directories. Left out when 0.
+    /// Which incarnation of the stream or cache the logs belong to, so a
+    /// restore cuts that incarnation's directories. Left out when 0.
     #[serde(skip_serializing_if = "is_zero")]
     incarnation: u64,
     logs: LogOffsets,

@@ -100,11 +100,11 @@ pub(crate) async fn create_cache(
     require_cache_manage(&state, &tenant_id, &headers, &namespace, &body.cache).await?;
     validate_identifier("cache", &body.cache).map_err(|err| api_validation_error(&err))?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
-    let cache = new_cache(tenant_id, namespace, body);
+    let cache = cache_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_cache(cache.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(StoreError::Conflict(_)) => match state.store.get_cache(&cache_key(&cache)).await {
-            Ok(existing) if existing == cache => Ok((StatusCode::OK, Json(existing))),
+            Ok(existing) if same_cache(&existing, &cache) => Ok((StatusCode::OK, Json(existing))),
             Ok(_) | Err(StoreError::NotFound(_)) => Err(api_conflict(
                 "conflict",
                 "cache already exists with a different configuration",
@@ -118,7 +118,12 @@ pub(crate) async fn create_cache(
 
 /// The cache a request creates. Counts below one are raised to one, so a
 /// retry compares against what was stored rather than what was sent.
-pub(crate) fn new_cache(tenant_id: String, namespace: String, body: CacheCreateRequest) -> Cache {
+pub(crate) fn new_cache(
+    tenant_id: String,
+    namespace: String,
+    body: CacheCreateRequest,
+    propose_incarnation: bool,
+) -> Cache {
     Cache {
         tenant_id,
         namespace,
@@ -127,7 +132,44 @@ pub(crate) fn new_cache(tenant_id: String, namespace: String, body: CacheCreateR
         shards: body.shards.max(1),
         replication_factor: body.replication_factor.max(1),
         consistency: body.consistency,
+        // A proposal, decided by the store as for a stream's.
+        incarnation: if propose_incarnation {
+            crate::model::proposed_incarnation()
+        } else {
+            0
+        },
     }
+}
+
+/// The cache a create request asks for, with the incarnation it proposes as
+/// of now.
+pub(crate) async fn cache_to_create(
+    state: &AppState,
+    tenant_id: String,
+    namespace: String,
+    body: CacheCreateRequest,
+) -> Result<Cache, ApiError> {
+    let incarnation = proposes_cache_incarnation(state).await?;
+    Ok(new_cache(tenant_id, namespace, body, incarnation))
+}
+
+/// Whether creating `wanted` again would leave `existing` as it is. A retry
+/// proposes another incarnation; the cache it would create is the existing
+/// one all the same.
+pub(crate) fn same_cache(existing: &Cache, wanted: &Cache) -> bool {
+    *existing
+        == Cache {
+            incarnation: existing.incarnation,
+            ..wanted.clone()
+        }
+}
+
+/// Whether a create proposes the clock as the cache's incarnation, as
+/// [`crate::api::streams::proposes_incarnation`] decides for a stream.
+pub(crate) async fn proposes_cache_incarnation(state: &AppState) -> Result<bool, ApiError> {
+    Ok(state.store.takes_cache_incarnation_proposals().await
+        || crate::api::streams::fleet_finalized(state, felix_common::fleet::CACHE_INCARNATIONS)
+            .await?)
 }
 
 pub(crate) fn cache_key(cache: &Cache) -> CacheKey {
@@ -280,9 +322,15 @@ pub(crate) async fn cache_snapshot(
         .cache_snapshot()
         .await
         .map_err(|err| api_internal("failed to load cache snapshot", &err))?;
+    let tombstones = state
+        .store
+        .cache_tombstones()
+        .await
+        .map_err(|err| api_internal("failed to load cache tombstones", &err))?;
     Ok(Json(CacheSnapshotResponse {
         items: snapshot.items,
         next_seq: snapshot.next_seq,
+        tombstones,
     }))
 }
 

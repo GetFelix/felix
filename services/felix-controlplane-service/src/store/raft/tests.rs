@@ -80,6 +80,13 @@ async fn satisfies_the_incarnation_contract() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_cache_incarnation_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::cache_incarnations::run_cache_incarnation_contract(store).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_resources_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
@@ -1511,8 +1518,9 @@ async fn a_member_below_a_finalized_level_is_refused() {
 }
 
 /// With nothing finalized, a delete that takes shard state still carries a
-/// level-10 field. A member below 10 would refuse it on replay, so once one
-/// is in the log an older member is refused too.
+/// level-10 field, and on a group at 14 the level-14 `incarnations` flag. A
+/// member below would refuse it on replay, so once one is in the log an older
+/// member is refused too.
 #[tokio::test]
 async fn an_older_member_is_refused_after_a_flagged_delete() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1542,7 +1550,7 @@ async fn an_older_member_is_refused_after_a_flagged_delete() {
         .add_learner_without_waiting(2, addr.clone())
         .await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 10")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 14")),
         "{refused:?}"
     );
     version.store(
@@ -1650,4 +1658,296 @@ async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
         fed_within(Duration::from_secs(3)).await,
         "the member was not fed again after reporting the floor"
     );
+}
+
+fn incarnated_cache(name: &str, incarnation: u64) -> Cache {
+    Cache {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: name.to_string(),
+        display_name: name.to_string(),
+        shards: 1,
+        replication_factor: 1,
+        consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation,
+    }
+}
+
+/// A member before level 14 would drop a cache's incarnation. While one is
+/// in the group a cache create proposes none, finalizing `cache_incarnations`
+/// is refused, and an incarnated cache is refused before it reaches the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_incarnated_cache_waits_for_every_member() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 13).await;
+    // The member's level has been read once streams take proposals.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!store.takes_cache_incarnation_proposals().await);
+    let state = crate::test_support::app_state_ready(store.clone());
+    let body = || crate::api::types::CacheCreateRequest {
+        cache: "sessions".to_string(),
+        display_name: "Sessions".to_string(),
+        ..Default::default()
+    };
+    let asked = crate::api::caches::cache_to_create(&state, "t1".into(), "ns".into(), body())
+        .await
+        .expect("cache");
+    assert_eq!(asked.incarnation, 0, "proposed past a level-13 member");
+    store.create_cache(asked).await.expect("create");
+
+    let feature = felix_common::fleet::CACHE_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    let refused = store.finalize_fleet_feature(feature).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("cannot finalize")),
+        "{refused:?}"
+    );
+    let refused = store.create_cache(incarnated_cache("again", 7)).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 14")),
+        "{refused:?}"
+    );
+    let refused = store
+        .create_resources(Vec::new(), vec![incarnated_cache("batched", 7)])
+        .await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 14")),
+        "{refused:?}"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let created = loop {
+        match store.create_cache(incarnated_cache("again", 7)).await {
+            Ok(cache) => break cache,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // Not finalized yet, so the cache is at 0 whatever the command carried.
+    assert_eq!(created.incarnation, 0);
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let (_, batched) = store
+        .create_resources(Vec::new(), vec![incarnated_cache("batched", 7)])
+        .await
+        .expect("create in a batch");
+    assert_eq!(batched[0].incarnation, 7);
+    assert_eq!(
+        store
+            .get_cache(&CacheKey {
+                tenant_id: "t1".to_string(),
+                namespace: "ns".to_string(),
+                cache: "batched".to_string(),
+            })
+            .await
+            .expect("read back")
+            .incarnation,
+        7
+    );
+}
+
+/// Once cache incarnations are finalized, a cache create proposes the clock
+/// even while a peer has not answered since this member restarted, as a
+/// stream create does. A peer that answers with a lower level still holds
+/// the incarnated create back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finalized_group_proposes_cache_incarnations_past_a_peer_that_never_answered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) =
+        store_with_member_at(dir.path(), crate::store::raft::command::METADATA_VERSION).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_cache_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let feature = felix_common::fleet::CACHE_INCARNATIONS.name();
+    store
+        .register_node(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-i", 7301),
+            &[feature],
+        ))
+        .await
+        .expect("report the feature");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let state = crate::test_support::app_state_ready(store.clone());
+    let key = CacheKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+    };
+    let create = || async {
+        let body = crate::api::types::CacheCreateRequest {
+            cache: "sessions".to_string(),
+            display_name: "Sessions".to_string(),
+            ..Default::default()
+        };
+        let cache = crate::api::caches::cache_to_create(&state, "t1".into(), "ns".into(), body)
+            .await
+            .expect("cache");
+        store.create_cache(cache).await
+    };
+    let first = create().await.expect("create");
+    assert_ne!(first.incarnation, 0);
+    store.delete_cache(&key).await.expect("delete");
+
+    // As after a restart with the peer down: it has never answered.
+    version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    assert!(!store.takes_cache_incarnation_proposals().await);
+    let again = create()
+        .await
+        .expect("create with a peer that never answered");
+    assert!(
+        again.incarnation > first.incarnation + 1,
+        "proposed nothing: incarnation {} after {}",
+        again.incarnation,
+        first.incarnation
+    );
+    store.delete_cache(&key).await.expect("delete again");
+
+    // A peer that says it is at level 0 holds the incarnated create back.
+    version.store(0, std::sync::atomic::Ordering::SeqCst);
+    store.handle.forget_reported_versions();
+    let refused = create().await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 14")),
+        "a peer that reported level 0 was overridden: {refused:?}"
+    );
+}
+
+/// Creates and deletes carry the level-14 `incarnations` flag only once every
+/// member is at 14: an entry with it raises the applied level mark to 14,
+/// one without it leaves the mark below.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 13).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let key = CacheKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "sessions".to_string(),
+    };
+    store
+        .create_cache(incarnated_cache("sessions", 0))
+        .await
+        .expect("create");
+    store.delete_cache(&key).await.expect("delete");
+    assert!(
+        store.machine.levels_used() < 14,
+        "{}",
+        store.machine.levels_used()
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_cache_incarnation_proposals().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member's new level was never read"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    store
+        .create_cache(incarnated_cache("sessions", 0))
+        .await
+        .expect("create");
+    assert_eq!(
+        store.machine.levels_used(),
+        14,
+        "the create was not flagged"
+    );
+    let restarted = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(restarted.path(), 13).await;
+    store
+        .create_cache(incarnated_cache("sessions", 0))
+        .await
+        .expect("create");
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.takes_cache_incarnation_proposals().await {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    store.delete_cache(&key).await.expect("delete");
+    assert_eq!(
+        store.machine.levels_used(),
+        14,
+        "the delete was not flagged"
+    );
+}
+
+/// An entry carrying a cache proposal is always flagged, at whatever level
+/// was read, so it is refused below 14 by the same read rather than sent as
+/// an older entry that stores the cache at 0 after the finalize.
+#[test]
+fn a_cache_proposal_always_flags_its_entry() {
+    let proposed = Cache {
+        tenant_id: "t".to_string(),
+        namespace: "ns".to_string(),
+        cache: "c".to_string(),
+        display_name: "c".to_string(),
+        shards: 1,
+        replication_factor: 1,
+        consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 42,
+    };
+    let unproposed = Cache {
+        incarnation: 0,
+        ..proposed.clone()
+    };
+    assert!(RaftStore::caches_decide_at(
+        13,
+        std::slice::from_ref(&proposed)
+    ));
+    assert!(!RaftStore::caches_decide_at(
+        13,
+        std::slice::from_ref(&unproposed)
+    ));
+    assert!(RaftStore::caches_decide_at(
+        14,
+        std::slice::from_ref(&unproposed)
+    ));
 }

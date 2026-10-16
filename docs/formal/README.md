@@ -342,6 +342,15 @@ Each incarnated stream is then one run of the model from an empty log, with
 none of the last run's per-shard state. Nothing in the spec names the
 incarnation.
 
+Cache shards (the cache log and the counter log riding it, which
+`FelixShardFencedCache.cfg` covers) get the same treatment once
+`cache_incarnations` is finalized: their own directories per incarnation, a
+first generation from the change seq, replication state keyed by incarnation,
+and a follower that refuses a cache incarnation it does not hold
+(`a_cache_follower_refuses_an_incarnation_it_does_not_hold`,
+`a_cache_recreate_between_the_check_and_the_open_is_refused`). Each
+incarnated cache is one run of the model too.
+
 ### What ties this to the code, and what does not
 
 A spec and an implementation are two artifacts in two languages. Nothing in the

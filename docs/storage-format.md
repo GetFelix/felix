@@ -85,8 +85,13 @@ only increases for the name. Its shard directories end in `-` and the
 incarnation as 16 hex digits, so a stream deleted and created again under the
 same name never opens the old one's directories. A stream from before the
 finalize is incarnation 0 and keeps the name above. The same naming applies
-under `groups/` and `dead-letters/`, which belong to a stream shard; caches and
-counters stay at 0.
+under `groups/` and `dead-letters/`, which belong to a stream shard. A cache
+created once the fleet finalized `cache_incarnations` has one too, and its
+shard directories under `caches/` and `counters/` are named the same way; a
+cache from before keeps incarnation 0 and its directory names. The cache
+store's root has its own `.streams/` (markers, `.floors`, `.incarnations`, in
+the formats below, one marker per cache) and `.deleted/`, and so does
+`counters/` for `.deleted/`.
 
 `.streams/` holds one marker per durable stream, and per ephemeral stream once
 it has an incarnation, named like a shard directory without the shard. It is

@@ -14,6 +14,7 @@ fn replicated_cache(name: &str, shards: u32, replication_factor: u32) -> Cache {
         shards,
         replication_factor,
         consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 

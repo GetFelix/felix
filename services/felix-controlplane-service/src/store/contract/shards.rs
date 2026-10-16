@@ -97,6 +97,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
             shards: CACHE_SHARDS,
             replication_factor: 1,
             consistency: crate::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await;
 
@@ -1112,6 +1113,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
             shards: 2,
             replication_factor: 1,
             consistency: crate::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await
         .expect("create the cache to delete");
@@ -1273,6 +1275,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                 shards: 1,
                 replication_factor: 1,
                 consistency: ConsistencyLevel::Leader,
+                incarnation: 0,
             })
             .await
             .expect("cache");

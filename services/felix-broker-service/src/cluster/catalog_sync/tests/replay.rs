@@ -121,6 +121,7 @@ fn router_with(
                 Json(CacheSnapshotResponse {
                     items: vec![],
                     next_seq: 1,
+                    tombstones: Vec::new(),
                 })
             }),
         )

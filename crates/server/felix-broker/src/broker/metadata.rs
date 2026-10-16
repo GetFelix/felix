@@ -78,4 +78,9 @@ pub struct CacheMetadata {
     /// replicated like a stream's, so `Quorum` holds the acknowledgement until
     /// a majority of the shard's replica set has the write.
     pub consistency: ConsistencyLevel,
+    /// Which cache of this name this is, as for a stream: a cache deleted and
+    /// created again is a new cache with logs of its own. 0 is a cache from
+    /// before cache incarnations, whose logs keep the directory names they
+    /// always had.
+    pub incarnation: u64,
 }

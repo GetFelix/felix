@@ -603,6 +603,7 @@ async fn pg_store_core_crud_and_auth() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     let conflict_cache = store
@@ -614,6 +615,7 @@ async fn pg_store_core_crud_and_auth() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await;
     assert!(matches!(
@@ -886,6 +888,7 @@ async fn pg_store_additional_paths() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     assert_eq!(store.list_streams("t1", "default").await?.len(), 1);
@@ -1094,6 +1097,7 @@ async fn pg_store_list_and_change_roundtrip() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     store
@@ -1105,6 +1109,7 @@ async fn pg_store_list_and_change_roundtrip() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     let caches = store.list_caches("t1", "ns1").await?;
@@ -1236,6 +1241,7 @@ async fn pg_store_not_found_and_noop_paths() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await;
     assert!(matches!(missing_cache, Err(store::StoreError::NotFound(_))));
@@ -1353,6 +1359,7 @@ async fn pg_store_delete_tenant_with_dependents() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
 
@@ -1509,6 +1516,7 @@ async fn pg_store_full_surface_area() -> Result<()> {
             shards: 1,
             replication_factor: 1,
             consistency: felix_controlplane_service::model::ConsistencyLevel::Leader,
+            incarnation: 0,
         })
         .await?;
     assert_eq!(store.list_caches("t1", "default").await?.len(), 1);

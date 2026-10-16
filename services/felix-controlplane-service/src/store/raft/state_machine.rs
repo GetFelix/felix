@@ -22,7 +22,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::raft::AppStateMachine;
-use crate::store::memory::{FleetRule, InMemoryStore, ShardCleanup};
+use crate::store::memory::{Decide, FleetRule, InMemoryStore, ShardCleanup};
 use crate::store::raft::command::{
     MetaCommand, MetaResponse, MetaResult, decode_command_with_level, encode_result,
 };
@@ -188,8 +188,9 @@ impl MetadataStateMachine {
             MetaCommand::DeleteTenant {
                 tenant_id,
                 take_shards,
+                incarnations,
             } => store
-                .apply_delete_tenant(&tenant_id, cleanup(take_shards))
+                .apply_delete_tenant(&tenant_id, cleanup(take_shards), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -198,13 +199,20 @@ impl MetadataStateMachine {
                 .await
                 .map(|namespace| MetaResponse::Namespace { namespace })
                 .map_err(Into::into),
-            MetaCommand::DeleteNamespace { key, take_shards } => store
-                .apply_delete_namespace(&key, cleanup(take_shards))
+            MetaCommand::DeleteNamespace {
+                key,
+                take_shards,
+                incarnations,
+            } => store
+                .apply_delete_namespace(&key, cleanup(take_shards), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
-            MetaCommand::CreateStream { stream } => store
-                .create_stream(stream)
+            MetaCommand::CreateStream {
+                stream,
+                incarnations,
+            } => store
+                .apply_create_stream(stream, decide(incarnations))
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
@@ -213,13 +221,20 @@ impl MetadataStateMachine {
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
-            MetaCommand::DeleteStream { key, take_reports } => store
-                .apply_delete_stream(&key, cleanup(take_reports))
+            MetaCommand::DeleteStream {
+                key,
+                take_reports,
+                incarnations,
+            } => store
+                .apply_delete_stream(&key, cleanup(take_reports), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
-            MetaCommand::CreateCache { cache } => store
-                .create_cache(cache)
+            MetaCommand::CreateCache {
+                cache,
+                incarnations,
+            } => store
+                .apply_create_cache(cache, decide(incarnations))
                 .await
                 .map(|cache| MetaResponse::Cache { cache })
                 .map_err(Into::into),
@@ -228,8 +243,12 @@ impl MetadataStateMachine {
                 .await
                 .map(|cache| MetaResponse::Cache { cache })
                 .map_err(Into::into),
-            MetaCommand::DeleteCache { key, take_reports } => store
-                .apply_delete_cache(&key, cleanup(take_reports))
+            MetaCommand::DeleteCache {
+                key,
+                take_reports,
+                incarnations,
+            } => store
+                .apply_delete_cache(&key, cleanup(take_reports), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -247,13 +266,19 @@ impl MetadataStateMachine {
                     fleet,
                 })
             }
-            // `Streams` only once a stream has an incarnation, which needs
-            // every member at the level that decodes it; `Unit` before.
-            MetaCommand::CreateResources { streams, caches } => store
-                .create_resources(streams, caches)
+            // Each shape only once something in it has an incarnation, which
+            // needs every member at the level that decodes it; `Unit` before.
+            MetaCommand::CreateResources {
+                streams,
+                caches,
+                incarnations,
+            } => store
+                .apply_create_resources(streams, caches, decide(incarnations))
                 .await
-                .map(|streams| {
-                    if streams.iter().any(|stream| stream.incarnation != 0) {
+                .map(|(streams, caches)| {
+                    if caches.iter().any(|cache| cache.incarnation != 0) {
+                        MetaResponse::Resources { streams, caches }
+                    } else if streams.iter().any(|stream| stream.incarnation != 0) {
                         MetaResponse::Streams { streams }
                     } else {
                         MetaResponse::Unit
@@ -679,6 +704,16 @@ fn assignment_written(written: AssignmentWrite) -> MetaResponse {
             current_generation: current,
         },
         AssignmentWrite::Fenced { token } => MetaResponse::FencedAssignment { token },
+    }
+}
+
+/// What an entry's `incarnations` flag means: decided from the entry, or as
+/// a member before level 14 decides.
+fn decide(incarnations: bool) -> Decide {
+    if incarnations {
+        Decide::Entry
+    } else {
+        Decide::Legacy
     }
 }
 

@@ -245,6 +245,20 @@ pub trait StorageApi: Debug + Send + Sync {
         Err(StorageError::Unsupported("cache watch snapshot"))
     }
 
+    /// This store as a [`LogCache`], for the bookkeeping only a store with
+    /// directories has: which incarnation of a cache it opens, and deleting
+    /// one.
+    fn as_log_cache(&self) -> Option<&LogCache> {
+        None
+    }
+
+    /// Drop every entry of a deleted cache, so one created again under the
+    /// name starts empty. For a store with no log; a [`LogCache`] deletes a
+    /// cache through its directories instead, and ignores this.
+    async fn forget_cache(&self, _tenant_id: &str, _namespace: &str, _cache: &str) -> Result<()> {
+        Ok(())
+    }
+
     async fn len(&self) -> usize;
 
     async fn is_empty(&self) -> bool;

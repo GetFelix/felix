@@ -670,6 +670,66 @@ data too. Below level 13 the proposer drops them, and placement reads the
 report as it did at level 12: from any leader, and an unverified follower
 however often it restarted.
 
+Level 14 is cache incarnations, the same change as level 10 for caches: a
+cache's `incarnation`, a cache change's `deleted_through`, the snapshot's
+`cache_tombstones`, and a `create_resources` answer carrying the caches as
+stored. It also adds `incarnations` to the create commands and to
+`delete_cache`, `delete_namespace` and `delete_tenant`: the proposer sets it
+only once every member is at level 14, and apply decides incarnations and
+tombstones from the entry alone.
+
+- A flagged create stores the incarnation it proposed, raised above the
+  name's tombstone, once the feature is finalized, and 0 otherwise. A
+  proposal of 0 stays 0.
+- A flagged cache delete records the tombstone once `cache_incarnations` is
+  finalized.
+- An unflagged entry applies as level 13 applies it. A cache is created at 0,
+  and a cache delete writes no tombstone. A stream entry keeps the meaning it
+  had at levels 10 to 13, so entries already in a log replay as they did.
+
+**What the finalize gate does and does not do.** An upgraded member refuses to
+propose the finalize of `cache_incarnations` (409) until every member is at
+level 14. A member still on the older build does not know the feature, reads
+its finalize as level 2 and proposes it, so the finalize can commit in a mixed
+group. What keeps the members identical is the rules above, not the gate.
+Until every member is at level 14 no entry carries the flag, so caches are
+created at 0 and no cache delete writes a tombstone, on every member. Through
+an upgraded member a cache create is refused with 409 in that window, since
+it would carry a cache incarnation. Brokers see caches at 0, as before the
+finalize, and keep a deleted cache's data. Once every member is at level 14,
+new entries carry the flag and caches get incarnations. The first flagged
+create or delete raises the group's level floor to 14, finalized or not, so
+from then on a member below level 14 is refused at join and held by the
+leader.
+
+Streams have the same gap at level 10: a `stream_incarnations` finalize can be
+committed through a member below level 10, such as a `v0.6.0-preview.7`
+member (level 8) during a roll to this release. Stream entries are decided
+from the entry alone for that reason too:
+
+- An unflagged stream create proposing 0 stores 0, and an unflagged delete of
+  a stream at incarnation 0 writes no tombstone, so a level-8 member and an
+  upgraded one store the same.
+- An unflagged create proposing an incarnation still gets one, as at levels 10
+  to 13. A proposer below level 10 never writes one.
+- A level-14 proposer flags every create and delete once every member is at
+  14, and fills in a proposal. It reads the group's level once per entry and
+  decides the flag and the level gate from that one reading. An entry
+  carrying a cache proposal is always flagged, so the gate refuses it below
+  14. A stream create from it can still go unflagged while a member is below
+  14, and then applies as the older levels do.
+
+**The residual is for unreleased builds.** Levels 10 to 13 were never
+released. Their builds gave an unflagged create proposing 0 after the finalize
+the name's tombstone + 1, and tombstoned a deleted stream at incarnation 0.
+That happened when the proposer had not yet applied the finalize, or counted a
+silent peer as level 0. A cluster that ran such a build and logged one of
+these entries now stores something different when it replays them: 0, and no
+tombstone. A member that replays the log then disagrees with one restored from
+a snapshot taken before the upgrade. Rebuild such members from a snapshot:
+remove the member, wipe its Raft data and add it back. No migration step is
+needed.
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -689,12 +749,13 @@ the field itself, on every member alike, or refuses the command:
 | node `features`, snapshot `fleet_enabled` | 2 | as above |
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
-| stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | an upgraded proposer refuses finalizing `stream_incarnations` with 409; one below level 10 does not, see the level-14 notes above |
 | replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 | node `storage_id`, replica report `follower_storage`, and both in the snapshot | 12 | the registration and the report are proposed without them, which placement reads as unverified |
 | replica report `report.leader` and `node_incarnations`, and both in the snapshot | 13 | the report is proposed without them, which placement reads as at level 12 |
+| cache `incarnation`, cache change `deleted_through`, snapshot `cache_tombstones`, command `incarnations` | 14 | the entry carries no flag, so every member creates caches at 0 and writes no cache tombstone; an upgraded proposer refuses the finalize and, once finalized, cache creates with 409 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

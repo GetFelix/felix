@@ -223,6 +223,7 @@ fn cache(name: &str) -> Cache {
         shards: 1,
         replication_factor: 1,
         consistency: ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 

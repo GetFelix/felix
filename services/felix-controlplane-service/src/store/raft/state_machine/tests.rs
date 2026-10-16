@@ -77,6 +77,7 @@ fn cache(tenant_id: &str, namespace: &str, name: &str) -> Cache {
         shards: 1,
         replication_factor: 1,
         consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 0,
     }
 }
 
@@ -188,12 +189,15 @@ fn script() -> Vec<MetaCommand> {
             });
             commands.push(MetaCommand::CreateStream {
                 stream: stream(t, ns, "orders"),
+                incarnations: false,
             });
             commands.push(MetaCommand::CreateStream {
                 stream: stream(t, ns, "events"),
+                incarnations: false,
             });
             commands.push(MetaCommand::CreateCache {
                 cache: cache(t, ns, "primary"),
+                incarnations: false,
             });
         }
     }
@@ -352,6 +356,7 @@ fn script() -> Vec<MetaCommand> {
     commands.push(MetaCommand::DeleteTenant {
         tenant_id: "t-c".to_string(),
         take_shards: true,
+        incarnations: false,
     });
     commands.push(MetaCommand::DeleteStream {
         key: StreamKey {
@@ -360,6 +365,7 @@ fn script() -> Vec<MetaCommand> {
             stream: "events".to_string(),
         },
         take_reports: true,
+        incarnations: false,
     });
     commands.push(MetaCommand::DeleteNamespace {
         key: NamespaceKey {
@@ -367,6 +373,7 @@ fn script() -> Vec<MetaCommand> {
             namespace: "ns-2".to_string(),
         },
         take_shards: false,
+        incarnations: false,
     });
     commands
 }

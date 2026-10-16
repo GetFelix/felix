@@ -91,8 +91,8 @@ pub struct LocalShard {
     /// moved away and must not serve here again, however many times the
     /// assignment is re-delivered.
     pub draining: bool,
-    /// The stream incarnation the assignment that opened it named; 0 for a
-    /// cache and before incarnations.
+    /// The stream or cache incarnation the assignment that opened it named;
+    /// 0 before incarnations.
     pub incarnation: u64,
 }
 
@@ -123,7 +123,7 @@ pub enum Action {
         /// The shard waits in `Fencing` once open, and where this
         /// generation begins is recorded when it serves, not here.
         fence: bool,
-        /// The stream incarnation the assignment names; 0 for a cache and an
+        /// The stream or cache incarnation the assignment names; 0 for an
         /// assignment from before incarnations.
         incarnation: u64,
     },
@@ -736,8 +736,8 @@ pub trait ShardStore: Send + Sync {
     /// fence may take a replica's tail first, so where this generation
     /// begins is recorded when the shard serves ([`record_term_start`]).
     ///
-    /// A stream's logs open only at `incarnation`, the one the assignment
-    /// names, when it is not 0: the catalog may have moved on to another
+    /// A stream's or cache's logs open only at `incarnation`, the one the
+    /// assignment names, when it is not 0: the catalog may have moved on to another
     /// since the shard was found ready to open.
     async fn open(
         &self,
@@ -747,7 +747,8 @@ pub trait ShardStore: Send + Sync {
         begins_here: bool,
     ) -> anyhow::Result<()>;
     /// Whether opening `key`, whose assignment names `incarnation`, has to
-    /// wait for the catalog to register its stream at that incarnation.
+    /// wait for the catalog to register its stream or cache at that
+    /// incarnation.
     fn awaits_registration(&self, _key: &ShardKey, _incarnation: u64) -> bool {
         false
     }
@@ -1229,6 +1230,7 @@ impl DurableShardStore {
         &self,
         key: &ShardKey,
         generation: u64,
+        incarnation: u64,
         begins_here: bool,
     ) -> anyhow::Result<()> {
         // Only a broker-backed store has the cache store to open.
@@ -1245,7 +1247,15 @@ impl DurableShardStore {
         ] {
             // No counter store configured means no counter log to mark.
             let Some(log) = broker
-                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .shard_log_for(
+                    kind,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    None,
+                    (incarnation != 0).then_some(incarnation),
+                )
                 .await
             else {
                 if kind == felix_broker::LogKind::Cache {
@@ -1269,7 +1279,7 @@ impl DurableShardStore {
 impl ShardStore for DurableShardStore {
     /// Once this broker has seen streams carry incarnations, a stream shard
     /// opens only after the catalog registered its stream at the assignment's
-    /// incarnation. The
+    /// incarnation, and the same for caches, which have their own switch. The
     /// control plane places a new stream's shards as soon as it exists, which
     /// usually reaches this broker before the catalog does; opened then, the
     /// log would be the wrong incarnation's. An assignment without one, from a
@@ -1279,17 +1289,33 @@ impl ShardStore for DurableShardStore {
             return false;
         };
         let broker = &starts.broker;
-        if key.kind != ShardKind::Stream {
-            return false;
-        }
-        // An assignment naming one is proof incarnations are in play.
-        if incarnation != 0 {
-            broker.require_registered_streams();
-        }
-        if !broker.registration_required() {
-            return false;
-        }
-        let waits = match broker.stream_incarnation(&key.tenant_id, &key.namespace, &key.stream) {
+        let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
+        let registered = match key.kind {
+            ShardKind::Stream => {
+                // An assignment naming one is proof incarnations are in play.
+                if incarnation != 0 {
+                    broker.require_registered_streams();
+                }
+                if !broker.registration_required() {
+                    return false;
+                }
+                broker.stream_incarnation(tenant, namespace, name)
+            }
+            ShardKind::Cache => {
+                // A cache store with no log has no incarnation to wait for.
+                if broker.cache().as_log_cache().is_none() && broker.counters().is_none() {
+                    return false;
+                }
+                if incarnation != 0 {
+                    broker.require_registered_caches();
+                }
+                if !broker.cache_registration_required() {
+                    return false;
+                }
+                broker.cache_incarnation(tenant, namespace, name)
+            }
+        };
+        let waits = match registered {
             None => true,
             Some(registered) => incarnation != 0 && registered != incarnation,
         };
@@ -1310,7 +1336,9 @@ impl ShardStore for DurableShardStore {
         // broker reaches; opening a stream log here would create an empty
         // directory nothing reads.
         if key.kind == ShardKind::Cache {
-            return self.open_cache(key, generation, begins_here).await;
+            return self
+                .open_cache(key, generation, incarnation, begins_here)
+                .await;
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.

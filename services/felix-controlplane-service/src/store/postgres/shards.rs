@@ -131,7 +131,7 @@ async fn write_shard_assignment(
             "stream",
         ),
         ShardKind::Cache => (
-            "SELECT shards, 0::BIGINT AS incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR KEY SHARE",
+            "SELECT shards, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR KEY SHARE",
             "cache",
         ),
     };

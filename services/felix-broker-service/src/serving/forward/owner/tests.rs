@@ -474,9 +474,6 @@ async fn a_forwarded_cache_op_the_store_refused_is_an_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("caches");
     let cache = felix_storage::LogCache::open(&root, LogConfig::default()).expect("open cache");
-    // The shard can never open once its root is a plain file.
-    std::fs::remove_dir(&root).expect("remove root");
-    std::fs::write(&root, b"not a directory").expect("replace root");
     let broker = Broker::new(Box::new(cache));
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
@@ -492,6 +489,10 @@ async fn a_forwarded_cache_op_the_store_refused_is_an_error() {
         )
         .await
         .expect("cache");
+    // The shard can never open once its root is a plain file. Replaced after
+    // the registration, which reads the cache's marker under that root.
+    std::fs::remove_dir_all(&root).expect("remove root");
+    std::fs::write(&root, b"not a directory").expect("replace root");
     let credentials = Credentials::new();
     let handler = handler_with(
         Arc::new(broker),

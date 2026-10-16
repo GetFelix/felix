@@ -55,6 +55,7 @@ pub(super) async fn delete_namespace(
     store: &InMemoryStore,
     key: &NamespaceKey,
     cleanup: ShardCleanup,
+    decide: super::Decide,
 ) -> StoreResult<()> {
     if !store.tenant_exists(&key.tenant_id).await? {
         return Err(StoreError::NotFound("tenant".into()));
@@ -90,9 +91,14 @@ pub(super) async fn delete_namespace(
     let nodes = store.nodes.read().await;
     for stream_key in &stream_keys {
         if let Some(stream) = streams.remove(stream_key) {
-            let deleted_through =
-                super::streams::record_tombstone(store, &nodes, stream_key, stream.incarnation)
-                    .await;
+            let deleted_through = super::streams::record_tombstone(
+                store,
+                &nodes,
+                stream_key,
+                stream.incarnation,
+                decide,
+            )
+            .await;
             store
                 .stream_changes
                 .write()
@@ -129,13 +135,23 @@ pub(super) async fn delete_namespace(
     cache_keys.sort_by(|a, b| {
         (&a.tenant_id, &a.namespace, &a.cache).cmp(&(&b.tenant_id, &b.namespace, &b.cache))
     });
+    let nodes = store.nodes.read().await;
     for cache_key in &cache_keys {
         if let Some(cache) = caches.remove(cache_key) {
+            let deleted_through = super::caches::record_tombstone(
+                store,
+                &nodes,
+                cache_key,
+                cache.incarnation,
+                decide,
+            )
+            .await;
             store.cache_changes.write().await.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Deleted,
                 key: cache_key.clone(),
                 cache: Some(cache),
+                deleted_through,
             });
             if cleanup == ShardCleanup::Full {
                 store
@@ -150,6 +166,7 @@ pub(super) async fn delete_namespace(
             }
         }
     }
+    drop(nodes);
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);
     Ok(())
 }

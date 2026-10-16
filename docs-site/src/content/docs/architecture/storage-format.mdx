@@ -100,6 +100,11 @@ naming the incarnation this broker holds, whether a delete of it is
 unfinished, and through which incarnation the control plane said the name is
 deleted; the format is in `docs/storage-format.md`. See [Deleting a stream](/architecture/durable-storage/#deleting-a-stream-and-creating-it-again).
 
+Caches work the same way once the fleet finalized `cache_incarnations`: an
+incarnated cache's shard directories under `caches/` and `counters/` end in
+its incarnation, a cache from before keeps incarnation 0 and its names, and
+the cache store's root has its own `.streams/` markers and `.deleted/`.
+
 File names are zero-padded to 20 digits so lexicographic and numeric order agree.
 Recovery still parses the number and sorts on it rather than trusting directory
 iteration order, which is filesystem-defined.

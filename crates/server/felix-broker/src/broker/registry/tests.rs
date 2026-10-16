@@ -90,6 +90,53 @@ async fn remove_tenant_succeeds() {
     assert!(!removed_again);
 }
 
+/// A cascading delete may remove the tenant before its caches.
+#[tokio::test]
+async fn a_registered_cache_is_removed_after_its_tenant() {
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_cache("t1", "default", "primary", CacheMetadata::default())
+        .await
+        .expect("cache");
+    broker
+        .cache()
+        .put(
+            "t1",
+            "default",
+            "primary",
+            0,
+            "k",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    broker.remove_tenant("t1").await.expect("remove tenant");
+
+    assert!(
+        broker
+            .remove_cache("t1", "default", "primary")
+            .await
+            .expect("remove cache")
+    );
+    let entry = broker
+        .cache()
+        .get("t1", "default", "primary", 0, "k")
+        .await
+        .expect("get");
+    assert_eq!(entry, None, "an operator removal deletes the entries");
+    let err = broker
+        .remove_cache("t1", "default", "primary")
+        .await
+        .expect_err("tenant gone");
+    assert!(matches!(err, BrokerError::TenantNotFound(_)));
+}
+
 #[tokio::test]
 async fn remove_namespace_succeeds() {
     let broker = Broker::new(EphemeralCache::new().into());

@@ -35,6 +35,7 @@ pub(super) async fn delete_tenant(
     store: &InMemoryStore,
     tenant_id: &str,
     cleanup: ShardCleanup,
+    decide: super::Decide,
 ) -> StoreResult<()> {
     let mut tenants = store.tenants.write().await;
     if tenants.remove(tenant_id).is_none() {
@@ -89,7 +90,8 @@ pub(super) async fn delete_tenant(
     for key in &stream_keys {
         if let Some(stream) = streams.remove(key) {
             let deleted_through =
-                super::streams::record_tombstone(store, &nodes, key, stream.incarnation).await;
+                super::streams::record_tombstone(store, &nodes, key, stream.incarnation, decide)
+                    .await;
             store
                 .stream_changes
                 .write()
@@ -127,13 +129,18 @@ pub(super) async fn delete_tenant(
     cache_keys.sort_by(|a, b| {
         (&a.tenant_id, &a.namespace, &a.cache).cmp(&(&b.tenant_id, &b.namespace, &b.cache))
     });
+    let nodes = store.nodes.read().await;
     for key in &cache_keys {
         if let Some(cache) = caches.remove(key) {
+            let deleted_through =
+                super::caches::record_tombstone(store, &nodes, key, cache.incarnation, decide)
+                    .await;
             store.cache_changes.write().await.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Deleted,
                 key: key.clone(),
                 cache: Some(cache),
+                deleted_through,
             });
             if cleanup == ShardCleanup::Full {
                 store
@@ -148,6 +155,7 @@ pub(super) async fn delete_tenant(
             }
         }
     }
+    drop(nodes);
     metrics::gauge!("felix_caches_total").set(caches.len() as f64);
 
     store

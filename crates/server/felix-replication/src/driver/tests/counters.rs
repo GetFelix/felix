@@ -130,6 +130,7 @@ async fn quorum_cache() -> (Arc<Broker>, Arc<ShardRouter>, TempDir) {
             STREAM,
             felix_broker::CacheMetadata {
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await

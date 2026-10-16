@@ -1487,7 +1487,8 @@ A new stream also gets an `incarnation` once the `stream_incarnations` fleet
 feature is finalized. Brokers keep each incarnation's data in directories of
 its own, so a stream deleted and created again starts empty (see
 `docs/durable-storage.md`, "Deleting a stream"). Finalizing it needs every
-Raft member at metadata level 10 and every serving broker reporting it, and
+Raft member at metadata level 10 (an upgraded member refuses it before then;
+one below level 10 does not, see `docs/metadata-raft-design.md`) and every serving broker reporting it, and
 like every finalize it is one-way. A stream created before is incarnation 0,
 which every answer leaves out.
 
@@ -1580,6 +1581,31 @@ it reaches an upgraded one. Finish upgrading every instance before the
 finalize to avoid that. The rules are checked for every
 store by one contract (`run_incarnation_contract` in
 `store/contract/incarnations.rs`).
+
+**Caches have incarnations too**, under their own fleet feature,
+`cache_incarnations`, finalized separately because a broker that has
+`stream_incarnations` but predates this one would open an incarnated cache in
+the deleted cache's directories. An upgraded Raft member refuses to finalize
+it until every member is at metadata level 14. A member on the older build
+accepts the finalize, but entries carry no cache incarnation or tombstone
+until every member is at level 14 (see `docs/metadata-raft-design.md`), so
+the members stay identical. The rules are the stream rules above, applied to caches: a
+create proposes the clock (`cache_to_create`; on Raft once every member is at
+level 14 or the feature is finalized), the store decides inside the write, a
+cache from before the finalize is incarnation 0 and every answer leaves it
+out, and a retried create ignores the incarnation. After the finalize every
+cache delete, cascades included, records a tombstone per name, kept for good,
+exported and imported with the state, served by `GET /v1/caches/snapshot` as
+`tombstones` (left out while empty) and carried on the `Deleted` change as
+`deleted_through`. A single cache delete carries the cache as its payload only
+when its incarnation is not 0, as for streams. A cache shard's assignment
+stores the cache's incarnation, and an incarnated cache's first shard
+generation is the change seq. `POST /v1/resources` answers with the caches as
+stored, incarnations included. On Postgres, migration 0032 adds
+`caches.incarnation`, `cache_tombstones` and `cache_changes.deleted_through`
+with the same triggers as 0028, under an advisory lock of their own, so a
+cache write never waits on a stream finalize. The rules are checked for every
+store by `run_cache_incarnation_contract` in `store/contract/cache_incarnations.rs`.
 
 Brokers learn the mapping from the shard assignments, not from the stream
 catalog: the snapshot, changes and list responses stamp each stream shard's

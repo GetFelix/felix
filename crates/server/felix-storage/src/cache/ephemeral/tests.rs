@@ -310,3 +310,31 @@ async fn an_expired_entry_is_absent_to_a_condition() {
         .unwrap();
     assert!(taken.applied);
 }
+
+#[tokio::test]
+async fn forget_cache_drops_only_that_caches_entries() {
+    let cache = EphemeralCache::new();
+    for name in ["orders", "users"] {
+        cache
+            .put(
+                "t1",
+                "default",
+                name,
+                0,
+                "k",
+                Bytes::from_static(b"v"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    cache.forget_cache("t1", "default", "orders").await.unwrap();
+    assert_eq!(
+        cache.get("t1", "default", "orders", 0, "k").await.unwrap(),
+        None
+    );
+    assert_eq!(
+        cache.get("t1", "default", "users", 0, "k").await.unwrap(),
+        Some(Bytes::from_static(b"v"))
+    );
+}

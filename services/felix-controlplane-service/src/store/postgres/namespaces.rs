@@ -3,16 +3,16 @@ use serde_json::Value;
 use sqlx::FromRow;
 
 use super::codec::{
-    DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_routing,
-    parse_stream_kind,
+    DbCache, DbNamespace, DbStream, cache_from_db, parse_consistency, parse_delivery,
+    parse_routing, parse_stream_kind,
 };
 use super::{
     CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
     is_unique_violation, page_fetch,
 };
 use crate::model::{
-    Cache, CacheKey, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey, RetentionPolicy,
-    Stream, StreamKey,
+    CacheKey, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey, RetentionPolicy, Stream,
+    StreamKey,
 };
 use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
@@ -165,7 +165,7 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
     ?;
 
     let caches = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches WHERE tenant_id = $1 AND namespace = $2"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
@@ -185,15 +185,7 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
             namespace: cache.namespace.clone(),
             cache: cache.cache.clone(),
         };
-        let payload = Cache {
-            tenant_id: cache.tenant_id,
-            namespace: cache.namespace,
-            cache: cache.cache,
-            display_name: cache.display_name,
-            shards: cache.shards as u32,
-            replication_factor: cache.replication_factor as u32,
-            consistency: parse_consistency(&cache.consistency)?,
-        };
+        let payload = cache_from_db(cache)?;
         sqlx::query(
             r#"INSERT INTO cache_changes (op, tenant_id, namespace, cache, payload) VALUES ($1, $2, $3, $4, $5)"#,
         )

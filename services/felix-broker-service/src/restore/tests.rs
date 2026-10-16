@@ -173,3 +173,149 @@ async fn a_restore_that_fails_part_way_has_already_rotated_the_storage_id() {
     let after = crate::node::storage::storage_id(Some(root.path())).expect("load");
     assert_ne!(after, before);
 }
+
+fn incarnated_cache(records: u64) -> Manifest {
+    serde_json::from_value(serde_json::json!({
+        "format_version": 1,
+        "name": "nightly",
+        "shards": [{
+            "tenant_id": "t", "namespace": "ns", "name": "prices", "shard": 0,
+            "kind": "cache", "leader": "broker-0", "generation": 3,
+            "incarnation": 42, "logs": { "records": records, "counters": 0 }
+        }]
+    }))
+    .expect("manifest")
+}
+
+#[test]
+fn a_cache_with_an_incarnation_is_found_in_that_incarnations_directories() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let manifest = incarnated_cache(10);
+    let key = felix_storage::log::ShardKey {
+        tenant: "t".into(),
+        namespace: "ns".into(),
+        stream: "prices".into(),
+        shard: 0,
+    };
+    // Only the deleted cache's directories: not the ones the point describes.
+    for store in ["caches", "counters"] {
+        std::fs::create_dir_all(incarnation_dir(&root.path().join(store), &key, 0)).expect("mkdir");
+    }
+    assert!(manifest.plan(None, root.path()).expect("plan").is_empty());
+
+    for store in ["caches", "counters"] {
+        std::fs::create_dir_all(incarnation_dir(&root.path().join(store), &key, 42))
+            .expect("mkdir");
+    }
+    let plan = manifest.plan(None, root.path()).expect("plan");
+    assert_eq!(
+        cuts(&plan),
+        vec![
+            ("t/ns/prices/0".to_string(), LogKind::Cache, 10),
+            ("t/ns/prices/0".to_string(), LogKind::Counters, 0),
+        ]
+    );
+}
+
+fn cache_broker(root: &Path) -> (felix_broker::Broker, felix_broker::DurableStorage) {
+    let config = felix_storage::log::LogConfig {
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        ..felix_storage::log::LogConfig::default()
+    };
+    let storage = felix_broker::DurableStorage::open(root, config.clone()).expect("open storage");
+    let cache = felix_storage::LogCache::open(root.join("caches"), config.clone()).expect("cache");
+    let counters = std::sync::Arc::new(
+        felix_storage::CounterStore::open(root.join("counters"), config).expect("counters"),
+    );
+    let broker = felix_broker::Broker::new(Box::new(cache))
+        .with_durable_storage(storage.clone())
+        .with_counters(counters);
+    (broker, storage)
+}
+
+/// On a stopped broker nothing is registered: the restore cuts the
+/// incarnation the point names and records it as the cache's again, below
+/// the one created since.
+#[tokio::test]
+async fn a_restore_cuts_and_records_the_points_cache_incarnation() {
+    let root = tempfile::tempdir().expect("tempdir");
+    {
+        let (broker, storage) = cache_broker(root.path());
+        broker.register_tenant("t").await.expect("tenant");
+        broker.register_namespace("t", "ns").await.expect("ns");
+        broker
+            .register_cache(
+                "t",
+                "ns",
+                "prices",
+                felix_broker::CacheMetadata {
+                    incarnation: 42,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("register");
+        for key in ["a", "b", "c"] {
+            broker
+                .cache()
+                .put(
+                    "t",
+                    "ns",
+                    "prices",
+                    0,
+                    key,
+                    bytes::Bytes::from_static(b"v"),
+                    None,
+                )
+                .await
+                .expect("put");
+        }
+        broker
+            .counters()
+            .expect("counters")
+            .add("t", "ns", "prices", 0, "hits", 2)
+            .await
+            .expect("add");
+        // Created again since the point.
+        broker
+            .register_cache(
+                "t",
+                "ns",
+                "prices",
+                felix_broker::CacheMetadata {
+                    incarnation: 43,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("register");
+        storage.shutdown().await.expect("shutdown");
+    }
+
+    let (broker, storage) = cache_broker(root.path());
+    let restored = restore(
+        &incarnated_cache(1),
+        None,
+        root.path(),
+        &broker,
+        Some(storage),
+    )
+    .await
+    .expect("restore");
+    assert_eq!(restored, 2);
+
+    let store = broker.cache().as_log_cache().expect("log cache");
+    match store.marker("t", "ns", "prices").await.expect("marker") {
+        felix_storage::MarkerRead::Valid(marker) => {
+            assert_eq!(marker.incarnation, 42);
+            assert!(!marker.retiring);
+        }
+        other => panic!("no marker for the point's incarnation: {other:?}"),
+    }
+    let log = broker
+        .shard_log_for(LogKind::Cache, "t", "ns", "prices", 0, None, Some(42))
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
+}
