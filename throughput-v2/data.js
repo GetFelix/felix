@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792101816325,
+  "lastUpdate": 1792109575021,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30680,6 +30680,58 @@ window.BENCHMARK_DATA = {
             "range": "12918.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1681682.44\nmean: 1686515.45\nstdev: 12918.29\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "53a2ba5e0fdd5d549d1a079e065dcd81c00fbc59",
+          "message": "ci: run ElectSwap nightly, tighten spec pairing, check docs on docs-only PRs (#1273)\n\n* ci: run ElectSwap nightly, tighten spec pairing, check docs on docs-only PRs\n\nElectSwap has never finished a run and starved the configurations scheduled\nafter it in its shard on main; it now runs in the nightly exhaustive job.\nWipe is weighted at its measured 35 minutes. Spec pairing needs a\nnon-comment change to a .tla or .cfg, and covers the code the commit,\ngroups, sessions and suspicion models describe. Docs-only changes run\ndocs:evidence.\n\n* ci: tokenize spec comments, run changed configs on PRs, nightly Wipe",
+          "timestamp": "2026-10-16T00:09:05Z",
+          "tree_id": "c90b0716423c3a78666c31b42154fdfd6afafc7b",
+          "url": "https://github.com/GetFelix/felix/commit/53a2ba5e0fdd5d549d1a079e065dcd81c00fbc59"
+        },
+        "date": 1792109574570,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 516210.56,
+            "range": "26606.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516210.56\nmean: 514043.71\nstdev: 26606.19\ncv: 5.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 516210.56,
+            "range": "26606.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516210.56\nmean: 514043.71\nstdev: 26606.19\ncv: 5.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116758.13,
+            "range": "2022.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116758.13\nmean: 116626.64\nstdev: 2022.09\ncv: 1.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1167581.27,
+            "range": "20220.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1167581.27\nmean: 1166266.37\nstdev: 20220.85\ncv: 1.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
