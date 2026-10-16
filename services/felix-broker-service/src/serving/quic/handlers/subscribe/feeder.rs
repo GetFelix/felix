@@ -95,13 +95,16 @@ pub(super) async fn run_lane_feeder(
         };
         // Waits only on this subscription's own frames, so a stalled stream
         // holds up nobody else. Its broker queue fills and sheds meanwhile.
-        let mut held = tokio::select! {
-            biased;
-            held = share.hold(envelope.payload_bytes()) => held,
-            () = &mut revoked => {
-                revoked_frame = revoke(&config, revocation.take());
-                break;
-            }
+        let mut held = match share.try_hold(envelope.payload_bytes()) {
+            Some(held) => held,
+            None => tokio::select! {
+                biased;
+                held = share.hold(envelope.payload_bytes()) => held,
+                () = &mut revoked => {
+                    revoked_frame = revoke(&config, revocation.take());
+                    break;
+                }
+            },
         };
         held.carry(queued);
         let first_enqueued_at = envelope.enqueued_at();
