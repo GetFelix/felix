@@ -65,7 +65,7 @@
 //! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
@@ -411,6 +411,13 @@ impl CaughtUp for ReplicaPositions {
         self.reports
             .get(key)
             .is_some_and(|report| self.identity(report, leader) == Identity::Mismatch)
+    }
+
+    fn report_storage_ids(&self, key: &ShardKey) -> BTreeMap<String, String> {
+        self.reports
+            .get(key)
+            .map(|report| report.follower_storage.clone())
+            .unwrap_or_default()
     }
 
     fn leader_gave_up(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {

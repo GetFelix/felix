@@ -176,6 +176,33 @@ fn a_fenced_shard_waits_for_the_leader_to_report_drained() {
     );
 }
 
+/// A promotion's identities do not ride along into the move's later writes.
+#[test]
+fn a_cut_over_carries_no_fence_storage_ids() {
+    let streams = vec![stream("orders", 1)];
+    let mut fenced = one_shard("broker-a", &["broker-b"]);
+    fenced.successor = Some("broker-b".to_string());
+    fenced.state = ShardState::Draining;
+    fenced
+        .fence_storage_ids
+        .insert("broker-b".to_string(), "b".repeat(32));
+
+    let plan = plan(
+        &streams,
+        &[],
+        &draining_cluster(),
+        &[fenced.clone()],
+        &Reported::caught_up(&["broker-b"]).drained_at(fenced.generation),
+    );
+
+    match only_decision(&plan) {
+        Decision::Move(MoveStep::CutOver { .. }, next) => {
+            assert!(next.fence_storage_ids.is_empty());
+        }
+        other => panic!("expected a cut-over, got {other:?}"),
+    }
+}
+
 /// Step three: the drained report at the fenced generation cuts over. The
 /// old leader is not kept as a follower -- it is draining.
 #[test]

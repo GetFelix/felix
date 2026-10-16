@@ -56,6 +56,10 @@ const CACHE_INCARNATION_LEVEL: u16 = 14;
 /// The metadata level whose members store that a replica report's leader
 /// gave the shard up.
 const GIVEN_UP_LEVEL: u16 = 15;
+
+/// The metadata level whose members store the storage identities a
+/// promotion's assignment hands the promoted leader's fence.
+const FENCE_STORAGE_LEVEL: u16 = 16;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -105,6 +109,17 @@ impl RaftStore {
         self.handle
             .cluster_version_with_unknown_at(self.machine.join_floor())
             .await
+    }
+
+    /// Without the level an older member would drop the map and diverge, so
+    /// the promoted leader's fence falls back to counting every answer, as
+    /// before identities. Cleared before proposing.
+    async fn drop_unstorable_fence_ids(&self, assignment: &mut ShardAssignment) {
+        if !assignment.fence_storage_ids.is_empty()
+            && self.group_level().await < FENCE_STORAGE_LEVEL
+        {
+            assignment.fence_storage_ids.clear();
+        }
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -724,8 +739,9 @@ impl ControlPlaneStore for RaftStore {
 
     async fn put_shard_assignment(
         &self,
-        assignment: ShardAssignment,
+        mut assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
+        self.drop_unstorable_fence_ids(&mut assignment).await;
         match self
             .propose(MetaCommand::PutShardAssignment { assignment })
             .await?
@@ -737,10 +753,11 @@ impl ControlPlaneStore for RaftStore {
 
     async fn put_shard_assignment_if(
         &self,
-        assignment: ShardAssignment,
+        mut assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
     ) -> StoreResult<AssignmentWrite> {
+        self.drop_unstorable_fence_ids(&mut assignment).await;
         match self
             .propose(MetaCommand::PutShardAssignmentFenced {
                 assignment,

@@ -261,8 +261,18 @@
 (* counted on what it lost, and TLC finds it promoted without an           *)
 (* acknowledged record (AckedSurvive, FelixShardCrashKeepsId.cfg). With    *)
 (* `RotateOnCrash` it restarts under a new identity, as the broker does    *)
-(* when it finds no clean stop recorded. No configuration in CI checks     *)
-(* that case: with a partial suffix lost it is too large for the job.      *)
+(* when it finds no clean stop recorded. On the report path that case is   *)
+(* too large for the CI job with a partial suffix lost; on the fenced path *)
+(* start records give the logs a second record, so a crash there can lose  *)
+(* part of a log with one write (FelixShardFencedCrash.cfg).               *)
+(*                                                                         *)
+(* Wipes and crashes are also checked on the fenced, follower-acked path   *)
+(* the broker ships. There a promoted leader counts a replica's fence      *)
+(* answer only from the copy the report its promotion was decided on       *)
+(* named (`expect`, `FenceChecksIds`). Counting the copy that came back    *)
+(* empty or short, TLC finds the new leader opening on it without a record *)
+(* the old one acknowledged (AckedHeldByLeader,                            *)
+(* FelixShardFencedCrashCountsRotated.cfg).                                *)
 (*                                                                         *)
 (* `CrashLeader` makes the crash the leader's instead (#1295). Keeping its *)
 (* lease and its generation, it serves on without what it lost, and TLC    *)
@@ -392,11 +402,12 @@ ASSUME PreVote \in BOOLEAN /\ (PreVote => Elections > 0)
 ASSUME Swaps \in Nat /\ (Swaps > 0 => SetCheck /\ Spares /= {} /\ FenceEveryChange /\ MaxMoves = 0 /\ StartRecord)
 \* Acknowledgements are recorded by generation where opens are tracked.
 ASSUME (Elections > 0 \/ Suspicions > 0) => Quorum /\ ~Resends
-\* A wipe is checked against the report counted from answers, with no
-\* promises to lose and no other set changes.
+\* A wipe is checked against the report counted from answers, with no other
+\* set changes, and on the fenced path with promotion the only fence.
 ASSUME Wipes \in Nat /\ StorageIds \in BOOLEAN
-ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /\ ~Counters /\ ~Handoff /\ ~Cancel
+ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~Counters /\ ~Handoff /\ ~Cancel
                    /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
+                   /\ Elections = 0 /\ Swaps = 0 /\ ~SetCheck
 
 \* How placement reads a registration, as definitions rather than constants so
 \* the configurations that leave them alone need not name them. One that
@@ -425,6 +436,11 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* finds not behind it (ByProbe), and names that leader again at the next
 \* generation once every follower is behind it (Reclaim).
 \* `ReclaimBlind`: it reclaims without measuring the followers.
+\* `FenceChecksIds`: where wipes or crashes are modelled with identities, a
+\* promoted leader counts a fence answer only from the identity the report
+\* its promotion was decided on named (`expect`), as `fence_shard` in
+\* crates/server/felix-replication/src/promotion.rs does with the identities
+\* the assignment carries.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -436,6 +452,7 @@ CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
+FenceChecksIds == TRUE
 \* `LosePromises`: a follower loses its data directory once, with what it
 \* promised (`Forget`).
 \* `PromiseFromRoutes`: a follower with no promise on disk answers only what
@@ -507,7 +524,8 @@ VARIABLES
     checked,    \* per leader, the followers that answered this pass from the copy it knows
     registered, \* the identity each broker last registered: its sid + 1, or 0 for none
     inc,        \* how many times each broker has registered: its incarnation
-    restarting  \* brokers wiped and not yet registered again
+    restarting, \* brokers wiped and not yet registered again
+    expect      \* per leader, the identity it counts each replica's fence answer from
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -518,8 +536,10 @@ nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
-\* learning one, and a registration change them.
-idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting >>
+\* learning one, a registration and a promotion change them.
+idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect >>
+\* All of them but `expect`, which a placement decision sets on a promotion.
+decideIdVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -707,6 +727,7 @@ IdInit ==
     /\ registered = [m \in Brokers |-> 1]
     /\ inc = [m \in Brokers |-> 0]
     /\ restarting = {}
+    /\ expect = [m \in Brokers |-> [n \in Brokers |-> 0]]
 
 Init ==
     /\ now = 0
@@ -1363,6 +1384,9 @@ Promote(v, f, views) ==
     /\ clog' = IF Counters /\ ~FenceOnPromote THEN [clog EXCEPT ![f] = COpened(f, gen + 1)] ELSE clog
     /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     /\ canswered' = [canswered EXCEPT ![f] = {}]
+    \* The assignment carries the identities the report named, for the fence
+    \* (`fence_storage_ids`). Kept only where identities can change.
+    /\ expect' = IF Wipes > 0 /\ StorageIds THEN [expect EXCEPT ![f] = v.report.sids] ELSE expect
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, chwm, cacked >>
 
@@ -1375,6 +1399,16 @@ Promote(v, f, views) ==
 (* answered. Any majority that acknowledged a record shares a replica with *)
 (* that one, which either held the record when it answered or refused it  *)
 (* after, so no clock is needed to keep the old leader out.                *)
+
+\* With `FenceChecksIds`, where identities can change, whether `b` counts
+\* `f`'s fence answer: only from the identity it expects for `f`. Another is
+\* a copy that may have lost what it answered for before, so it is neither
+\* counted nor taken from, though its promise still refuses the old leader.
+\* The code compares the identity the answer's connection gave in its
+\* handshake, and a missing one never matches; the model's reports always
+\* name one, so it counts at least as much as the code.
+FenceCounts(b, f) ==
+    ~(FenceChecksIds /\ StorageIds /\ Wipes > 0) \/ expect[b][f] = sid[f]
 
 \* One replica answers the fence, and the leader takes its log if it is ahead.
 \* That is the catch-up: whatever a majority acknowledged is in the answer
@@ -1405,8 +1439,8 @@ AnswerFence(b, f) ==
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
-    /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
-    /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
+    /\ answered' = IF FenceCounts(b, f) THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
+    /\ log' = IF FenceCounts(b, f) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ IF SetCheck /\ bgen[f] > 0
        THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
             /\ fencing' = [fencing EXCEPT ![f] = FALSE]
@@ -1987,12 +2021,16 @@ Decide(v, f, views) ==
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
-       /\ UNCHANGED counterVars
+       /\ UNCHANGED << counterVars, expect >>
 
 -----------------------------------------------------------------------------
 (* Wipes. A follower loses its data directory and comes back empty, under *)
 (* a new storage identity. Its high-water mark goes with the log.         *)
 
+\* What it promised stays. On the fenced path the broker answers a copy with
+\* no promise from its routing view (`Forget` under `PromiseFromRoutes`),
+\* which names the promised generation or a later one, so keeping the promise
+\* refuses no more than the code does.
 Wipe(f) ==
     /\ ~CrashLoses
     /\ wipes < Wipes
@@ -2009,7 +2047,7 @@ Wipe(f) ==
             /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -2050,7 +2088,7 @@ Crash(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
-                    seen, seenInc >>
+                    seen, seenInc, expect >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
@@ -2065,7 +2103,7 @@ Register(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
-    /\ UNCHANGED << sid, seen, seenInc, wipes, checked >>
+    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect >>
 
 \* `f` loses its data directory, and with it the generation and ballot it
 \* promised. Under `PromiseFromRoutes` it answers what its routing view
@@ -2088,7 +2126,7 @@ Forget(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting >>
+    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
@@ -2113,7 +2151,7 @@ Probe(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, wipes, registered, inc, restarting >>
+    /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
@@ -2129,7 +2167,8 @@ Answer(b, f) ==
     /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting,
+                    expect >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -2141,7 +2180,8 @@ EndPass(b) ==
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-\* Identities change only in a wipe, a crash, a probe and a registration.
+\* Identities change only in a wipe, a crash, a probe, a registration and a
+\* promotion.
 quietVars == << counterVars, heard, idVars >>
 loudVars == << heard, idVars >>
 
@@ -2163,7 +2203,8 @@ Next ==
         \/ Commit(b) /\ UNCHANGED quietVars
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
-           /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting >>
+           /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
+                           expect >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -2181,9 +2222,9 @@ Next ==
         \/ Crash(b) /\ UNCHANGED counterVars
         \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
-        \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
+        \/ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars >>
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-           /\ UNCHANGED loudVars
+           /\ UNCHANGED << heard, decideIdVars >>
         \/ CommitCounter(b) /\ UNCHANGED loudVars
         \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
@@ -2371,6 +2412,7 @@ TypeOK ==
     /\ seenInc \in [Brokers -> [Brokers -> Nat]]
     /\ checked \in [Brokers -> SUBSET Brokers]
     /\ registered \in [Brokers -> Nat] /\ inc \in [Brokers -> Nat] /\ restarting \subseteq Brokers
+    /\ expect \in [Brokers -> [Brokers -> Nat]]
     /\ wipes \in 0..(IF LosePromises THEN 1 ELSE Wipes)
 
 =============================================================================

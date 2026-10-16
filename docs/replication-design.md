@@ -412,6 +412,39 @@ leadership begins is recorded only then, so the records it took keep their
 own generation. Answers that arrive after the majority are not waited for,
 as in the model.
 
+**An answer counts only from the copy the failover's report named.** A
+follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
+new storage identity without the tail it had not synced, and it may already
+have answered for that tail: under `majority_ack` the old leader acknowledged
+a record on itself and that follower. Counted in the fence, the short copy and
+a successor that never held the record are a majority without it, and once
+the old leader is gone the record is too (#1335). A wiped follower is the same
+case with nothing left. So a failover's assignment carries the storage
+identity the replica report it was decided on named for each replica, the old
+leader's own included (`fence_storage_ids`), and the promoted leader counts an
+answer only when the handshake identity of the connection it came over is
+that one. An answer from another identity, from a replica the report did not
+name, or over a handshake that gave none, still takes the promise and so
+still refuses the old leader there, but it counts toward no majority and its
+log is not taken. The fence waits for a replica that can vouch for what it
+answered, which is the old leader itself when the other follower is the one
+that lost the tail. The group logs' round follows the same rule. Every other
+assignment carries no identities, and a fence on one counts every answer, as
+does a broker under a control plane that predates the field. Under Raft the
+field waits for metadata level 16. `FelixShardFencedCrash.cfg`,
+`FelixShardFencedWipe.cfg` and `FelixShardFencedLeaderCrash.cfg` check it on
+the fenced, follower-acked path, and `FelixShardFencedCrashCountsRotated.cfg`
+finds the lost record when the rotated copy counts.
+
+The identity is the evidence because it is what changes on every loss: a
+wipe, a crash under a relaxed fsync mode and a restore all give a new one
+(see [Storage identities](#storage-identities)). The same identity as the
+report means the copy lost nothing since the leader counted it there. A copy
+the old leader had already probed under its new identity is named under that
+one, but only by a report made after the old leader started its count over,
+and that report names the promoted leader caught up to the mark, so it holds
+every record the follower's old answers released.
+
 What makes the deposed leader harmless is the majority, not the clock. The
 follower it can still reach may never have heard of the promotion from the
 control plane, and its routing view would take the batch; the fence it took
@@ -1745,10 +1778,14 @@ on the measured incarnation; `FelixShardWipeStrippedOnArrival.cfg` stamps the
 incarnation as the report arrives instead and loses the record, and
 `FelixShardWipeStrippedNoStamp.cfg` loses it with no incarnation check at all.
 `FelixShardCrashKeepsId.cfg` replaces the wipe with a crash that keeps the
-directory and the identity and loses the record. The passing case with the
-new identity and a partial suffix loss is too large for the CI job and is not
-model-checked (see `docs/formal/README.md`). A leader's crash has a pair of
-its own, under [A leader's own crash](#a-leaders-own-crash).
+directory and the identity and loses the record. On the report path the
+passing case with the new identity and a partial suffix loss is too large for
+the CI job. On the fenced, follower-acked path it is checked, with the
+promotion fence counting only the identities the report named
+(`FelixShardFencedCrash.cfg`, `FelixShardFencedWipe.cfg`; see
+[Fencing a promotion](#fencing-a-promotion)). A leader's crash has a pair of
+its own, under [A leader's own crash](#a-leaders-own-crash), and
+`FelixShardFencedLeaderCrash.cfg` on the fenced path.
 
 ### Divergence and truncation
 
@@ -2504,6 +2541,7 @@ with a crash use the lease and the report.
 | A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
 | A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
 | Leader crashes under `Periodic` or `None` and restarts before it is failed over | It comes back under a new storage identity and leads nothing from the copy it led, which may have lost records it acknowledged. Placement sees the identity change and promotes a follower the last report names caught up, without waiting for the lease. Failing that, once the leader has measured every follower and none holds more than it does, placement names it again at a new generation; otherwise the shard waits. See [A leader's own crash](#a-leaders-own-crash). |
+| A follower crashes under `Periodic` or `None`, or loses its disk, and the leader is lost after | The follower comes back under a new storage identity, possibly without records it had answered for. The promoted leader's fence counts it only under the identity the failover's report named, so it waits for a copy that can vouch for what it holds, the old leader's if need be, rather than open on the short copy. See [Fencing a promotion](#fencing-a-promotion). |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |

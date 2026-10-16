@@ -180,6 +180,7 @@ pub(super) fn ingress_with_routing(
                 successor: None,
                 routing,
                 incarnation: 0,
+                fence_storage_ids: Default::default(),
             };
             (key, assignment)
         })

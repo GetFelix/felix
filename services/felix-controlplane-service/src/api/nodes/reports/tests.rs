@@ -23,6 +23,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 
@@ -143,6 +144,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("fenced move");
@@ -271,6 +273,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     };
     for _ in 0..=generation_bumps {
         assignment = store

@@ -608,6 +608,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     move_started_at_millis: None,
                     move_reason: None,
                     incarnation: 0,
+                    fence_storage_ids: Default::default(),
                 })
                 .await
                 .expect("assign");
@@ -798,6 +799,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("assign");
@@ -869,6 +871,75 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     }
 }
 
+/// A member before the fence identities would drop them from an assignment it
+/// applies and diverge from the others. So until every member has the level
+/// the assignment is written without them; once it does, they are kept.
+#[tokio::test]
+async fn fence_storage_ids_wait_for_every_member() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 15).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
+    };
+
+    let written = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    assert!(
+        written.fence_storage_ids.is_empty(),
+        "an older member in the group would have dropped them"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let written = store
+            .put_shard_assignment(assignment.clone())
+            .await
+            .expect("assign");
+        if !written.fence_storage_ids.is_empty() {
+            assert_eq!(written.fence_storage_ids, assignment.fence_storage_ids);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "identities still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// A member before `by_round` would drop it, and its placement would read the
 /// leader as on its lease while the others did not. So until every member has
 /// the level the report is recorded without it, which is the safe reading, and
@@ -909,6 +980,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("assign");
@@ -1039,6 +1111,7 @@ async fn storage_ids_wait_for_every_member() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("assign");

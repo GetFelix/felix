@@ -373,6 +373,8 @@
 0 import_state.state.shard_changes
 0 import_state.state.shard_changes.items
 0 import_state.state.shard_changes.items[].assignment
+16 import_state.state.shard_changes.items[].assignment.fence_storage_ids
+16 import_state.state.shard_changes.items[].assignment.fence_storage_ids.*
 0 import_state.state.shard_changes.items[].assignment.generation
 10 import_state.state.shard_changes.items[].assignment.incarnation
 0 import_state.state.shard_changes.items[].assignment.joining
@@ -397,6 +399,8 @@
 0 import_state.state.shard_changes.items[].seq
 0 import_state.state.shard_changes.next_seq
 0 import_state.state.shards
+16 import_state.state.shards[][].fence_storage_ids
+16 import_state.state.shards[][].fence_storage_ids.*
 0 import_state.state.shards[][].generation
 10 import_state.state.shards[][].incarnation
 0 import_state.state.shards[][].joining
@@ -536,6 +540,8 @@
 0 purge_expired_refresh_tokens.before_secs
 0 put_shard_assignment
 0 put_shard_assignment.assignment
+16 put_shard_assignment.assignment.fence_storage_ids
+16 put_shard_assignment.assignment.fence_storage_ids.*
 0 put_shard_assignment.assignment.generation
 10 put_shard_assignment.assignment.incarnation
 0 put_shard_assignment.assignment.joining
@@ -552,6 +558,8 @@
 0 put_shard_assignment.assignment.tenant_id
 0 put_shard_assignment_fenced
 0 put_shard_assignment_fenced.assignment
+16 put_shard_assignment_fenced.assignment.fence_storage_ids
+16 put_shard_assignment_fenced.assignment.fence_storage_ids.*
 0 put_shard_assignment_fenced.assignment.generation
 10 put_shard_assignment_fenced.assignment.incarnation
 0 put_shard_assignment_fenced.assignment.joining
@@ -570,6 +578,8 @@
 0 put_shard_assignment_fenced.fence
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
+16 put_shard_assignment_if.assignment.fence_storage_ids
+16 put_shard_assignment_if.assignment.fence_storage_ids.*
 0 put_shard_assignment_if.assignment.generation
 10 put_shard_assignment_if.assignment.incarnation
 0 put_shard_assignment_if.assignment.joining
@@ -920,6 +930,8 @@
 0 snapshot.state.shard_changes
 0 snapshot.state.shard_changes.items
 0 snapshot.state.shard_changes.items[].assignment
+16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids
+16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids.*
 0 snapshot.state.shard_changes.items[].assignment.generation
 10 snapshot.state.shard_changes.items[].assignment.incarnation
 0 snapshot.state.shard_changes.items[].assignment.joining
@@ -944,6 +956,8 @@
 0 snapshot.state.shard_changes.items[].seq
 0 snapshot.state.shard_changes.next_seq
 0 snapshot.state.shards
+16 snapshot.state.shards[][].fence_storage_ids
+16 snapshot.state.shards[][].fence_storage_ids.*
 0 snapshot.state.shards[][].generation
 10 snapshot.state.shards[][].incarnation
 0 snapshot.state.shards[][].joining

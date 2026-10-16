@@ -247,5 +247,6 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         successor: None,
         routing: Default::default(),
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }

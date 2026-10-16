@@ -180,6 +180,7 @@ fn assignment() -> ShardAssignment {
         move_started_at_millis: Some(1),
         move_reason: Some(MoveReason::Drain),
         incarnation: 7,
+        fence_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
     }
 }
 

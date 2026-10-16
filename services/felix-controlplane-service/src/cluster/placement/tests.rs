@@ -127,6 +127,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 
@@ -148,5 +149,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }

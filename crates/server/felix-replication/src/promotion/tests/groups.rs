@@ -112,6 +112,7 @@ fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
                 capabilities,
                 reachable: true,
                 unreachable_logs: Vec::new(),
+                storage: Some(storage_of(id)),
                 _dir: dir,
             },
         );

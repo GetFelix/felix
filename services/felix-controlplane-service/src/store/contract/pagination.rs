@@ -130,6 +130,7 @@ fn assignment(kind: ShardKind, shard: u32, leader: &str) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 

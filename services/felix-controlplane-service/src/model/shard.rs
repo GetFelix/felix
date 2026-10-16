@@ -218,6 +218,12 @@ pub struct ShardAssignment {
     /// and for a stream from before incarnations.
     #[serde(default, skip_serializing_if = "is_zero_incarnation")]
     pub incarnation: u64,
+    /// The storage identity the replica report a failover was decided on named
+    /// for each replica, by node id (32 lowercase hex). The promoted leader's
+    /// fence counts a replica's answer only from that copy. Set only by the
+    /// write that promotes a follower; empty on every other write.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fence_storage_ids: BTreeMap<String, String>,
 }
 
 fn is_zero_incarnation(value: &u64) -> bool {

@@ -28,6 +28,8 @@ struct DbShardAssignment {
     move_started_at_millis: Option<i64>,
     move_reason: Option<String>,
     incarnation: i64,
+    fence_storage_ids: Option<serde_json::Value>,
+    fence_storage_generation: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -168,7 +170,8 @@ async fn write_shard_assignment(
     // reading the row this transaction is about to replace.
     let existing = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR UPDATE"#,
@@ -227,15 +230,20 @@ async fn write_shard_assignment(
         ..assignment
     };
 
+    let fence_storage = (!stored.fence_storage_ids.is_empty())
+        .then(|| serde_json::to_value(&stored.fence_storage_ids))
+        .transpose()?;
+    let fence_storage_generation = fence_storage.as_ref().map(|_| stored.generation as i64);
+
     // A write that expects no assignment must not replace one another writer
     // inserted since the read above.
     let insert = if expected == Some(None) {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO NOTHING"#
     } else {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE SET
                  leader = EXCLUDED.leader,
                  replicas = EXCLUDED.replicas,
@@ -246,6 +254,8 @@ async fn write_shard_assignment(
                  move_started_at_millis = EXCLUDED.move_started_at_millis,
                  move_reason = EXCLUDED.move_reason,
                  incarnation = EXCLUDED.incarnation,
+                 fence_storage_ids = EXCLUDED.fence_storage_ids,
+                 fence_storage_generation = EXCLUDED.fence_storage_generation,
                  updated_at = now()"#
     };
     let written = sqlx::query(insert)
@@ -263,6 +273,8 @@ async fn write_shard_assignment(
         .bind(stored.move_started_at_millis.map(|millis| millis as i64))
         .bind(stored.move_reason.map(MoveReason::as_str))
         .bind(stored.incarnation as i64)
+        .bind(fence_storage)
+        .bind(fence_storage_generation)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -294,7 +306,8 @@ pub(super) async fn get_shard_assignment(
 ) -> StoreResult<ShardAssignment> {
     sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
     )
@@ -315,7 +328,8 @@ pub(super) async fn list_shard_assignments(
 ) -> StoreResult<Vec<ShardAssignment>> {
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&store.pool)
@@ -334,7 +348,8 @@ pub(super) async fn list_shard_assignments_page(
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $2"#,
         )
@@ -342,7 +357,8 @@ pub(super) async fn list_shard_assignments_page(
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                  AND (tenant_id, namespace, kind, stream, shard) > ($2, $3, $4, $5, $6)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $7"#,
@@ -372,7 +388,8 @@ pub(super) async fn list_shard_assignments_for_node(
 ) -> StoreResult<Vec<ShardAssignment>> {
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments WHERE leader = $1
                ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
@@ -418,7 +435,8 @@ pub(super) async fn shard_assignment_snapshot(
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
-                      joining, move_started_at_millis, move_reason, incarnation
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&mut *tx)
@@ -651,6 +669,12 @@ fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
             })
             .transpose()?,
         incarnation: row.incarnation as u64,
+        fence_storage_ids: match row.fence_storage_ids {
+            Some(ids) if row.fence_storage_generation == Some(row.generation) => {
+                serde_json::from_value(ids)?
+            }
+            _ => Default::default(),
+        },
     })
 }
 

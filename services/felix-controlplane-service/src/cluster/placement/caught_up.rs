@@ -1,5 +1,7 @@
 //! What placement may assume about how much of a shard's log each replica
 //! holds.
+use std::collections::BTreeMap;
+
 use crate::model::{HaltedCopy, ShardKey};
 
 /// Which replicas hold enough of a shard's log to lead it.
@@ -27,6 +29,14 @@ pub trait CaughtUp {
     /// no identity.
     fn leader_replaced(&self, _key: &ShardKey, _leader: &str) -> bool {
         false
+    }
+
+    /// The storage identity the report for `key` names for each replica, by
+    /// node id, the old leader's own included. What a promotion hands the new
+    /// leader so its fence counts a replica only from the copy the report
+    /// measured. Empty when there is no report or it names none.
+    fn report_storage_ids(&self, _key: &ShardKey) -> BTreeMap<String, String> {
+        BTreeMap::new()
     }
 
     /// Whether `leader` reported at `generation` that it gave the shard up:

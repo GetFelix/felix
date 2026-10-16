@@ -21,6 +21,7 @@ fn route(replicas: &[&str], successor: Option<&str>) -> Route {
         draining: false,
         successor: successor.map(str::to_string),
         incarnation: 0,
+        fence_storage_ids: None,
     }
 }
 

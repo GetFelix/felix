@@ -1,7 +1,8 @@
 //! The routing table: an immutable snapshot of where every shard is served.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use felix_wire::routing::{ShardRouting, shard_for_routing};
 
@@ -46,6 +47,7 @@ impl RoutingTable {
                     successor: None,
                     routing: ShardRouting::Modulo,
                     incarnation: 0,
+                    fence_storage_ids: BTreeMap::new(),
                 }),
             nodes,
         )
@@ -67,6 +69,7 @@ impl RoutingTable {
             successor,
             routing,
             incarnation,
+            fence_storage_ids,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -109,6 +112,8 @@ impl RoutingTable {
                     draining,
                     successor,
                     incarnation,
+                    fence_storage_ids: (!fence_storage_ids.is_empty())
+                        .then(|| Arc::new(fence_storage_ids)),
                 },
             );
         }
@@ -237,6 +242,11 @@ pub struct Route {
     /// Which incarnation of the stream the assignment is for; 0 for a cache,
     /// and for a stream from before incarnations.
     pub incarnation: u64,
+    /// The storage identity, by node id, that the replica report a failover
+    /// was decided on named for each replica. A leader promoted by that
+    /// assignment counts a replica's fence answer only from that copy. `None`
+    /// on every other assignment, and from a control plane that sends none.
+    pub fence_storage_ids: Option<Arc<BTreeMap<String, String>>>,
 }
 
 /// One assignment as the table takes it.
@@ -252,6 +262,8 @@ pub struct Placed {
     pub routing: ShardRouting,
     /// See [`Route::incarnation`].
     pub incarnation: u64,
+    /// See [`Route::fence_storage_ids`]; empty for none.
+    pub fence_storage_ids: BTreeMap<String, String>,
 }
 
 /// How a stream was placed: how many shards it has and how keys map onto them.

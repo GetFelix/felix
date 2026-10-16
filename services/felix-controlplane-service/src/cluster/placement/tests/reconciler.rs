@@ -305,6 +305,7 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("staged move");
@@ -443,6 +444,7 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("placed");
@@ -512,4 +514,108 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
         again,
         "the second promotion stands",
     );
+}
+
+/// A shard with a leader and two followers, the leader's node now down, and a
+/// report that measured the followers under `ids`.
+async fn failed_over(ids: &[(&str, &str)]) -> (InMemoryStore, ShardAssignment) {
+    let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the three-shard stream");
+    store
+        .create_stream(replicated_stream("orders", 1, 3))
+        .await
+        .expect("stream");
+    let mut start = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    start.generation = 0;
+    start.state = ShardState::Assigning;
+    let written = store.put_shard_assignment(start).await.expect("assign");
+    store
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                given_up: false,
+                counter_offsets: Default::default(),
+                stream_incarnation: None,
+                by_round: false,
+                leader_incarnation: None,
+                key: shard_zero(),
+                generation: written.generation,
+                caught_up: ["broker-b", "broker-c"].map(String::from).into(),
+                offsets: Default::default(),
+                reported_at_millis: store.now_millis().await.expect("clock"),
+                drained: false,
+                leader_offset: None,
+                halted: Default::default(),
+                leader: None,
+                node_incarnations: Default::default(),
+                follower_storage: ids
+                    .iter()
+                    .map(|(node, id)| (node.to_string(), id.to_string()))
+                    .collect(),
+            },
+            "broker-a",
+        )
+        .await
+        .expect("report");
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Down)
+        .await
+        .expect("down");
+    (store, written)
+}
+
+/// The promoted leader's fence counts a replica only from the copy the
+/// report measured, so the write that promotes names those copies.
+#[tokio::test]
+async fn a_promotion_carries_the_reports_storage_ids() {
+    let ids = [
+        ("broker-a", "a".repeat(32)),
+        ("broker-b", "b".repeat(32)),
+        ("broker-c", "c".repeat(32)),
+    ];
+    let named: Vec<(&str, &str)> = ids.iter().map(|(n, i)| (*n, i.as_str())).collect();
+    let (store, before) = failed_over(&named).await;
+
+    let outcome = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(outcome.placed, 1, "{outcome:?}");
+
+    let after = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("assignment");
+    assert_ne!(after.leader, before.leader, "a follower was promoted");
+    assert_eq!(
+        after.fence_storage_ids,
+        ids.iter()
+            .map(|(n, i)| (n.to_string(), i.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    );
+}
+
+/// A report that names no identities leaves nothing to carry.
+#[tokio::test]
+async fn a_promotion_on_a_report_without_identities_carries_none() {
+    let (store, _) = failed_over(&[]).await;
+    let outcome = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(outcome.placed, 1, "{outcome:?}");
+    let after = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("assignment");
+    assert!(after.fence_storage_ids.is_empty());
+}
+
+#[tokio::test]
+async fn an_initial_placement_carries_no_storage_ids() {
+    let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
+    reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    let assignments = store.list_shard_assignments().await.expect("list");
+    assert_eq!(assignments.len(), 3);
+    assert!(assignments.iter().all(|a| a.fence_storage_ids.is_empty()));
 }

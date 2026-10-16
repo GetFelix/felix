@@ -330,6 +330,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
                 successor: None,
                 joining: None,
                 move_reason: None,
+                fence_storage_ids: Default::default(),
                 ..existing.clone()
             },
         )

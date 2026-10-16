@@ -618,6 +618,7 @@ pub fn routing_table_from(
             successor: assignment.successor.clone(),
             routing: assignment.routing,
             incarnation: assignment.incarnation,
+            fence_storage_ids: assignment.fence_storage_ids.clone(),
         }),
         nodes,
     )
