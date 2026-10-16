@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792133894616,
+  "lastUpdate": 1792143568195,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39666,6 +39666,72 @@ window.BENCHMARK_DATA = {
             "range": "15.75",
             "unit": "us",
             "extra": "trials: 5\nmedian: 364.00\nmean: 364.20\nstdev: 15.75\ncv: 4.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b54844bfd193c31002d20f1b32f171a4ce0de64a",
+          "message": "fix(storage): rotate the storage id after a crash under Periodic or None fsync (#1294)\n\n* fix(storage): rotate the storage id after a crash under Periodic or None fsync\n\nA broker that crashed under FsyncMode::Periodic or None kept its storage\nid but could have lost the unsynced tail of its logs, records it had\nalready answered for. Leaders kept its cursor and placement could count\nit, so a later leader death could promote it without acknowledged\nrecords.\n\nThe broker now keeps <data dir>/run-state. Before any store opens it\nrecords a run under way, and the fsync mode; after a drain that flushed\nevery store, with no writing step cut short and no log poisoned, it\nrecords a clean stop. A start that finds a relaxed run that never stopped\ncleanly writes a new storage id before it registers or answers a\nhandshake, so the existing identity machinery restarts every leader's\ncopy and placement stops counting its old reports. A clean stop and a\ncrash under OnCommit keep the id. With no record (the first start on this\nrelease) the id rotates only if startup would repair a shard, so an\norderly roll keeps every id.\n\nThe drain now flushes the cache, group, dead-letter and counter logs as\nwell as the stream logs, so a clean stop means every store was synced.\nrestore-point records a clean stop under the id it wrote.\n\nTLA+: a Crash action that loses a suffix and keeps the directory.\nFelixShardCrashKeepsId.cfg violates AckedSurvive; FelixShardCrash.cfg,\nwith the rotation, passes.\n\nCloses #1284\n\n* fix(storage): test every store's flush, model a partial suffix loss, scope the docs to followers\n\n- One test per store that Broker::shutdown_storage flushes it: streams,\n  cache, group cursors, dead letters and counters.\n- FelixShardCrash.cfg and its twin run two writes, so a crash can keep the\n  first record and lose the second. The clock stops at 2 with no margin to\n  keep the state space inside a CI job; promotion still follows the crash.\n- The docs say plainly that a leader's own crash is not covered (#1295),\n  and name felixctl placement abandon and restore-point for a shard whose\n  every replica crashed.\n\n* fix(storage): drop the crash config CI cannot finish and say what is not model-checked\n\nFelixShardCrash.cfg with two writes ran past the 60-minute TLA job. The\npassing case with a partial suffix loss is no longer registered; the\nREADME, the spec and the remaining cfg say so and why.\nFelixShardCrashKeepsId.cfg goes back to one write, where TLC finds the\nviolation in seconds.",
+          "timestamp": "2026-10-16T09:33:01Z",
+          "tree_id": "49eb7f547a470668521077e8296b6bc062bd7f52",
+          "url": "https://github.com/GetFelix/felix/commit/b54844bfd193c31002d20f1b32f171a4ce0de64a"
+        },
+        "date": 1792143563789,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 184.00\nstdev: 1.22\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 251,
+            "range": "3.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 251.00\nmean: 250.00\nstdev: 3.32\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 311,
+            "range": "111.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 311.00\nmean: 356.60\nstdev: 111.10\ncv: 31.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "11.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 225.40\nstdev: 11.52\ncv: 5.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 452,
+            "range": "444.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 452.00\nmean: 648.80\nstdev: 444.71\ncv: 68.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 698,
+            "range": "846.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 698.00\nmean: 1082.60\nstdev: 846.84\ncv: 78.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
