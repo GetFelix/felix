@@ -156,6 +156,11 @@ async fn a_restore_gives_the_data_directory_a_new_storage_id() {
     assert_eq!(restored, 0);
     let after = crate::node::storage::storage_id(Some(root.path())).expect("load");
     assert_ne!(after, before);
+    // A finished restore is a clean stop, so the next start keeps the new id.
+    assert_eq!(
+        felix_storage::run_state::read(root.path(), after).expect("run state"),
+        felix_storage::run_state::LastRun::Clean
+    );
 }
 
 #[tokio::test]
@@ -172,6 +177,11 @@ async fn a_restore_that_fails_part_way_has_already_rotated_the_storage_id() {
         .expect_err("an empty copy is outside the point");
     let after = crate::node::storage::storage_id(Some(root.path())).expect("load");
     assert_ne!(after, before);
+    assert_ne!(
+        felix_storage::run_state::read(root.path(), after).expect("run state"),
+        felix_storage::run_state::LastRun::Clean,
+        "a failed restore is not a clean stop"
+    );
 }
 
 fn incarnated_cache(records: u64) -> Manifest {

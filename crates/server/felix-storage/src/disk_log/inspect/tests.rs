@@ -253,3 +253,24 @@ fn an_absent_shard_is_a_fresh_log_and_is_not_created() {
     assert_eq!(report.actions, [Action::CreateFirstSegment]);
     assert!(!dir.exists());
 }
+
+/// The first start after an upgrade looks for a torn tail in every store,
+/// without writing, to tell whether the last run crashed.
+#[tokio::test]
+async fn a_torn_tail_in_any_store_is_a_pending_repair() {
+    let data = tempdir().expect("dir");
+    write_shard(data.path(), Store::Stream, "orders", 3).await;
+    let groups = write_shard(data.path(), Store::Groups, "orders", 3).await;
+    crate::run_state::begin(data.path(), true, || false, || [1; 16]).expect("run state");
+    assert!(!any_repair_pending(data.path(), &config()));
+
+    let active = *segment_ids(&groups).last().expect("id");
+    let path = groups.join(segment_file_name(active));
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes.extend_from_slice(&[0x11; 13]);
+    std::fs::write(&path, &bytes).expect("write");
+
+    let before = tree(data.path());
+    assert!(any_repair_pending(data.path(), &config()));
+    assert_eq!(tree(data.path()), before, "the check wrote to the data dir");
+}

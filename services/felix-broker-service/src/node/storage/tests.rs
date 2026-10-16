@@ -55,3 +55,40 @@ fn the_storage_id_is_kept_on_disk_and_random_without_one() {
         storage_id(None).expect("random")
     );
 }
+
+/// **A crash under `Periodic` or `None` starts under a new storage id
+/// (#1284)**, since its unsynced tail may be gone. A clean stop keeps the id
+/// under every mode, and so does a crash under `OnCommit`, which acknowledged
+/// nothing it had not synced.
+#[test]
+fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
+    let modes = [
+        (FsyncMode::None, true),
+        (
+            FsyncMode::Periodic {
+                interval: Duration::from_millis(250),
+            },
+            true,
+        ),
+        (FsyncMode::OnCommit, false),
+    ];
+    for (fsync_mode, rotates) in modes {
+        let root = tempfile::tempdir().expect("tempdir");
+        let log = felix_storage::log::LogConfig {
+            fsync_mode,
+            ..Default::default()
+        };
+        let first = begin_run(root.path(), &log).expect("first run");
+        mark_clean_stop(root.path(), first).expect("clean stop");
+        let second = begin_run(root.path(), &log).expect("after a clean stop");
+        assert_eq!(second, first, "{fsync_mode:?}: a clean stop kept the id");
+        // No clean stop: the process died.
+        let third = begin_run(root.path(), &log).expect("after a crash");
+        assert_eq!(third != second, rotates, "{fsync_mode:?}");
+        assert_eq!(
+            storage_id(Some(root.path())).expect("load"),
+            third,
+            "the id announced is the one on disk"
+        );
+    }
+}

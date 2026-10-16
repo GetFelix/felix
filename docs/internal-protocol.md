@@ -117,9 +117,10 @@ never have dialled the one that shipped to it.
 #### Storage identity
 
 Every broker has a storage identity: 16 random bytes in `<data dir>/storage-id`,
-which a restart keeps and a wiped or replaced data directory changes. A leader
-uses it to tell a follower that restarted from one that lost its disk (see
-"Storage identities" in `docs/replication-design.md`).
+which a clean restart keeps and a wiped or replaced data directory changes, as
+does a start after a crash under `Periodic` or `None` fsync. A leader uses it
+to tell a follower that restarted from one that lost its disk or an unsynced
+tail (see "Storage identities" in `docs/replication-design.md`).
 
 It travels on `HelloCapableOk`, as 16 bytes after the capability bits, and only
 when those bits include `STORAGE_IDENTITY`:

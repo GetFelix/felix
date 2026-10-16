@@ -136,8 +136,11 @@ async fn restore(
         restored
             .with_context(|| format!("record the incarnation of {tenant_id}/{namespace}/{name}"))?;
     }
-    if let Some(storage) = storage {
-        storage.shutdown().await?;
+    // A restore that finished is a clean stop under the new id; one that
+    // failed leaves the record of a run under way, read as a crash.
+    if storage.is_some() {
+        broker.shutdown_storage().await?;
+        crate::node::storage::mark_clean_stop(root, id)?;
     }
     Ok(plan.len())
 }

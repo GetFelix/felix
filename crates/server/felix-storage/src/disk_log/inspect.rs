@@ -238,13 +238,68 @@ pub struct Damage {
 /// `index_spacing_bytes`, `repair_checksum_tail` and `verify_all_on_open`
 /// affect the result.
 pub fn inspect_shard(dir: &Path, config: &LogConfig) -> Result<ShardReport> {
-    let label = dir
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let label = label_of(dir);
     let offloaded = offload::manifest::load(dir)?;
     let plan = recovery::plan_recovery(dir, &label, config, &offloaded)?;
+    let (startup, actions) = verdict(&plan);
 
+    let mut segments = Vec::new();
+    if dir.exists() {
+        for id in recovery::discover_segment_ids(dir)? {
+            segments.push(inspect_segment(dir, &label, config, id)?);
+        }
+    }
+    Ok(ShardReport {
+        segments,
+        durable_mark: durable_mark::load(dir).map(
+            |DurableMark {
+                 segment,
+                 synced_bytes,
+             }| { (segment, synced_bytes) },
+        ),
+        startup,
+        actions,
+    })
+}
+
+/// Whether startup would discard anything under `data_dir`: a torn tail, a
+/// rollover left half done, or damage it refuses to open. Runs startup's plan
+/// for every shard and stops there, so it reads what opening them would, not
+/// every segment. A shard whose plan cannot be made counts as well.
+pub fn any_repair_pending(data_dir: &Path, config: &LogConfig) -> bool {
+    let config = LogConfig {
+        verify_all_on_open: false,
+        ..config.clone()
+    };
+    let shards = match find_shards(data_dir) {
+        Ok(shards) => shards,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not list shards to look for a torn tail");
+            return true;
+        }
+    };
+    shards.iter().any(|shard| {
+        let planned = offload::manifest::load(&shard.path).and_then(|offloaded| {
+            recovery::plan_recovery(&shard.path, &label_of(&shard.path), &config, &offloaded)
+        });
+        match planned {
+            Ok(plan) => verdict(&plan).0 != Startup::Clean,
+            Err(err) => {
+                tracing::warn!(shard = %shard.path.display(), error = %err, "could not plan a shard's recovery");
+                true
+            }
+        }
+    })
+}
+
+fn label_of(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Startup's verdict on a plan, and the writes it would make.
+fn verdict(plan: &recovery::RecoveryPlan) -> (Startup, Vec<Action>) {
     let mut actions: Vec<Action> = plan.steps.iter().filter_map(describe).collect();
     let startup = match &plan.end {
         End::Refuse(detail) => Startup::Refuse(detail.clone()),
@@ -277,24 +332,7 @@ pub fn inspect_shard(dir: &Path, config: &LogConfig) -> Result<ShardReport> {
         }
         other => other,
     };
-
-    let mut segments = Vec::new();
-    if dir.exists() {
-        for id in recovery::discover_segment_ids(dir)? {
-            segments.push(inspect_segment(dir, &label, config, id)?);
-        }
-    }
-    Ok(ShardReport {
-        segments,
-        durable_mark: durable_mark::load(dir).map(
-            |DurableMark {
-                 segment,
-                 synced_bytes,
-             }| { (segment, synced_bytes) },
-        ),
-        startup,
-        actions,
-    })
+    (startup, actions)
 }
 
 fn describe(step: &Step) -> Option<Action> {

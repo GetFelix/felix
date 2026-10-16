@@ -1,5 +1,7 @@
-//! A follower that lost its data directory is never promoted on a report
-//! about the copy it lost, and one that only restarted still is.
+//! A follower that lost its data directory, or crashed under the default
+//! `Periodic` fsync and so may have lost its unsynced tail, is never promoted
+//! on a report about the copy it had. One that stopped cleanly and restarted
+//! still is.
 //!
 //! The leader here cannot reach the follower after it comes back (its peer
 //! requests to it are refused), so its reports keep naming the follower
@@ -73,11 +75,45 @@ async fn registered_storage(cluster: &Cluster, node: &str) -> String {
         .unwrap_or_else(|| panic!("{node} registered without a storage identity"))
 }
 
-/// Stop `c`, wipe its storage if asked, and start it again while the leader
-/// cannot reach it. Waits for a report the leader made after `c`
-/// registered again, so placement has the same evidence it would have had
-/// after a long idle stretch.
-async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, wipe: bool) {
+/// How a follower goes down before it is started again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// SIGTERM and the drain: a clean stop, which keeps the storage id.
+    Clean,
+    /// SIGKILL under `Periodic`: the unsynced tail may be gone.
+    Crash,
+    /// SIGKILL and the data directory removed.
+    Wipe,
+}
+
+/// Stop `node` the way an orchestrator does and wait until the control plane
+/// has it gone. The drain records a clean stop, so it keeps its storage id.
+async fn stop_cleanly(cluster: &mut Cluster, node: &str) {
+    cluster.terminate_node(node).expect("terminate");
+    let status = cluster
+        .wait_for_exit(node, Duration::from_secs(60))
+        .await
+        .expect("exit");
+    assert!(status.success(), "{node} did not stop cleanly: {status}");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the control plane to notice the stop",
+        || async {
+            cluster
+                .placeable_nodes()
+                .await
+                .is_ok_and(|live| !live.iter().any(|live| live == node))
+        },
+    )
+    .await
+    .expect("the stopped node leaves placement");
+}
+
+/// Stop `c` as `stop` says and start it again while the leader cannot reach
+/// it. Waits for a report the leader made after `c` registered again, so
+/// placement has the same evidence it would have had after a long idle
+/// stretch.
+async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, stop: Stop) {
     cluster
         .inject(&Fault::Refuse {
             node: leader.to_string(),
@@ -86,17 +122,21 @@ async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, wipe: b
         .await
         .expect("inject");
     let before = registered_storage(cluster, c).await;
-    cluster.stop_node(c).await.expect("stop c");
-    if wipe {
-        let storage = cluster.node(c).expect("c").storage_dir();
-        std::fs::remove_dir_all(&storage).expect("wipe c's storage");
+    match stop {
+        Stop::Clean => stop_cleanly(cluster, c).await,
+        Stop::Crash => cluster.stop_node(c).await.expect("kill c"),
+        Stop::Wipe => {
+            cluster.stop_node(c).await.expect("kill c");
+            let storage = cluster.node(c).expect("c").storage_dir();
+            std::fs::remove_dir_all(&storage).expect("wipe c's storage");
+        }
     }
     cluster.restart_node(c).await.expect("restart c");
     let after = registered_storage(cluster, c).await;
     assert_eq!(
         before != after,
-        wipe,
-        "a wipe changes the storage identity and a restart keeps it"
+        stop != Stop::Clean,
+        "{stop:?}: a crash or a wipe changes the storage identity and a clean stop keeps it"
     );
     let since = cluster.control_plane_now_millis().await.expect("clock");
     felix_cluster::wait::until(
@@ -123,11 +163,11 @@ async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, wipe: b
     assert_eq!(report.follower_storage.get(c), Some(&before));
 }
 
-/// Kill the leader, stop `b`, and wait until the control plane has marked
-/// the leader down.
+/// Kill the leader, stop `b` cleanly so it keeps its storage id, and wait
+/// until the control plane has marked the leader down.
 async fn lose_leader_and_b(cluster: &mut Cluster, leader: &str, b: &str) {
     cluster.kill_node(leader).expect("kill the leader");
-    cluster.stop_node(b).await.expect("stop b");
+    stop_cleanly(cluster, b).await;
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "the control plane to mark the leader down",
@@ -189,17 +229,15 @@ fn all_records() -> Vec<String> {
     (0..RECORDS).map(|i| format!("record-{i}")).collect()
 }
 
-/// **A wiped follower is not promoted (#1266).** The leader's last report
-/// still names it caught up under its old identity, and it registered under
-/// a new one. Promoting it would let it fence with its empty log counted as
-/// a vote. The shard waits instead, and fails over to the follower that kept
-/// its log once that one is back.
-#[tokio::test]
-#[serial]
-async fn a_wiped_follower_is_not_promoted() {
+/// The leader's last report names `c` caught up under the identity it had
+/// before `stop`, and it registered under a new one. Promoting it would let
+/// it fence with whatever it lost counted as a vote. The shard waits
+/// instead, and fails over to the follower that kept its log once that one
+/// is back.
+async fn not_promoted_after(stop: Stop) {
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, b, c) = written(&cluster).await;
-    restart_unreached(&mut cluster, &leader, &c, true).await;
+    restart_unreached(&mut cluster, &leader, &c, stop).await;
     lose_leader_and_b(&mut cluster, &leader, &b).await;
 
     // Unplaceable is placement having decided the failover: the lease has
@@ -210,12 +248,12 @@ async fn a_wiped_follower_is_not_promoted() {
         || async {
             let outcome = cluster.place_shards().await;
             let owner = cluster.owner(STREAM).await.expect("owner");
-            assert_ne!(owner, c, "the wiped follower was promoted");
+            assert_ne!(owner, c, "the {stop:?} follower was promoted");
             outcome.unplaceable > 0
         },
     )
     .await
-    .expect("placement refuses the wiped follower");
+    .expect("placement refuses the follower");
     assert_eq!(cluster.owner(STREAM).await.expect("owner"), leader);
 
     cluster.restart_node(&b).await.expect("restart b");
@@ -225,8 +263,24 @@ async fn a_wiped_follower_is_not_promoted() {
     cluster.shutdown().await;
 }
 
-/// **A follower that only restarted is promoted past the report's TTL
-/// (#1250, #1266).** Its identity survived the restart, so the dead
+/// **A wiped follower is not promoted (#1266).**
+#[tokio::test]
+#[serial]
+async fn a_wiped_follower_is_not_promoted() {
+    not_promoted_after(Stop::Wipe).await;
+}
+
+/// **A follower that crashed under `Periodic` fsync is not promoted
+/// (#1284).** It kept its data directory, but not necessarily the records it
+/// acknowledged since the last sync, so it starts under a new storage id.
+#[tokio::test]
+#[serial]
+async fn a_crashed_follower_is_not_promoted() {
+    not_promoted_after(Stop::Crash).await;
+}
+
+/// **A follower that stopped cleanly and restarted is promoted past the
+/// report's TTL (#1250, #1266).** Its identity survived the restart, so the dead
 /// leader's last report still describes its log, and it is trusted for as
 /// long as the leader was heard from, not only for the TTL after it was
 /// made.
@@ -235,7 +289,7 @@ async fn a_wiped_follower_is_not_promoted() {
 async fn a_restarted_follower_is_promoted_past_the_ttl() {
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, b, c) = written(&cluster).await;
-    restart_unreached(&mut cluster, &leader, &c, false).await;
+    restart_unreached(&mut cluster, &leader, &c, Stop::Clean).await;
     lose_leader_and_b(&mut cluster, &leader, &b).await;
 
     // No placement pass until the report is older than its TTL, so only the

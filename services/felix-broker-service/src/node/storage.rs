@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_broker::{Broker, DurableStorage};
+use felix_storage::log::FsyncMode;
 use felix_storage::{EphemeralCache, StorageId};
 
 use crate::config::{BrokerConfig, DurableStorageConfig};
@@ -26,6 +27,12 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
+    // Before any store opens: a store's recovery is the first write of this
+    // run, and the record that a run is under way must already be on disk.
+    let storage_id = match &durable_config {
+        Some(durable) => begin_run(&durable.root, &durable.log)?,
+        None => storage_id(None)?,
+    };
     let hold = retention_hold(config);
     let durable_storage = match &durable_config {
         Some(durable) => {
@@ -48,12 +55,6 @@ pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
             None
         }
     };
-
-    let storage_id = storage_id(
-        durable_config
-            .as_ref()
-            .map(|durable| durable.root.as_path()),
-    )?;
 
     // The cache is a log when there is a disk to put one on.
     //
@@ -171,6 +172,28 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
             .with_context(|| format!("read the storage id under {}", root.display())),
         None => Ok(StorageId::from_bytes(fresh_storage_id())),
     }
+}
+
+/// Start a run on the data directory at `root` and return the id to announce.
+/// A crash under `Periodic` or `None` may have lost records peers counted, so
+/// it comes back with a new id. See `felix_storage::run_state`.
+fn begin_run(root: &Path, log: &felix_storage::log::LogConfig) -> Result<StorageId> {
+    let relaxed = !matches!(log.fsync_mode, FsyncMode::OnCommit);
+    let begun = felix_storage::run_state::begin(
+        root,
+        relaxed,
+        || felix_storage::inspect::any_repair_pending(root, log),
+        fresh_storage_id,
+    )
+    .with_context(|| format!("start a run on {}", root.display()))?;
+    Ok(begun.id)
+}
+
+/// Record that this run on `root` stopped with everything it acknowledged
+/// synced, so the next start keeps `id`.
+pub(crate) fn mark_clean_stop(root: &Path, id: StorageId) -> Result<()> {
+    felix_storage::run_state::mark_clean(root, id)
+        .with_context(|| format!("record a clean stop under {}", root.display()))
 }
 
 /// Give the data directory under `root` a new storage id, for when its

@@ -20,10 +20,26 @@ pub fn counter_record(bytes: &[u8]) {
 
 /// Decode `bytes` as each small per-shard state file: the durable mark, the
 /// replica state, the generation history and the producer snapshot. Also as
-/// the data directory's storage id, the one such file outside a shard.
+/// the data directory's storage id and run state, the files outside a shard.
 pub fn sidecar_state(bytes: &[u8]) {
     crate::disk_log::fuzzing::sidecars(bytes);
     storage_id(bytes);
+    run_state(bytes);
+}
+
+fn run_state(bytes: &[u8]) {
+    use crate::run_state::{ENCODED_LEN, decode, encode};
+
+    let mut fixed = bytes.to_vec();
+    if fixed.len() == ENCODED_LEN {
+        let crc = crc32fast::hash(&fixed[..ENCODED_LEN - 4]);
+        fixed[ENCODED_LEN - 4..].copy_from_slice(&crc.to_be_bytes());
+    }
+    for bytes in [bytes, fixed.as_slice()] {
+        if let Some((state, flags, id)) = decode(bytes) {
+            assert_eq!(encode(state, flags, id).as_slice(), bytes);
+        }
+    }
 }
 
 fn storage_id(bytes: &[u8]) {

@@ -1867,7 +1867,10 @@ export FELIX_DURABLE_FSYNC_MODE="on_commit"
 
 **Trade-off**: `on_commit` costs one device flush per commit (~4ms on typical
 NVMe), amortised across concurrent publishers by group commit. `periodic` adds
-no measurable append latency at all.
+no measurable append latency at all. Under `periodic` and `none` a broker that
+crashes (anything but a clean SIGTERM stop) starts again under a new storage
+id, and its leaders copy each shard it follows again; under `on_commit` it
+keeps its id.
 
 ### `FELIX_DURABLE_FSYNC_INTERVAL_MS`
 

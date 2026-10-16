@@ -35,7 +35,8 @@
 //!   left half done. `incarnation` picks which incarnation of a stream a store
 //!   opens, and retires a deleted one's directories.
 //! - [`storage_identity`]: the random id a data directory keeps, so peers can
-//!   tell a restarted disk from a wiped one.
+//!   tell a restarted disk from a wiped one. [`run_state`] gives it a new one
+//!   when a crash may have lost what it acknowledged.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -60,6 +61,7 @@ pub(crate) mod io;
 mod legacy_swap;
 pub mod log;
 pub mod metrics_names;
+pub mod run_state;
 pub mod segment;
 mod shard_slots;
 pub mod storage_identity;

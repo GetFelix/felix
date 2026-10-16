@@ -254,6 +254,15 @@
 (* follower's old connection reports it under its old identity after it   *)
 (* registered again, and the stamp counts it                              *)
 (* (FelixShardWipeStrippedOnArrival.cfg).                                 *)
+(*                                                                         *)
+(* With `CrashLoses` the loss is a crash under `FsyncMode::Periodic` or    *)
+(* `None` instead (`Crash`): the follower keeps its data directory but     *)
+(* loses an unsynced suffix of its log. Keeping its identity, it stays     *)
+(* counted on what it lost, and TLC finds it promoted without an           *)
+(* acknowledged record (AckedSurvive, FelixShardCrashKeepsId.cfg). With    *)
+(* `RotateOnCrash` it restarts under a new identity, as the broker does    *)
+(* when it finds no clean stop recorded, and the wipe's checks hold        *)
+(* (FelixShardCrash.cfg).                                                  *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -375,11 +384,18 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* plane reads as it takes the report, not the ones the leader measured on
 \* its connections. The code does this only for a follower that predates the
 \* handshake's incarnation.
+\* `CrashLoses`: a follower loses data by crashing under a relaxed fsync
+\* mode, which drops an unsynced suffix of its log and keeps its directory,
+\* rather than by a wipe.
+\* `RotateOnCrash`: after such a crash it starts under a new storage
+\* identity: `felix_storage::run_state::begin`.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
 StampIncarnations == TRUE
 StampOnArrival == FALSE
+CrashLoses == FALSE
+RotateOnCrash == FALSE
 
 VARIABLES
     now,        \* real time
@@ -448,8 +464,8 @@ counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
-\* Storage identities and registrations: only a wipe, a leader learning one,
-\* and a registration change them.
+\* Storage identities and registrations: only a wipe, a crash, a leader
+\* learning one, and a registration change them.
 idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
@@ -1867,6 +1883,7 @@ Decide(v, f, views) ==
 (* a new storage identity. Its high-water mark goes with the log.         *)
 
 Wipe(f) ==
+    /\ ~CrashLoses
     /\ wipes < Wipes
     /\ bgen[f] = 0
     /\ log' = [log EXCEPT ![f] = <<>>]
@@ -1879,6 +1896,30 @@ Wipe(f) ==
        ELSE /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
             /\ inc' = [inc EXCEPT ![f] = @ + 1]
             /\ UNCHANGED restarting
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked >>
+
+\* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
+\* without a suffix it had not synced, which it may already have answered
+\* for. Its directory, and so its identity, is the one it had, unless
+\* `RotateOnCrash` gives it a new one before it registers again. It shares
+\* the wipes' budget.
+Crash(f) ==
+    /\ CrashLoses
+    /\ wipes < Wipes
+    /\ bgen[f] = 0
+    /\ Len(log[f]) > 0
+    /\ \E k \in 0..(Len(log[f]) - 1) :
+          /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
+          /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+    /\ wipes' = wipes + 1
+    /\ IF RotateOnCrash
+       THEN /\ sid' = [sid EXCEPT ![f] = @ + 1]
+            /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
+       ELSE UNCHANGED << sid, registered >>
+    /\ inc' = [inc EXCEPT ![f] = @ + 1]
+    /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked >>
@@ -1949,7 +1990,7 @@ EndPass(b) ==
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-\* Identities change only in a wipe, a probe and a registration.
+\* Identities change only in a wipe, a crash, a probe and a registration.
 quietVars == << counterVars, heard, idVars >>
 loudVars == << heard, idVars >>
 
@@ -1985,6 +2026,7 @@ Next ==
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
+        \/ Crash(b) /\ UNCHANGED << counterVars, heard >>
         \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars

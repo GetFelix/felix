@@ -40,7 +40,8 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 | `0x464C5349` | `FLSI` | Felix Segment **I**ndex | sparse offset index (`*.index`) |
 
 The small state files have magics of their own, listed with each file below.
-The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`.
+The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`, and the
+run state's `0x464C524E` (`FLRN`), apart from the replica state's `FLRS`.
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
@@ -52,6 +53,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
 ```text
 <root>/
   storage-id                                 ← this data directory's identity
+  run-state                                  ← whether the last run stopped cleanly
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -844,6 +846,29 @@ failing the start. That includes a file a newer version wrote, read after a
 downgrade: a new id only makes peers treat the directory as one that
 may have lost data, which is the safe reading of damage. See
 `docs/durable-storage.md`, "Storage identity".
+
+## `run-state`: whether the last run stopped cleanly
+
+One file at the durable root, beside `storage-id`:
+
+```text
+ 0   4  magic    u32  "FLRN"
+ 4   2  version  u16
+ 6   1  state    u8   1 = running, 2 = stopped cleanly
+ 7   1  flags    u8   bit 0: the run acknowledges records before syncing them
+                      (FsyncMode::Periodic or None); other bits must be zero
+ 8  16  id       the storage id the run started under
+24   4  crc      u32  crc32 over bytes 0..24
+```
+
+A broker writes `running` before any store opens and `stopped cleanly` as the
+last step of a drain that flushed everything. Both go through `run-state.tmp`,
+synced, renamed and the directory synced, like `storage-id`. No file means no
+release that writes it has run here. A file that does not decode, or names
+another id than `storage-id` holds, reads as a crash under a relaxed mode. A
+start that finds `running` with bit 0 set, or that, with no file and an id
+loaded, finds a shard startup would repair, writes a new `storage-id` first.
+See `docs/durable-storage.md`, "Storage identity".
 
 ## Consumer-group cursor values
 

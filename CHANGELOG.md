@@ -98,6 +98,21 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A follower that crashed under `FsyncMode::Periodic` (the default) or `None`
+  is no longer counted, or promoted, on records it acknowledged before the
+  crash and may have lost (#1284). The broker now keeps
+  `<data dir>/run-state`: it records a run under way before any store opens,
+  and a clean stop once a drain has flushed every store with nothing cut
+  short and no log poisoned. A start that finds no clean stop after a
+  `Periodic` or `None` run writes a new storage id before it registers, so
+  leaders copy the follower again and placement stops counting its old
+  reports. A clean stop, and a crash under `OnCommit`, keep the id. The
+  first start on this release rotates only if startup would repair a shard,
+  so an orderly roll keeps every id. `felix-broker restore-point` records a
+  clean stop when it finishes. The shutdown drain now flushes the cache,
+  consumer-group, dead-letter and counter logs too, not only stream logs
+  (`Broker::shutdown_storage`, `StorageApi::shutdown`). TLA+:
+  `FelixShardCrash.cfg` and `FelixShardCrashKeepsId.cfg`.
 - Placement no longer counts a wiped follower from a report its leader made
   over a connection to the follower's old process (#1281). The window was
   open only while brokers or control-plane instances were being rolled and

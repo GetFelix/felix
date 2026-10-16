@@ -236,6 +236,8 @@ async fn a_failed_flush_poisons_the_log_and_never_advances_the_durable_bound() {
     );
     assert!(log.append(&records(&["c"])).await.is_err());
     assert!(log.shutdown().await.is_err());
+    // Closed or not, the process may not record a clean stop.
+    assert!(crate::disk_log::any_log_poisoned());
 }
 
 #[tokio::test]

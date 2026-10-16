@@ -407,6 +407,40 @@ impl Broker {
         self.counters.as_ref()
     }
 
+    /// Flush and stop every store this broker writes: stream logs, the cache,
+    /// consumer-group positions, dead letters and counters. Call once during
+    /// graceful shutdown. Every store is flushed even when one fails; the
+    /// first failure is returned.
+    pub async fn shutdown_storage(&self) -> Result<()> {
+        let mut first_error = None;
+        let mut note = |stage: &str, result: Result<()>| {
+            if let Err(err) = result {
+                tracing::error!(store = stage, error = %err, "failed to flush on shutdown");
+                first_error.get_or_insert(err);
+            }
+        };
+        if let Some(storage) = &self.durable_storage {
+            note("streams", storage.shutdown().await);
+        }
+        note(
+            "cache",
+            self.cache.shutdown().await.map_err(BrokerError::from),
+        );
+        if let Some(groups) = &self.consumer_groups {
+            note("groups", groups.shutdown().await);
+        }
+        if let Some(reader) = &self.group_reader {
+            note("dead-letters", reader.dead_letters().shutdown().await);
+        }
+        if let Some(counters) = &self.counters {
+            note(
+                "counters",
+                counters.shutdown().await.map_err(BrokerError::from),
+            );
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// Fanout for cache watches, if this broker's cache store can serve them.
     pub fn cache_watches(&self) -> Option<&Arc<CacheWatchHub>> {
         self.cache_watches.as_ref()
