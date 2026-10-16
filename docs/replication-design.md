@@ -1608,6 +1608,17 @@ then the leader reports the old identity, which the restarted broker no
 longer registers under. It counts nothing for that follower: no answer comes
 back over the old connection.
 
+The handshake also carries the follower's node incarnation, the number the
+control plane gave it at its last registration (`NODE_INCARNATION`, see
+`docs/internal-protocol.md`). The cursor's identity is the pair, and a change
+in either starts it over. That covers a follower that gives no storage
+identity: its incarnation still changes across a restart, so the leader no
+longer counts a restarted process on its predecessor's position. A process
+answers "not registered yet" until it registers, and then closes the
+connections it answered that way, so its leaders dial again and learn the
+number. A follower that predates the bit gives none, and its cursor is kept
+across a restart as before.
+
 Each report names the identity every follower was counted under
 (`replica_storage_ids`, lowercase hex, omitted when empty). A follower that
 gives no identity, an older build, is reported without one. The control plane
@@ -1615,14 +1626,16 @@ keeps them with the report (`follower_storage`), and each broker registers its
 own identity (`storage_id`). Placement compares the two for every follower it
 might promote (see "Who may be promoted" below), so the stale identity a
 crashed follower's old connection still shows only ever reads as a mismatch
-once the restarted broker has registered. `FelixShardWipe.cfg` checks the
-design with that comparison in place, and `FelixShardWipeNoIds.cfg` finds the
-lost record without it. `FelixShardWipeStripped.cfg` registers the wiped
-follower again without an identity and finds the window described below
-([#1281](https://github.com/GetFelix/felix/issues/1281));
-`FelixShardWipeStrippedRedial.cfg` passes with the incarnation stamp once that
-window is assumed away, and `FelixShardWipeStrippedNoStamp.cfg` loses the
-record without the stamp.
+once the restarted broker has registered. Each report also names the
+incarnation every follower gave on the connection its positions came over
+(`replica_incarnations`, `null` for one that had not registered yet, omitted
+when empty). `FelixShardWipe.cfg` checks the design with the identity
+comparison in place, and `FelixShardWipeNoIds.cfg` finds the lost record
+without it. `FelixShardWipeStripped.cfg` registers the wiped follower again
+without an identity, with the leader still on its old connection, and passes
+on the measured incarnation; `FelixShardWipeStrippedOnArrival.cfg` stamps the
+incarnation as the report arrives instead and loses the record, and
+`FelixShardWipeStrippedNoStamp.cfg` loses it with no incarnation check at all.
 
 ### Divergence and truncation
 
@@ -1847,32 +1860,32 @@ placement holds that against the identity the follower is registered with now:
   log counts as a vote) without the record.
 - **Either missing:** a broker on one side that predates identities, or a
   registration or report written through a control plane that dropped them.
-  The follower counts while the report is fresh and only if the report was
-  taken at the incarnation the follower is registered at now. Without an
+  The follower counts while the report is fresh and only if the report names
+  the incarnation the follower is registered at now. Without an
   identity, a restart is the only evidence the follower may have lost its
   disk, so a report from before it says nothing about what it holds.
 
-The control plane stamps each report with the node that made it and the
-incarnation every node it names was registered at, read before the report is
-stored (`report.leader`, `node_incarnations`). A registration landing after
-that read leaves a node at a newer incarnation than the stamp, which counts it
-for less, never more. The stamp cannot see two things. One is a report the
-leader measured before the follower restarted that reaches the control plane
-after the follower registered again: it is stamped at the new incarnation.
-The other is a leader still on a crashed follower's old connection, which
-goes on reporting it under its old identity until QUIC's idle timeout closes
-that connection (see "Storage identities" above). A follower that registered
-with its new identity reads as a mismatch in both cases. One that registered
-without an identity is counted. So the stamp closes the window only for
-reports made before the restart, which is the case of a leader that dies
-first. For the rest it stays open while the control plane or the brokers are
-being rolled and a registration loses its identity, until the leader redials
-the follower (at most QUIC's idle timeout after a crash). Tracked as
-[#1281](https://github.com/GetFelix/felix/issues/1281): the handshake would
-carry the follower's incarnation and the report the incarnation it measured.
-`FelixShardWipeStripped.cfg` finds the stale connection's report;
-`FelixShardWipeStrippedRedial.cfg` rules both cases out by assumption and
-passes.
+The control plane stamps each report with the node that made it
+(`report.leader`) and an incarnation for every node it names
+(`node_incarnations`). For a follower that is the incarnation the leader
+measured on the connection its positions came over, so a report always says
+which process it describes. A leader still on a crashed follower's old
+connection, which goes on reporting it under its old identity until QUIC's
+idle timeout closes that connection, reports the old process's incarnation
+too, and a follower that registered again since is not counted. A follower
+measured before it registered is left out, and so never counts on its
+incarnation. `FelixShardWipeStripped.cfg` checks this with the wiped follower
+registering again without an identity.
+
+A follower that predates the handshake's incarnation sends none, and for it the
+control plane falls back to the incarnation the follower is registered at when
+the report arrives, read before the report is stored. That stamp cannot see a
+report measured before the follower restarted that arrives after it registered
+again, nor a stale connection's report, so it leaves the window open for such a
+follower whose registration also lost its identity. Both only happen while
+brokers or control-plane instances are being rolled: an older broker, or an
+older control-plane instance that does not read `replica_incarnations` and
+stamps every follower. `FelixShardWipeStrippedOnArrival.cfg` is that window.
 
 The incarnation check costs availability in one case: an unverified follower
 that restarts after its leader's last report, whose leader then dies, is not

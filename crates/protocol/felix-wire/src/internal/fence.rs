@@ -70,6 +70,13 @@ impl PeerCapabilities {
     ///
     /// [`HelloOk::identity`]: super::HelloOk::identity
     pub const STORAGE_IDENTITY: Self = Self(1 << 10);
+    /// Answers a `HelloCapable` offering this bit with the node incarnation
+    /// it holds from its last registration, or with none before it has
+    /// registered ([`HelloOk::incarnation`]), and closes the connections
+    /// it answered once its incarnation changes.
+    ///
+    /// [`HelloOk::incarnation`]: super::HelloOk::incarnation
+    pub const NODE_INCARNATION: Self = Self(1 << 11);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

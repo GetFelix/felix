@@ -161,6 +161,8 @@ pub struct PeerServer {
     known: KnownCapabilities,
     /// This broker's storage identity, given to a caller that asks for it.
     identity: Option<StorageId>,
+    /// This process's node incarnation, `None` until it registers.
+    incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
 }
 
 impl PeerServer {
@@ -204,6 +206,7 @@ impl PeerServer {
             capabilities: config.capabilities(),
             known: KnownCapabilities::default(),
             identity: None,
+            incarnation: None,
         })
     }
 
@@ -218,6 +221,21 @@ impl PeerServer {
     /// with `identity`. Without it the bit is never answered.
     pub fn with_storage_identity(mut self, identity: StorageId) -> Self {
         self.identity = Some(identity);
+        self
+    }
+
+    /// Answer a handshake that offers [`PeerCapabilities::NODE_INCARNATION`]
+    /// with the incarnation `incarnation` holds, and close each connection so
+    /// answered once it changes. Without it the bit is never answered.
+    ///
+    /// The close is what keeps a caller's view current: it learned the
+    /// incarnation once, at the handshake, and dials again to learn the new
+    /// one.
+    pub fn with_node_incarnation(
+        mut self,
+        incarnation: tokio::sync::watch::Receiver<Option<u64>>,
+    ) -> Self {
+        self.incarnation = Some(incarnation);
         self
     }
 
@@ -305,6 +323,7 @@ impl PeerServer {
                 capabilities: self.capabilities,
                 known: self.known.clone(),
                 identity: self.identity,
+                incarnation: self.incarnation.clone(),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -323,6 +342,7 @@ struct Offered {
     capabilities: PeerCapabilities,
     known: KnownCapabilities,
     identity: Option<StorageId>,
+    incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -446,21 +466,44 @@ async fn serve_connection(
                         );
                         // Only to a caller that offered the bit, so an older
                         // one reads the answer it always has.
-                        let identity = offered.identity.filter(|_| {
-                            hello.capabilities.is_some_and(|c| {
-                                c.contains(PeerCapabilities::STORAGE_IDENTITY)
-                            })
-                        });
+                        let asked = |bit| hello.capabilities.is_some_and(|c| c.contains(bit));
+                        let identity = offered
+                            .identity
+                            .filter(|_| asked(PeerCapabilities::STORAGE_IDENTITY));
+                        let incarnation = offered
+                            .incarnation
+                            .clone()
+                            .filter(|_| asked(PeerCapabilities::NODE_INCARNATION));
+                        let mut answered = offered.capabilities;
+                        if identity.is_some() {
+                            answered = answered.union(PeerCapabilities::STORAGE_IDENTITY);
+                        }
+                        let mut at = None;
+                        if let Some(mut watch) = incarnation {
+                            answered = answered.union(PeerCapabilities::NODE_INCARNATION);
+                            let current = *watch.borrow_and_update();
+                            at = current;
+                            // The caller keeps what it was told for the life
+                            // of the connection, so a new registration has to
+                            // end the connection for the caller to learn it.
+                            let closer = connection.clone();
+                            connection.spawn_pump(async move {
+                                tokio::select! {
+                                    _ = closer.closed() => {}
+                                    changed = watch.wait_for(|now| *now != current) => {
+                                        if changed.is_ok() {
+                                            closer.close(4u32.into(), b"node incarnation changed");
+                                        }
+                                    }
+                                }
+                            });
+                        }
                         InternalMessage::HelloOk(HelloOk {
                             correlation_id: hello.correlation_id,
                             node_id: node_id.clone(),
-                            capabilities: hello.capabilities.map(|_| match identity {
-                                Some(_) => offered
-                                    .capabilities
-                                    .union(PeerCapabilities::STORAGE_IDENTITY),
-                                None => offered.capabilities,
-                            }),
+                            capabilities: hello.capabilities.map(|_| answered),
                             identity: identity.map(|id| id.to_bytes()),
+                            incarnation: at,
                         })
                     }
                     // Refused as a build without the fence would refuse it, so

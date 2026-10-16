@@ -247,6 +247,31 @@ fn named_nodes(shard: &ShardReplicaStatus) -> impl Iterator<Item = &str> {
         .chain(shard.replica_storage_ids.keys().map(String::as_str))
 }
 
+/// The incarnation each node a report names is held to: the leader's as
+/// registered, and each follower's as the leader measured it on the
+/// connection its positions came over. A follower measured before it
+/// registered is left out, so it never counts on its incarnation.
+///
+/// A follower the leader sent none for predates the handshake's incarnation,
+/// and gets the one registered as the report arrived. That stamp can name a
+/// process the leader never spoke to, so it only stands in during a roll.
+fn node_incarnations(
+    leader: &str,
+    shard: &ShardReplicaStatus,
+    registered: &std::collections::BTreeMap<String, u64>,
+) -> std::collections::BTreeMap<String, u64> {
+    std::iter::once(leader)
+        .chain(named_nodes(shard))
+        .filter_map(|id| {
+            let incarnation = match shard.replica_incarnations.get(id) {
+                Some(measured) if id != leader => (*measured)?,
+                _ => *registered.get(id)?,
+            };
+            Some((id.to_string(), incarnation))
+        })
+        .collect()
+}
+
 /// Judge one shard's report and, if it passes, store it. `by_round` is kept
 /// only with `leader_incarnation`, the reporting process's incarnation.
 async fn record_one(
@@ -360,10 +385,7 @@ async fn record_one(
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
         leader: Some(node_id.to_string()),
-        node_incarnations: std::iter::once(node_id)
-            .chain(named_nodes(shard))
-            .filter_map(|id| Some((id.to_string(), *incarnations.get(id)?)))
-            .collect(),
+        node_incarnations: node_incarnations(node_id, shard, incarnations),
         // A malformed identity is no evidence either way, so it is left out
         // and the follower is judged as one that sent none.
         follower_storage: shard

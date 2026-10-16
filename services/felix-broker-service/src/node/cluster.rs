@@ -121,6 +121,7 @@ pub(super) fn bind_peer_listener(
     peer_tls: &Option<Arc<PeerTls>>,
     known_capabilities: Option<peer::KnownCapabilities>,
     storage_id: felix_storage::StorageId,
+    incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -150,7 +151,8 @@ pub(super) fn bind_peer_listener(
                     Some(known) => server.with_known_capabilities(known),
                     None => server,
                 }
-                .with_storage_identity(storage_id);
+                .with_storage_identity(storage_id)
+                .with_node_incarnation(incarnation);
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,

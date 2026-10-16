@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 
 use felix_storage::StorageId;
 
+use crate::peer::{Incarnation, PeerIdentity};
+
 /// How far a follower may be behind and still be fit to lead.
 ///
 /// Zero: a follower is caught up when it holds every record the leader does.
@@ -52,6 +54,10 @@ pub struct FollowerCursor {
     /// were learned; `None` from one that gives none. A different one is a
     /// different copy of the log, so the cursor starts over.
     pub storage_id: Option<StorageId>,
+    /// The node incarnation the follower gave beside `storage_id`. A
+    /// different one is another process, which may not hold what this one
+    /// did, so the cursor starts over on it too.
+    pub incarnation: Incarnation,
 }
 
 impl FollowerCursor {
@@ -68,6 +74,15 @@ impl FollowerCursor {
             stalled: true,
             legacy_frames: false,
             storage_id: None,
+            incarnation: Incarnation::Unsent,
+        }
+    }
+
+    /// The identity this cursor's positions were learned under.
+    pub fn identity(&self) -> PeerIdentity {
+        PeerIdentity {
+            storage: self.storage_id,
+            incarnation: self.incarnation,
         }
     }
 }

@@ -35,4 +35,9 @@ pub struct HelloOk {
     /// capability bits, present exactly when those bits include
     /// [`PeerCapabilities::STORAGE_IDENTITY`].
     pub identity: Option<[u8; 16]>,
+    /// The responder's node incarnation, when the capability bits include
+    /// [`PeerCapabilities::NODE_INCARNATION`]: a byte after the identity, 1
+    /// followed by the incarnation as 8 bytes, or 0 alone for a responder
+    /// that has not registered yet. Must be `None` without the bit.
+    pub incarnation: Option<u64>,
 }

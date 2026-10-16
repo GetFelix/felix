@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use super::PeerError;
 use super::state::Pooled;
 use crate::peer::codec::{Incoming, read_frame};
+use crate::peer::identity::{Incarnation, PeerIdentity};
 use crate::peer::metrics;
 
 /// One established connection to a peer, with its multiplexed streams.
@@ -33,9 +34,8 @@ pub(super) struct PeerConnection {
     /// What the peer said it can do in the handshake. `NONE` until then, and
     /// for a peer that predates the bits.
     pub(super) capabilities: Mutex<PeerCapabilities>,
-    /// The peer's storage identity from the handshake, `None` from a peer
-    /// that does not send one.
-    pub(super) identity: Mutex<Option<StorageId>>,
+    /// The peer's storage identity and incarnation from the handshake.
+    pub(super) identity: Mutex<PeerIdentity>,
 }
 
 /// Waiters for responses that have not arrived.
@@ -131,7 +131,7 @@ impl PeerConnection {
             last_used: Mutex::new(Instant::now()),
             tasks: Mutex::new(tasks),
             capabilities: Mutex::new(PeerCapabilities::NONE),
-            identity: Mutex::new(None),
+            identity: Mutex::new(PeerIdentity::default()),
         });
 
         // One watcher fails every waiter the moment the connection drops, which
@@ -179,8 +179,15 @@ impl PeerConnection {
 
         match response {
             InternalMessage::HelloOk(ok) if ok.node_id == self.node_id => {
-                *self.capabilities.lock() = ok.capabilities.unwrap_or(PeerCapabilities::NONE);
-                *self.identity.lock() = ok.identity.map(StorageId::from_bytes);
+                let capabilities = ok.capabilities.unwrap_or(PeerCapabilities::NONE);
+                *self.capabilities.lock() = capabilities;
+                *self.identity.lock() = PeerIdentity {
+                    storage: ok.identity.map(StorageId::from_bytes),
+                    incarnation: Incarnation::from_handshake(
+                        capabilities.contains(PeerCapabilities::NODE_INCARNATION),
+                        ok.incarnation,
+                    ),
+                };
                 Ok(())
             }
             InternalMessage::HelloOk(ok) => {
@@ -221,8 +228,8 @@ impl PeerConnection {
         *self.capabilities.lock()
     }
 
-    /// The peer's storage identity, if it gave one.
-    pub(super) fn identity(&self) -> Option<StorageId> {
+    /// The peer's storage identity and incarnation from the handshake.
+    pub(super) fn identity(&self) -> PeerIdentity {
         *self.identity.lock()
     }
 

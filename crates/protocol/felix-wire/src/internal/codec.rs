@@ -89,6 +89,18 @@ impl InternalMessage {
                     (false, None) => {}
                     _ => return Err(Error::Incomplete),
                 }
+                let carries_incarnation = m
+                    .capabilities
+                    .is_some_and(|c| c.contains(PeerCapabilities::NODE_INCARNATION));
+                match (carries_incarnation, m.incarnation) {
+                    (true, Some(incarnation)) => {
+                        body.put_u8(1);
+                        body.put_u64(incarnation);
+                    }
+                    (true, None) => body.put_u8(0),
+                    (false, None) => {}
+                    (false, Some(_)) => return Err(Error::Incomplete),
+                }
             }
             Self::Fence(m) => {
                 body.put_u64(m.correlation_id);
@@ -464,11 +476,22 @@ impl InternalMessage {
                     }
                     _ => None,
                 };
+                let incarnation = match capabilities {
+                    Some(c) if c.contains(PeerCapabilities::NODE_INCARNATION) => {
+                        match take_u8(&mut body)? {
+                            0 => None,
+                            1 => Some(take_u64(&mut body)?),
+                            _ => return Err(Error::Incomplete),
+                        }
+                    }
+                    _ => None,
+                };
                 let message = HelloOk {
                     correlation_id,
                     node_id,
                     capabilities,
                     identity,
+                    incarnation,
                 };
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))

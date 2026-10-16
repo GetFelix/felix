@@ -453,6 +453,7 @@ pub fn spawn(
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
     incarnation: Arc<AtomicU64>,
+    registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
@@ -505,6 +506,7 @@ pub fn spawn(
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
                 incarnation.store(registration.incarnation, Ordering::Release);
+                registered.send_replace(Some(registration.incarnation));
 
                 match run_heartbeat(
                     client.clone(),

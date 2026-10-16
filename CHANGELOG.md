@@ -95,6 +95,17 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- Placement no longer counts a wiped follower from a report its leader made
+  over a connection to the follower's old process (#1281). The window was
+  open only while brokers or control-plane instances were being rolled and
+  the follower's registration lost its storage identity. A follower now gives
+  its node incarnation in the peer handshake beside its storage identity (the
+  new `NODE_INCARNATION` peer bit), the leader starts a follower's copy over
+  when either changes, including for a follower that sends no storage
+  identity, and reports carry the incarnation it measured
+  (`replica_incarnations`). A follower that sends none still gets the
+  incarnation registered when the report arrives. `PeerRequester::storage_identity`
+  is now `identity`, returning a `PeerIdentity`.
 - Deleting many streams at once, as a namespace delete does, starts one
   thread per store to remove the retired directories instead of one per
   directory, which raced on the same entries and logged spurious warnings.

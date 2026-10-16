@@ -144,6 +144,16 @@ pub struct ShardReplicaStatus {
     /// when empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replica_storage_ids: BTreeMap<String, String>,
+    /// The node incarnation each follower gave the leader in the handshake
+    /// of the connection its positions were measured on, keyed by node id;
+    /// `null` for a follower that had not registered when that connection
+    /// opened. Placement counts a follower without a verified storage
+    /// identity only when this is its current incarnation. A follower that
+    /// sends none is absent, and the control plane falls back to the
+    /// incarnation it has registered when the report arrives. Omitted when
+    /// empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replica_incarnations: BTreeMap<String, Option<u64>>,
 }
 
 fn is_zero(value: &u64) -> bool {
