@@ -713,7 +713,11 @@ from the entry alone for that reason too:
 - An unflagged create proposing an incarnation still gets one, as at levels 10
   to 13. A proposer below level 10 never writes one.
 - A level-14 proposer flags every create and delete once every member is at
-  14, and fills in a proposal, so new entries never take the unflagged path.
+  14, and fills in a proposal. It reads the group's level once per entry and
+  decides the flag and the level gate from that one reading. An entry
+  carrying a cache proposal is always flagged, so the gate refuses it below
+  14. A stream create from it can still go unflagged while a member is below
+  14, and then applies as the older levels do.
 
 **The residual is for unreleased builds.** Levels 10 to 13 were never
 released. Their builds gave an unflagged create proposing 0 after the finalize

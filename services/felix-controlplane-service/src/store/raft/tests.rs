@@ -1918,3 +1918,36 @@ async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
         "the delete was not flagged"
     );
 }
+
+/// An entry carrying a cache proposal is always flagged, at whatever level
+/// was read, so it is refused below 14 by the same read rather than sent as
+/// an older entry that stores the cache at 0 after the finalize.
+#[test]
+fn a_cache_proposal_always_flags_its_entry() {
+    let proposed = Cache {
+        tenant_id: "t".to_string(),
+        namespace: "ns".to_string(),
+        cache: "c".to_string(),
+        display_name: "c".to_string(),
+        shards: 1,
+        replication_factor: 1,
+        consistency: crate::model::ConsistencyLevel::Leader,
+        incarnation: 42,
+    };
+    let unproposed = Cache {
+        incarnation: 0,
+        ..proposed.clone()
+    };
+    assert!(RaftStore::caches_decide_at(
+        13,
+        std::slice::from_ref(&proposed)
+    ));
+    assert!(!RaftStore::caches_decide_at(
+        13,
+        std::slice::from_ref(&unproposed)
+    ));
+    assert!(RaftStore::caches_decide_at(
+        14,
+        std::slice::from_ref(&unproposed)
+    ));
+}
