@@ -249,7 +249,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
-  "FelixShardWipe 35"
+  "FelixShardWipe 10"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
