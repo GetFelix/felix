@@ -167,6 +167,11 @@ any log. See
    whole `FELIX_DURABLE_STORAGE_DIR` of any broker step 4 did not run on.
 6. **Start the brokers.**
 
+A data directory put back any other way, by rsync, from a volume snapshot, or
+copied from another broker, keeps its old storage id, and peers go on trusting
+what it acknowledged before. Delete `<FELIX_DURABLE_STORAGE_DIR>/storage-id`
+before starting that broker so it gets a new one.
+
 Stopping every broker is also what makes generations safe across a restore.
 The restored control plane hands out change sequence numbers, and so first
 generations of new incarnated streams, it had already used before the

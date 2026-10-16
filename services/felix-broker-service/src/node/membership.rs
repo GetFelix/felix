@@ -74,6 +74,7 @@ pub(super) fn spawn(
     credential: &Option<NodeCredential>,
     suspects: &Arc<felix_replication::suspicion::Suspects>,
     incarnation: &Arc<std::sync::atomic::AtomicU64>,
+    registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: felix_storage::StorageId,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
@@ -107,6 +108,7 @@ pub(super) fn spawn(
                 Arc::clone(fleet),
                 Arc::clone(suspects),
                 Arc::clone(incarnation),
+                registered,
                 Some(storage_id),
             ))
         }

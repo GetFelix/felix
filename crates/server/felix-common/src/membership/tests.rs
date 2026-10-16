@@ -43,6 +43,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
         replica_counter_offsets: Vec::new(),
         stream_incarnation: 0,
         by_round: false,
+        replica_incarnations: BTreeMap::new(),
         replica_storage_ids: BTreeMap::new(),
     };
     let json = serde_json::to_string(&status).expect("write");
@@ -75,6 +76,7 @@ fn a_report_without_storage_ids_is_unchanged() {
         replica_counter_offsets: Vec::new(),
         stream_incarnation: 0,
         by_round: false,
+        replica_incarnations: BTreeMap::new(),
         replica_storage_ids: BTreeMap::new(),
     };
     let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":1,"caught_up":["broker-b"],"replica_offsets":[],"leader_offset":3}"#;
@@ -132,6 +134,7 @@ fn a_report_round_trips() {
             }],
             stream_incarnation: 5,
             by_round: true,
+            replica_incarnations: BTreeMap::new(),
             replica_storage_ids: BTreeMap::from([(
                 "broker-b".into(),
                 "ab000000000000000000000000000000".into(),

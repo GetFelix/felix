@@ -8,13 +8,13 @@ use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_router::{Route, ShardKey};
-use felix_storage::StorageId;
+
 use felix_wire::internal::{InternalMessage, PeerCapabilities, ShardRef};
 use futures::StreamExt;
 
 use super::WriteFence;
 use crate::halted::HaltedReplica;
-use crate::peer::{PeerError, PeerRequester};
+use crate::peer::{PeerError, PeerIdentity, PeerRequester};
 use crate::quorum::QuorumMarks;
 use crate::reporter::Reporter;
 use crate::reporter::{ShardReport, shard_report};
@@ -676,10 +676,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // handshake, which can be older than a restart, so it resets
                 // a cursor but never vouches for one. An error leaves the
                 // cursor as it is; the shipping below meets the same failure.
-                if let Ok(seen) = requester
-                    .storage_identity(&cursor.node_id, cursor.addr)
-                    .await
-                {
+                if let Ok(seen) = requester.identity(&cursor.node_id, cursor.addr).await {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
                 let RideAlong {
@@ -790,7 +787,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // the cursor now describes. One from another copy starts the
                 // cursor over, as a new identity in the probe would.
                 let answered = requester.answered();
-                let other = answered.iter().find(|seen| **seen != cursor.storage_id);
+                let before = cursor.identity();
+                let other = answered.iter().find(|seen| **seen != before);
                 if let Some(&seen) = other {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
@@ -798,7 +796,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cursor,
                     rode,
                     cut: cut || counters_cut,
-                    checked: !answered.is_empty() && other.is_none(),
+                    checked: !answered.is_empty()
+                        && answered.iter().all(|seen| same_copy(*seen, before)),
                 }
             });
             exchange
@@ -1071,7 +1070,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .iter()
                 .find(|main| main.node_id == cursor.node_id)
             {
-                follow_storage(cursor, main.storage_id, 0, rebuilds);
+                follow_storage(cursor, main.identity(), 0, rebuilds);
             }
         }
     }
@@ -1848,17 +1847,17 @@ pub(super) fn staged_learner(previous: Option<&ShardCursors>, route: &Route) -> 
     added.then(|| successor.clone())
 }
 
-/// Start a follower's cursors over if `seen` is not the storage identity
-/// they were learned under.
+/// Start a follower's cursors over if `seen` is not the identity they were
+/// learned under.
 fn restart_copy(
     cursor: &mut FollowerCursor,
     rode: &mut RideAlong,
-    seen: Option<StorageId>,
+    seen: PeerIdentity,
     base: u64,
     shard: &ShardRef,
     rebuilds: &Rebuilds,
 ) {
-    if seen != cursor.storage_id && cursor.storage_id.is_some() {
+    if seen.storage != cursor.storage_id && cursor.storage_id.is_some() {
         tracing::warn!(
             node_id = %cursor.node_id,
             stream = %shard.stream,
@@ -1912,16 +1911,16 @@ async fn reship_last<R: PeerRequester>(
     }
 }
 
-/// Forwards one exchange's requests and keeps the storage identity of each
+/// Forwards one exchange's requests and keeps the identity of each
 /// connection an answer came over.
 ///
-/// The pool's [`PeerRequester::storage_identity`] reads a connection's
-/// handshake. A follower that crashed and came back wiped leaves the old
-/// connection open until QUIC's idle timeout, still naming the old copy, so
-/// only an answer says which copy is there now.
+/// The pool's [`PeerRequester::identity`] reads a connection's handshake. A
+/// follower that crashed and came back wiped leaves the old connection open
+/// until QUIC's idle timeout, still naming the old copy, so only an answer
+/// says which copy is there now.
 struct Witness<'r, R> {
     inner: &'r R,
-    answered: parking_lot::Mutex<Vec<Option<StorageId>>>,
+    answered: parking_lot::Mutex<Vec<PeerIdentity>>,
 }
 
 impl<'r, R: PeerRequester> Witness<'r, R> {
@@ -1933,11 +1932,11 @@ impl<'r, R: PeerRequester> Witness<'r, R> {
     }
 
     /// Each identity an answer came with, once.
-    fn answered(&self) -> Vec<Option<StorageId>> {
+    fn answered(&self) -> Vec<PeerIdentity> {
         self.answered.lock().clone()
     }
 
-    fn record(&self, identity: Option<StorageId>) {
+    fn record(&self, identity: PeerIdentity) {
         let mut answered = self.answered.lock();
         if !answered.contains(&identity) {
             answered.push(identity);
@@ -1969,12 +1968,12 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         self.inner.recorded_capabilities(node_id)
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         node_id: &str,
         addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
-        self.inner.storage_identity(node_id, addr).await
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        self.inner.identity(node_id, addr).await
     }
 
     async fn request_identified(
@@ -1982,7 +1981,7 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+    ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
         let (answer, identity) = self
             .inner
             .request_identified(node_id, addr, message)
@@ -2011,16 +2010,29 @@ fn checked_only(followers: &[FollowerCursor], checked: &HashSet<String>) -> Vec<
         .collect()
 }
 
+/// Whether two identities name the same copy of a follower's log. The same
+/// storage identity does, whatever process holds it. Without one on both
+/// sides only the same incarnation does: a restart may have lost the log.
+fn same_copy(a: PeerIdentity, b: PeerIdentity) -> bool {
+    match (a.storage, b.storage) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Start `cursor` over at `base` unless it already describes the copy of
-/// the log whose storage identity is `seen`. Whatever it said about the old
-/// copy, including that it held everything, is not true of this one.
+/// the log that `seen` names. Whatever it said about another copy, including
+/// that it held everything, is not true of this one. A new incarnation on
+/// the same storage is the same copy: only the incarnation is updated, so a
+/// re-registration keeps the follower's position, halts and rebuild.
 pub(super) fn follow_storage(
     cursor: &mut FollowerCursor,
-    seen: Option<StorageId>,
+    seen: PeerIdentity,
     base: u64,
     rebuilds: &Rebuilds,
 ) {
-    if cursor.storage_id == seen {
+    if same_copy(cursor.identity(), seen) {
+        cursor.incarnation = seen.incarnation;
         return;
     }
     if cursor.rebuilding {
@@ -2030,7 +2042,8 @@ pub(super) fn follow_storage(
     let fenced = cursor.halted.filter(|halt| *halt == crate::Halt::Fenced);
     *cursor = FollowerCursor {
         halted: fenced,
-        storage_id: seen,
+        storage_id: seen.storage,
+        incarnation: seen.incarnation,
         ..FollowerCursor::new(cursor.node_id.clone(), cursor.addr, base)
     };
 }

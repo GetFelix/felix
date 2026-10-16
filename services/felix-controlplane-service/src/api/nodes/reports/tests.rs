@@ -55,6 +55,7 @@ fn status(
         halted: Default::default(),
         stream_incarnation: 0,
         by_round: false,
+        replica_incarnations: Default::default(),
         replica_storage_ids: Default::default(),
     }
 }
@@ -580,4 +581,78 @@ async fn a_report_is_stamped_with_its_leader_and_the_registered_incarnations() {
         !positions().await.is_caught_up(&shard_zero(), "broker-y"),
         "a report from before broker-y registered again still counted it"
     );
+}
+
+/// Post a report naming broker-y caught up, measured at `measured`, and say
+/// whether placement then counts broker-y.
+async fn counted_when_measured_at(
+    store: &Arc<crate::store::memory::InMemoryStore>,
+    keys: &crate::auth::felix_token::TenantSigningKeys,
+    generation: u64,
+    measured: serde_json::Value,
+) -> bool {
+    let mut shard = shard_json(0, generation, 10, &["broker-y"]);
+    shard["replica_incarnations"] = serde_json::json!({ "broker-y": measured });
+    let state = app_state_ready(Arc::clone(store) as _);
+    let (status, _) = post_report(state, keys, serde_json::json!([shard])).await;
+    assert_eq!(status, StatusCode::OK);
+    use crate::cluster::placement::CaughtUp;
+    crate::cluster::placement::ReplicaPositions::load(
+        store.as_ref(),
+        &crate::config::NodeLivenessConfig::default(),
+    )
+    .await
+    .expect("positions")
+    .is_caught_up(&shard_zero(), "broker-y")
+}
+
+/// **A follower is held to the incarnation its leader measured, not the one
+/// registered when the report arrived.** A leader still on a wiped
+/// follower's old connection reports it after it registered again; the stamp
+/// would be the new incarnation, and would count a copy that is gone.
+#[tokio::test]
+async fn a_follower_measured_at_another_incarnation_is_not_counted() {
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+    let before = store.get_node("broker-y").await.expect("broker-y");
+    let restarted = store
+        .register_node(before.clone())
+        .await
+        .expect("register again");
+
+    assert!(
+        !counted_when_measured_at(&store, &keys, generation, before.status.incarnation.into())
+            .await,
+        "a report measured on the old process's connection counted the new one",
+    );
+    assert_eq!(
+        store.list_replica_reports().await.expect("list")[0].node_incarnations["broker-y"],
+        before.status.incarnation,
+    );
+    assert!(
+        counted_when_measured_at(
+            &store,
+            &keys,
+            generation,
+            restarted.status.incarnation.into()
+        )
+        .await,
+        "a report measured on the current process did not count it",
+    );
+}
+
+/// **A follower measured before it registered never counts on its
+/// incarnation**, which says nothing about the process holding the copy.
+#[tokio::test]
+async fn a_follower_measured_at_no_incarnation_is_not_counted() {
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+
+    assert!(
+        !counted_when_measured_at(&store, &keys, generation, serde_json::Value::Null).await,
+        "a follower measured at no incarnation was counted",
+    );
+    let held = store.list_replica_reports().await.expect("list");
+    assert!(!held[0].node_incarnations.contains_key("broker-y"));
+    assert!(held[0].node_incarnations.contains_key("broker-x"));
 }

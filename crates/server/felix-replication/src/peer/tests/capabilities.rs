@@ -13,6 +13,7 @@ use felix_wire::internal::{
 
 use super::*;
 use crate::peer::codec::{Incoming, read_frame, write_frame};
+use crate::peer::{Incarnation, PeerIdentity};
 
 fn fence() -> InternalMessage {
     InternalMessage::Fence(Fence {
@@ -89,6 +90,7 @@ impl OldBroker {
                     node_id: node_id.to_string(),
                     capabilities: None,
                     identity: None,
+                    incarnation: None,
                 })
             }
             _ => InternalMessage::ForwardPublishOk(ForwardPublishOk {
@@ -163,7 +165,11 @@ async fn two_current_brokers_learn_each_others_capabilities() {
     // A caller reads an identity whether or not it gives one.
     assert_eq!(
         noted.get("broker-a"),
-        Some(offered.union(PeerCapabilities::STORAGE_IDENTITY))
+        Some(
+            offered
+                .union(PeerCapabilities::STORAGE_IDENTITY)
+                .union(PeerCapabilities::NODE_INCARNATION)
+        )
     );
 
     pool.shutdown().await;
@@ -196,10 +202,8 @@ async fn a_current_broker_learns_the_storage_identity_it_dialled() {
     let pool = pool(config());
 
     assert_eq!(
-        pool.storage_identity(PEER, listener.addr)
-            .await
-            .expect("handshake"),
-        Some(storage_id()),
+        pool.identity(PEER, listener.addr).await.expect("handshake"),
+        PeerIdentity::storage(storage_id()),
     );
     assert!(
         pool.capabilities(PEER, listener.addr)
@@ -247,10 +251,122 @@ async fn a_caller_without_the_bit_gets_neither_the_bit_nor_the_identity() {
         node_id: PEER.to_string(),
         capabilities: Some(offered),
         identity: None,
+        incarnation: None,
     });
     assert_eq!(frame, today.encode().expect("encode"));
 
     connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// A current listener that answers with `storage_id()` and the incarnation
+/// the returned sender holds.
+async fn listener_with_incarnation(
+    incarnation: Option<u64>,
+) -> (Listener, tokio::sync::watch::Sender<Option<u64>>) {
+    let (registered, watched) = tokio::sync::watch::channel(incarnation);
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_storage_identity(storage_id())
+        .with_node_incarnation(watched);
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(server.serve(shutdown.clone()));
+    let listener = Listener {
+        addr,
+        shutdown,
+        task,
+    };
+    (listener, registered)
+}
+
+/// **The incarnation travels only to a caller that offered the bit.** A
+/// current caller reads it beside the storage identity; one that predates
+/// the bit gets the answer it always had, byte for byte.
+#[tokio::test]
+async fn the_incarnation_travels_only_to_a_caller_that_offered_it() {
+    let (listener, _registered) = listener_with_incarnation(Some(7)).await;
+    let pool = pool(config());
+    assert_eq!(
+        pool.identity(PEER, listener.addr).await.expect("handshake"),
+        PeerIdentity {
+            storage: Some(storage_id()),
+            incarnation: Incarnation::At(7),
+        },
+    );
+    pool.shutdown().await;
+
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+    let offered = config()
+        .capabilities()
+        .union(PeerCapabilities::STORAGE_IDENTITY);
+    write_frame(
+        &mut send,
+        &InternalMessage::Hello(Hello {
+            correlation_id: 5,
+            node_id: "broker-old".to_string(),
+            capabilities: Some(offered),
+        }),
+    )
+    .await
+    .expect("write");
+    let (_, frame) = read_raw(&mut recv).await.expect("an answer");
+    let today = InternalMessage::HelloOk(HelloOk {
+        correlation_id: 5,
+        node_id: PEER.to_string(),
+        capabilities: Some(offered),
+        identity: Some(storage_id().to_bytes()),
+        incarnation: None,
+    });
+    assert_eq!(frame, today.encode().expect("encode"));
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// **A registration closes the connections answered before it**, so a
+/// caller that learned "not registered yet" learns the incarnation by
+/// dialling again rather than keeping the old answer for good.
+#[tokio::test]
+async fn a_registration_closes_the_connections_answered_before_it() {
+    let (listener, registered) = listener_with_incarnation(None).await;
+    let pool = pool(config());
+    assert_eq!(
+        pool.identity(PEER, listener.addr)
+            .await
+            .expect("handshake")
+            .incarnation,
+        Incarnation::Unregistered,
+    );
+
+    registered.send_replace(Some(3));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = pool
+            .identity(PEER, listener.addr)
+            .await
+            .map(|identity| identity.incarnation);
+        if seen.as_ref().ok() == Some(&Incarnation::At(3)) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "still on the connection from before the registration: {seen:?}",
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    pool.shutdown().await;
     listener.stop().await;
 }
 
@@ -261,10 +377,8 @@ async fn a_responder_without_an_identity_gives_none() {
     let old = OldBroker::start(PEER).await;
     let pool = pool(config());
     assert_eq!(
-        pool.storage_identity(PEER, old.addr)
-            .await
-            .expect("handshake"),
-        None
+        pool.identity(PEER, old.addr).await.expect("handshake"),
+        PeerIdentity::default()
     );
     pool.shutdown().await;
     old.stop();
@@ -272,10 +386,8 @@ async fn a_responder_without_an_identity_gives_none() {
     let (listener, _noted) = listener_noting(true).await;
     let pool = super::pool(config());
     assert_eq!(
-        pool.storage_identity(PEER, listener.addr)
-            .await
-            .expect("handshake"),
-        None
+        pool.identity(PEER, listener.addr).await.expect("handshake"),
+        PeerIdentity::default()
     );
     pool.shutdown().await;
     listener.stop().await;

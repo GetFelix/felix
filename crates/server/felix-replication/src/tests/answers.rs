@@ -49,6 +49,7 @@ fn an_unexpected_answer_is_retried() {
             node_id: "broker-b".to_string(),
             capabilities: None,
             identity: None,
+            incarnation: None,
         })),
         Progress::Retry,
     );

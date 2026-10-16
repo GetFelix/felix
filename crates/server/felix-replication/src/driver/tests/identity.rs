@@ -7,6 +7,7 @@ use felix_storage::StorageId;
 
 use super::*;
 use crate::FollowerCursor;
+use crate::peer::{Incarnation, PeerIdentity};
 
 fn id(byte: u8) -> StorageId {
     StorageId::from_bytes([byte; 16])
@@ -18,20 +19,28 @@ fn id(byte: u8) -> StorageId {
 #[derive(Default)]
 struct IdentifiedFollower {
     inner: AcceptingFollower,
-    identity: Mutex<Option<StorageId>>,
+    identity: Mutex<PeerIdentity>,
     busy: AtomicBool,
 }
 
 impl IdentifiedFollower {
     fn with(identity: StorageId) -> Self {
+        Self::at(PeerIdentity::storage(identity))
+    }
+
+    fn at(identity: PeerIdentity) -> Self {
         Self {
-            identity: Mutex::new(Some(identity)),
+            identity: Mutex::new(identity),
             ..Self::default()
         }
     }
 
     fn restart_as(&self, identity: StorageId) {
-        *self.identity.lock().expect("lock") = Some(identity);
+        self.restart_at(PeerIdentity::storage(identity));
+    }
+
+    fn restart_at(&self, identity: PeerIdentity) {
+        *self.identity.lock().expect("lock") = identity;
         self.busy.store(true, Ordering::SeqCst);
     }
 }
@@ -56,11 +65,11 @@ impl PeerRequester for IdentifiedFollower {
         self.inner.request(node_id, addr, message).await
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         _node_id: &str,
         _addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
+    ) -> std::result::Result<PeerIdentity, PeerError> {
         Ok(*self.identity.lock().expect("lock"))
     }
 }
@@ -166,6 +175,113 @@ async fn a_restarted_follower_still_counts() {
     assert_eq!(report.storage_ids, vec![("broker-b".to_string(), id(1))]);
 }
 
+/// **Without a storage identity on either side, a new incarnation starts
+/// the copy over.** A follower that sends none cannot be told from a wiped copy
+/// of itself by its storage, so before the incarnation the leader went on
+/// counting its old position across a restart.
+#[tokio::test]
+async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let at = |incarnation| PeerIdentity {
+        storage: None,
+        incarnation,
+    };
+    let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+    assert_eq!(
+        report.node_incarnations,
+        vec![("broker-b".to_string(), Some(1))]
+    );
+
+    follower.restart_at(at(Incarnation::Unregistered));
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert!(
+        report.caught_up.is_empty(),
+        "a restarted process was counted on its predecessor's position: {report:?}",
+    );
+    assert_eq!(
+        report.node_incarnations,
+        vec![("broker-b".to_string(), None)]
+    );
+}
+
+/// **A re-registration on the same storage keeps the follower's place.** A
+/// broker marked down registers again without restarting: same copy, new
+/// incarnation. Its position still counts, under the new incarnation, and a
+/// halt a rebuild would clear is kept rather than started over.
+#[tokio::test]
+async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let at = |incarnation| PeerIdentity {
+        storage: Some(id(1)),
+        incarnation,
+    };
+    let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+
+    follower.restart_at(at(Incarnation::At(2)));
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+    assert_eq!(
+        report.node_incarnations,
+        vec![("broker-b".to_string(), Some(2))]
+    );
+
+    let addr = nodes()["broker-b"].advertise_addr;
+    let mut halted = FollowerCursor {
+        halted: Some(crate::Halt::NeedsBootstrap),
+        confirmed: 2,
+        next_offset: 2,
+        storage_id: Some(id(1)),
+        incarnation: Incarnation::At(2),
+        ..FollowerCursor::new("broker-b", addr, 0)
+    };
+    super::shard::follow_storage(&mut halted, at(Incarnation::At(3)), 0, &rebuilds);
+    assert_eq!(halted.halted, Some(crate::Halt::NeedsBootstrap));
+    assert_eq!((halted.confirmed, halted.next_offset), (2, 2));
+    assert_eq!(halted.incarnation, Incarnation::At(3));
+}
+
 /// **A new identity resets the logs that ride the shard too, and gives back
 /// a rebuild slot the old copy held.** The slot is otherwise only recounted
 /// at the next pass, and the cursors would keep vouching for the old copy.
@@ -265,13 +381,13 @@ impl PeerRequester for WipedAndDown {
         })
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         node_id: &str,
         _addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
+    ) -> std::result::Result<PeerIdentity, PeerError> {
         if node_id == "broker-c" {
-            return Ok(Some(id(2)));
+            return Ok(PeerIdentity::storage(id(2)));
         }
         Err(PeerError::Unavailable {
             node_id: node_id.to_string(),
@@ -411,13 +527,13 @@ impl PeerRequester for StaleConnection {
             .map(|(answer, _)| answer)
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         node_id: &str,
         _addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
+    ) -> std::result::Result<PeerIdentity, PeerError> {
         if node_id == "broker-c" {
-            return Ok(Some(id(1)));
+            return Ok(PeerIdentity::storage(id(1)));
         }
         Err(PeerError::Unavailable {
             node_id: node_id.to_string(),
@@ -430,7 +546,7 @@ impl PeerRequester for StaleConnection {
         node_id: &str,
         _addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+    ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
         if node_id != "broker-c" {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -451,7 +567,7 @@ impl PeerRequester for StaleConnection {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
         });
-        Ok((answer, Some(id(2))))
+        Ok((answer, PeerIdentity::storage(id(2))))
     }
 }
 
@@ -557,18 +673,18 @@ impl PeerRequester for CountingFollower {
         }))
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         node_id: &str,
         _addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
+    ) -> std::result::Result<PeerIdentity, PeerError> {
         if node_id == self.down {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "down".to_string(),
             });
         }
-        Ok(Some(id(1)))
+        Ok(PeerIdentity::storage(id(1)))
     }
 }
 

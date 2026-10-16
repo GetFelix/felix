@@ -629,6 +629,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
         Arc::default(),
         Arc::default(),
+        tokio::sync::watch::channel(None).0,
         None,
     );
 

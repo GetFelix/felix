@@ -110,6 +110,7 @@ never have dialled the one that shipped to it.
 | `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
 | `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
+| `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
 
 <!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
@@ -133,6 +134,35 @@ reads the 16 bytes only when the bit is set, and refuses a body with the bit set
 and the bytes missing, or with bytes and no bit. Every current broker offers the
 bit when it dials; a peer that gives no identity is read as having none, and the
 leader treats it as it did before identities existed.
+
+#### Node incarnation
+
+A broker's node incarnation is the number the control plane gives it at each
+registration. Every restart registers again, so it names one process, where the
+storage identity names one data directory. A leader holds a follower's
+positions to both (see "Who may be promoted" in
+`docs/replication-design.md`).
+
+It travels on `HelloCapableOk` after the identity, and only when the bits
+include `NODE_INCARNATION`: a byte, 1 followed by the incarnation, or 0 alone
+for a broker that has not registered yet. Incarnation 0 is a node's first
+registration, so the byte is what tells the two apart.
+
+```text
+u64 correlation_id | str node_id | u64 bits | [16 bytes identity, if bits has 1 << 10]
+  | [u8 registered | u64 incarnation if registered = 1, if bits has 1 << 11]
+```
+
+As with the identity, a responder sets the bit only when the caller offered it,
+so a caller that predates it reads the bytes it always did, and a decoder
+refuses a body where the bit and the bytes disagree, or a first byte other than
+0 or 1.
+
+A caller learns the incarnation once, at the handshake. When the responder
+registers again, as it does at startup and after the control plane marked it
+down, it closes every connection it answered with another value (application
+close code 4), and the caller learns the new one by dialling again. Every
+current broker offers the bit when it dials.
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,

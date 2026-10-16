@@ -72,6 +72,7 @@ fn report(stream: &str) -> ShardReport {
         incarnation: 0,
         by_round: false,
         storage_ids: Vec::new(),
+        node_incarnations: Vec::new(),
     }
 }
 

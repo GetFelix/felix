@@ -344,6 +344,7 @@ async fn an_unexpected_answer_is_refused() {
         node_id: "broker-b".to_string(),
         capabilities: None,
         identity: None,
+        incarnation: None,
     }))]);
 
     let err = forward(&owner).await.expect_err("should be refused");

@@ -44,6 +44,7 @@ fn capabilities_travel_on_their_own_kind() {
         node_id: "broker-b".to_string(),
         capabilities: Some(PeerCapabilities::NONE),
         identity: None,
+        incarnation: None,
     });
     assert_eq!(answer.kind(), Kind::HelloCapableOk);
     let decoded = InternalMessage::decode(answer.encode().expect("encode")).expect("decode");
@@ -59,6 +60,7 @@ fn capable_ok(capabilities: PeerCapabilities, identity: Option<[u8; 16]>) -> Int
         node_id: "broker-b".to_string(),
         capabilities: Some(capabilities),
         identity,
+        incarnation: None,
     })
 }
 
@@ -120,6 +122,103 @@ fn the_identity_bit_without_its_bytes_is_refused() {
             .encode()
             .is_err(),
         "the bit and the bytes must agree on the way out too",
+    );
+}
+
+fn incarnated_ok(identity: Option<[u8; 16]>, incarnation: Option<u64>) -> InternalMessage {
+    let mut capabilities = PeerCapabilities::FENCE.union(PeerCapabilities::NODE_INCARNATION);
+    if identity.is_some() {
+        capabilities = capabilities.union(PeerCapabilities::STORAGE_IDENTITY);
+    }
+    InternalMessage::HelloOk(HelloOk {
+        correlation_id: 42,
+        node_id: "broker-b".to_string(),
+        capabilities: Some(capabilities),
+        identity,
+        incarnation,
+    })
+}
+
+#[test]
+fn a_node_incarnation_travels_after_the_identity() {
+    let identity = [7; 16];
+    let answer = incarnated_ok(Some(identity), Some(9));
+    let encoded = answer.encode().expect("encode");
+    let mut trailing = identity.to_vec();
+    trailing.push(1);
+    trailing.extend_from_slice(&9u64.to_be_bytes());
+    assert_eq!(
+        encoded,
+        capable_ok_frame((1 << 0) | (1 << 10) | (1 << 11), &trailing),
+        "a byte saying it is there, then the incarnation, after the identity",
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), answer);
+
+    // Zero is a real incarnation: a node's first registration.
+    let first = incarnated_ok(None, Some(0));
+    let encoded = first.encode().expect("encode");
+    assert_eq!(
+        encoded,
+        capable_ok_frame((1 << 0) | (1 << 11), &[1, 0, 0, 0, 0, 0, 0, 0, 0]),
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), first);
+}
+
+/// **Before it registers a responder answers the bit with none**, which is
+/// not incarnation zero.
+#[test]
+fn an_unregistered_responder_answers_with_no_incarnation() {
+    let answer = incarnated_ok(None, None);
+    let encoded = answer.encode().expect("encode");
+    assert_eq!(encoded, capable_ok_frame((1 << 0) | (1 << 11), &[0]));
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), answer);
+}
+
+/// **Without the bit the answer is the frame a peer that predates it reads**,
+/// identity and all.
+#[test]
+fn an_answer_without_the_incarnation_bit_is_unchanged() {
+    let identity = [7; 16];
+    let answer = capable_ok(
+        PeerCapabilities::FENCE.union(PeerCapabilities::STORAGE_IDENTITY),
+        Some(identity),
+    );
+    assert_eq!(
+        answer.encode().expect("encode"),
+        capable_ok_frame((1 << 0) | (1 << 10), &identity)
+    );
+}
+
+#[test]
+fn a_malformed_incarnation_is_refused() {
+    let bits = PeerCapabilities::NODE_INCARNATION.bits();
+    for trailing in [&[][..], &[2][..], &[1, 0, 0, 0][..], &[0, 0][..]] {
+        assert!(
+            matches!(
+                InternalMessage::decode(capable_ok_frame(bits, trailing)),
+                Err(Error::Incomplete)
+            ),
+            "{trailing:?} was read as an incarnation",
+        );
+    }
+    assert!(
+        matches!(
+            InternalMessage::decode(capable_ok_frame(PeerCapabilities::FENCE.bits(), &[0])),
+            Err(Error::Incomplete)
+        ),
+        "an incarnation byte without the bit is trailing garbage",
+    );
+    assert!(
+        InternalMessage::HelloOk(HelloOk {
+            correlation_id: 42,
+            node_id: "broker-b".to_string(),
+            capabilities: Some(PeerCapabilities::FENCE),
+            identity: None,
+            incarnation: Some(1),
+        })
+        .encode()
+        .is_err(),
+        "an incarnation without the bit would not read back",
     );
 }
 

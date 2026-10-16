@@ -41,8 +41,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::peer::identity::PeerIdentity;
 use anyhow::{Context, Result};
-use felix_storage::StorageId;
 use felix_transport::QuicClient;
 use felix_wire::internal::{InternalMessage, PeerCapabilities, ReplicaLog};
 use parking_lot::Mutex;
@@ -136,15 +136,15 @@ impl PeerPool {
             .map(|(answer, _)| answer)
     }
 
-    /// [`Self::request`], with the storage identity of the connection the
-    /// answer came over. Unlike [`Self::storage_identity`] this says who
-    /// answered: a pooled connection can outlive the process it was opened to.
+    /// [`Self::request`], with the identity of the connection the answer
+    /// came over. Unlike [`Self::identity`] this says who answered: a pooled
+    /// connection can outlive the process it was opened to.
     pub async fn request_identified(
         &self,
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+    ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
         let started = Instant::now();
         let result = self.request_inner(node_id, addr, message).await;
         match &result {
@@ -163,13 +163,13 @@ impl PeerPool {
         Ok(self.connection(node_id, addr).await?.capabilities())
     }
 
-    /// The storage identity `node_id` gave in its handshake, dialling it if
-    /// there is no connection yet. `None` from a peer that does not send one.
-    pub async fn storage_identity(
+    /// The storage identity and incarnation `node_id` gave in its
+    /// handshake, dialling it if there is no connection yet.
+    pub async fn identity(
         &self,
         node_id: &str,
         addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
+    ) -> std::result::Result<PeerIdentity, PeerError> {
         Ok(self.connection(node_id, addr).await?.identity())
     }
 
@@ -231,7 +231,7 @@ impl PeerPool {
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+    ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
         if self.shutdown.is_cancelled() {
             return Err(PeerError::ShuttingDown);
         }
@@ -405,7 +405,8 @@ impl PeerPool {
             // This side reads an identity whatever it offers itself.
             self.config
                 .capabilities()
-                .union(PeerCapabilities::STORAGE_IDENTITY),
+                .union(PeerCapabilities::STORAGE_IDENTITY)
+                .union(PeerCapabilities::NODE_INCARNATION),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )
@@ -514,32 +515,32 @@ pub trait PeerRequester: Sync {
         None
     }
 
-    /// The storage identity `node_id` gave in its handshake, reaching it if
-    /// need be. `None` means it gave none, so it cannot be told apart from
-    /// a wiped copy of itself.
-    fn storage_identity(
+    /// The storage identity and incarnation `node_id` gave in its
+    /// handshake, reaching it if need be. A peer that gave neither cannot be
+    /// told apart from a wiped copy of itself.
+    fn identity(
         &self,
         _node_id: &str,
         _addr: SocketAddr,
-    ) -> impl std::future::Future<Output = std::result::Result<Option<StorageId>, PeerError>> + Send
+    ) -> impl std::future::Future<Output = std::result::Result<PeerIdentity, PeerError>> + Send
     {
-        async { Ok(None) }
+        async { Ok(PeerIdentity::default()) }
     }
 
-    /// [`Self::request`], with the storage identity of the connection the
-    /// answer came over. A requester that cannot tell answers with
-    /// [`Self::storage_identity`].
+    /// [`Self::request`], with the identity of the connection the answer
+    /// came over. A requester that cannot tell answers with
+    /// [`Self::identity`].
     fn request_identified(
         &self,
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
     ) -> impl std::future::Future<
-        Output = std::result::Result<(InternalMessage, Option<StorageId>), PeerError>,
+        Output = std::result::Result<(InternalMessage, PeerIdentity), PeerError>,
     > + Send {
         async move {
             let answer = self.request(node_id, addr, message).await?;
-            let identity = self.storage_identity(node_id, addr).await?;
+            let identity = self.identity(node_id, addr).await?;
             Ok((answer, identity))
         }
     }
@@ -569,13 +570,13 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::recorded_capabilities(self, node_id)
     }
 
-    fn storage_identity(
+    fn identity(
         &self,
         node_id: &str,
         addr: SocketAddr,
-    ) -> impl std::future::Future<Output = std::result::Result<Option<StorageId>, PeerError>> + Send
+    ) -> impl std::future::Future<Output = std::result::Result<PeerIdentity, PeerError>> + Send
     {
-        T::storage_identity(self, node_id, addr)
+        T::identity(self, node_id, addr)
     }
 
     fn request_identified(
@@ -584,7 +585,7 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> impl std::future::Future<
-        Output = std::result::Result<(InternalMessage, Option<StorageId>), PeerError>,
+        Output = std::result::Result<(InternalMessage, PeerIdentity), PeerError>,
     > + Send {
         T::request_identified(self, node_id, addr, message)
     }
@@ -612,12 +613,12 @@ impl PeerRequester for PeerPool {
         self.known.get(node_id)
     }
 
-    async fn storage_identity(
+    async fn identity(
         &self,
         node_id: &str,
         addr: SocketAddr,
-    ) -> std::result::Result<Option<StorageId>, PeerError> {
-        PeerPool::storage_identity(self, node_id, addr).await
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        PeerPool::identity(self, node_id, addr).await
     }
 
     async fn request_identified(
@@ -625,7 +626,7 @@ impl PeerRequester for PeerPool {
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+    ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
         PeerPool::request_identified(self, node_id, addr, message).await
     }
 }

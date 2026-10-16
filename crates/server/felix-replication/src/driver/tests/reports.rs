@@ -502,6 +502,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             }],
             stream_incarnation: 0,
             by_round: true,
+            replica_incarnations: Default::default(),
             replica_storage_ids: Default::default(),
         }],
     };

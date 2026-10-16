@@ -13,6 +13,7 @@
 pub mod capabilities;
 pub mod codec;
 pub mod config;
+pub mod identity;
 pub mod metrics;
 pub mod pool;
 pub mod server;
@@ -22,6 +23,7 @@ mod partition;
 
 pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
+pub use identity::{Incarnation, PeerIdentity};
 pub use partition::PartitionInjector;
 pub use pool::{PeerError, PeerPool, PeerRequester};
 pub use server::{PeerRequestHandler, PeerServer, UnavailableHandler};

@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{FollowerCursor, caught_up};
+use crate::peer::Incarnation;
 
 /// Most reports in one request.
 ///
@@ -139,6 +140,10 @@ pub struct ShardReport {
     /// The storage identity each follower gave, for every follower that gave
     /// one. The positions above describe that copy of the log and no other.
     pub storage_ids: Vec<(String, StorageId)>,
+    /// The node incarnation each follower gave beside its storage identity,
+    /// `None` for one that had not registered yet, for every follower that
+    /// sends one. Like `storage_ids`, it names who the positions describe.
+    pub node_incarnations: Vec<(String, Option<u64>)>,
 }
 
 impl ShardReport {
@@ -191,6 +196,17 @@ pub(super) fn shard_report(
         storage_ids: followers
             .iter()
             .filter_map(|follower| Some((follower.node_id.clone(), follower.storage_id?)))
+            .collect(),
+        node_incarnations: followers
+            .iter()
+            .filter_map(|follower| {
+                let at = match follower.incarnation {
+                    Incarnation::Unsent => return None,
+                    Incarnation::Unregistered => None,
+                    Incarnation::At(at) => Some(at),
+                };
+                Some((follower.node_id.clone(), at))
+            })
             .collect(),
     }
 }
@@ -312,6 +328,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .iter()
                     .map(|(node_id, id)| (node_id.clone(), id.to_hex()))
                     .collect(),
+                replica_incarnations: report.node_incarnations.iter().cloned().collect(),
             })
             .collect(),
     };

@@ -370,6 +370,9 @@ where
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     // Set at each registration, read by the replica reports.
     let incarnation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The same, for the peer listener's handshake, which must tell "not
+    // registered yet" from incarnation 0 and learn when it changes.
+    let (registered, registered_watch) = tokio::sync::watch::channel(None);
     let membership = membership::spawn(
         &config,
         &membership_client,
@@ -380,6 +383,7 @@ where
         &credential,
         &suspects,
         &incarnation,
+        registered,
         storage_id,
         &sync_shutdown,
     );
@@ -395,6 +399,7 @@ where
         &peer_tls,
         peers.as_ref().map(|pool| pool.known_capabilities().clone()),
         storage_id,
+        registered_watch,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
