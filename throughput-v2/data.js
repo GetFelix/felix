@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792129499280,
+  "lastUpdate": 1792133897402,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31200,6 +31200,58 @@ window.BENCHMARK_DATA = {
             "range": "75118.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1201703.38\nmean: 1173269.21\nstdev: 75118.23\ncv: 6.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0efeac4e2ff90a65283e83c2bdd2c354e7af9e9e",
+          "message": "fix(cache): give caches incarnations so a recreated cache never sees the old one's data (#1287)\n\n* fix(cache): give caches incarnations so a recreated cache never sees the old one's data\n\nPart of #1209 (item 2). Once the fleet finalizes the new\n`cache_incarnations` feature, every cache the control plane creates gets an\nincarnation, carried in the catalog and its shard assignments. Brokers keep\neach incarnation's cache and counter logs in directories named with it,\ndelete a cache's data only on a `Deleted` change with `deleted_through`, a\nsnapshot tombstone or an operator's removal, and refuse stale\nregistrations. Cache and counter replication requests name the incarnation\nand a follower holding another refuses them.\n\nRaft metadata level 14; Postgres migration 0032. Caches from before the\nfinalize stay at incarnation 0 with their directories and data.\n\nSpec-Unaffected: each cache incarnation has its own directories, starts at the change seq's generation and keeps replication state per incarnation, so every incarnated cache is a fresh run of the model, as docs/formal/README.md already argues for streams; nothing in the protocol the spec describes changes.\n\n* fix(cache): decide incarnations and tombstones from the Raft entry alone\n\nA member that predates a fleet feature reads its finalize as level 2 and\naccepts it, so a `cache_incarnations` (or `stream_incarnations`) finalize can\ncommit in a mixed group, after which old and new members stored different\nincarnations and tombstones. Create and delete commands now carry a level-14\n`incarnations` flag, set only once every member is at level 14, and apply\ndecides from the entry: unflagged cache entries apply as level 13 does, and\nunflagged stream entries keep their old meaning so existing logs replay\nunchanged. The in-memory lock-race test is now deterministic, and the docs no\nlonger promise a 409 an older member cannot give.\n\nSpec-Unaffected: control-plane Raft apply rules for catalog metadata; nothing in the shard protocol the spec models changes.\n\n* fix(raft): store a preview.7 proposer's stream creates as preview.7 does\n\nA preview.7 member (metadata level 8) accepts an unknown\n`stream_incarnations` finalize, after which its stream creates, proposing no\nincarnation, were stored at tombstone + 1 on upgraded members and at 0 on\nit. An unflagged create proposing 0 now stores 0, and an unflagged delete of\na stream at incarnation 0 writes no tombstone. DeleteStream gets the level-14\n`incarnations` flag like the other deletes. Unreleased level 10-13 builds that\nlogged such entries replay them differently and must rebuild those members\nfrom a snapshot.\n\nSpec-Unaffected: control-plane Raft apply rules for catalog metadata; nothing in the shard protocol the spec models changes.\n\n* fix(raft): read the group level once per proposal\n\nThe flag and the level gate each read the cached group level, so a refresh\nbetween them could send an unflagged create carrying a level-14 cache\nproposal, stored at 0 after the finalize. Each create and delete now reads\nthe level once and builds the flag, the shard-cleanup choice and the gate\nfrom it, and an entry carrying a cache proposal is always flagged.\n\nSpec-Unaffected: control-plane Raft proposer gating for catalog metadata; nothing in the shard protocol the spec models changes.",
+          "timestamp": "2026-10-16T06:54:38Z",
+          "tree_id": "70f53e249dfd5c48baab6d2eee5693f46f7d6166",
+          "url": "https://github.com/GetFelix/felix/commit/0efeac4e2ff90a65283e83c2bdd2c354e7af9e9e"
+        },
+        "date": 1792133896561,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 538541.87,
+            "range": "30205.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538541.87\nmean: 542352.41\nstdev: 30205.20\ncv: 5.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 538541.87,
+            "range": "30205.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538541.87\nmean: 542352.41\nstdev: 30205.20\ncv: 5.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125776.9,
+            "range": "1334.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125776.90\nmean: 125126.73\nstdev: 1334.92\ncv: 1.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1257768.95,
+            "range": "13349.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1257768.95\nmean: 1251267.25\nstdev: 13349.23\ncv: 1.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
