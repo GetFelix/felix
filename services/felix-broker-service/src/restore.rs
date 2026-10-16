@@ -122,6 +122,7 @@ async fn restore(
     for (tenant_id, namespace, name, incarnation) in manifest.streams() {
         broker
             .restore_stream_marker(tenant_id, namespace, name, incarnation)
+            .await
             .with_context(|| format!("record the incarnation of {tenant_id}/{namespace}/{name}"))?;
     }
     if let Some(storage) = storage {

@@ -95,6 +95,12 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- Deleting many streams at once, as a namespace delete does, starts one
+  thread per store to remove the retired directories instead of one per
+  directory, which raced on the same entries and logged spurious warnings.
+  Directory renames and stream marker and floor writes during a delete no
+  longer run on the async workers. `Broker::restore_stream_marker` is now
+  async.
 - With `FELIX_REPLAY_RING_MAX_BYTES_TOTAL` set, a busy stream could keep
   every other stream's replay ring empty, since a ring made room only from its
   own records. A ring with nothing left to give up now keeps its newest batch,

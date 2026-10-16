@@ -872,13 +872,19 @@ the deleted incarnation; that write is the commit point. If the registered
 incarnation is covered it unregisters it and ends its subscriptions, then
 closes its logs (a handle held elsewhere fails with `StorageError::Closed`).
 Each covered directory is renamed into `.deleted/` under its store's root and
-the rename flushed; a background thread removes what `.deleted/` holds, and so
-does the next start. Last, the marker is rewritten with `retiring 0`, keeping
+the rename flushed, on the blocking pool rather than an async worker, as are
+the marker and floor writes. One background thread per root removes what
+`.deleted/` holds, listing it again if more arrives while it works, so a
+cascade over a namespace's streams costs one thread per store
+(`retiring_many_directories_runs_one_purge_worker`). The next start removes
+whatever a crash left there. Last, the marker is rewritten with `retiring 0`, keeping
 the deleted incarnation as a floor. Every store is tried even when one fails.
 A delete cut short by a crash or an I/O error is finished at start
 (`Broker::finish_pending_deletes`), by the next delete, or by the next
 registration of the name, before anything opens. Applying a tombstone already
-applied costs one marker read.
+applied costs one marker read. Registering and deleting one name must not
+overlap, since each reads the marker and writes it back; the broker service
+runs both from its single catalog-sync task.
 
 `remove_stream` deletes the registered incarnation. For one other than 0 the
 marker keeps it as deleted, as a tombstone would; for incarnation 0 the marker

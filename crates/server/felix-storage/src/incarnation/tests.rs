@@ -187,3 +187,70 @@ fn markers_and_retired_directories_survive_a_power_loss() {
         }
     }
 }
+
+/// Live and peak purge workers per `.deleted/` directory.
+static LIVE_WORKERS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, (usize, usize)>>> =
+    LazyLock::new(Default::default);
+
+pub(super) struct LiveWorker(PathBuf);
+
+impl LiveWorker {
+    pub(super) fn enter(deleted: &Path) -> Self {
+        let mut live = LIVE_WORKERS.lock();
+        let (now, peak) = live.entry(deleted.to_path_buf()).or_default();
+        *now += 1;
+        *peak = (*peak).max(*now);
+        Self(deleted.to_path_buf())
+    }
+}
+
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        if let Some((now, _)) = LIVE_WORKERS.lock().get_mut(&self.0) {
+            *now -= 1;
+        }
+    }
+}
+
+#[test]
+fn retiring_many_directories_runs_one_purge_worker() {
+    let root = tempfile::tempdir().expect("dir");
+    let root = root.path().to_path_buf();
+    let dirs: Vec<PathBuf> = (0..200)
+        .map(|n| {
+            let dir = root.join(format!("shard-{n}"));
+            std::fs::create_dir_all(dir.join("inner")).expect("create");
+            std::fs::write(dir.join("inner/records"), b"records").expect("write");
+            dir
+        })
+        .collect();
+
+    std::thread::scope(|scope| {
+        for chunk in dirs.chunks(25) {
+            let root = &root;
+            scope.spawn(move || {
+                for dir in chunk {
+                    assert!(retire_dir(root, dir).expect("retire"));
+                }
+            });
+        }
+    });
+
+    let deleted = root.join(DELETED_DIR);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while PURGE_WORKERS.lock().contains_key(&deleted)
+        || LIVE_WORKERS
+            .lock()
+            .get(&deleted)
+            .is_some_and(|(live, _)| *live > 0)
+        || std::fs::read_dir(&deleted).expect("read").count() > 0
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retired directories left behind"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (_, peak) = LIVE_WORKERS.lock()[&deleted];
+    assert_eq!(peak, 1, "one purge worker at a time per root");
+}

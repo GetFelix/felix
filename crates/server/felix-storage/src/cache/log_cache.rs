@@ -55,7 +55,7 @@ pub struct LogCache {
     /// Which incarnation of each name to open. Only consumer-group state and
     /// dead letters set one, being a stream's; a cache's shards stay at 0.
     incarnations: crate::incarnation::Incarnations,
-    dirs: crate::incarnation::DirIndex,
+    dirs: Arc<crate::incarnation::DirIndex>,
 }
 
 impl LogCache {
@@ -743,7 +743,8 @@ impl LogCache {
             }
         }
         self.dirs
-            .retire_stream(&self.root, tenant, namespace, name, incarnation)
+            .retire_stream_off_runtime(&self.root, tenant, namespace, name, incarnation)
+            .await
     }
 
     /// The shard and incarnation of every directory of `name` here.
@@ -801,7 +802,8 @@ impl LogCache {
             stream: name.to_string(),
             shard,
         };
-        crate::incarnation::retire_dir(&self.root, &layout::shard_dir(&self.root, &key))?;
+        let (root, dir) = (self.root.clone(), layout::shard_dir(&self.root, &key));
+        crate::task::blocking(move || crate::incarnation::retire_dir(&root, &dir)).await?;
         Ok(())
     }
 

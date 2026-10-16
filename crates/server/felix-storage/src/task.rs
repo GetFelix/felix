@@ -22,3 +22,17 @@ where
         Err(_) => Err(StorageError::Closed("the runtime is shutting down".into())),
     }
 }
+
+/// Run blocking filesystem work on the blocking pool and wait for it. The
+/// work runs to the end even if the caller stops waiting.
+pub(crate) async fn blocking<T, F>(work: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(answer) => answer,
+        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+        Err(_) => Err(StorageError::Closed("the runtime is shutting down".into())),
+    }
+}

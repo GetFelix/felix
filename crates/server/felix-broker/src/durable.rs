@@ -162,6 +162,23 @@ impl DurableStorage {
         &self.provider
     }
 
+    /// Run `work` against the provider on the blocking pool, for stream
+    /// markers and floors: each write fsyncs, and the first directory lookup
+    /// reads the whole root. The work finishes even if the caller stops
+    /// waiting.
+    pub(crate) async fn on_provider<T, F>(&self, work: F) -> Result<T>
+    where
+        F: FnOnce(&DiskLogProvider) -> felix_storage::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let provider = Arc::clone(&self.provider);
+        match tokio::task::spawn_blocking(move || work(&provider)).await {
+            Ok(answer) => answer.map_err(BrokerError::from),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
+    }
+
     /// Open the log for one stream shard, recovering whatever is on disk.
     ///
     /// Repeated calls for the same shard return the same log, so re-registering
