@@ -28,11 +28,6 @@ ignore = [
   # recommends, or Felix replacing casbin. Re-check when casbin or rhai next
   # release; drop this entry the moment the chain clears.
   { id = "RUSTSEC-2026-0249", reason = "unmaintained transitive dep via casbin->rhai; no upgrade exists as of 2026-08-10" },
-
-  # felix-python and felix-typescript read their CA bundle with it. They have
-  # their own lockfiles, checked by `task deny`; the workspace lock no longer
-  # contains it. Move them to rustls-pki-types' PemObject and drop this entry.
-  { id = "RUSTSEC-2025-0134", reason = "unmaintained; used only by the python and typescript SDK crates for PEM loading" },
 ]
 
 [licenses]

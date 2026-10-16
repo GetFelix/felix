@@ -17,16 +17,14 @@ use crate::errors::invalid;
 use quinn::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 
 pub(crate) fn client_config(ca_file: Option<&str>, offer_alpn: bool) -> napi::Result<ClientConfig> {
     match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
-            let mut file = std::io::BufReader::new(
-                std::fs::File::open(path)
-                    .map_err(|err| invalid(format!("could not read caFile {path:?}: {err}")))?,
-            );
-            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut file)
+            let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+                .map_err(|err| invalid(format!("could not read caFile {path:?}: {err}")))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|err| invalid(format!("caFile {path:?} is not valid PEM: {err}")))?;
             if certs.is_empty() {

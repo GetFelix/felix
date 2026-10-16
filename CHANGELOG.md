@@ -12,6 +12,9 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Security
+- The Python and TypeScript SDKs read their CA file with `rustls-pki-types`
+  instead of the unmaintained `rustls-pemfile` (RUSTSEC-2025-0134), and
+  `deny.toml` no longer ignores that advisory (#1255).
 - A revoked gateway can no longer delegate with a `felix-controlplane` token
   it got before the revocation (#1205). `/token/delegate` checked the
   revocation cutoffs against the user's token only, and trusted
