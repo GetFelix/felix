@@ -1287,3 +1287,27 @@ jobs:
               exit 1
             fi
           done
+
+  # The site's own version job runs on a schedule GitHub fires every few hours,
+  # so ask it to update now. It reads the release list, so this only needs the
+  # release to exist, and waits for the registries so it shows a finished one.
+  site-versions:
+    name: Ask getfelix.dev to show this release
+    needs:
+      [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
+       python-publish, typescript-publish, crates-publish]
+    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Dispatch release-published to the site
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          SITE: ${{ github.repository_owner }}/getfelix.github.io
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::SITE_DISPATCH_TOKEN is not set; run the site's Release versions workflow by hand."
+            exit 0
+          fi
+          gh api "repos/$SITE/dispatches" -f event_type=release-published

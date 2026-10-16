@@ -198,7 +198,12 @@ docs pin (`scripts/check_release_version.py`), and its release notes are its
 - after both conformance suites, packages `felix-transport`, `felix-wire`,
   `felix-client`, `felix-loadgen` and `felixctl` together, then publishes them
   to crates.io in that order (`PUBLISH_CRATES`), skipping any version already
-  there.
+  there;
+- once those jobs finish, sends `release-published` to
+  `<owner>/getfelix.github.io` so the landing page shows the new version. This
+  needs the `SITE_DISPATCH_TOKEN` secret: a fine-grained token on that one
+  repository with Contents read and write. Without it the job only leaves a
+  notice, and the site picks the release up on its own schedule.
 
 ### crates.io credentials
 
