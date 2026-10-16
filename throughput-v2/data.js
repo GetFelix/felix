@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792117111062,
+  "lastUpdate": 1792119824275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30992,6 +30992,58 @@ window.BENCHMARK_DATA = {
             "range": "5612.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812555.16\nmean: 810738.25\nstdev: 5612.69\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6e5d231e14fd5807d0ed8a74f9527b812c8c759",
+          "message": "docs(formal): stop FelixShardWipe's clock inside the first lease (#1280)\n\n* docs(formal): stop FelixShardWipe's clock inside the first lease\n\nAt 4 the pull-request configuration still ran past 29 minutes. The\nacknowledgement AckedOnLiveMajority checks happens inside one lease;\npromotion after a wipe stays with FelixShardWipeFull (nightly) and\nFelixShardWipeNoIds.\n\nSpec-Unaffected: configuration and comments only.\n\n* docs(formal): run FelixShardWipeFull to the first promotion, and say what runs where\n\nThe clock goes to 3, the least at which placement promotes after a wipe,\nso the nightly run has a chance to finish. The README names it among the\nnightly configurations and says promotion after a wipe is now checked only\nthere.\n\nSpec-Unaffected: configuration and documentation only.\n\n* docs(formal): record FelixShardWipe and FelixShardWipeFull runtimes\n\nMeasured on a dispatch of the TLA job: 22 s and 4 min 30 s. FelixShardWipe\ndrops out of the weights, which take anything unlisted as a minute.\n\nSpec-Unaffected: documentation and CI weights only.\n\n* docs(formal): check promotion after a wipe on every pull request\n\nFelixShardWipeFull passes in 4.5 minutes, small enough to run per push\ninstead of nightly.\n\nSpec-Unaffected: config scheduling and comments only.\n\n* docs(formal): check FelixShardWipeFull on every pull request\n\nIt takes 4.5 minutes, so promotion after a wipe goes back to the per-push\nset instead of the nightly exhaustive job.\n\nSpec-Unaffected: CI registration and documentation only.",
+          "timestamp": "2026-10-16T02:59:19Z",
+          "tree_id": "c071b69ed748d4046de42cec4b0c1087fb4b0f1d",
+          "url": "https://github.com/GetFelix/felix/commit/a6e5d231e14fd5807d0ed8a74f9527b812c8c759"
+        },
+        "date": 1792119823439,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347217.72,
+            "range": "15978.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347217.72\nmean: 342192.46\nstdev: 15978.04\ncv: 4.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347217.72,
+            "range": "15978.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347217.72\nmean: 342192.46\nstdev: 15978.04\ncv: 4.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81125.24,
+            "range": "522.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81125.24\nmean: 80985.01\nstdev: 522.58\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811252.38,
+            "range": "5225.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811252.38\nmean: 809850.10\nstdev: 5225.85\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
