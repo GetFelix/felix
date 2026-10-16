@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792113080678,
+  "lastUpdate": 1792117111062,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30940,6 +30940,58 @@ window.BENCHMARK_DATA = {
             "range": "45214.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1091276.89\nmean: 1076579.28\nstdev: 45214.59\ncv: 4.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "618cafe8fd53b1459ce85502817dcb7bf3a0efda",
+          "message": "fix(replication): don't count a follower's stale position before its storage id is checked (#1274)\n\n* fix(replication): don't count a follower's stale position before its storage id is checked\n\nA pass clones the followers' cursors before any exchange runs, and the\nstorage-identity check resets a cursor only inside that follower's own\nexchange. Each landed answer recounted the mark over every position, so a\nwiped follower that had confirmed more than the mark, beside one that failed\nfast, released records only the leader held. The counter mark and the\ngroup-state candidates read the same stale cursors.\n\nThe mark, the counter mark and the report's caught-up list now count only\nfollowers whose identity this pass has checked and found unchanged; any\nother counts as holding nothing. FelixShard.tla's ReportCounts gets the\nsame condition.\n\nA failed replica commit-offset write is now retried by the log once a\nsecond until it lands, since an idle shard sends no batch to retry it. A\nclosed log refuses to write its replica state, so a pending retry cannot\nland in a directory another log owns.\n\n* fix(replication): keep unchecked followers in the report's candidates\n\nLeaving a follower whose identity the pass had not checked out of the\nreport's caught-up list broke failover: a leader cut off from its followers\nreported no candidates, so none was promoted after it died\n(a_deposed_cache_leader_rejoins_after_a_failover). Only the marks need the\nrule. The report names followers as they last stood, with the identity each\nwas counted under, as before; the counter level keeps its candidates from\nall followers and its mark from the checked ones. The spec splits\nMarkCounts from ReportCounts to match.\n\n* fix(replication): count a follower only on an answer from the copy it describes\n\nThe identity probe reads the pooled connection's handshake. A follower that\ncrashed and came back wiped leaves the old connection open until QUIC's idle\ntimeout, so the probe named the old copy and the pass counted its position.\nA follower now counts toward the mark and the counter mark only after one of\nits requests in the pass was answered over a connection whose identity is\nthe cursor's; an answer from another identity starts the cursor over. The\npool's request_identified returns that identity with the answer.\n\nA level follower is sent nothing, so while the mark is below what it\nconfirmed it is sent its last record again for an answer; once the mark has\ncaught up nothing extra is sent.\n\nFelixShard.tla models the per-pass answer (Answer, Recount, checked), counts\nthe mark by it under the wipe configuration, and FelixShardWipe.cfg checks\nAckedOnLiveMajority. A closed log refuses only a write it would make.\n\n* fix(replication): resend a level follower's last record only when it raises the mark\n\nThe resend fired whenever a level follower's position was above the mark,\nso an idle non-Quorum cache resent its last counter record every pass, and a\nmark stuck for any other reason (a deposed leader, a learner, followers down)\nresent a record every pass to no end. It now fires only on a shard whose\npublishes wait on the mark, while this broker leads, and only for a follower\nwhose position would raise the mark (or the counter mark), counting the\nothers that are not stalled. The answer rule for counting applies only where\npublishes wait on the mark.\n\nAckedOnLiveMajority names the leader whose hwm moved, and FelixShardWipe's\nweight goes up for the new state.\n\n* fix(replication): judge a drain's successor by an answer too\n\nThe strict count was gated on acks_at_quorum, which is false while a shard\ndrains, so a draining shard counted stale positions again: its mark could\nrelease in-flight writes on a wiped follower's old position, and the drain\ncould report a wiped successor level and hand the shard to an empty copy.\nThe count is now strict on every shard. A draining shard whose fence is\nquiet asks its successor for an answer by resending the last record, so an\nidle drain still completes; the Quorum resend keeps its gates.\n\n* docs(formal): define the mark's counting before AckReadyOver uses it\n\nTLC refuses an operator used above its definition.\n\nSpec-Unaffected: reorders definitions only.\n\n* docs(formal): fit FelixShardWipe in a pull request's hour\n\nThe pass's answers are now cleared by the report that ends the pass rather\nthan by a separate action, only the current leader records them, and only\nfor a follower whose answer would count. The lost-copy history is derived\n(an answered follower whose identity moved on) instead of kept. The PR\nconfiguration stops the clock at 4; FelixShardWipeFull runs it to 5 in the\nnightly exhaustive job.\n\nSpec-Unaffected: the spec itself is what changes; no code changes.",
+          "timestamp": "2026-10-16T02:14:09Z",
+          "tree_id": "5d430e83a4d35cdd9a4e985761eaa9c71ac52b25",
+          "url": "https://github.com/GetFelix/felix/commit/618cafe8fd53b1459ce85502817dcb7bf3a0efda"
+        },
+        "date": 1792117110276,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355272.41,
+            "range": "15252.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355272.41\nmean: 345930.62\nstdev: 15252.26\ncv: 4.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355272.41,
+            "range": "15252.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355272.41\nmean: 345930.62\nstdev: 15252.26\ncv: 4.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81255.52,
+            "range": "561.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81255.52\nmean: 81073.83\nstdev: 561.27\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812555.16,
+            "range": "5612.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812555.16\nmean: 810738.25\nstdev: 5612.69\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
