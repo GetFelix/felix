@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792151515786,
+  "lastUpdate": 1792153463797,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39798,6 +39798,72 @@ window.BENCHMARK_DATA = {
             "range": "3165.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 872.00\nmean: 2532.00\nstdev: 3165.98\ncv: 125.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6c069f9959575a67c06e5bb51140120cda80366",
+          "message": "fix(replication): a crashed leader gives up the generation it led (#1305)\n\n* fix(replication): a crashed leader gives up the generation it led (#1295)\n\nA leader that lost an unsynced tail in a crash under Periodic or None fsync\nand restarted before failover reopened its old generation with the shorter\nlog. Under Quorum it and a follower that lagged behind the lost records made\na majority and could write over acknowledged offsets.\n\nA start that rotated the storage id now leads no replicated shard from a\ncopy it led before the crash: the open is refused before it writes, the copy\nis given up on disk as a ballot naming no leader, replication passes over the\nshard meanwhile, and the broker refuses a successor's promotion fence from\nthat copy in a replica set of odd size. Reports name the leader's own storage\nid, and placement promotes a caught-up follower once the leader is registered\nunder another. TLA+: FelixShardLeaderCrashKeepsGen.cfg (violates\nAckedSurvive) and FelixShardLeaderCrashGivesUp.cfg (passes).\n\n* fix(replication): reclaim a given-up leader no follower is ahead of, and close review findings\n\n* fix(replication): make a leader's give-up an explicit report field\n\n* fix(replication): treat a copy led at generation 0 as led",
+          "timestamp": "2026-10-16T12:20:02Z",
+          "tree_id": "d1f7eb08b97d0abd22517741199160d82850674f",
+          "url": "https://github.com/GetFelix/felix/commit/d6c069f9959575a67c06e5bb51140120cda80366"
+        },
+        "date": 1792153459718,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 182.00\nstdev: 1.22\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "58.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 269.20\nstdev: 58.07\ncv: 21.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "109.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 350.80\nstdev: 109.39\ncv: 31.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "10.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 225.00\nstdev: 10.65\ncv: 4.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 449,
+            "range": "337.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 449.00\nmean: 598.40\nstdev: 337.48\ncv: 56.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 905,
+            "range": "1079.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 905.00\nmean: 1299.80\nstdev: 1079.92\ncv: 83.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
