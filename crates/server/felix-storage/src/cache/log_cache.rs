@@ -747,19 +747,25 @@ impl LogCache {
             .await
     }
 
-    /// The shard and incarnation of every directory of `name` here.
-    pub fn dirs_on_disk(
+    /// The shard and incarnation of every directory of `name` here. Runs on
+    /// the blocking pool: the first lookup reads the whole root.
+    pub async fn dirs_on_disk(
         &self,
         tenant: &str,
         namespace: &str,
         name: &str,
     ) -> Result<Vec<(u32, u64)>> {
-        Ok(self
-            .dirs
-            .stream_dirs(&self.root, tenant, namespace, name)?
-            .into_iter()
-            .map(|(shard, incarnation, _)| (shard, incarnation))
-            .collect())
+        let (dirs, root) = (Arc::clone(&self.dirs), self.root.clone());
+        let (tenant, namespace, name) =
+            (tenant.to_string(), namespace.to_string(), name.to_string());
+        crate::task::blocking(move || {
+            Ok(dirs
+                .stream_dirs(&root, &tenant, &namespace, &name)?
+                .into_iter()
+                .map(|(shard, incarnation, _)| (shard, incarnation))
+                .collect())
+        })
+        .await
     }
 
     /// Close every shard of one incarnation of `name`, keeping its

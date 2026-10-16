@@ -873,7 +873,7 @@ incarnation is covered it unregisters it and ends its subscriptions, then
 closes its logs (a handle held elsewhere fails with `StorageError::Closed`).
 Each covered directory is renamed into `.deleted/` under its store's root and
 the rename flushed, on the blocking pool rather than an async worker, as are
-the marker and floor writes. One background thread per root removes what
+the marker and floor reads and writes and every store's directory lookups. One background thread per root removes what
 `.deleted/` holds, listing it again if more arrives while it works, so a
 cascade over a namespace's streams costs one thread per store
 (`retiring_many_directories_runs_one_purge_worker`). The next start removes

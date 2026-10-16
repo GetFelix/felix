@@ -94,11 +94,11 @@ in `-` and the incarnation as 16 hex digits, under `groups/` and
 `dead-letters/` too. A stream deleted and created again therefore never opens
 the old one's directories. Incarnation 0, every stream from before, keeps the
 name above. A deleted stream's directories are renamed into `.deleted/` and
-removed from there by one background thread per store; being dotted, it is never read as a
-shard. `.streams/` holds a small text marker per stream naming the incarnation
-this broker holds, whether a delete of it is unfinished, and through which
-incarnation the control plane said the name is deleted; the format is in
-`docs/storage-format.md`. See [Deleting a stream](/architecture/durable-storage/#deleting-a-stream-and-creating-it-again).
+removed from there by one background thread per store; being dotted, it is
+never read as a shard. `.streams/` holds a small text marker per stream
+naming the incarnation this broker holds, whether a delete of it is
+unfinished, and through which incarnation the control plane said the name is
+deleted; the format is in `docs/storage-format.md`. See [Deleting a stream](/architecture/durable-storage/#deleting-a-stream-and-creating-it-again).
 
 File names are zero-padded to 20 digits so lexicographic and numeric order agree.
 Recovery still parses the number and sorts on it rather than trusting directory

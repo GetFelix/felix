@@ -300,14 +300,17 @@ pub(crate) fn purge_in_background(root: PathBuf) {
         .name("felix-purge-deleted".into())
         .spawn(move || purge_until_idle(&dir));
     if let Err(err) = spawned {
-        PURGE_WORKERS.lock().remove(&deleted);
-        tracing::warn!(error = %err, "could not start deleting retired shard directories");
+        // The entry stays claimed, so the work is done here rather than left
+        // for a call that may never come.
+        tracing::warn!(error = %err, "could not start a thread to delete retired shard directories; deleting them inline");
+        purge_until_idle(&deleted);
     }
 }
 
 fn purge_until_idle(deleted: &Path) {
     #[cfg(test)]
     let _live = tests::LiveWorker::enter(deleted);
+    let _slot = WorkerSlot(deleted);
     loop {
         purge(deleted);
         let mut workers = PURGE_WORKERS.lock();
@@ -317,6 +320,20 @@ fn purge_until_idle(deleted: &Path) {
                 workers.remove(deleted);
                 return;
             }
+        }
+    }
+}
+
+/// Frees a root's purge slot if its worker panics, so the next retire there
+/// starts another instead of leaving `.deleted/` until a restart.
+struct WorkerSlot<'a>(&'a Path);
+
+impl Drop for WorkerSlot<'_> {
+    fn drop(&mut self) {
+        // Only on a panic: after a normal exit the slot may already belong to
+        // the next worker.
+        if std::thread::panicking() {
+            PURGE_WORKERS.lock().remove(self.0);
         }
     }
 }
