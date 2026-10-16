@@ -1854,11 +1854,17 @@ The control plane stamps each report with the node that made it and the
 incarnation every node it names was registered at, read before the report is
 stored (`report.leader`, `node_incarnations`). A registration landing after
 that read leaves a node at a newer incarnation than the stamp, which counts it
-for less, never more. What the stamp cannot see is a report the leader
-measured before the follower restarted that reaches the control plane after
-the follower registered again: it is stamped at the new incarnation. That is
-one report in flight, and the leader's next pass reports the follower as it is
-now.
+for less, never more. The stamp cannot see two things. One is a report the
+leader measured before the follower restarted that reaches the control plane
+after the follower registered again: it is stamped at the new incarnation.
+The other is a leader still on a crashed follower's old connection, which
+goes on reporting it under its old identity until QUIC's idle timeout closes
+that connection (see "Storage identities" above). A follower that registered
+with its new identity reads as a mismatch in both cases. One that registered
+without an identity is counted, so the stamp closes the window only for
+reports made before the restart, which is the case of a leader that dies
+first. `FelixShardWipeStripped.cfg` checks the stamp with both cases left
+out.
 
 The incarnation check costs availability in one case: an unverified follower
 that restarts after its leader's last report, whose leader then dies, is not

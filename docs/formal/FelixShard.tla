@@ -1866,9 +1866,14 @@ Wipe(f) ==
 \* otherwise registering with one is the wipe's own step. Only once no
 \* report it was counted in before the wipe is still to come: the pass that
 \* heard it has ended (a report, or a probe that learned the new identity)
-\* and nothing is in flight. A report measured before a restart and stamped
-\* after the registration is the one case the stamp cannot tell apart,
-\* which the design takes as the restart outlasting a pass.
+\* and nothing is in flight. By then every broker has learned its new
+\* identity, as a restart closes the old connections and the next exchange
+\* redials. Two cases are left out, both in docs/replication-design.md
+\* ("Who may be promoted"): a report measured before the restart and
+\* stamped after the registration, and a leader still on a crashed
+\* follower's old connection, which reports it under its old identity until
+\* QUIC's idle timeout. A registration without an identity cannot tell
+\* either from a report about the copy it has now.
 Register(f) ==
     /\ f \in restarting
     /\ inflight = <<>>
@@ -1876,9 +1881,12 @@ Register(f) ==
     /\ registered' = [registered EXCEPT ![f] = 0]
     /\ inc' = [inc EXCEPT ![f] = @ + 1]
     /\ restarting' = restarting \ {f}
+    /\ seen' = [b \in Brokers |-> IF b = f THEN seen[b] ELSE [seen[b] EXCEPT ![f] = sid[f]]]
+    /\ confirmed' = [b \in Brokers |-> IF b = f THEN confirmed[b] ELSE [confirmed[b] EXCEPT ![f] = 0]]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes, checked >>
+    /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
+    /\ UNCHANGED << sid, wipes, checked >>
 
 \* The leader learns `f`'s identity from the handshake, and a new one
 \* starts `f`'s count over: `follow_storage` in
