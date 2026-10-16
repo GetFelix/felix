@@ -113,7 +113,8 @@ entries.
   clean stop when it finishes. The shutdown drain now flushes the cache,
   consumer-group, dead-letter and counter logs too, not only stream logs
   (`Broker::shutdown_storage`, `StorageApi::shutdown`). TLA+:
-  `FelixShardCrash.cfg` and `FelixShardCrashKeepsId.cfg`.
+  `FelixShardCrashKeepsId.cfg` (the passing case with a partial
+  suffix loss is too large for CI and is not model-checked).
 - Placement no longer counts a wiped follower from a report its leader made
   over a connection to the follower's old process (#1281). The window was
   open only while brokers or control-plane instances were being rolled and

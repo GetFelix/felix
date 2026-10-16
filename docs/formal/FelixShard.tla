@@ -261,8 +261,8 @@
 (* counted on what it lost, and TLC finds it promoted without an           *)
 (* acknowledged record (AckedSurvive, FelixShardCrashKeepsId.cfg). With    *)
 (* `RotateOnCrash` it restarts under a new identity, as the broker does    *)
-(* when it finds no clean stop recorded, and the wipe's checks hold        *)
-(* (FelixShardCrash.cfg).                                                  *)
+(* when it finds no clean stop recorded. No configuration in CI checks     *)
+(* that case: with a partial suffix lost it is too large for the job.      *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC

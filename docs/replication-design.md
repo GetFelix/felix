@@ -1673,9 +1673,10 @@ without an identity, with the leader still on its old connection, and passes
 on the measured incarnation; `FelixShardWipeStrippedOnArrival.cfg` stamps the
 incarnation as the report arrives instead and loses the record, and
 `FelixShardWipeStrippedNoStamp.cfg` loses it with no incarnation check at all.
-`FelixShardCrash.cfg` replaces the wipe with a crash that keeps the directory
-and loses a suffix the follower had answered for, and passes with the new
-identity; `FelixShardCrashKeepsId.cfg` keeps the old one and loses the record.
+`FelixShardCrashKeepsId.cfg` replaces the wipe with a crash that keeps the
+directory and the identity and loses the record. The passing case with the
+new identity and a partial suffix loss is too large for the CI job and is not
+model-checked (see `docs/formal/README.md`).
 
 ### Divergence and truncation
 
