@@ -155,16 +155,14 @@ pub async fn probe<R: PeerRequester>(
 /// Who the probe names caught up, from each of the shard's logs, the
 /// shard's own first.
 ///
-/// Nobody when every follower is behind this broker on every log: that is
-/// the only case placement reclaims. Otherwise the followers furthest on
-/// every log, which hold whatever any copy holds. When no follower is
-/// furthest on every log (a cache whose cache and counter logs are led by
-/// different followers), the furthest on the first log that is not behind
-/// this broker, the shard's own log when it qualifies, as before a level
-/// follower was named: a shard is never left with neither a promotion nor a
-/// reclaim.
+/// Nobody when every follower is behind this broker on the shard's own log:
+/// promoting one would lose what this broker kept, so placement reclaims.
+/// Otherwise the followers furthest on every log, which hold whatever any
+/// copy holds. When no follower is furthest on every log (a cache whose
+/// cache and counter logs are led by different followers), the furthest on
+/// the shard's own log, as before a level follower was named.
 fn caught_up(positions: &[LogPosition]) -> Vec<String> {
-    let Some(first) = positions.iter().find(|log| log.not_behind) else {
+    let Some(first) = positions.first().filter(|log| log.not_behind) else {
         return Vec::new();
     };
     let on_every_log: Vec<String> = first

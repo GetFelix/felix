@@ -224,21 +224,22 @@ fn a_follower_ahead_on_the_cache_log_alone_is_named() {
 }
 
 /// A follower furthest on every log is preferred; with none, the furthest on
-/// the first log not behind this broker.
+/// the shard's own log.
 #[test]
 fn the_follower_furthest_on_every_log_is_named_first() {
     let both = [at(true, &["broker-b", "broker-c"]), at(true, &["broker-c"])];
     assert_eq!(caught_up(&both), vec!["broker-c".to_string()]);
     let split = [at(true, &["broker-b"]), at(true, &["broker-c"])];
     assert_eq!(caught_up(&split), vec!["broker-b".to_string()]);
-    let counters_only = [at(false, &["broker-b"]), at(true, &["broker-c"])];
-    assert_eq!(caught_up(&counters_only), vec!["broker-c".to_string()]);
 }
 
-/// Nobody is named only when every follower is behind on every log, the one
-/// case placement reclaims.
+/// **A follower behind this broker on the shard's own log is never named**,
+/// however far it is on the counter log: promoting it would lose what this
+/// broker kept, so the shard is reclaimed.
 #[test]
-fn nobody_is_named_when_every_follower_is_behind_on_every_log() {
-    let positions = [at(false, &["broker-b"]), at(false, &["broker-b"])];
-    assert!(caught_up(&positions).is_empty());
+fn a_follower_behind_on_the_cache_log_is_never_named() {
+    let counters_only = [at(false, &["broker-b"]), at(true, &["broker-c"])];
+    assert!(caught_up(&counters_only).is_empty());
+    let behind_everywhere = [at(false, &["broker-b"]), at(false, &["broker-b"])];
+    assert!(caught_up(&behind_everywhere).is_empty());
 }

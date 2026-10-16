@@ -2329,10 +2329,13 @@ follower is behind it:
   furthest follower is level with this broker or ahead, the followers at that
   position are reported caught up; every copy is accounted for, so they hold
   whatever any copy holds. For a cache, a follower furthest on both its logs
-  is named first; when the cache and counter logs are led by different
-  followers, the furthest on the cache log is named, or on the counter log
-  when only that one is not behind, so the shard always has a way out
-  (`felix_replication::reclaim`).
+  is named first, and when the cache and counter logs are led by different
+  followers, the furthest on the cache log. When every follower is behind on
+  the cache log nobody is named, whatever the counter log says. A `Quorum`
+  cache is not fenced on promotion (`suspects` in
+  `placement/replica_positions.rs` is for streams only), so a promoted
+  follower behind on the counter log can lose counter records a majority
+  acknowledged; that predates the probe (`felix_replication::reclaim`).
 - **In placement.** A report names the leader's own storage identity beside
   its followers'. When the assignment's leader is registered under another
   identity than the shard's last report names for it, or its own report since
