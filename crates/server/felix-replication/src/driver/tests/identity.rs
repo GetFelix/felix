@@ -705,3 +705,78 @@ async fn an_idle_cache_below_quorum_resends_nothing() {
 
     assert_eq!(follower.asked("broker-c"), 0);
 }
+
+/// **A drain does not hand the shard to a wiped successor.** `broker-c`, the
+/// successor, confirmed everything before it was wiped; the pooled
+/// connection still gives its old identity. Judged by its old position the
+/// drain would report it level, and the control plane would cut over to an
+/// empty copy.
+#[tokio::test(start_paused = true)]
+async fn a_drain_does_not_hand_over_to_a_wiped_successor() {
+    for answered_by_new_copy in [false, true] {
+        let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+        let router = draining_router(LOCAL, &["broker-c", "broker-b"], 4);
+        let marks = super::quorum::follower_ack_marks();
+        let follower = StaleConnection {
+            answered_by_new_copy,
+        };
+        let mut cursors = level_cursors(&key(), 0, 5);
+        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+
+        let pass = replicate_once(
+            &follower,
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        );
+        // Unanswered, the drain waits on the successor for good.
+        if let Ok(pass) = tokio::time::timeout(Duration::from_secs(1), pass).await {
+            assert!(
+                pass.reports.iter().all(|report| !report.drained),
+                "drained to a wiped successor: {:?}",
+                pass.reports,
+            );
+        } else {
+            assert!(!answered_by_new_copy, "the pass did not finish");
+        }
+        assert_eq!(marks.offset(&watch_key(&key()), 4).unwrap_or(0), 0);
+    }
+}
+
+/// **A drain on an idle shard still completes**: the successor is level and
+/// sent nothing, so it is asked once for an answer that shows it.
+#[tokio::test(start_paused = true)]
+async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
+    // Not `Quorum`, so nothing else asks the successor for an answer.
+    let (broker, _dir) = leader_with(5).await;
+    let router = draining_router(LOCAL, &["broker-c", "broker-b"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let follower = CountingFollower::new("broker-b");
+    let mut cursors = level_cursors(&key(), 0, 5);
+    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+
+    let pass = replicate_once(
+        &follower,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+
+    assert!(
+        pass.reports.iter().any(|report| report.drained),
+        "a level successor was not handed the shard: {:?}",
+        pass.reports,
+    );
+    assert_eq!(follower.asked("broker-c"), 1);
+}

@@ -1560,7 +1560,8 @@ leader holds: a wiped follower that had confirmed more than the mark, beside
 one that fails at once. The probe does not settle it either, because it
 reads the pooled connection's handshake, and that connection can outlive the
 process it was opened to (below). So the mark and the counter mark count a
-follower only once one of its requests in this pass has been answered over a
+follower, and a drain judges its successor level, only once one of its
+requests in this pass has been answered over a
 connection whose identity is the cursor's (`Witness`, `checked_only`). An
 answer from another identity starts the cursor over. Any other follower
 counts as holding nothing. A follower that is down counts for nothing either,
@@ -1572,7 +1573,9 @@ would never answer. On a shard whose publishes wait on the mark, while this
 broker still leads, the leader sends such a follower its last record again
 (`reship_last`) when counting it would raise the mark, the counter mark
 likewise, with the other followers that are not stalled counted as they
-stand. The follower compares the overlap and answers where it is. That happens when the pass
+stand. A draining shard whose fence is quiet asks its successor the same
+way, so a drain on an idle shard still completes. The follower compares the
+overlap and answers where it is. That happens when the pass
 that heard the answer could not count it, for instance an answer that
 arrived after its pass had handed the exchange to the driver, or a report
 that did not land. Once the mark has caught up, nothing extra is sent. While

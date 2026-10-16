@@ -500,15 +500,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // offers it: a leader cut off from its followers names them as they last
     // stood, and failover needs that. See [`checked_only`].
     let checked: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
-    // Only where a publish waits on the mark: elsewhere a position counted
-    // late releases nothing, and a draining shard's fence holds its writes.
-    let view = |followers: &[FollowerCursor]| {
-        if acks_at_quorum {
-            checked_only(followers, &checked.lock())
-        } else {
-            followers.to_vec()
-        }
-    };
+    // On every shard: besides the mark, a drain hands the shard to a
+    // successor it judges level by this count.
+    let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
     let counter_mark = counter_log.clone().filter(|_| acks_at_quorum);
     let counters_of = |followers: &[FollowerCursor]| {
         let counter_mark = counter_mark.clone();
@@ -569,11 +563,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut launched_rode: Vec<String> = Vec::new();
     let base = entry.base;
     // Which level followers to send their last record again for an answer
-    // the mark can count (see `reship_last`): only where the mark gates a
-    // publish, while this broker still leads, and only a follower whose
-    // position would raise it, counting the others that are not stalled.
-    // Anything else would resend a record every pass to no end.
+    // this pass can count (see `reship_last`): on a `Quorum` shard while this
+    // broker leads, a follower whose position would raise the mark, counting
+    // the others that are not stalled; and a draining shard's successor,
+    // which is judged level only on an answer. Anything else would resend a
+    // record every pass to no end.
     let leading = log.accepted_generation() <= route.generation;
+    // A drain is judged only once its fence is quiet, so asking before that
+    // would only repeat the question.
+    let quiesced_now = route.draining && fence.quiesced(mark_key);
     let counter_tail = match &counter_log {
         Some(log) if acks_at_quorum && leading => log.tail_offset().await.ok(),
         _ => None,
@@ -583,7 +581,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                        held: &dyn Fn(&[FollowerCursor]) -> u64,
                        mark: u64| {
         let mine = followers.iter().find(|cursor| cursor.node_id == node);
-        if !acks_at_quorum || !leading || learner.as_deref() == Some(node) {
+        if !quorum_shard || !leading || learner.as_deref() == Some(node) {
             return false;
         }
         if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.halted.is_none()) {
@@ -615,12 +613,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .map(|cursor| {
             let mut cursor = cursor.clone();
             let sliced = learner.as_deref() == Some(cursor.node_id.as_str());
-            let ping = would_raise(
-                &cursor.node_id,
-                &entry.followers,
-                &|followers| held_offset(tail, followers),
-                mark_now,
-            );
+            let successor = quiesced_now
+                && route
+                    .successor
+                    .as_deref()
+                    .is_none_or(|successor| successor == cursor.node_id);
+            let ping = successor
+                || would_raise(
+                    &cursor.node_id,
+                    &entry.followers,
+                    &|followers| held_offset(tail, followers),
+                    mark_now,
+                );
             let ping_counters = counter_tail.is_some_and(|counter_tail| {
                 would_raise(
                     &cursor.node_id,
