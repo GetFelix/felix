@@ -51,7 +51,7 @@ pub(super) async fn run_lane_feeder(
     delivery: TenantDelivery,
     mut revocation: Option<SubscriberRevocation>,
 ) {
-    let Some(share) = manager.upgrade().map(|manager| manager.egress.join()) else {
+    let Some(mut share) = manager.upgrade().map(|manager| manager.egress.join()) else {
         subscriptions.release();
         return;
     };

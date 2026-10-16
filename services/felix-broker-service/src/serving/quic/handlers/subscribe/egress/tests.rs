@@ -5,8 +5,8 @@ use super::*;
 #[test]
 fn each_subscription_gets_an_equal_share() {
     let budget = Arc::new(EgressBudget::new(100));
-    let a = budget.join();
-    let b = budget.join();
+    let mut a = budget.join();
+    let mut b = budget.join();
     let held = a.try_hold(50).expect("within the share");
     assert!(a.try_hold(1).is_none(), "the share is full");
     let other = b.try_hold(50).expect("b's share is its own");
@@ -18,7 +18,7 @@ fn each_subscription_gets_an_equal_share() {
 #[test]
 fn a_frame_larger_than_the_share_goes_once_nothing_else_waits() {
     let budget = Arc::new(EgressBudget::new(100));
-    let share = budget.join();
+    let mut share = budget.join();
     let small = share.try_hold(1).expect("fits");
     assert!(share.try_hold(1_000).is_none());
     drop(small);
@@ -30,7 +30,7 @@ fn a_frame_larger_than_the_share_goes_once_nothing_else_waits() {
 #[test]
 fn the_share_grows_when_a_subscription_leaves() {
     let budget = Arc::new(EgressBudget::new(100));
-    let a = budget.join();
+    let mut a = budget.join();
     let b = budget.join();
     let held = a.try_hold(40).expect("fits");
     assert!(a.try_hold(40).is_none());
@@ -42,7 +42,7 @@ fn the_share_grows_when_a_subscription_leaves() {
 #[test]
 fn zero_is_unbounded() {
     let budget = Arc::new(EgressBudget::new(0));
-    let share = budget.join();
+    let mut share = budget.join();
     let _held: Vec<_> = (0..10)
         .map(|_| share.try_hold(1 << 30).expect("unbounded"))
         .collect();
@@ -51,7 +51,7 @@ fn zero_is_unbounded() {
 #[tokio::test]
 async fn hold_waits_for_the_subscriptions_own_frames() {
     let budget = Arc::new(EgressBudget::new(100));
-    let share = budget.join();
+    let mut share = budget.join();
     let mut held = share.hold(60).await;
     held.absorb(share.try_hold(30).expect("fits"));
     let waiting = tokio::time::timeout(Duration::from_millis(20), share.hold(20)).await;
@@ -71,7 +71,7 @@ async fn hold_waits_for_the_subscriptions_own_frames() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_waiter_on_a_full_share_wakes_when_its_bytes_are_released() {
     let budget = Arc::new(EgressBudget::new(100));
-    let share = budget.join();
+    let mut share = budget.join();
     for _ in 0..2_000 {
         let held = share.try_hold(100).expect("the share is empty");
         let release = std::thread::spawn(move || drop(held));
@@ -87,11 +87,11 @@ async fn a_waiter_on_a_full_share_wakes_when_its_bytes_are_released() {
 #[tokio::test]
 async fn a_cancelled_wait_is_no_longer_counted() {
     let budget = Arc::new(EgressBudget::new(100));
-    let share = budget.join();
+    let mut share = budget.join();
     let held = share.try_hold(100).expect("fits");
     let waited = tokio::time::timeout(Duration::from_millis(10), share.hold(1)).await;
     assert!(waited.is_err(), "the share is full");
     assert_eq!(share.held.waiting.load(Ordering::SeqCst), 0);
     drop(held);
-    assert_eq!(share.held.bytes.load(Ordering::SeqCst), 0);
+    assert_eq!(share.held_bytes(), 0);
 }

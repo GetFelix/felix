@@ -42,11 +42,13 @@ impl EgressBudget {
         EgressShare {
             budget: Arc::clone(self),
             held: Arc::new(ShareHeld {
-                bytes: AtomicUsize::new(0),
+                returned: AtomicUsize::new(0),
                 waiting: AtomicUsize::new(0),
                 freed: Notify::new(),
                 gauge: metrics::gauge!("felix_sub_egress_bytes"),
             }),
+            taken: 0,
+            returned: 0,
         }
     }
 
@@ -56,15 +58,26 @@ impl EgressBudget {
 }
 
 /// One subscription's part of its connection's budget.
+///
+/// Only the subscription's feeder takes from it, so what it has handed out is
+/// a plain counter. The writer adds what it has written to `returned`, and the
+/// feeder reads that only when its last reading says the share is full: on
+/// the common path a frame costs the feeder no shared write.
 #[derive(Debug)]
 pub(super) struct EgressShare {
     budget: Arc<EgressBudget>,
     held: Arc<ShareHeld>,
+    /// Bytes handed out, ever. Wraps, as `returned` does.
+    taken: usize,
+    /// The last reading of `ShareHeld::returned`. That only grows, so an old
+    /// reading overstates what is held, which is safe to refuse on.
+    returned: usize,
 }
 
 #[derive(Debug)]
 struct ShareHeld {
-    bytes: AtomicUsize,
+    /// Bytes given back, ever.
+    returned: AtomicUsize,
     /// Feeders parked in [`EgressShare::hold`]. A release notifies only when
     /// this is nonzero, so the common case takes no lock.
     waiting: AtomicUsize,
@@ -75,13 +88,14 @@ struct ShareHeld {
 impl EgressShare {
     /// Hold `bytes` until the returned value is dropped, waiting while the
     /// subscription's own frames fill its share.
-    pub(super) async fn hold(&self, bytes: usize) -> EgressBytes {
+    pub(super) async fn hold(&mut self, bytes: usize) -> EgressBytes {
         if let Some(held) = self.try_hold(bytes) {
             return held;
         }
-        let _waiting = Waiting::new(&self.held.waiting);
+        let shared = Arc::clone(&self.held);
+        let _waiting = Waiting::new(&shared.waiting);
         loop {
-            let freed = self.held.freed.notified();
+            let freed = shared.freed.notified();
             tokio::pin!(freed);
             // Counted as waiting and registered before the check, so a write
             // finishing in between either sees the count and notifies, or
@@ -94,23 +108,38 @@ impl EgressShare {
         }
     }
 
-    /// [`Self::hold`] without waiting. Only the subscription's feeder holds,
-    /// so nothing else can take the room between the check and the add.
-    pub(super) fn try_hold(&self, bytes: usize) -> Option<EgressBytes> {
+    /// [`Self::hold`] without waiting.
+    pub(super) fn try_hold(&mut self, bytes: usize) -> Option<EgressBytes> {
         if self.budget.max == 0 || bytes == 0 {
             return Some(EgressBytes::default());
         }
-        let used = self.held.bytes.load(Ordering::SeqCst);
-        if used > 0 && used.saturating_add(bytes) > self.budget.share() {
-            return None;
+        if !self.fits(bytes) {
+            self.returned = self.held.returned.load(Ordering::SeqCst);
+            if !self.fits(bytes) {
+                return None;
+            }
         }
-        self.held.bytes.fetch_add(bytes, Ordering::AcqRel);
+        self.taken = self.taken.wrapping_add(bytes);
         self.held.gauge.increment(bytes as f64);
         Some(EgressBytes {
             bytes,
             held: Some(Arc::clone(&self.held)),
             queue: HeldBytes::default(),
         })
+    }
+
+    /// Whether `bytes` more fit by the last reading. A frame larger than the
+    /// share fits once nothing else is held.
+    fn fits(&self, bytes: usize) -> bool {
+        let used = self.taken.wrapping_sub(self.returned);
+        used == 0 || used.saturating_add(bytes) <= self.budget.share()
+    }
+
+    /// Bytes handed out and not yet given back.
+    #[cfg(test)]
+    fn held_bytes(&self) -> usize {
+        self.taken
+            .wrapping_sub(self.held.returned.load(Ordering::SeqCst))
     }
 }
 
@@ -173,7 +202,7 @@ impl Drop for EgressBytes {
         if let Some(held) = &self.held {
             // SeqCst pairs with `hold`: either the waiter's check sees this
             // release, or this sees the waiter and wakes it.
-            held.bytes.fetch_sub(self.bytes, Ordering::SeqCst);
+            held.returned.fetch_add(self.bytes, Ordering::SeqCst);
             if held.waiting.load(Ordering::SeqCst) > 0 {
                 held.freed.notify_waiters();
             }
