@@ -3,14 +3,19 @@
 # subscribe with the stack's felixctl service, publish from the host with the
 # credentials copied out the way the docs say.
 #
-#   scripts/ci/compose_smoke.sh            (CONTAINER_ENGINE=podman for Podman)
+#   scripts/ci/compose_smoke.sh
+#
+# CONTAINER_ENGINE=podman runs it under Podman (with the docker-compose
+# provider). FELIX_VERSION picks the image tag, as it does for compose.yaml;
+# CI sets it to images it built and loaded, and COMPOSE_PULL=never makes sure
+# nothing is pulled in their place.
 set -euo pipefail
 
 ENGINE=${CONTAINER_ENGINE:-docker}
 cd "$(dirname "$0")/../.."
 compose() { "$ENGINE" compose "$@"; }
 
-FELIXCTL_IMAGE=$(grep -m1 -o 'ghcr.io/getfelix/felixctl:[^ "]*' compose.yaml)
+FELIXCTL_IMAGE=$(compose config --images | grep -m1 /felixctl:)
 MESSAGE="hello from compose $$"
 work=$(mktemp -d)
 # felixctl's image runs as uid 65532 and reads the copied files from here.
@@ -29,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-compose up -d
+compose up -d --pull "${COMPOSE_PULL:-missing}"
 
 for _ in $(seq 1 90); do
   compose logs felix-dev-ready 2> /dev/null | grep -q 'Felix is up' && break
@@ -42,8 +47,8 @@ compose logs --no-color felix-dev-ready | grep -q 'Felix is up' || {
 compose logs --no-color felix-dev-ready
 
 # The host side, as the printed instructions do it.
-compose cp felix-broker:/var/lib/felix/client.jwt "$work/felix-dev.jwt"
-compose cp felix-broker:/var/lib/felix/broker-cert.pem "$work/felix-dev.pem"
+compose exec -T felix-broker cat /var/lib/felix/client.jwt > "$work/felix-dev.jwt"
+compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > "$work/felix-dev.pem"
 chmod 644 "$work"/*
 host_felixctl=("$ENGINE" run --rm --network host -v "$work:/work:ro" "$FELIXCTL_IMAGE"
   --brokers 127.0.0.1:5000 --tenant dev

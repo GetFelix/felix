@@ -55,6 +55,22 @@ docker compose up
 It sits at the root because `compose.yaml` is the name Compose looks for, so
 `docker compose up` in a fresh clone finds it with no `-f`.
 
+With Podman, run it through the `docker-compose` provider (2.20 or later),
+and use `podman compose` wherever this section says `docker compose`:
+
+```bash
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose up
+```
+
+`podman-compose` does not work here. It cannot `run` a service that sits in a
+profile, as the `felixctl` service does, and it starts the broker even when
+`felix-dev-auth` fails, because it treats that dependency as merely stopped.
+
+The images default to the release the file was last bumped for. Set
+`FELIX_VERSION` to run another tag (`FELIX_VERSION=0.6.0-preview.8 docker
+compose up`).
+
 Once the broker is ready, the stack prints its connection settings. In a second
 terminal, from the same directory:
 
@@ -73,9 +89,9 @@ settings already in its environment. To use one installed on your machine
 instead, copy the token and the broker's certificate out and add a context:
 
 ```bash
-docker compose cp felix-broker:/var/lib/felix/client.jwt felix-dev.jwt
-docker compose cp felix-broker:/var/lib/felix/controlplane.jwt felix-dev-cp.jwt
-docker compose cp felix-broker:/var/lib/felix/broker-cert.pem felix-dev.pem
+docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
+docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
 felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
   --token-file felix-dev.jwt --ca-file felix-dev.pem \
   --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
@@ -96,8 +112,10 @@ What it runs:
 | `felixctl` | Only for `docker compose run` | none |
 
 Every host port is bound to `127.0.0.1`, so nothing in the stack is reachable
-from another machine. Everything is in memory: `docker compose down` discards
-the streams, the tenant and the tokens, and the next `up` starts clean.
+from another machine. The control plane and broker keep their state in
+memory, and the tokens and certificate sit in the `felix-dev` volume.
+`docker compose down -v` discards all of it, and the next `up` starts clean.
+Without `-v` the volume survives, but the next `up` overwrites what is in it.
 
 ### The development credentials
 
@@ -120,15 +138,17 @@ control plane or broker runs in by default:
   `dev`, and **the control-plane token** (`controlplane.jwt`) can manage its
   namespaces and streams. Both last a day
   (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS=86400`), so a copy on the host outlives a
-  working session. After that, `docker compose down` and `up` mint new ones.
+  working session. After that, `docker compose down -v` and `up` mint new ones.
 
 The tokens are signed by keys the in-memory control plane generates at start
 and verified only by this stack, so they mean nothing anywhere else. Never use
 this file, or `FELIX_BOOTSTRAP_DEV_TOKENS`, for anything shared. The rest of
 this page builds a real one.
 
-CI brings the stack up on every change and does one round trip through it
-(`scripts/ci/compose_smoke.sh`, which takes `CONTAINER_ENGINE=podman`).
+CI brings the stack up on every change, from the images that change builds,
+and does one round trip through it (`scripts/ci/compose_smoke.sh`, which takes
+`CONTAINER_ENGINE=podman`). A release bumps the default tag in `compose.yaml`
+along with the other pins `scripts/check_release_version.py` checks.
 
 ## What a broker needs
 

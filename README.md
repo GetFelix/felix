@@ -6,7 +6,7 @@
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up                                      # or: podman compose up
+docker compose up                                      # Podman: PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up
 docker compose run --rm felixctl sub orders            # in a second terminal
 docker compose run --rm felixctl pub orders 'hello'    # and a third
 ```

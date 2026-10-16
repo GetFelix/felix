@@ -16,8 +16,11 @@ development credentials from the released images:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up                       # or: podman compose up
+docker compose up
 ```
+
+With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up`;
+`podman-compose` does not run this file correctly.
 
 When the broker is ready it prints its connection settings. Then, from the
 same directory, subscribe in one terminal and publish in another:
