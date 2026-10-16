@@ -80,3 +80,20 @@ async fn without_a_ballot_only_the_accepted_generation_was_led() {
     assert!(unclean.led_before(&key(), &log, 5));
     assert!(!unclean.led_before(&key(), &log, 6));
 }
+
+/// **Generation 0 is a generation** (#1295): a shard placed before
+/// incarnations starts there, and the copy this broker led at it is one it
+/// led, though the accepted generation reads 0.
+#[tokio::test]
+async fn a_copy_led_at_generation_zero_was_led() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = log(&dir);
+    let unclean = UncleanStart::new("broker-a");
+    assert!(!unclean.led_before(&key(), &log, 0), "a log never used");
+    log.accept_generation(0, Some("broker-a"))
+        .await
+        .expect("lead at 0");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(unclean.led_before(&key(), &log, 0));
+    assert!(unclean.led_before(&key(), &log, 1));
+}

@@ -289,3 +289,22 @@ async fn a_shard_without_a_reachable_log_is_not_left_withheld() {
         .expect("nothing to give up");
     assert!(start.expect("unclean").leads_at(&cache, 3));
 }
+
+/// **A leader at generation 0 gives it up too** (#1295), and is reclaimed
+/// at 1. A shard placed before incarnations starts at 0, so 0 is a
+/// generation it led, not one it never took.
+#[tokio::test]
+async fn a_crashed_leader_at_generation_zero_gives_it_up() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = storage(dir.path());
+    led_before_the_crash(&storage, 0).await;
+    let (lifecycle, store) = node(&storage, true);
+
+    reconcile(&lifecycle, &store, &led_with_followers(0)).await;
+    assert_eq!(lifecycle.lock().await.phase(&key(0)), Phase::Failed);
+    assert!(log(&storage).gave_up());
+
+    lifecycle.lock().await.fence().probed(&key(0), 0, true);
+    reconcile(&lifecycle, &store, &led_with_followers(1)).await;
+    assert_eq!(lifecycle.lock().await.phase(&key(0)), Phase::Active);
+}

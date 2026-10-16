@@ -53,7 +53,7 @@ impl UncleanStart {
     ) -> bool {
         let accepted = log.accepted_generation();
         self.led_before(key, log, generation)
-            || (accepted > 0
+            || (held(log)
                 && accepted < generation
                 && !self.leads_at(key, accepted)
                 && !self.vouched.lock().contains(key))
@@ -83,7 +83,7 @@ impl UncleanStart {
         generation: u64,
     ) -> bool {
         let accepted = log.accepted_generation();
-        if accepted == 0 || self.leads_at(key, accepted) {
+        if !held(log) || self.leads_at(key, accepted) {
             return false;
         }
         match log.accepted_leader() {
@@ -97,6 +97,15 @@ impl UncleanStart {
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
+}
+
+/// Whether `log` ever took a generation: a ballot, a recorded generation, or
+/// one above 0. Generation 0 is a real one (a shard placed before
+/// incarnations starts there), so the number alone cannot say.
+fn held(log: &felix_broker::StreamLog) -> bool {
+    log.accepted_generation() > 0
+        || log.accepted_leader().is_some()
+        || !log.generations().is_empty()
 }
 
 #[cfg(test)]
