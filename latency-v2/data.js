@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792113077992,
+  "lastUpdate": 1792117107611,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39270,6 +39270,72 @@ window.BENCHMARK_DATA = {
             "range": "155.32",
             "unit": "us",
             "extra": "trials: 5\nmedian: 420.00\nmean: 480.60\nstdev: 155.32\ncv: 32.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "618cafe8fd53b1459ce85502817dcb7bf3a0efda",
+          "message": "fix(replication): don't count a follower's stale position before its storage id is checked (#1274)\n\n* fix(replication): don't count a follower's stale position before its storage id is checked\n\nA pass clones the followers' cursors before any exchange runs, and the\nstorage-identity check resets a cursor only inside that follower's own\nexchange. Each landed answer recounted the mark over every position, so a\nwiped follower that had confirmed more than the mark, beside one that failed\nfast, released records only the leader held. The counter mark and the\ngroup-state candidates read the same stale cursors.\n\nThe mark, the counter mark and the report's caught-up list now count only\nfollowers whose identity this pass has checked and found unchanged; any\nother counts as holding nothing. FelixShard.tla's ReportCounts gets the\nsame condition.\n\nA failed replica commit-offset write is now retried by the log once a\nsecond until it lands, since an idle shard sends no batch to retry it. A\nclosed log refuses to write its replica state, so a pending retry cannot\nland in a directory another log owns.\n\n* fix(replication): keep unchecked followers in the report's candidates\n\nLeaving a follower whose identity the pass had not checked out of the\nreport's caught-up list broke failover: a leader cut off from its followers\nreported no candidates, so none was promoted after it died\n(a_deposed_cache_leader_rejoins_after_a_failover). Only the marks need the\nrule. The report names followers as they last stood, with the identity each\nwas counted under, as before; the counter level keeps its candidates from\nall followers and its mark from the checked ones. The spec splits\nMarkCounts from ReportCounts to match.\n\n* fix(replication): count a follower only on an answer from the copy it describes\n\nThe identity probe reads the pooled connection's handshake. A follower that\ncrashed and came back wiped leaves the old connection open until QUIC's idle\ntimeout, so the probe named the old copy and the pass counted its position.\nA follower now counts toward the mark and the counter mark only after one of\nits requests in the pass was answered over a connection whose identity is\nthe cursor's; an answer from another identity starts the cursor over. The\npool's request_identified returns that identity with the answer.\n\nA level follower is sent nothing, so while the mark is below what it\nconfirmed it is sent its last record again for an answer; once the mark has\ncaught up nothing extra is sent.\n\nFelixShard.tla models the per-pass answer (Answer, Recount, checked), counts\nthe mark by it under the wipe configuration, and FelixShardWipe.cfg checks\nAckedOnLiveMajority. A closed log refuses only a write it would make.\n\n* fix(replication): resend a level follower's last record only when it raises the mark\n\nThe resend fired whenever a level follower's position was above the mark,\nso an idle non-Quorum cache resent its last counter record every pass, and a\nmark stuck for any other reason (a deposed leader, a learner, followers down)\nresent a record every pass to no end. It now fires only on a shard whose\npublishes wait on the mark, while this broker leads, and only for a follower\nwhose position would raise the mark (or the counter mark), counting the\nothers that are not stalled. The answer rule for counting applies only where\npublishes wait on the mark.\n\nAckedOnLiveMajority names the leader whose hwm moved, and FelixShardWipe's\nweight goes up for the new state.\n\n* fix(replication): judge a drain's successor by an answer too\n\nThe strict count was gated on acks_at_quorum, which is false while a shard\ndrains, so a draining shard counted stale positions again: its mark could\nrelease in-flight writes on a wiped follower's old position, and the drain\ncould report a wiped successor level and hand the shard to an empty copy.\nThe count is now strict on every shard. A draining shard whose fence is\nquiet asks its successor for an answer by resending the last record, so an\nidle drain still completes; the Quorum resend keeps its gates.\n\n* docs(formal): define the mark's counting before AckReadyOver uses it\n\nTLC refuses an operator used above its definition.\n\nSpec-Unaffected: reorders definitions only.\n\n* docs(formal): fit FelixShardWipe in a pull request's hour\n\nThe pass's answers are now cleared by the report that ends the pass rather\nthan by a separate action, only the current leader records them, and only\nfor a follower whose answer would count. The lost-copy history is derived\n(an answered follower whose identity moved on) instead of kept. The PR\nconfiguration stops the clock at 4; FelixShardWipeFull runs it to 5 in the\nnightly exhaustive job.\n\nSpec-Unaffected: the spec itself is what changes; no code changes.",
+          "timestamp": "2026-10-16T02:14:09Z",
+          "tree_id": "5d430e83a4d35cdd9a4e985761eaa9c71ac52b25",
+          "url": "https://github.com/GetFelix/felix/commit/618cafe8fd53b1459ce85502817dcb7bf3a0efda"
+        },
+        "date": 1792117102902,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.80\nstdev: 1.30\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 248,
+            "range": "10.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 251.00\nstdev: 10.37\ncv: 4.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 575,
+            "range": "1233.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 575.00\nmean: 1070.80\nstdev: 1233.93\ncv: 115.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 219.60\nstdev: 2.07\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 475,
+            "range": "51.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 475.00\nmean: 490.20\nstdev: 51.72\ncv: 10.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1459,
+            "range": "643.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1459.00\nmean: 1569.80\nstdev: 643.97\ncv: 41.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
