@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792110496672,
+  "lastUpdate": 1792111493076,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39072,6 +39072,72 @@ window.BENCHMARK_DATA = {
             "range": "426.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 642.00\nmean: 876.80\nstdev: 426.66\ncv: 48.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "357571795363fd3f18dc38a05075a4d542ea641c",
+          "message": "fix(placement): never promote a follower whose storage changed, and trust a dead leader's report past its TTL (#1266, #1250) (#1271)\n\n* fix(placement): never promote a follower whose storage changed, and trust a dead leader's report past its TTL (#1266, #1250)\n\nThe control plane now keeps each broker's registered storage identity\n(NodeStatus.storage_id, cleared by a registration without one, 400 when\nmalformed) and the identity each replica report names for every follower\n(ReplicaReport.follower_storage, copied from replica_storage_ids).\n\nPlacement judges each (report, follower) pair: a matching identity counts\nwhile the report is believed, and while the assignment is still at the\nreport's generation and its leader is down or left the report is aged to the\nleader's last heartbeat (#1250). A mismatch never counts, even fresh. A\nmissing identity on either side is today's rule: fresh within the TTL, never\nfrozen. Key-level reads (generation, leader offset, drained, halted) use the\nbelieved report so promotion works from a dead leader's report.\n\nRaft metadata level 12 for both fields, dropped by the proposer below it.\nPostgres migration 0030 adds the columns with markers\n(storage_id_incarnation, follower_storage_at) so an older instance's write\nreads as no identity.\n\nSpec-Unaffected: the model already promotes from a report of any age (reports never expire in FelixShard.tla), so the #1250 freeze only narrows what it checks, and ByLeaderReport's r.sids[f] = sid[f] is the identity comparison placement now makes; FelixShardWipe.cfg cites the new placement tests.\n\n* test(cluster): skip the harness's probe record when replaying in wiped tests\n\nSpec-Unaffected: test helper only.\n\n* docs: say which wiped followers placement still counts\n\nThe status row and the upgrade note claimed more than placement does: a\nfollower wiped before it is marked down still matches its old identity until\nit registers again, and unverified followers are still promoted. Also note\nthat the identity does not catch a tail lost under a relaxed fsync mode.\n\nSpec-Unaffected: docs only.\n\n* ci: re-run on the docs commit\n\nSpec-Unaffected: no change.",
+          "timestamp": "2026-10-16T00:40:35Z",
+          "tree_id": "e2c4aeeeaa4a86681af6a3c5cd4830e9158419e0",
+          "url": "https://github.com/GetFelix/felix/commit/357571795363fd3f18dc38a05075a4d542ea641c"
+        },
+        "date": 1792111488363,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "4.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 181.20\nstdev: 4.09\ncv: 2.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "3.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 244.00\nstdev: 3.74\ncv: 1.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 313,
+            "range": "12.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 313.00\nmean: 310.80\nstdev: 12.11\ncv: 3.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 220.40\nstdev: 0.89\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 444,
+            "range": "10.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 444.00\nmean: 444.20\nstdev: 10.33\ncv: 2.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 707,
+            "range": "119.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 707.00\nmean: 718.20\nstdev: 119.82\ncv: 16.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
