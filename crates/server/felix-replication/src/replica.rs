@@ -967,6 +967,20 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        if let Some(refusal) = self
+            .refuse_unbacked(
+                correlation_id,
+                &key,
+                log_kind,
+                &log,
+                generation,
+                sender,
+                request.shard.incarnation,
+            )
+            .await
+        {
+            return refusal;
+        }
         // A fence at the generation already accepted changes nothing here: it
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
@@ -1214,15 +1228,8 @@ impl ReplicaHandler {
         generation: u64,
         sent: Option<u64>,
     ) -> Option<InternalMessage> {
-        let own = match log_kind {
-            felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => None,
-            felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
-                Some(felix_broker::LogKind::Stream)
-            }
-            felix_broker::LogKind::Counters => Some(felix_broker::LogKind::Cache),
-        };
         let opened;
-        let log = match own {
+        let log = match own_kind(log_kind) {
             None => log,
             Some(own) => {
                 opened = self
@@ -1289,6 +1296,77 @@ impl ReplicaHandler {
              records, and no newer leader has shipped to it since"
                 .to_string(),
         ))
+    }
+
+    /// Refuse a fence for a copy that holds no promise on disk unless the
+    /// routing view backs it.
+    ///
+    /// A wiped broker has lost every ballot it gave, so on its own it would
+    /// answer a leader its old directory had promised to refuse (#1267).
+    /// Every copy without a promise is held to this, not only those on a
+    /// directory new this start: nothing on disk tells a wiped copy from a
+    /// new one once the broker has restarted again. The
+    /// control plane issued each generation it promised before the wipe, and
+    /// a routing view taken since names the newest of them or a later one.
+    /// An older generation is already refused by the routing view; at the
+    /// view's own generation only the leader it names is answered, and a
+    /// newer one was never promised. With no route for the shard nothing
+    /// says which generations those were, so the fence waits for the view.
+    ///
+    /// Judged on the shard's own log, which a group or counter log follows.
+    /// Once the copy has taken a generation the ballot on disk answers.
+    #[allow(clippy::too_many_arguments)]
+    async fn refuse_unbacked(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        sender: Option<&str>,
+        sent: Option<u64>,
+    ) -> Option<InternalMessage> {
+        let opened;
+        let log = match own_kind(log_kind) {
+            None => log,
+            Some(own) => {
+                opened = self
+                    .broker
+                    .shard_log_for(
+                        own,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        None,
+                        self.expected_incarnation(key, sent),
+                    )
+                    .await;
+                match &opened {
+                    Some(log) => log,
+                    // No log of its own: no promise either, and the group or
+                    // counter log's fence is refused like the shard's would be.
+                    None => return Some(unbacked(correlation_id, key, generation)),
+                }
+            }
+        };
+        if crate::unclean::held(log) {
+            return None;
+        }
+        match self.router.snapshot().get(key) {
+            None => Some(unbacked(correlation_id, key, generation)),
+            Some(route) if route.generation == generation => match sender {
+                Some(sender) if sender != route.leader.node_id => Some(promised_elsewhere(
+                    correlation_id,
+                    key,
+                    generation,
+                    &route.leader.node_id,
+                    Some(sender),
+                )),
+                _ => None,
+            },
+            Some(_) => None,
+        }
     }
 
     /// Refuse a request for a shard at an incarnation this broker does
@@ -1368,6 +1446,37 @@ impl ReplicaHandler {
             }
         }
     }
+}
+
+/// The log a group or counter log keeps its promise in: the shard's own.
+fn own_kind(log_kind: felix_broker::LogKind) -> Option<felix_broker::LogKind> {
+    match log_kind {
+        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => None,
+        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
+            Some(felix_broker::LogKind::Stream)
+        }
+        felix_broker::LogKind::Counters => Some(felix_broker::LogKind::Cache),
+    }
+}
+
+/// A fence refused for a copy with no promise the routing view cannot back
+/// yet.
+/// Retryable: the leader asks again once this broker's watch has the shard.
+fn unbacked(correlation_id: u64, key: &felix_router::ShardKey, generation: u64) -> InternalMessage {
+    tracing::info!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation,
+        "refusing a fence: this copy holds no promise and the routing view does not \
+         have the shard yet",
+    );
+    metrics::record_replicated(metrics::OUTCOME_BEHIND);
+    refused(
+        correlation_id,
+        ErrorCode::StaleRoute,
+        0,
+        "this copy holds no promise and the routing view does not have the shard yet".to_string(),
+    )
 }
 
 fn log_kind(log: ReplicaLog) -> felix_broker::LogKind {

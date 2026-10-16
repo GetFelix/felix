@@ -102,7 +102,7 @@ impl UncleanStart {
 /// Whether `log` ever took a generation: a ballot, a recorded generation, or
 /// one above 0. Generation 0 is a real one (a shard placed before
 /// incarnations starts there), so the number alone cannot say.
-fn held(log: &felix_broker::StreamLog) -> bool {
+pub(crate) fn held(log: &felix_broker::StreamLog) -> bool {
     log.accepted_generation() > 0
         || log.accepted_leader().is_some()
         || !log.generations().is_empty()
