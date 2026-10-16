@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792154608603,
+  "lastUpdate": 1792157640096,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31460,6 +31460,58 @@ window.BENCHMARK_DATA = {
             "range": "7836.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 944251.78\nmean: 942640.16\nstdev: 7836.71\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0cf2540cc37cfb8185c0c824eda256ffccff1a14",
+          "message": "test(cluster): keep the crashed leader's probe from reclaiming in the replacement test (#1313)\n\nWhen the restarted leader's probe reports no follower ahead before placement\nacts on its new storage id, placement reclaims the shard for it at a new\ngeneration, which is correct but is not what this test checks. Refuse the\nleader's requests to one follower so the probe cannot report and only the\nidentity check decides.",
+          "timestamp": "2026-10-16T13:29:39Z",
+          "tree_id": "e7992fc75b5402526e2865a0c2f0b59b126d68ce",
+          "url": "https://github.com/GetFelix/felix/commit/0cf2540cc37cfb8185c0c824eda256ffccff1a14"
+        },
+        "date": 1792157639518,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350133.2,
+            "range": "18878.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350133.20\nmean: 345496.29\nstdev: 18878.24\ncv: 5.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350133.2,
+            "range": "18878.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350133.20\nmean: 345496.29\nstdev: 18878.24\ncv: 5.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81064.21,
+            "range": "567.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81064.21\nmean: 81013.48\nstdev: 567.66\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810642.12,
+            "range": "5676.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810642.12\nmean: 810134.75\nstdev: 5676.62\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
