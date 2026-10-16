@@ -7,8 +7,9 @@
 //! budget, and a feeder waits only for its own subscription's frames to be
 //! written. A subscription whose stream stalls fills its share and stops
 //! there, its broker queue fills and sheds as usual, and the others on the
-//! connection never wait for it. A shared pool would let one stalled
-//! subscription take all of it.
+//! connection never wait for it (under the `drop_new` lane policy; `block`
+//! stops the connection writer, see `writer.rs`). A shared pool would let
+//! one stalled subscription take all of it.
 //!
 //! A frame larger than the share still goes once the subscription has
 //! nothing else waiting, so each subscription can always have one batch in
@@ -40,7 +41,12 @@ impl EgressBudget {
         self.subscriptions.fetch_add(1, Ordering::Relaxed);
         EgressShare {
             budget: Arc::clone(self),
-            held: Arc::default(),
+            held: Arc::new(ShareHeld {
+                bytes: AtomicUsize::new(0),
+                waiting: AtomicUsize::new(0),
+                freed: Notify::new(),
+                gauge: metrics::gauge!("felix_sub_egress_bytes"),
+            }),
         }
     }
 
@@ -56,21 +62,30 @@ pub(super) struct EgressShare {
     held: Arc<ShareHeld>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ShareHeld {
     bytes: AtomicUsize,
+    /// Feeders parked in [`EgressShare::hold`]. A release notifies only when
+    /// this is nonzero, so the common case takes no lock.
+    waiting: AtomicUsize,
     freed: Notify,
+    gauge: metrics::Gauge,
 }
 
 impl EgressShare {
     /// Hold `bytes` until the returned value is dropped, waiting while the
     /// subscription's own frames fill its share.
     pub(super) async fn hold(&self, bytes: usize) -> EgressBytes {
+        if let Some(held) = self.try_hold(bytes) {
+            return held;
+        }
+        let _waiting = Waiting::new(&self.held.waiting);
         loop {
             let freed = self.held.freed.notified();
             tokio::pin!(freed);
-            // Registered before the check, so a write finishing in between
-            // still wakes this.
+            // Counted as waiting and registered before the check, so a write
+            // finishing in between either sees the count and notifies, or
+            // its release is visible to the check.
             freed.as_mut().enable();
             if let Some(held) = self.try_hold(bytes) {
                 return held;
@@ -85,17 +100,34 @@ impl EgressShare {
         if self.budget.max == 0 || bytes == 0 {
             return Some(EgressBytes::default());
         }
-        let used = self.held.bytes.load(Ordering::Acquire);
+        let used = self.held.bytes.load(Ordering::SeqCst);
         if used > 0 && used.saturating_add(bytes) > self.budget.share() {
             return None;
         }
         self.held.bytes.fetch_add(bytes, Ordering::AcqRel);
-        metrics::gauge!("felix_sub_egress_bytes").increment(bytes as f64);
+        self.held.gauge.increment(bytes as f64);
         Some(EgressBytes {
             bytes,
             held: Some(Arc::clone(&self.held)),
             queue: HeldBytes::default(),
         })
+    }
+}
+
+/// Counts a feeder as waiting for as long as it is parked, including when
+/// its wait is cancelled.
+struct Waiting<'a>(&'a AtomicUsize);
+
+impl<'a> Waiting<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -139,10 +171,14 @@ impl Drop for EgressBytes {
             return;
         }
         if let Some(held) = &self.held {
-            held.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
-            held.freed.notify_waiters();
+            // SeqCst pairs with `hold`: either the waiter's check sees this
+            // release, or this sees the waiter and wakes it.
+            held.bytes.fetch_sub(self.bytes, Ordering::SeqCst);
+            if held.waiting.load(Ordering::SeqCst) > 0 {
+                held.freed.notify_waiters();
+            }
+            held.gauge.decrement(self.bytes as f64);
         }
-        metrics::gauge!("felix_sub_egress_bytes").decrement(self.bytes as f64);
     }
 }
 
