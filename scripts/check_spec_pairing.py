@@ -66,6 +66,14 @@ MODELLED = (
     "crates/server/felix-broker/src/queue/cursors",
     "crates/server/felix-storage/src/cache/log_cache",
     "crates/server/felix-common/src/fleet",
+    # Storage identity and the clean-stop decision: which copy a follower is
+    # counted as, and when an unclean start rotates it. The internal handshake
+    # carries both to peers.
+    "crates/server/felix-storage/src/storage_identity",
+    "crates/server/felix-storage/src/run_state",
+    "services/felix-broker-service/src/node/storage",
+    "services/felix-broker-service/src/node/shutdown",
+    "crates/protocol/felix-wire/src/internal/handshake",
 )
 SPEC = "docs/formal/"
 MARKER = re.compile(r"^\s*Spec-Unaffected:\s*\S", re.MULTILINE)
