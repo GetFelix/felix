@@ -259,7 +259,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardReportFromAnswers.cfg` | followers counted by what they answered, as the broker counts them, with two promotions in a row and no floor under the report | violate `AckedSurvive` |
 | `FelixShardReportFloor.cfg` | the same, with no follower named short of the log the leader inherited | pass |
 | `FelixShardWipe.cfg` | `FelixShardReportFloor.cfg` with a follower that loses its disk, the leader learning each follower's storage identity and counting a follower toward the mark only on an answer from that identity this pass, with the clock stopped inside the first lease | pass `AckedOnLiveMajority` and the invariants below (265k distinct states, depth 30, 22 s on a four-core CI runner). No promotion happens here |
-| `FelixShardWipeFull.cfg` | the same with the clock to 3, the least at which placement promotes after a wipe, and placement promoting a follower only under the identity it has now | pass `AckedSurvive`, `AckedOnLiveMajority` and the rest (3.6M distinct states, depth 37, 4 min 30 s on a four-core CI runner; nightly) |
+| `FelixShardWipeFull.cfg` | the same with the clock to 3, the least at which placement promotes after a wipe, and placement promoting a follower only under the identity it has now | pass `AckedSurvive`, `AckedOnLiveMajority` and the rest (3.6M distinct states, depth 37, 4 min 30 s on a four-core CI runner) |
 | `FelixShardWipeNoIds.cfg` | the same without storage identities: a wiped follower stays counted on an idle shard | violate `AckedSurvive` (found in seconds) |
 | `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.39M distinct states) |
 | `FelixShardHandoffNoWait.cfg` | the same move cutting over without waiting for the drained report | violate `AtMostOneServing` |
@@ -1070,19 +1070,16 @@ workflow's dispatch (`tla_configs`) when the change is risky.
 Whether a code change still matches the spec is a separate, quick check on
 every pull request that touches code (`scripts/check_spec_pairing.py`).
 
-Nine configurations are too big for that hour, and run nightly instead, each in
+Eight configurations are too big for that hour, and run nightly instead, each in
 its own job with a six-hour limit (the `exhaustive` job in
 `.github/workflows/tla-walk.yml`): `FelixShardElectSwap.cfg`,
-`FelixShardWipeFull.cfg`, `FelixShardElectHandoff.cfg`,
+`FelixShardElectHandoff.cfg`,
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
 `FelixShardFencedAckMoveCancel.cfg`. Each must pass; `FelixShardElectSwap.cfg`
 has not yet finished a run. A smaller sibling of each
-runs per push. For `FelixShardWipeFull.cfg` that sibling, `FelixShardWipe.cfg`,
-stops before any promotion, so a promotion after a wipe (`AckedSurvive` with
-storage identities) is checked only nightly; `FelixShardWipeNoIds.cfg` still
-shows per push that without identities it loses a record. A failure shows the same way a failed walk does, as a failed
+runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
 
