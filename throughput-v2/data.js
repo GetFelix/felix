@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792127904743,
+  "lastUpdate": 1792129499280,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31148,6 +31148,58 @@ window.BENCHMARK_DATA = {
             "range": "11727.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1241496.97\nmean: 1240673.87\nstdev: 11727.72\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b3f2ee67be3acd67c1a6e951bc571a6b681a820",
+          "message": "fix(replication): hold followers to the incarnation measured on their connection (#1282)\n\n* fix(replication): hold followers to the incarnation measured on their connection\n\nA leader still on a wiped follower's old connection reported it under its old\nstorage identity after the follower registered again. When that registration\nlost its identity (an older broker, an older control-plane instance, or a Raft\ngroup below the identity level), the control plane stamped the follower's\ncurrent incarnation on the report and placement counted the empty copy.\n\n- New peer bit NODE_INCARNATION (1 << 11): HelloCapableOk carries the\n  responder's node incarnation after its storage identity, or \"not registered\n  yet\". A responder closes the connections it answered once its incarnation\n  changes, so callers redial and learn it. Peers that predate the bit exchange\n  byte-identical frames.\n- The leader's per-follower identity is (storage id, incarnation);\n  follow_storage starts a cursor over on any change, including a follower\n  with no storage id whose incarnation changed.\n- Reports carry the incarnation each follower gave (replica_incarnations).\n  The control plane stores it as that follower's incarnation; a follower\n  measured before it registered gets none and never counts on it. A follower\n  without the bit falls back to the incarnation registered on arrival.\n- Model: Register no longer redials by assumption; Report records the\n  incarnations the leader learned. FelixShardWipeStripped now passes;\n  FelixShardWipeStrippedOnArrival is the old stamp and violates AckedSurvive.\n\nCloses #1281\n\n* fix(replication): keep a follower's cursor across a re-registration on the same storage\n\nA new incarnation on an unchanged storage identity is the same copy, so the\nleader updates the incarnation and keeps the position, rebuildable halts and\nany rebuild. A new storage identity, or a new incarnation with no storage\nidentity on either side, still starts the copy over. The model's Probe and\nAnswer follow. Docs list every way the arrival-stamp window opens.\n\n* docs(replication): say what a storage id does not catch; name the no-storage-id incarnation test\n\nThe id names a data directory, not its contents: an unflushed tail lost in a\ncrash, an older copy put back by rsync or a snapshot, and a copied directory\nall keep it. A hand-made restore or copy must delete storage-id.\n\n* fix(formal): seed reports at every broker's first incarnation\n\nNoReport named incarnation 0 for everyone, which the +1 encoding now reads as\nnone, so the Figure 8 histories seeded from it could never promote and their\nruns stopped after five states.",
+          "timestamp": "2026-10-16T05:41:13Z",
+          "tree_id": "881b5eb66f76181d88d873b6e3a6ea4dc09a9c02",
+          "url": "https://github.com/GetFelix/felix/commit/1b3f2ee67be3acd67c1a6e951bc571a6b681a820"
+        },
+        "date": 1792129498459,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 499833.25,
+            "range": "33901.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499833.25\nmean: 514675.90\nstdev: 33901.97\ncv: 6.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 499833.25,
+            "range": "33901.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499833.25\nmean: 514675.90\nstdev: 33901.97\ncv: 6.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120170.34,
+            "range": "7511.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120170.34\nmean: 117326.92\nstdev: 7511.82\ncv: 6.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1201703.38,
+            "range": "75118.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1201703.38\nmean: 1173269.21\nstdev: 75118.23\ncv: 6.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
