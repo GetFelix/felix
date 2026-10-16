@@ -185,6 +185,8 @@ is still required in every other case:
 - The broker runs without cluster membership, so there is no registration to
   compare.
 - The control plane was restored too, so its incarnations went back.
+- The node was deleted from the control plane after the copy was taken. It
+  registers again from incarnation 0.
 
 Deleting the file is always safe. It costs one full copy of each shard the
 broker follows. When in doubt, delete it.
