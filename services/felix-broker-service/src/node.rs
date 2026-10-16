@@ -175,7 +175,40 @@ where
         "sub egress lanes ENABLED"
     );
 
-    let (broker, durable_storage, storage_id, unclean) = storage::open(&config)?;
+    // One holder, shared by every control-plane caller: the startup lookup
+    // and the metadata sync here, and membership below. A refresh swaps what
+    // is inside it, so a caller handed it at startup keeps presenting a
+    // current token for the life of the process rather than the one token it
+    // was given.
+    let credential = (!config.controlplane_token.is_empty())
+        .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
+    let membership_client = crate::cluster::controlplane_client::build()?;
+    let credential_refresh = membership::keep_credential_current(
+        &config,
+        &membership_client,
+        &credential,
+        &sync_shutdown,
+    );
+    // Before any store opens: a data directory restored from a snapshot is
+    // older than the node's last registration and must not keep its id
+    // (#1334). Nothing is open yet, so a stop while waiting leaves the
+    // directory as it was.
+    let mut shutdown = Box::pin(shutdown);
+    let registered = tokio::select! {
+        registered = membership::registered_incarnation(
+            &config,
+            durable_storage_configured,
+            &membership_client,
+            &credential,
+        ) => registered?,
+        () = shutdown.as_mut() => {
+            tracing::info!("stopped before the control plane answered; nothing was opened");
+            sync_shutdown.cancel();
+            peer_shutdown.cancel();
+            return Ok(());
+        }
+    };
+    let (broker, durable_storage, storage_id, unclean) = storage::open(&config, registered)?;
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
@@ -349,12 +382,6 @@ where
         ));
     }
 
-    // One holder, shared by every control-plane caller: the metadata sync
-    // here, and membership below. A refresh swaps what is inside it, so a
-    // caller handed it at startup keeps presenting a current token for the
-    // life of the process rather than the one token it was given.
-    let credential = (!config.controlplane_token.is_empty())
-        .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
     tokio::spawn(cache_expiry::run(
         Arc::clone(&broker),
         ingress_router.clone(),
@@ -380,13 +407,6 @@ where
         seeded_rx,
     );
 
-    let membership_client = crate::cluster::controlplane_client::build()?;
-    let credential_refresh = membership::keep_credential_current(
-        &config,
-        &membership_client,
-        &credential,
-        &sync_shutdown,
-    );
     // Filled by the shard tasks, carried by the heartbeat.
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     // Set at each registration, read by the replica reports.
@@ -406,6 +426,7 @@ where
         &incarnation,
         registered,
         storage_id,
+        durable_storage.as_ref().map(|storage| storage.root()),
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes

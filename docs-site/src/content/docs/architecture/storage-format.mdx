@@ -65,6 +65,7 @@ a segment) should be rejected on its first four bytes rather than misparsed.
 <root>/
   storage-id                                 ← this data directory's identity
   run-state                                  ← whether the last run stopped cleanly
+  registration                               ← the node incarnation of the last registration
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -642,3 +643,10 @@ A start that finds `running` with bit 0 set writes a new `storage-id` before
 anything else, because the crash may have lost records the broker had already
 acknowledged. See [`docs/storage-format.md`](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md#run-state-whether-the-last-run-stopped-cleanly)
 for the rest of the rules.
+
+`registration` holds the node incarnation the control plane gave at the last
+registration (`"FLRG"`, a version, the incarnation as a u64, a CRC). A cluster
+member asks the control plane for its current incarnation before any store
+opens, and writes a new `storage-id` when the control plane is ahead: the
+directory is older than the node's last registration, as a restored volume
+snapshot is.

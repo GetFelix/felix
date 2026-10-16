@@ -327,6 +327,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
         std::sync::Arc::clone(&incarnation),
         tokio::sync::watch::channel(None).0,
         None,
+        None,
     );
 
     // Wait for registration to land.
@@ -425,5 +426,49 @@ async fn an_unauthenticated_broker_cannot_register() {
         "a missing credential is terminal, not something to retry: {err:?}",
     );
 
+    cluster.shutdown().await;
+}
+
+/// The startup lookup that judges a restored data directory (#1334) reads
+/// what registration wrote, under the credential a broker is deployed with,
+/// and a node the control plane has never seen is no evidence.
+#[tokio::test]
+async fn the_startup_lookup_reads_the_incarnation_registration_gave() {
+    let cluster = Cluster::start().await;
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &cluster.keys,
+        "t1",
+        "p:broker-a",
+        vec![
+            "node.manage:node:broker-a".to_string(),
+            "node.view:cluster:*".to_string(),
+        ],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let credential = felix_broker_service::cluster::credential::NodeCredential::new(token);
+    let lookup = || {
+        membership::await_registered_incarnation(
+            &cluster.client,
+            &cluster.base_url,
+            "broker-a",
+            &credential,
+        )
+    };
+    assert_eq!(lookup().await.expect("lookup"), None);
+    for expected in 0..2 {
+        let registration = membership::register(
+            &cluster.client,
+            &cluster.base_url,
+            &config("broker-a", 7001),
+            &credential,
+            None,
+        )
+        .await
+        .expect("register");
+        assert_eq!(registration.incarnation, expected);
+        assert_eq!(lookup().await.expect("lookup"), Some(expected));
+    }
     cluster.shutdown().await;
 }
