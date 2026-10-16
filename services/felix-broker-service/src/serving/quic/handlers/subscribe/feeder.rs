@@ -80,7 +80,7 @@ pub(super) async fn run_lane_feeder(
     let mut busy = false;
 
     loop {
-        let (envelope, queued) = match pending.take() {
+        let (envelope, mut queued) = match pending.take() {
             Some(next) => next,
             None => tokio::select! {
                 next = event_rx.recv_held() => match next {
@@ -103,6 +103,10 @@ pub(super) async fn run_lane_feeder(
                 break;
             }
         };
+        // Given back once the frame is handed to the lanes, at the end of this
+        // pass: before that, on the delivery path, it measurably slows a
+        // single publisher's stream.
+        let mut subscriber = queued.take_subscriber();
         held.carry(queued);
         let first_enqueued_at = envelope.enqueued_at();
         let Some(manager) = manager.upgrade() else {
@@ -247,14 +251,19 @@ pub(super) async fn run_lane_feeder(
                     Some(next)
                 }
                 Err(_) => match deadline {
-                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv_held())
-                        .await
-                        .ok()
-                        .flatten(),
+                    Some(deadline) => {
+                        // Nothing taken waits out the flush delay on the
+                        // subscriber's bound.
+                        drop(std::mem::take(&mut subscriber));
+                        tokio::time::timeout_at(deadline, event_rx.recv_held())
+                            .await
+                            .ok()
+                            .flatten()
+                    }
                     None => None,
                 },
             };
-            let Some((envelope, next_held)) = next else {
+            let Some((envelope, mut next_held)) = next else {
                 break;
             };
             let payload_len = envelope.payloads().first().map_or(0, Bytes::len);
@@ -276,6 +285,7 @@ pub(super) async fn run_lane_feeder(
             };
             let payload = envelope.payloads()[0].clone();
             held.absorb(more);
+            subscriber.absorb(next_held.take_subscriber());
             held.carry(next_held);
             batch_bytes += payload.len();
             batch.push(payload);
