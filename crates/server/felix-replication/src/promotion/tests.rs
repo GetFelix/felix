@@ -161,6 +161,9 @@ struct Replica {
     unreachable_logs: Vec<ReplicaLog>,
     /// The storage identity its handshake gives.
     storage: Option<StorageId>,
+    /// The identity its handshake gives on the group logs' fences, when it
+    /// differs from `storage`.
+    group_storage: Option<StorageId>,
     _dir: TempDir,
 }
 
@@ -175,6 +178,7 @@ impl Replica {
             reachable: true,
             unreachable_logs: Vec::new(),
             storage: Some(storage_of(node_id)),
+            group_storage: None,
             _dir: dir,
         }
     }
@@ -303,6 +307,32 @@ impl PeerRequester for Replicas {
             storage: self.get(node_id).storage,
             ..Default::default()
         })
+    }
+
+    async fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<(InternalMessage, crate::peer::PeerIdentity), PeerError> {
+        let group = matches!(
+            &message,
+            InternalMessage::Fence(fence)
+                if matches!(fence.log, ReplicaLog::GroupDeadLetters | ReplicaLog::GroupCursors)
+        );
+        let answer = self.request(node_id, addr, message).await?;
+        let replica = self.get(node_id);
+        let storage = match replica.group_storage {
+            Some(rotated) if group => Some(rotated),
+            _ => replica.storage,
+        };
+        Ok((
+            answer,
+            crate::peer::PeerIdentity {
+                storage,
+                ..Default::default()
+            },
+        ))
     }
 }
 

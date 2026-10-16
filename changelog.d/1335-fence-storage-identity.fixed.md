@@ -8,5 +8,8 @@
   over a connection whose handshake gave that identity. Any other answer still
   takes the promise, but counts for nothing, and the fence waits for a copy that
   can vouch for what it holds. Under Raft the field waits for metadata level 16.
-  A replica that sends no storage identity, from a build that predates it, does
-  not count in a failover's fence while the assignment names identities.
+  A replica the report named no identity for counts only if its handshake gives
+  none either, as a build that predates identities does. With the old leader
+  gone for good and no majority that counts, the shard waits. That takes two
+  faults; the way out is to stop the promoted broker and run
+  `felixctl placement abandon`.

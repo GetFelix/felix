@@ -87,7 +87,9 @@ async fn a_fence_answer_without_a_storage_id_does_not_count() {
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }
 
-/// **Nor does a replica the report did not name.**
+/// **Nor does a replica the report did not name that gives an identity**:
+/// its leader had not learned it at the report, so whatever it answered
+/// since is not vouched for.
 #[tokio::test]
 async fn a_replica_the_report_did_not_name_does_not_count() {
     let mut replicas = Replicas::new();
@@ -101,6 +103,36 @@ async fn a_replica_the_report_did_not_name_does_not_count() {
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
 
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// **A replica the report did not name and that gives no identity counts as
+/// it always has**, a build from before identities: nothing says either way,
+/// and holding it out would keep a promotion closed for good while it is
+/// rolled.
+#[tokio::test]
+async fn an_unnamed_replica_without_a_storage_id_counts() {
+    let mut replicas = Replicas::new();
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a", "w"])
+        .await;
+    replicas.get_mut("broker-b").storage = None;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = route();
+    route.fence_storage_ids = Some(Arc::new(
+        [("broker-c".to_string(), storage_of("broker-c").to_hex())].into(),
+    ));
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: Some("broker-b".to_string())
+        }
+    );
+    assert_eq!(held(&leader).await, vec!["a", "w"]);
 }
 
 /// **The copy the report named counts, and its tail is taken.**

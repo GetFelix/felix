@@ -730,10 +730,18 @@ async fn ask_fence<R: PeerRequester>(
 }
 
 /// Whether an answer from `node_id`, over a connection whose handshake gave
-/// `identity`, is from the copy the failover's report named. Every answer is
-/// when the assignment names no identities. Otherwise only a match counts:
-/// a replica the report did not name, or a handshake that gave none, cannot
-/// show that its copy still holds what it answered for before.
+/// `identity`, may count toward the fence's majority. Every answer may when
+/// the assignment names no identities.
+///
+/// A replica the report named counts only under that identity: under another
+/// one, or with none, it cannot show it still holds what it answered for.
+/// One the report did not name and that gives no identity, a build from
+/// before identities, counts as it always has: there is no evidence either
+/// way. One the report did not name that does give an identity does not
+/// count: its leader had not learned it when it reported, so every answer it
+/// gave that leader came after the report, and nothing says it kept them.
+/// The fence's majority both refuses the old leader and holds what it
+/// acknowledged, so a promise alone cannot stand in for that answer.
 fn reported_copy(
     expected: Option<&BTreeMap<String, String>>,
     node_id: &str,
@@ -744,6 +752,7 @@ fn reported_copy(
     };
     match (expected.get(node_id), identity) {
         (Some(named), Some(identity)) => named.eq_ignore_ascii_case(&identity.to_hex()),
+        (None, None) => true,
         _ => false,
     }
 }

@@ -113,6 +113,7 @@ fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
                 reachable: true,
                 unreachable_logs: Vec::new(),
                 storage: Some(storage_of(id)),
+                group_storage: None,
                 _dir: dir,
             },
         );
@@ -265,6 +266,31 @@ async fn the_group_logs_furthest_ahead_are_taken_too() {
     assert_eq!(serves(&leader, "workers").await, (Some(2), vec![1]));
     // The records' log and both group logs, in one round.
     assert_eq!(replicas.sent(Kind::Fence).len(), 3);
+}
+
+/// **A failover's group round counts a replica only from the copy the report
+/// named**, as the records' round does. b's group answers come from another
+/// copy, so with c unreachable too few took both and the leader serves its
+/// own pair rather than take b's.
+#[tokio::test]
+async fn a_group_answer_from_another_copy_does_not_count() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    b_gave_up_on_one(&replicas, 3).await;
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").group_storage = Some(StorageId::from_bytes([0xee; 16]));
+    let (leader, _dir) = group_leader().await;
+    let mut route = route_of_size(3);
+    route.fence_storage_ids = Some(Arc::new(
+        ["broker-b", "broker-c"]
+            .into_iter()
+            .map(|id| (id.to_string(), storage_of(id).to_hex()))
+            .collect(),
+    ));
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    assert_eq!(serves(&leader, "workers").await, (None, Vec::new()));
 }
 
 /// **A replica counts toward the group logs' majority only once it took

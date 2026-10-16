@@ -436,11 +436,14 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~Counters /\ ~Handoff /\ ~Cancel
 \* finds not behind it (ByProbe), and names that leader again at the next
 \* generation once every follower is behind it (Reclaim).
 \* `ReclaimBlind`: it reclaims without measuring the followers.
-\* `FenceChecksIds`: where wipes or crashes are modelled with identities, a
-\* promoted leader counts a fence answer only from the identity the report
-\* its promotion was decided on named (`expect`), as `fence_shard` in
-\* crates/server/felix-replication/src/promotion.rs does with the identities
-\* the assignment carries.
+\* `FenceChecksIds`: where wipes or crashes are modelled on the fenced path
+\* (`FencedIds`), a promoted leader counts a fence answer only from the
+\* identity the report its promotion was decided on named (`expect`), as
+\* `fence_shard` in crates/server/felix-replication/src/promotion.rs does with
+\* the identities the assignment carries.
+\* `UnnamedCounts`: it also counts a replica the report named no identity
+\* for. The code does that only for a replica whose handshake gives none, a
+\* build from before identities; the model's always give one.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -453,6 +456,7 @@ GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
 FenceChecksIds == TRUE
+UnnamedCounts == FALSE
 \* `LosePromises`: a follower loses its data directory once, with what it
 \* promised (`Forget`).
 \* `PromiseFromRoutes`: a follower with no promise on disk answers only what
@@ -466,6 +470,15 @@ PromiseFromRoutes == FALSE
 \* fenced path, and apart from the wipes of the report path.
 ASSUME LosePromises => /\ Elections = 0 /\ Wipes = 0 /\ AckByFollowers /\ FenceOnPromote
 ASSUME PromiseFromRoutes => LosePromises
+
+\* Wipes and crashes on the fenced path, where the promoted leader checks the
+\* identities the report named. There a leader knows no follower's identity
+\* until it has asked (`Unnamed`, any value no identity reaches), and asks
+\* before it ships, as `follow_storage` runs at the start of each exchange. A
+\* report made before then names none for it. On the report path every
+\* identity starts known, as those configurations were measured.
+FencedIds == FenceOnPromote /\ StorageIds /\ Wipes > 0
+Unnamed == 99
 
 VARIABLES
     now,        \* real time
@@ -720,7 +733,7 @@ CounterInit ==
 
 IdInit ==
     /\ sid = [m \in Brokers |-> 0]
-    /\ seen = [m \in Brokers |-> [n \in Brokers |-> 0]]
+    /\ seen = [m \in Brokers |-> [n \in Brokers |-> IF FencedIds /\ n /= m THEN Unnamed ELSE 0]]
     /\ seenInc = [m \in Brokers |-> [n \in Brokers |-> 1]]
     /\ wipes = 0
     /\ checked = [m \in Brokers |-> {}]
@@ -981,6 +994,7 @@ Ship(b, f) ==
        ELSE UNCHANGED << bgen, fencing, queued, pending >>
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
+    /\ FencedIds => seen[b][f] /= Unnamed
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
@@ -1190,7 +1204,9 @@ Report(b) ==
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
                        gen     |-> bgen[b],
                        \* With `CrashLeader` the leader names its own identity
-                       \* too, as the code does.
+                       \* too, as the code does. Otherwise `seen[b][b]` stands
+                       \* in for it, 0, which is right only because there the
+                       \* leader never crashes and keeps its first identity.
                        sids    |-> IF CrashLeader THEN [seen[b] EXCEPT ![b] = sid[b]]
                                                   ELSE seen[b],
                        incs    |-> seenInc[b]] >>
@@ -1386,7 +1402,7 @@ Promote(v, f, views) ==
     /\ canswered' = [canswered EXCEPT ![f] = {}]
     \* The assignment carries the identities the report named, for the fence
     \* (`fence_storage_ids`). Kept only where identities can change.
-    /\ expect' = IF Wipes > 0 /\ StorageIds THEN [expect EXCEPT ![f] = v.report.sids] ELSE expect
+    /\ expect' = IF FencedIds THEN [expect EXCEPT ![f] = v.report.sids] ELSE expect
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, chwm, cacked >>
 
@@ -1400,15 +1416,22 @@ Promote(v, f, views) ==
 (* that one, which either held the record when it answered or refused it  *)
 (* after, so no clock is needed to keep the old leader out.                *)
 
-\* With `FenceChecksIds`, where identities can change, whether `b` counts
-\* `f`'s fence answer: only from the identity it expects for `f`. Another is
-\* a copy that may have lost what it answered for before, so it is neither
-\* counted nor taken from, though its promise still refuses the old leader.
-\* The code compares the identity the answer's connection gave in its
-\* handshake, and a missing one never matches; the model's reports always
-\* name one, so it counts at least as much as the code.
+\* With `FenceChecksIds`, on the fenced path where identities can change,
+\* whether `b` counts `f`'s fence answer: only from the identity it expects
+\* for `f`. Another is a copy that may have lost what it answered for
+\* before, so it is neither counted nor taken from. Its promise still refuses
+\* the old leader, but cannot count alone: the majority that took the fence
+\* is also what the catch-up trusts to hold every acknowledged record. A
+\* replica the report named no identity for (`Unnamed`) gave its leader
+\* every answer after that report, so it does not count either; the code
+\* counts one only when its handshake gives no identity, which the model's
+\* never do. `UnnamedCounts` counts it, and TLC finds the record lost
+\* (FelixShardFencedCrashCountsUnnamed.cfg). The code compares the identity
+\* the answer's connection gave in its handshake.
 FenceCounts(b, f) ==
-    ~(FenceChecksIds /\ StorageIds /\ Wipes > 0) \/ expect[b][f] = sid[f]
+    \/ ~(FenceChecksIds /\ FencedIds)
+    \/ expect[b][f] = sid[f]
+    \/ UnnamedCounts /\ expect[b][f] = Unnamed
 
 \* One replica answers the fence, and the leader takes its log if it is ahead.
 \* That is the catch-up: whatever a majority acknowledged is in the answer
