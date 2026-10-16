@@ -490,8 +490,11 @@ Promise(f, b, g) ==
 TracksOpens == Elections > 0 \/ Suspicions > 0
 Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
+\* `incs` holds incarnation + 1 (0 is none), so a report seeded from this
+\* names every broker at its first registration, as `sids` names its first
+\* identity.
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0, sids |-> [m \in Brokers |-> 0],
-             incs |-> [m \in Brokers |-> 0]]
+             incs |-> [m \in Brokers |-> 1]]
 
 \* The replica set the stream asked for: everyone but a destination still
 \* copying, a replacement still joining, and the brokers outside it. A quorum
