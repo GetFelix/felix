@@ -161,9 +161,10 @@ the storage id each replica had in the report it was decided on, and the
 promoted leader counts a fence answer only from that id, so the short copy
 never stands in a majority for records it lost. The fence waits for a copy
 that can vouch for what it holds, the old leader's if need be. With the old
-leader gone for good, that is two faults, and the shard stays closed until an
-operator stops the promoted broker and runs `felixctl placement abandon`,
-which loses what only the old leader held ([#1335](https://github.com/GetFelix/felix/issues/1335)).
+leader gone for good the shard stays closed until an operator stops the
+promoted broker and runs `felixctl placement abandon`. That keeps every copy
+in the new replica set and takes the furthest, losing only what no copy there
+holds ([#1335](https://github.com/GetFelix/felix/issues/1335)).
 
 ## On-disk layout
 

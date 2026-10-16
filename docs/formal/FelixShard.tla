@@ -444,6 +444,12 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~Counters /\ ~Handoff /\ ~Cancel
 \* `UnnamedCounts`: it also counts a replica the report named no identity
 \* for. The code does that only for a replica whose handshake gives none, a
 \* build from before identities; the model's always give one.
+\* `NameByRegistration`: placement names such a replica by the identity it
+\* is registered under, while it is at the incarnation the report was taken
+\* at. The code does not: for a follower its leader had not asked yet, that
+\* incarnation is the control plane's stamp as the report arrives, which can
+\* follow a crash the report predates
+\* (FelixShardFencedCrashNamesByRegistration.cfg).
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -457,6 +463,7 @@ Reclaims == FALSE
 ReclaimBlind == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
+NameByRegistration == FALSE
 \* `LosePromises`: a follower loses its data directory once, with what it
 \* promised (`Forget`).
 \* `PromiseFromRoutes`: a follower with no promise on disk answers only what
@@ -734,7 +741,7 @@ CounterInit ==
 IdInit ==
     /\ sid = [m \in Brokers |-> 0]
     /\ seen = [m \in Brokers |-> [n \in Brokers |-> IF FencedIds /\ n /= m THEN Unnamed ELSE 0]]
-    /\ seenInc = [m \in Brokers |-> [n \in Brokers |-> 1]]
+    /\ seenInc = [m \in Brokers |-> [n \in Brokers |-> IF FencedIds /\ n /= m THEN 0 ELSE 1]]
     /\ wipes = 0
     /\ checked = [m \in Brokers |-> {}]
     /\ registered = [m \in Brokers |-> 1]
@@ -1226,6 +1233,13 @@ DeliverReport ==
     /\ report' = IF inflight[1].gen /= gen THEN report
                  ELSE IF StampOnArrival \/ ~StorageIds
                       THEN [inflight[1] EXCEPT !.incs = [m \in Brokers |-> inc[m] + 1]]
+                      \* On the fenced path a leader has measured no incarnation
+                      \* for a follower it has not asked yet, and the control
+                      \* plane stamps the registered one (`node_incarnations`).
+                      ELSE IF FencedIds
+                      THEN [inflight[1] EXCEPT !.incs =
+                              [m \in Brokers |-> IF inflight[1].incs[m] = 0 THEN inc[m] + 1
+                                                                             ELSE inflight[1].incs[m]]]
                       ELSE inflight[1]
     /\ inflight' = <<>>
     /\ heard' \in IF AckOnResponse /\ inflight[1].gen = gen
@@ -1325,6 +1339,16 @@ ByProbe(v, f) ==
     /\ ~Ahead(v.leader, f)
     /\ \A o \in ReplicaSet \ {v.leader} : ~Ahead(o, f)
 
+\* The identity a promotion from report `r` hands the new leader for `m`: the
+\* one `r` names, and under `NameByRegistration` for one it names none, the
+\* one `m` is registered under while it is at the incarnation `r` was taken
+\* at. A crash registers again with a new identity and incarnation.
+Named(r, m) ==
+    IF /\ r.sids[m] = Unnamed /\ NameByRegistration /\ registered[m] /= 0
+       /\ r.incs[m] = inc[m] + 1
+    THEN registered[m] - 1
+    ELSE r.sids[m]
+
 \* Each decision below is made from a read `v` and leaves the planners'
 \* reads as `views`: a held read is used up by the write it decided, one
 \* write per shard per pass. Every write bumps the store's generation.
@@ -1402,7 +1426,8 @@ Promote(v, f, views) ==
     /\ canswered' = [canswered EXCEPT ![f] = {}]
     \* The assignment carries the identities the report named, for the fence
     \* (`fence_storage_ids`). Kept only where identities can change.
-    /\ expect' = IF FencedIds THEN [expect EXCEPT ![f] = v.report.sids] ELSE expect
+    /\ expect' = IF FencedIds THEN [expect EXCEPT ![f] = [m \in Brokers |-> Named(v.report, m)]]
+                                ELSE expect
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, chwm, cacked >>
 
@@ -1426,7 +1451,9 @@ Promote(v, f, views) ==
 \* every answer after that report, so it does not count either; the code
 \* counts one only when its handshake gives no identity, which the model's
 \* never do. `UnnamedCounts` counts it, and TLC finds the record lost
-\* (FelixShardFencedCrashCountsUnnamed.cfg). The code compares the identity
+\* (FelixShardFencedCrashCountsUnnamed.cfg), as it does naming it by its
+\* registration (`NameByRegistration`,
+\* FelixShardFencedCrashNamesByRegistration.cfg). The code compares the identity
 \* the answer's connection gave in its handshake.
 FenceCounts(b, f) ==
     \/ ~(FenceChecksIds /\ FencedIds)

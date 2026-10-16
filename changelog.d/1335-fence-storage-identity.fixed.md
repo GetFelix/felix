@@ -10,6 +10,6 @@
   can vouch for what it holds. Under Raft the field waits for metadata level 16.
   A replica the report named no identity for counts only if its handshake gives
   none either, as a build that predates identities does. With the old leader
-  gone for good and no majority that counts, the shard waits. That takes two
-  faults; the way out is to stop the promoted broker and run
-  `felixctl placement abandon`.
+  gone for good and no majority that counts, the shard waits. The way out is
+  to stop the promoted broker and run `felixctl placement abandon`. That keeps
+  every copy in the new replica set and takes the furthest of them.
