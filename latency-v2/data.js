@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792119820471,
+  "lastUpdate": 1792124537177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39402,6 +39402,72 @@ window.BENCHMARK_DATA = {
             "range": "324.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1885.00\nmean: 1882.60\nstdev: 324.47\ncv: 17.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e68a2c2513420ff6f31dd6d762b53de6b70d93f9",
+          "message": "fix(placement): keep identity checks on through a partial Raft level and across move steps (#1279)\n\n* fix(placement): keep identity checks on through a partial Raft level and across move steps\n\nFour gaps in how placement reads replica reports after #1271:\n\n- Under Raft a member that has not answered since this process started\n  counted at level 0, so a restart with one member down dropped storage\n  identities from every registration and report. A wiped follower's\n  registration then cleared its identity and an older report could promote\n  it empty. Such a member now counts at the join floor, the level the\n  applied log already depends on.\n- The API stamps each report with the node that made it and the\n  incarnation each named node is registered at (report.leader,\n  node_incarnations; metadata level 13, Postgres 0031 with a stamped_at\n  marker). A follower without an identity counts only from a fresh report\n  taken at its current incarnation.\n- A dead leader's report is frozen while its leader, at the same\n  incarnation, is still the assignment's leader, not only while the\n  generation is unchanged: a move's steps raise it under the same leader\n  (#1250).\n- A report counts for followers only while its leader is the\n  assignment's. A new leader that dies before its first report leaves the\n  shard waiting, as replication-design.md said; the code promoted on the\n  previous leader's report while it was fresh.\n\n* spec: model the registered identity and the report's incarnation stamp\n\nByLeaderReport now compares a report's identity with the one the follower\nregistered (`registered`), not the one it has, and treats a follower\nregistered without one as unverified: with StampIncarnations it counts only\nfrom a report the control plane stamped (DeliverReport, `incs`) at its\ncurrent registration. Without StripIds the wipe registers the new identity\nat once, so every existing configuration checks what it did. Under StripIds\nthe wiped follower registers in a step of its own and without an identity,\nonce the pass that heard it has ended and nothing is in flight.\n\nStripIds and StampIncarnations are definitions overridden with `<-`, so no\nother configuration has to name them. FelixShardWipeStripped.cfg is\nexpected to pass and FelixShardWipeStrippedNoStamp.cfg to violate\nAckedSurvive. Placement's other narrowing in this PR (a previous leader's\nreport counts for nobody) is stricter than the model, which still promotes\nfrom any stored report.\n\n* spec: every broker learns the new identity before a stripped registration\n\nTLC found FelixShardWipeStripped.cfg losing a record through the leader's\nstale view: still on the wiped follower's old connection, it reported the\nfollower under its old identity after a registration without one, and the\nstamp counted it. That is a real window in the code, bounded by QUIC's idle\ntimeout for a crashed follower, and only for a registration that lost its\nidentity. Register now teaches every broker the new identity, as a redial\ndoes, and the configuration and replication-design.md state both cases the\nstamp leaves out.\n\n* fix(placement): refuse a predecessor's report only for Leader shards; model the #1281 window\n\nReview follow-up. Under Quorum a previous leader's report still promotes:\non the lease the new leader acknowledged nothing before its first stored\nreport, and under majority_ack the next promoted leader's fence takes what\na majority holds. Only a Leader shard waits for a new leader that died\nbefore its first report. CaughtUp gains reported_by; plan.rs checks it.\n\nThe spec's Register no longer orders a stripped registration after every\nbroker redials the follower. FelixShardWipeStripped.cfg now expects the\nAckedSurvive violation through the leader's stale connection (#1281), and\nFelixShardWipeStrippedRedial.cfg checks the stamp with that window ruled\nout by RedialBeforeRegister, a labelled assumption the code does not make.\nFelixShardWipeStrippedNoStamp.cfg runs under the same assumption.\n\nThe stamping test now registers broker-y again after the write and checks\nthat the stamp stays put and placement stops counting it. The docs state\nthe roll-only window and link #1281.",
+          "timestamp": "2026-10-16T04:17:57Z",
+          "tree_id": "d00e49b7f9c80332875a33cfee62b494e0b66ef6",
+          "url": "https://github.com/GetFelix/felix/commit/e68a2c2513420ff6f31dd6d762b53de6b70d93f9"
+        },
+        "date": 1792124533038,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 183.60\nstdev: 0.55\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "59.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 271.60\nstdev: 59.51\ncv: 21.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 324,
+            "range": "105.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 324.00\nmean: 360.00\nstdev: 105.58\ncv: 29.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 220.40\nstdev: 1.14\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 448.60\nstdev: 2.07\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 620,
+            "range": "55.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 620.00\nmean: 628.80\nstdev: 55.62\ncv: 8.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
