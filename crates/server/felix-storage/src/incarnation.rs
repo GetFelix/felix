@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use parking_lot::RwLock;
 
@@ -197,6 +198,31 @@ impl DirIndex {
     }
 }
 
+impl DirIndex {
+    /// [`Self::retire_stream`] on the blocking pool: each directory costs a
+    /// rename and two directory fsyncs, and the first lookup reads the root.
+    pub(crate) async fn retire_stream_off_runtime(
+        self: &Arc<Self>,
+        root: &Path,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        let index = Arc::clone(self);
+        let root = root.to_path_buf();
+        let (tenant, namespace, stream) = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        crate::task::blocking(move || {
+            index.retire_stream(&root, &tenant, &namespace, &stream, incarnation)
+        })
+        .await
+    }
+}
+
 fn read_root(root: &Path) -> Result<HashMap<String, std::collections::BTreeSet<String>>> {
     let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
     let entries = match std::fs::read_dir(root) {
@@ -245,18 +271,53 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Roots whose `.deleted/` has a purge worker, each with whether something
+/// was retired there since the worker last listed it.
+static PURGE_WORKERS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, bool>>> =
+    LazyLock::new(Default::default);
+
 /// Delete whatever `root`'s `.deleted/` holds, on a thread of its own so a
 /// large directory does not hold up the caller.
+///
+/// One worker per root: a cascade retiring every shard of a namespace would
+/// otherwise start a thread per directory, each listing and deleting the same
+/// entries. A call while the worker runs makes it list the directory again
+/// before it exits, so nothing retired is left behind.
 pub(crate) fn purge_in_background(root: PathBuf) {
     let deleted = root.join(DELETED_DIR);
+    let mut workers = PURGE_WORKERS.lock();
+    if let Some(again) = workers.get_mut(&deleted) {
+        *again = true;
+        return;
+    }
     if !deleted.exists() {
         return;
     }
+    workers.insert(deleted.clone(), false);
+    drop(workers);
+    let dir = deleted.clone();
     let spawned = std::thread::Builder::new()
         .name("felix-purge-deleted".into())
-        .spawn(move || purge(&deleted));
+        .spawn(move || purge_until_idle(&dir));
     if let Err(err) = spawned {
+        PURGE_WORKERS.lock().remove(&deleted);
         tracing::warn!(error = %err, "could not start deleting retired shard directories");
+    }
+}
+
+fn purge_until_idle(deleted: &Path) {
+    #[cfg(test)]
+    let _live = tests::LiveWorker::enter(deleted);
+    loop {
+        purge(deleted);
+        let mut workers = PURGE_WORKERS.lock();
+        match workers.get_mut(deleted) {
+            Some(again) if *again => *again = false,
+            _ => {
+                workers.remove(deleted);
+                return;
+            }
+        }
     }
 }
 
@@ -268,7 +329,6 @@ fn purge(deleted: &Path) {
         let path = entry.path();
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}
-            // Another purge got there first.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 tracing::warn!(path = %path.display(), error = %err, "could not delete a retired shard directory");

@@ -94,7 +94,7 @@ in `-` and the incarnation as 16 hex digits, under `groups/` and
 `dead-letters/` too. A stream deleted and created again therefore never opens
 the old one's directories. Incarnation 0, every stream from before, keeps the
 name above. A deleted stream's directories are renamed into `.deleted/` and
-removed from there in the background; being dotted, it is never read as a
+removed from there by one background thread per store; being dotted, it is never read as a
 shard. `.streams/` holds a small text marker per stream naming the incarnation
 this broker holds, whether a delete of it is unfinished, and through which
 incarnation the control plane said the name is deleted; the format is in

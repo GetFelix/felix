@@ -1116,6 +1116,7 @@ async fn a_restore_to_a_backup_point_takes_the_points_incarnation() {
         let (broker, storage) = broker(&dir).await;
         broker
             .restore_stream_marker("t1", "default", "orders", 5)
+            .await
             .expect("restore the marker");
         storage.shutdown().await.expect("shutdown");
     }

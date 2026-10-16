@@ -27,7 +27,7 @@ pub struct DiskLogProvider {
     config: LogConfig,
     open_logs: ShardSlots<(ShardKey, u64), DiskLog>,
     incarnations: Incarnations,
-    dirs: incarnation::DirIndex,
+    dirs: std::sync::Arc<incarnation::DirIndex>,
     /// Retention set for one stream, keyed by tenant, namespace and stream.
     /// A bound a stream leaves unset comes from `config`.
     stream_retention: parking_lot::RwLock<HashMap<(String, String, String), Retention>>,
@@ -203,7 +203,8 @@ impl DiskLogProvider {
                 .await?;
         }
         self.dirs
-            .retire_stream(&self.root, tenant, namespace, stream, incarnation)
+            .retire_stream_off_runtime(&self.root, tenant, namespace, stream, incarnation)
+            .await
     }
 
     /// This broker's marker for a stream, if it has one. See
