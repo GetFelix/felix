@@ -1063,8 +1063,8 @@ survived. Only `OnCommit` makes it mean that. This is not handled; choose
 `OnCommit` where a follower's acknowledgement has to survive a power loss.
 
 The leader compares them: a follower whose id changed starts over, and a
-follower counts toward the mark only once its id has been checked in that
-pass. See "Storage identities" in `docs/replication-design.md`. Still open
+follower counts toward the mark only once it has answered that pass under
+the id its position was learned under. See "Storage identities" in `docs/replication-design.md`. Still open
 ([#1266](https://github.com/GetFelix/felix/issues/1266), PR
 [#1271](https://github.com/GetFelix/felix/pull/1271)): the control plane does
 not yet compare the id a report names with the one the follower registers

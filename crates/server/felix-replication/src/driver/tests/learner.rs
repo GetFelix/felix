@@ -75,7 +75,7 @@ impl Cursors {
 
     async fn pass(
         &mut self,
-        requester: &(impl PeerRequester + Sync),
+        requester: &impl PeerRequester,
         broker: &Arc<Broker>,
         router: &ShardRouter,
         marks: &QuorumMarks,

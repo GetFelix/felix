@@ -390,3 +390,115 @@ async fn a_wiped_followers_old_counter_position_does_not_move_the_counter_mark()
         "counter adds acknowledged on a copy that was wiped",
     );
 }
+
+/// `broker-b` is down. `broker-c` crashed and came back wiped, but the
+/// leader's pooled connection to the old process is still open: the probe
+/// reads the old handshake's identity. A request either goes unanswered
+/// there or, once the pool has dialled again, is answered by the new copy.
+struct StaleConnection {
+    answered_by_new_copy: bool,
+}
+
+impl PeerRequester for StaleConnection {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        self.request_identified(node_id, addr, message)
+            .await
+            .map(|(answer, _)| answer)
+    }
+
+    async fn storage_identity(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<Option<StorageId>, PeerError> {
+        if node_id == "broker-c" {
+            return Ok(Some(id(1)));
+        }
+        Err(PeerError::Unavailable {
+            node_id: node_id.to_string(),
+            detail: "down".to_string(),
+        })
+    }
+
+    async fn request_identified(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+        if node_id != "broker-c" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        if !self.answered_by_new_copy {
+            std::future::pending::<()>().await;
+        }
+        // Whatever the new copy says, even that it stored the batch, it is not
+        // the copy that confirmed the cursor's position.
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateMarkedRecords(batch)) = message
+        else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        let answer = InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        });
+        Ok((answer, Some(id(2))))
+    }
+}
+
+/// **The probe alone does not vouch for a follower.** It reads the identity
+/// of the pooled connection's handshake, which names the old copy until QUIC
+/// notices the old process is gone. Only an answer counts, and only one from
+/// the copy the cursor describes.
+#[tokio::test(start_paused = true)]
+async fn a_stale_connections_identity_does_not_count_a_wiped_follower() {
+    for answered_by_new_copy in [false, true] {
+        let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+        let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+        let marks = super::quorum::follower_ack_marks();
+        let nodes = nodes();
+        let at = |node: &str, confirmed: u64| FollowerCursor {
+            next_offset: confirmed,
+            confirmed,
+            stalled: false,
+            storage_id: Some(id(1)),
+            ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+        };
+        let mut entry = ShardCursors::at(4);
+        entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
+        let mut cursors = HashMap::from([(key(), entry)]);
+
+        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let follower = StaleConnection {
+            answered_by_new_copy,
+        };
+        let pass = replicate_once(
+            &follower,
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+
+        let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+        assert!(
+            mark <= 2,
+            "acknowledged up to {mark} on a copy that was wiped \
+             (answered by the new copy: {answered_by_new_copy})",
+        );
+    }
+}

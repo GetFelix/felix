@@ -1401,16 +1401,11 @@ impl LogInner {
     }
 }
 
-/// Write the replica state if memory is ahead of disk. Refused once the log
-/// is closed: its directory may already be another log's.
+/// Write the replica state if memory is ahead of disk. A write is refused
+/// once the log is closed: its directory may already be another log's.
 async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
     tokio::task::spawn_blocking(move || {
-        // Checked under the lock `close` takes for its own last write, so
-        // nothing lands after it.
         let mut persisted = inner.replica_persisted.lock();
-        if inner.closed.load(Ordering::Acquire) {
-            return Err(StorageError::Closed(inner.label.clone()));
-        }
         let state = replica_state::ReplicaState {
             accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
             commit_offset: inner.commit_offset.load(Ordering::Acquire),
@@ -1418,6 +1413,13 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         };
         if state == persisted.0 {
             return Ok(());
+        }
+        // `close` makes its own last write under this lock before it sets
+        // `closed`, and returns only after. A write that sees `closed` unset
+        // here therefore lands before `close` returns, while the directory
+        // is still this log's.
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(inner.label.clone()));
         }
         replica_state::store(&inner.dir, &state)?;
         inner

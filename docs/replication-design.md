@@ -1557,12 +1557,23 @@ The exchanges run concurrently, and the pass recounts the mark as each one
 lands, so a follower whose exchange has not got that far still carries the
 old copy's `confirmed`. Counted there, it could release records only the
 leader holds: a wiped follower that had confirmed more than the mark, beside
-one that fails at once. So the mark and the counter mark count only
-followers whose identity the pass has checked and found unchanged
-(`checked_only`). Any other follower counts as holding nothing until its
-exchange hands back a reset cursor, or until a later pass checks it. A
-follower that is down counts for nothing either, though what it confirmed
-may well still be on its disk; the majority that answers carries the mark.
+one that fails at once. The probe does not settle it either, because it
+reads the pooled connection's handshake, and that connection can outlive the
+process it was opened to (below). So the mark and the counter mark count a
+follower only once one of its requests in this pass has been answered over a
+connection whose identity is the cursor's (`Witness`, `checked_only`). An
+answer from another identity starts the cursor over. Any other follower
+counts as holding nothing. A follower that is down counts for nothing either,
+though what it confirmed may well still be on its disk; the majority that
+answers carries the mark.
+
+A follower level with the leader is sent nothing, so on an idle shard it
+would never answer. While the mark is below what such a follower confirmed,
+the leader sends it its last record again (`reship_last`): the follower
+compares the overlap and answers where it is. That happens when the pass
+that heard the answer could not count it, for instance an answer that
+arrived after its pass had handed the exchange to the driver, or a report
+that did not land. Once the mark has caught up, nothing extra is sent.
 The report is left alone: a leader cut off from its followers names them as
 they last stood, which is what failover reads, and the identity each was
 counted under goes with it.
@@ -1586,7 +1597,8 @@ crashes leaves the leader's connection open until QUIC's idle timeout,
 three quarters of `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` (3.75 s by default),
 because the restarted process cannot reset a connection it never had. Until
 then the leader reports the old identity, which the restarted broker no
-longer registers under, and can count the old copy's position.
+longer registers under. It counts nothing for that follower: no answer comes
+back over the old connection.
 
 Each report names the identity every follower was counted under
 (`replica_storage_ids`, lowercase hex, omitted when empty). A follower that

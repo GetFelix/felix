@@ -400,7 +400,9 @@ VARIABLES
     cpNextGen,  \* the generation that set was written at
     sid,        \* each broker's storage identity, which a wipe changes
     seen,       \* per leader, the identity it last learned for each follower
-    wipes       \* how many wipes have happened
+    wipes,      \* how many wipes have happened
+    checked,    \* per leader, the followers that answered this pass from the copy it knows
+    lost        \* history, per leader: followers wiped after answering this pass
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -411,7 +413,7 @@ nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities: only a wipe and a leader learning one change them.
-idVars == << sid, seen, wipes >>
+idVars == << sid, seen, wipes, checked, lost >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -585,6 +587,8 @@ IdInit ==
     /\ sid = [m \in Brokers |-> 0]
     /\ seen = [m \in Brokers |-> [n \in Brokers |-> 0]]
     /\ wipes = 0
+    /\ checked = [m \in Brokers |-> {}]
+    /\ lost = [m \in Brokers |-> {}]
 
 Init ==
     /\ now = 0
@@ -892,7 +896,11 @@ Ship(b, f) ==
 AckReadyOver(b, i, of) ==
     LET r == IF AckOnResponse THEN heard[b] ELSE report IN
     /\ OwnGen(b, i)
-    /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
+    \* Where wipes are modelled with identities, by what the leader counts, as
+    \* the code's mark is, rather than by the logs it cannot see.
+    /\ IF Wipes > 0 /\ StorageIds
+       THEN i <= MajorityLen(b)
+       ELSE MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
     /\ ReportBeforeAck => /\ r.gen = bgen[b]
                           /\ i <= r.len
                           /\ MajorityOf(r.holders \cup {b}, of)
@@ -982,15 +990,15 @@ HoldsPrefix(m, b, k) ==
 ReportCounts(m, b, k) ==
     IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
 
-\* Whether `b` counts `m` toward its mark. With `StorageIds`, only under the
-\* identity `m` has now: a pass counts a follower toward the mark only once it
-\* has checked its identity (`checked_only` in
-\* crates/server/felix-replication/src/driver/shard.rs), so a wiped follower
-\* the leader has not yet probed counts for nothing. The report still names
-\* it, under the identity it was counted under, and placement checks that.
+\* Whether `b` counts `m` toward its mark. Where wipes are modelled with
+\* `StorageIds`, only once `m` has answered this pass from the copy `b` knows
+\* (`Answer`; `checked_only` in
+\* crates/server/felix-replication/src/driver/shard.rs). A wipe between that
+\* answer and the count is not seen. The report still names `m`, under the
+\* identity it was counted under, and placement checks that.
 MarkCounts(m, b, k) ==
     /\ ReportCounts(m, b, k)
-    /\ ReportFromAnswers /\ StorageIds => seen[b][m] = sid[m]
+    /\ ReportFromAnswers /\ StorageIds /\ Wipes > 0 => m \in checked[b]
 
 \* How much of `b`'s log it inherited: the records written before its own
 \* generation. Any record an earlier leader acknowledged is among them.
@@ -1803,9 +1811,10 @@ Wipe(f) ==
     /\ hwm' = [hwm EXCEPT ![f] = 0]
     /\ sid' = [sid EXCEPT ![f] = @ + 1]
     /\ wipes' = wipes + 1
+    /\ lost' = [b \in Brokers |-> IF f \in checked[b] THEN lost[b] \cup {f} ELSE lost[b]]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, checked >>
 
 \* The leader learns `f`'s identity from the handshake, and a new one
 \* starts `f`'s count over: `follow_storage` in
@@ -1820,7 +1829,29 @@ Probe(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, wipes >>
+    /\ UNCHANGED << sid, wipes, checked, lost >>
+
+\* `f` answers one of `b`'s requests over a connection from the copy `b`
+\* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
+\* A connection opened to the process before a wipe answers nothing.
+Answer(b, f) ==
+    /\ StorageIds /\ Wipes > 0
+    /\ bgen[b] > 0 /\ f /= b /\ f \notin checked[b]
+    /\ seen[b][f] = sid[f]
+    /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes, lost >>
+
+\* `b` starts a pass: nothing it heard before counts toward the mark.
+Recount(b) ==
+    /\ StorageIds /\ Wipes > 0
+    /\ checked[b] /= {} \/ lost[b] /= {}
+    /\ checked' = [checked EXCEPT ![b] = {}]
+    /\ lost' = [lost EXCEPT ![b] = {}]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes >>
 
 -----------------------------------------------------------------------------
 
@@ -1859,7 +1890,9 @@ Next ==
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
+            \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
+        \/ Recount(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
@@ -1981,6 +2014,17 @@ AckedOnMajority ==
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
+\* Each step's newly acknowledged records are held then by a majority of the
+\* copies that exist, a wiped one holding nothing. A follower wiped after it
+\* answered the pass that counted it is let off: to the leader that wipe is a
+\* fault after the acknowledgement. Counting a follower's old answer without
+\* one in the pass breaks it (FelixShardWipe.cfg).
+AckedOnLiveMajority ==
+    [][\A id \in acked' \ acked :
+          \E b \in Brokers :
+              Majority({ m \in Brokers : \E i \in 1..Len(log'[m]) : log'[m][i].id = id }
+                       \cup lost'[b])]_vars
+
 \* A `Quorum` write is never held back by a destination's copy: whenever the
 \* stream's own replica set would acknowledge it, the leader can. A latency
 \* property, stated as the enabling condition of AckQuorum so TLC can check
@@ -2035,6 +2079,7 @@ TypeOK ==
     /\ cpNext \subseteq Brokers /\ cpNextGen \in Nat
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
     /\ sid \in [Brokers -> Nat] /\ seen \in [Brokers -> [Brokers -> Nat]]
+    /\ checked \in [Brokers -> SUBSET Brokers] /\ lost \in [Brokers -> SUBSET Brokers]
     /\ wipes \in 0..Wipes
 
 =============================================================================
