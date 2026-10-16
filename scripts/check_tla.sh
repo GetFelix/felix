@@ -143,6 +143,7 @@ expectations=(
   "FelixShardWipeStripped pass"
   "FelixShardWipeStrippedOnArrival violates AckedSurvive"
   "FelixShardWipeStrippedNoStamp violates AckedSurvive"
+  "FelixShardCrashKeepsId violates AckedSurvive"
   "FelixShard pass"
   "FelixShardHandoff pass"
   "FelixShardHandoffNoWait violates AtMostOneServing"

@@ -1488,6 +1488,11 @@ passes the old one, and its `Quorum` publishes wait meanwhile. That is a
 liveness cost, not a safety one: the held report describes records the
 followers do have.
 
+That covers the report, not the records. The restarted leader itself serves
+its old generation without the lost tail, and acknowledgements it made from
+that tail can be gone from it; see the storage-identity note below and
+[#1295](https://github.com/GetFelix/felix/issues/1295).
+
 **A follower counts only for what it has answered.** The mark and the report
 count each follower up to the last offset it answered holding at the leader's
 generation. A new leader starts its cursor for a follower it has not heard
@@ -1549,13 +1554,18 @@ caught up for as long as the shard stayed idle (#1266). Placement could then
 promote it, and an acknowledged record was gone after two faults.
 
 Each broker's data directory has a **storage identity**, 16 random bytes in
-`<data dir>/storage-id`. A restart keeps it; a wiped or replaced directory
-gets a new one. It names the directory, not what is in it, and only
-`felix-broker restore-point` rotates it. So three losses keep the id: a crash
-under `FsyncMode::Periodic` or `None` that drops an unflushed tail, an older
-copy put back by rsync or a volume snapshot, and a directory copied to
-another node. A restore or copy made by hand must delete `storage-id` so the
-broker creates a new one. The peer handshake carries it
+`<data dir>/storage-id`. A restart after a clean stop keeps it; a wiped or
+replaced directory gets a new one. It names the directory, not what is in it.
+Two things rotate it on a directory that kept its file: `felix-broker
+restore-point`, and a start after a crash under `FsyncMode::Periodic` or
+`None`, which may have dropped an unsynced tail the broker had already
+answered for (`<data dir>/run-state` records whether the last run stopped
+cleanly; see `docs/durable-storage.md`, "Storage identity"). The rotation is
+on disk before the broker registers or answers a handshake, so no peer or
+control plane ever sees the old id from the new process. Two losses still
+keep the id: an older copy put back by rsync or a volume snapshot, and a
+directory copied to another node. A restore or copy made by hand must delete
+`storage-id` so the broker creates a new one. The peer handshake carries it
 (`STORAGE_IDENTITY`, see `docs/internal-protocol.md`), and the pool keeps it
 with the connection.
 
@@ -1567,7 +1577,8 @@ the cursor starts over at the shard's base with nothing confirmed, and the
 follower's cursors on the group, dead-letter and counter logs start over at
 zero. A rebuild the old copy held gives its slot back. A failed lookup leaves
 the cursor alone; the shipping that follows meets the same failure. A
-follower that only restarted gives the same identity and keeps its place.
+follower that stopped cleanly and restarted gives the same identity and keeps
+its place; one that crashed under a relaxed fsync mode does not.
 
 The exchanges run concurrently, and the pass recounts the mark as each one
 lands, so a follower whose exchange has not got that far still carries the
@@ -1662,6 +1673,10 @@ without an identity, with the leader still on its old connection, and passes
 on the measured incarnation; `FelixShardWipeStrippedOnArrival.cfg` stamps the
 incarnation as the report arrives instead and loses the record, and
 `FelixShardWipeStrippedNoStamp.cfg` loses it with no incarnation check at all.
+`FelixShardCrashKeepsId.cfg` replaces the wipe with a crash that keeps the
+directory and the identity and loses the record. The passing case with the
+new identity and a partial suffix loss is too large for the CI job and is not
+model-checked (see `docs/formal/README.md`).
 
 ### Divergence and truncation
 
@@ -1933,8 +1948,8 @@ That holds across the generations a move's steps write under the same leader
 (stage, fence, restore, seat), so a leader that dies mid-move does not leave
 its report to expire. A report without a stamp (from a control plane that
 predates it) is frozen only while the assignment is at its generation. A
-follower that only restarted keeps its identity and still counts, however
-long ago the report was made. A live leader's report keeps ageing, so one that
+follower that stopped cleanly and restarted keeps its identity and still
+counts, however long ago the report was made. A live leader's report keeps ageing, so one that
 stopped reporting still expires.
 What the report says of the shard as a whole (its generation, the leader's
 tail, whether it drained, which copies halted) is read for as long as the
@@ -1949,15 +1964,36 @@ restarted counts at the group's floor rather than at 0, so a restart with one
 member down does not start dropping identities the group was already storing
 ([metadata-raft-design.md](metadata-raft-design.md)). Until a restarted
 broker's registration lands, its record still carries the identity and
-incarnation its previous process registered. So a follower that is wiped
-before the control plane marks it down, whose leader dies before the restarted
-broker registers again, can still be counted on the old identity. Placement
-does not treat a missing heartbeat as evidence to close that window.
+incarnation its previous process registered. So a follower that is wiped, or
+crashes under `Periodic` or `None`, before the control plane marks it down,
+and whose leader dies before the restarted broker registers again, can still
+be counted on the old identity. Placement does not treat a missing heartbeat
+as evidence to close that window. The rotation after a crash does not widen
+it: the new id is written before the broker registers, so the window is the
+same one a wipe has.
 
-The identity catches a lost data directory, not a tail lost in a crash under a
-relaxed `FsyncMode`. Keeping a dead leader's report believed for longer widens
-that exposure; under `OnCommit` an acknowledged record is on disk, so there is
-none.
+The identity catches a tail a follower lost in a crash under a relaxed
+`FsyncMode` the same way it catches a lost directory, because the broker
+starts under a new one after such a crash. The price is availability after
+correlated crashes: when the leader dies and every follower it reported has
+crashed and come back under a new id, nobody matches the report, and the
+shard is `NoCaughtUpReplica`. It resolves if the old leader returns. If it
+cannot, an operator either gives up the log with `felixctl placement abandon
+<stream> <shard> --yes` (`felix-controlplane admin abandon`; records only the
+old copies held are lost) or restores the shard from a backup point with
+`felix-broker restore-point` (see `deployment/backup-and-restore.md` in the
+docs site). Under `OnCommit` an acknowledged record is on disk, so a crash
+keeps the id. A crash of an older release, or one the first start on this
+release finds no torn tail for, is not detected (see
+`docs/durable-storage.md`).
+
+**A leader's own crash is not covered yet**
+([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id changes
+how peers count a broker as a follower. A leader that crashes under
+`Periodic` or `None` and restarts before placement fails the shard over is
+still the assignment's leader, and it reopens its old generation with a log
+shorter than what it acknowledged; nothing makes it step aside or fence its
+followers first. Until that is fixed, only `OnCommit` closes it.
 
 A new leader that dies before its first report leaves only its predecessor's
 report, which predates whatever the new leader acknowledged. Under `Leader`

@@ -3,17 +3,20 @@
 //! The drain runs in a fixed order: readiness goes false, a clustered broker
 //! hands its shards off, the listener keeps admitting for the optional
 //! hold-off, then stops; in-flight connections finish and the publish scheduler
-//! empties its queue, peers and background tasks stop, durable logs are
-//! flushed, and the metrics server goes last so an operator can watch the
-//! whole thing.
+//! empties its queue, peers and background tasks stop, every store is
+//! flushed and, if nothing was cut short, the stop is recorded as clean (see
+//! `felix_storage::run_state`); the metrics server goes last so an operator
+//! can watch the whole thing.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use felix_broker::DurableStorage;
+use felix_broker::Broker;
 use felix_common::lifecycle::{self, DrainBudget, Readiness};
+use felix_storage::StorageId;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +29,14 @@ use crate::cluster::membership::{self, MembershipTask};
 use crate::config::BrokerConfig;
 use crate::shards::watch::ShardOwnership;
 use felix_replication::peer::PeerPool;
+
+/// What the drain flushes, and where it records a clean stop.
+pub(super) struct Storage {
+    pub(super) broker: Arc<Broker>,
+    /// The durable root and the storage id this run announced; `None`
+    /// without durable storage.
+    pub(super) run: Option<(PathBuf, StorageId)>,
+}
 
 /// Everything a running node has to stop, in the fields the drain reads.
 pub(super) struct Running {
@@ -47,7 +58,7 @@ pub(super) struct Running {
     pub(super) shard_tasks: Option<ShardTasks>,
     pub(super) sync_shutdown: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
-    pub(super) durable_storage: Option<DurableStorage>,
+    pub(super) storage: Storage,
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
     pub(super) metrics_shutdown: CancellationToken,
 }
@@ -98,7 +109,7 @@ impl Running {
             shard_tasks,
             sync_shutdown,
             controlplane_task,
-            durable_storage,
+            storage,
             metrics_task,
             metrics_shutdown,
         } = self;
@@ -325,18 +336,43 @@ impl Running {
             }
         }
 
-        // Step 3b: flush durable logs while the drain deadline still applies.
+        // Step 3b: flush every store while the drain deadline still applies.
         // Publishes have stopped by now, so this is the last chance to push
         // page-cache bytes to the device — under `Periodic` it is the difference
         // between losing up to one interval of writes and losing nothing.
-        if let Some(storage) = &durable_storage {
+        let mut flushed = false;
+        if storage.run.is_some() {
             budget
                 .drain("durable_storage_flush", async {
-                    if let Err(err) = storage.shutdown().await {
-                        tracing::error!(error = %err, "failed to flush durable storage on shutdown");
+                    match storage.broker.shutdown_storage().await {
+                        Ok(()) => flushed = true,
+                        Err(err) => {
+                            tracing::error!(error = %err, "failed to flush durable storage on shutdown")
+                        }
                     }
                 })
                 .await;
+        }
+        // Step 3c: say the stop was clean, so the next start keeps the storage
+        // id. Only when every acknowledged record is known synced: a step cut
+        // short may still be writing, and a poisoned log may have dropped pages
+        // it acknowledged. Anything else reads as a crash at the next start.
+        if let Some((root, id)) = &storage.run {
+            if stopped_cleanly(
+                flushed,
+                budget.unfinished(),
+                felix_storage::disk_log::any_log_poisoned(),
+            ) {
+                if let Err(err) = super::storage::mark_clean_stop(root, *id) {
+                    tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
+                }
+            } else {
+                tracing::warn!(
+                    unfinished = ?budget.unfinished(),
+                    "stopping without recording a clean stop; under a relaxed fsync mode \
+                     the next start takes a new storage id"
+                );
+            }
         }
 
         // Step 4: metrics last, so `/ready` keeps reporting "draining" and `/metrics`
@@ -368,3 +404,20 @@ impl Running {
         Ok(())
     }
 }
+
+/// Drain steps that never write to a store, so one cut short (say, by a
+/// control plane that is down) does not cost the next start its storage id.
+const NO_STORE_WRITES: [&str; 3] = [
+    "membership_deregister",
+    "membership_heartbeat",
+    "credential_refresh",
+];
+
+/// Whether a stop may be recorded as clean: every store flushed, no drain
+/// step that may write cut short, and no log poisoned during the run.
+fn stopped_cleanly(flushed: bool, unfinished: &[&str], poisoned: bool) -> bool {
+    flushed && unfinished.iter().all(|step| NO_STORE_WRITES.contains(step)) && !poisoned
+}
+
+#[cfg(test)]
+mod tests;

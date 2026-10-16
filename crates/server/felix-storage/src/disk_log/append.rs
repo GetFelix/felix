@@ -561,6 +561,7 @@ impl LogInner {
         if failure.is_none() {
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
             *failure = Some(reason);
+            super::ANY_POISONED.store(true, Ordering::Release);
         }
     }
 

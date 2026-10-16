@@ -115,6 +115,30 @@ cache belongs to the kernel. It does not survive a machine crash or power loss.
 `periodic` is the default. It is the only policy whose cost is invisible on the
 append path while still bounding loss.
 
+### A crash under `periodic` or `none` changes the storage id
+
+Under those two policies a follower may have answered its leader for records a
+crash then lost, while its data directory, and so its storage id, survived.
+Peers would go on counting it on the old position, and placement could promote
+it without those records. So a broker records, in `<root>/run-state`, that a
+run is under way before any store opens, and that it stopped cleanly once a
+SIGTERM drain has flushed every store with nothing cut short and no log
+stopped by a failed fsync. A start that finds no clean stop after a
+`periodic` or `none` run writes a new storage id before it registers or
+answers a peer. Its leaders then copy it again from the start, and placement
+no longer counts it on reports from before the crash.
+
+A clean stop keeps the id, and so does a crash under `on_commit`, which
+acknowledged nothing it had not synced. The first start after upgrading to a
+release with this record has none to read, and rotates only if startup would
+repair a torn tail, so an orderly roll keeps every id. This covers a broker as a follower only. A **leader** that crashes under
+`periodic` or `none` and restarts before its shard fails over reopens its old
+generation with the shorter log, losing what it acknowledged from the lost
+tail; that is not handled yet
+([#1295](https://github.com/GetFelix/felix/issues/1295)), and only `on_commit`
+avoids it. The full rules are in
+[`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#storage-identity).
+
 ## On-disk layout
 
 ```mermaid

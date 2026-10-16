@@ -453,7 +453,12 @@ where
         shard_tasks,
         sync_shutdown,
         controlplane_task,
-        durable_storage,
+        storage: shutdown::Storage {
+            broker: Arc::clone(&broker),
+            run: durable_storage
+                .as_ref()
+                .map(|storage| (storage.root().to_path_buf(), storage_id)),
+        },
         metrics_task,
         metrics_shutdown,
     };

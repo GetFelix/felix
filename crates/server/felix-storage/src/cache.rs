@@ -207,6 +207,12 @@ pub trait StorageApi: Debug + Send + Sync {
         Ok(0)
     }
 
+    /// Flush every open shard and stop. Call once during graceful shutdown.
+    /// A no-op for a store with no log.
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Install the observer every applied write is reported to.
     ///
     /// `false` means this store cannot observe writes, and the caller must not

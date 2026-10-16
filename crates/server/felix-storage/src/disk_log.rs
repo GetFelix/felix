@@ -93,6 +93,17 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Set the first time any log in this process is poisoned, and never
+/// cleared. A log closed since still counts: whatever it acknowledged may not
+/// be on disk.
+static ANY_POISONED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a failure has stopped any log in this process for good. A broker
+/// that saw one cannot say it stopped with everything it acknowledged synced.
+pub fn any_log_poisoned() -> bool {
+    ANY_POISONED.load(Ordering::Acquire)
+}
+
 /// What [`DiskLog::accept_generation`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationCheck {

@@ -1103,8 +1103,8 @@ open and before the broker registers, and sent with the registration as
 makes up a new id each time it starts and never writes it down, since a
 restart of such a broker has kept nothing.
 
-The id names the data, not the node. A restart keeps it. A wipe gives a new
-one: anything that removes the file, whether a deleted or reformatted data
+The id names the data, not the node. A restart after a clean stop keeps it.
+A wipe gives a new one: anything that removes the file, whether a deleted or reformatted data
 directory, a replaced disk, or a fresh volume mounted at the same path, means
 the next start finds no file and writes a new id. Deleting a shard's
 directory and leaving the rest of the data directory in place keeps the id, so
@@ -1115,10 +1115,61 @@ every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felix-broker restore-point` also writes a
 new one, because restored logs are an older copy of what peers last saw here.
 
-A crash under `Periodic` or `None` keeps the id but can lose the unsynced
-tail of a log, so the same id does not promise that every acknowledged record
-survived. Only `OnCommit` makes it mean that. This is not handled; choose
-`OnCommit` where a follower's acknowledgement has to survive a power loss.
+A crash under `Periodic` or `None` keeps the directory but can lose the
+unsynced tail of a log, records the broker may already have acknowledged to a
+client or a leader. So the broker gives the directory a new id when it starts
+after one. `<root>/run-state` (format in `docs/storage-format.md`) records
+which it was:
+
+- **At startup**, before any store opens, the broker reads the id and the
+  record. If the last run was under `Periodic` or `None` and did not record a
+  clean stop, it writes a new id. Then it records that a run is under way,
+  and under which mode, and syncs that with the directory before any store
+  opens. Recovery is this run's first write, and only the id this returns is
+  sent to peers or the control plane.
+- **On a stop**, after every store (streams, caches, groups, dead letters,
+  counters) is flushed, the broker records a clean stop. Only if the flush
+  succeeded, no drain step that can write ran past its deadline (one still
+  running may write after the flush; deregistering and heartbeats do not
+  count), and no log was poisoned during the run: a failed fsync may already
+  have dropped pages that run acknowledged. A
+  `felix-broker restore-point` that finishes records a clean stop under the
+  id it wrote.
+- **Anything else is a crash**: `SIGKILL`, an OOM kill, a power loss, a panic
+  that ends the process, or a drain that ran out of time. A panic inside a
+  task the runtime contains does not stop the process, and the stop that
+  follows is judged like any other. So is a record that does not decode or
+  names another id.
+
+A crash under `OnCommit` keeps the id, since every record it acknowledged was
+synced first. The record names the mode of the run that crashed, so changing
+the mode across a restart does not hide one. A clean stop keeps the id under
+every mode. The cost of a crash is one copy started over per shard the broker
+follows: its leaders learn the new id and compare from the shard's base. A
+crash of a process does not lose its page cache, so the rotation is often
+more than the crash needed; nothing at startup can tell a process crash from
+a power loss.
+
+The first start on a release with this record finds none. It rotates only if
+the id was already there and startup would repair a shard: a torn tail, a
+rollover left half done, or damage it refuses (it runs the recovery plan for
+every shard to find out, which reads the active segments once more). An
+orderly roll therefore keeps every id. A crash of the older release that left
+no torn tail, which a power loss on page boundaries can, is not detected on
+that one start. A downgrade leaves the record as this release wrote it, and
+an older release ignores it; a crash under the older release before moving up
+again is not detected either.
+
+**A leader's own crash is not covered yet**
+([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id only
+changes how peers count the broker as a follower. A leader that crashes and
+restarts before the control plane fails its shard over is still the shard's
+leader, and reopens its old generation with the shorter log, so records it
+acknowledged from the lost tail are gone. Only `OnCommit` closes that today.
+
+Rotating the id does not reset a follower's election promises: the accepted
+generation and ballot are synced whatever the fsync mode, so a crash keeps
+them.
 
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has

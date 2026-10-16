@@ -175,6 +175,84 @@ async fn a_restarted_follower_still_counts() {
     assert_eq!(report.storage_ids, vec![("broker-b".to_string(), id(1))]);
 }
 
+/// **A follower that crashed under a relaxed fsync mode is not counted on
+/// its old position (#1284).** Its data directory is the same, but the
+/// unsynced tail may be gone; the id it starts under is what tells the
+/// leader. A clean stop keeps the id, and the follower keeps its place.
+#[tokio::test]
+async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_position() {
+    let data = tempfile::tempdir().expect("tempdir");
+    let mut next = 0u8;
+    let mut start = || {
+        felix_storage::run_state::begin(
+            data.path(),
+            true,
+            || false,
+            || {
+                next += 1;
+                [next; 16]
+            },
+        )
+        .expect("start a run")
+        .id
+    };
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let first = start();
+    let follower = IdentifiedFollower::with(first);
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+
+    felix_storage::run_state::mark_clean(data.path(), first).expect("clean stop");
+    follower.restart_as(start());
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(
+        report.caught_up,
+        vec!["broker-b".to_string()],
+        "a clean stop kept the follower's place"
+    );
+
+    // No clean stop: the process died.
+    let restarted = start();
+    follower.restart_as(restarted);
+    let report = pass(
+        &follower,
+        &broker,
+        &router,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert!(
+        report.caught_up.is_empty(),
+        "a crashed copy was reported as holding the log: {report:?}"
+    );
+    assert_eq!(
+        report.storage_ids,
+        vec![("broker-b".to_string(), restarted)],
+        "placement sees the follower under the id it starts with"
+    );
+}
+
 /// **Without a storage identity on either side, a new incarnation starts
 /// the copy over.** A follower that sends none cannot be told from a wiped copy
 /// of itself by its storage, so before the incarnation the leader went on

@@ -1048,6 +1048,10 @@ impl LogCache {
 
 #[async_trait]
 impl StorageApi for LogCache {
+    async fn shutdown(&self) -> Result<()> {
+        LogCache::shutdown(self).await
+    }
+
     async fn put(
         &self,
         tenant_id: &str,

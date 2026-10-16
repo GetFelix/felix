@@ -63,6 +63,8 @@ a segment) should be rejected on its first four bytes rather than misparsed.
 
 ```text
 <root>/
+  storage-id                                 ← this data directory's identity
+  run-state                                  ← whether the last run stopped cleanly
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -613,3 +615,24 @@ pass. Unlike the producer snapshot it is flushed: losing it costs a replay of
 the whole log, which is what it exists to avoid.
 
 It shortens an open, not memory: the index is still held whole in memory.
+
+## `storage-id` and `run-state`: the data directory's identity
+
+`storage-id` holds 16 random bytes the broker generates the first time it
+opens the directory (`"FLID"`, a version, the id, a CRC). `run-state` says
+whether the last run stopped cleanly:
+
+```text
+ 0   4  magic    u32  "FLRN"
+ 4   2  version  u16
+ 6   1  state    u8   1 = running, 2 = stopped cleanly
+ 7   1  flags    u8   bit 0: the run acknowledges before syncing (periodic or none)
+ 8  16  id       the storage id the run started under
+24   4  crc      u32  crc32 over bytes 0..24
+```
+
+Both are written to a `.tmp` file, flushed, renamed and the directory flushed.
+A start that finds `running` with bit 0 set writes a new `storage-id` before
+anything else, because the crash may have lost records the broker had already
+acknowledged. See [`docs/storage-format.md`](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md#run-state-whether-the-last-run-stopped-cleanly)
+for the rest of the rules.
