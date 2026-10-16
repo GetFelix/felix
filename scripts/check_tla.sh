@@ -138,6 +138,7 @@ expectations=(
   "FelixShardReportFromAnswers violates AckedSurvive"
   "FelixShardReportFloor pass"
   "FelixShardWipe pass"
+  "FelixShardWipeFull pass"
   "FelixShardWipeNoIds violates AckedSurvive"
   "FelixShardWipeStripped violates AckedSurvive"
   "FelixShardWipeStrippedRedial pass"
@@ -252,8 +253,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
-  "FelixShardWipe 35"
-  "FelixShardWipeStrippedRedial 45"
+  "FelixShardWipeStrippedRedial 36"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
@@ -265,6 +265,7 @@ weights=(
   "FelixGroups 12"
   "FelixShardFigure8CutOver 9"
   "FelixShard 7"
+  "FelixShardWipeFull 5"
   "FelixShardFencedPromotion 7"
   "FelixShardCancelResend 6"
   "FelixShardFigure8FollowerAcks 6"

@@ -116,7 +116,6 @@ jobs:
       matrix:
         config:
           - FelixShardElectSwap
-          - FelixShardWipeFull
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
           - FelixShardFencedAckTwoPromotions
