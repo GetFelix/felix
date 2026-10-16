@@ -18,15 +18,16 @@ use pyo3::prelude::*;
 use quinn::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 
 pub(crate) fn client_config(ca_file: Option<&str>, offer_alpn: bool) -> PyResult<ClientConfig> {
     match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
-            let mut file = std::io::BufReader::new(std::fs::File::open(path).map_err(|err| {
-                PyValueError::new_err(format!("could not read ca_file {path:?}: {err}"))
-            })?);
-            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut file)
+            let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+                .map_err(|err| {
+                    PyValueError::new_err(format!("could not read ca_file {path:?}: {err}"))
+                })?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|err| {
                     PyValueError::new_err(format!("ca_file {path:?} is not valid PEM: {err}"))
