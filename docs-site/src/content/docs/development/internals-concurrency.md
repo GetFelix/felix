@@ -65,8 +65,12 @@ does not delay delivery to the others.
 Past checkpoint 5 the batch counts against a second byte bound. The feeder
 reads with `SubscriptionReceiver::recv_held`, then takes room for the batch in
 its subscription's share of the connection's egress budget
-(`handlers/subscribe/egress.rs`), and only then gives back the subscriber's
-own bytes (`HeldBytes::release_subscriber`). The egress hold travels with the
+(`handlers/subscribe/egress.rs`). It splits off the subscriber's own bytes
+(`HeldBytes::take_subscriber`) and gives them back once the frame is handed to
+the writer lane, or before it waits out the flush delay. The subscriber bound
+therefore also covers the encode and any wait for lane room, including under
+`block`, so a subscriber whose lane is slowed by another connection sheds about
+one frame earlier. The egress hold travels with the
 frame through the writer lane, the connection writer's queue at checkpoint 6,
 and the write itself; a frame built from several batches carries all their
 holds. The broker-wide permit, when there is one, rides along the same way,

@@ -94,6 +94,18 @@ async fn feed(
     flush_delay: Duration,
     max_bytes: usize,
 ) -> Result<(tokio::task::JoinHandle<()>, felix_broker::SubscriptionGuard)> {
+    feed_with(broker, stream, manager, flush_delay, max_bytes, |_| {}).await
+}
+
+/// [`feed`] with the writer config adjusted by `adjust`.
+async fn feed_with(
+    broker: &Arc<Broker>,
+    stream: &str,
+    manager: &Arc<WriterLaneManager>,
+    flush_delay: Duration,
+    max_bytes: usize,
+    adjust: impl FnOnce(&mut EventWriterConfig),
+) -> Result<(tokio::task::JoinHandle<()>, felix_broker::SubscriptionGuard)> {
     broker
         .register_stream(
             "t1",
@@ -106,7 +118,7 @@ async fn feed(
         .subscribe("t1", "default", stream, 0)
         .await?
         .into_parts();
-    let config = EventWriterConfig {
+    let mut config = EventWriterConfig {
         offsets_enabled: false,
         skip_enabled: false,
         shard_moved_enabled: false,
@@ -122,6 +134,7 @@ async fn feed(
         publisher_enabled: false,
         timestamps_enabled: false,
     };
+    adjust(&mut config);
     let feeder = tokio::spawn(run_lane_feeder(
         event_rx,
         Arc::downgrade(manager),
@@ -252,6 +265,126 @@ async fn a_stalled_subscription_does_not_hold_up_its_connection_mates() -> Resul
     );
     stalled.abort();
     healthy.abort();
+    Ok(())
+}
+
+/// A manager whose one lane holds `capacity` commands, so a test can stall
+/// the feeder's send by leaving it full.
+fn capture_lane_holding(capacity: usize) -> (Arc<WriterLaneManager>, mpsc::Receiver<LaneCommand>) {
+    let (manager, _) = capture_lane();
+    let (tx, rx) = mpsc::channel(capacity);
+    let mut manager = Arc::into_inner(manager).expect("only handle");
+    manager.lanes = vec![tx];
+    manager.lane_queue_capacity = capacity;
+    (Arc::new(manager), rx)
+}
+
+fn filler() -> LaneCommand {
+    let now = Instant::now();
+    LaneCommand::Delivery {
+        subscriber_id: 0,
+        frame: Bytes::new(),
+        item_count: 0,
+        first_enqueued_at: now,
+        enqueue_at: now,
+        held: Default::default(),
+    }
+}
+
+/// A batch counts against its subscriber's queue bound until its frame is
+/// handed to the lanes: through a wait for lane room, but not after the send,
+/// nor after a failed encode, nor while the feeder waits out the flush delay.
+/// With a bound of 100, a 60-byte probe gets through only when the 60 bytes
+/// before it have been given back.
+#[tokio::test(start_paused = true)]
+async fn subscriber_queue_bytes_go_back_once_the_frame_is_handed_on() -> Result<()> {
+    let broker =
+        Arc::new(Broker::new(EphemeralCache::new().into()).with_subscriber_queue_max_bytes(100));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+
+    // A full lane: the feeder encodes the batch and waits to send it.
+    let (manager, mut lane_rx) = capture_lane_holding(1);
+    manager.lanes[0]
+        .try_send(filler())
+        .expect("room for the filler");
+    let (stalled, _stalled_guard) =
+        feed(&broker, "stalled", &manager, Duration::ZERO, 64 * 1024).await?;
+    settle().await;
+    assert_eq!(publish_to(&broker, "stalled", 60).await?, 1);
+    settle().await;
+    assert_eq!(
+        publish_to(&broker, "stalled", 60).await?,
+        0,
+        "held while the feeder waits for lane room"
+    );
+    let _filler = lane_rx.recv().await.expect("the filler");
+    let sent = lane_rx.recv().await.expect("the batch went on");
+    assert_eq!(item_count(sent), 1);
+    settle().await;
+    assert_eq!(
+        publish_to(&broker, "stalled", 60).await?,
+        1,
+        "given back once the frame is in the lane"
+    );
+    stalled.abort();
+
+    // A publisher too long to encode: the frame is never built.
+    let (manager, mut lane_rx) = capture_lane();
+    let (failing, _failing_guard) = feed_with(
+        &broker,
+        "failing",
+        &manager,
+        Duration::ZERO,
+        64 * 1024,
+        |config| config.publisher_enabled = true,
+    )
+    .await?;
+    settle().await;
+    let handle = broker
+        .resolve_stream_handle("t1", "default", "failing", 0)
+        .await?;
+    let publisher = Bytes::from(vec![b'p'; 300]);
+    broker
+        .publish_batch_with_outcome(&handle, &[Bytes::from(vec![7u8; 60])], Some(&publisher))
+        .await?;
+    settle().await;
+    assert!(lane_rx.try_recv().is_err(), "the encode failed");
+    assert_eq!(
+        publish_to(&broker, "failing", 60).await?,
+        1,
+        "given back when the encode fails"
+    );
+    failing.abort();
+
+    // A busy feeder waits out the flush delay for more.
+    let (manager, mut lane_rx) = capture_lane();
+    let (waiting, _waiting_guard) = feed(
+        &broker,
+        "waiting",
+        &manager,
+        Duration::from_secs(60),
+        64 * 1024,
+    )
+    .await?;
+    settle().await;
+    publish_to(&broker, "waiting", 10).await?;
+    publish_to(&broker, "waiting", 10).await?;
+    settle().await;
+    assert_eq!(
+        item_count(lane_rx.try_recv()?),
+        2,
+        "two at once mark it busy"
+    );
+    assert_eq!(publish_to(&broker, "waiting", 60).await?, 1);
+    settle().await;
+    assert!(lane_rx.try_recv().is_err(), "waiting out the delay");
+    assert_eq!(
+        publish_to(&broker, "waiting", 60).await?,
+        1,
+        "given back before the flush-delay wait"
+    );
+    waiting.abort();
     Ok(())
 }
 

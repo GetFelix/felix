@@ -12,9 +12,9 @@
 //! A receiver that queues the batch again on its way out, as the broker
 //! service's writer lanes do, takes the bytes with it
 //! ([`SubscriptionReceiver::recv_held`](super::SubscriptionReceiver::recv_held))
-//! and gives the subscriber's share back once its own bound has the batch
-//! ([`HeldBytes::release_subscriber`]). The broker-wide share stays held
-//! until the batch is written.
+//! and gives the subscriber's share back once it has handed the batch on
+//! ([`HeldBytes::take_subscriber`], [`HeldBytes::release_subscriber`]). The
+//! broker-wide share stays held until the batch is written.
 
 use std::sync::Arc;
 
