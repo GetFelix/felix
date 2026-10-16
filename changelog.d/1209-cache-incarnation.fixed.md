@@ -16,3 +16,12 @@
   durable storage drops a deleted cache's entries.
 - `Broker::remove_cache` is now an operator's removal and deletes the cache's
   data; the catalog path uses `Broker::remove_cache_from_catalog`.
+- Raft members on different builds no longer diverge when a finalize of
+  `cache_incarnations` or `stream_incarnations` is committed through a member
+  that predates it. Create and delete entries now carry an `incarnations`
+  flag (metadata level 14), set only once every member is at level 14, and
+  apply decides incarnations and tombstones from the entry alone. Stream
+  entries from older proposers keep their old meaning so logs replay
+  unchanged; a group that finalized `stream_incarnations` through a member
+  below level 10 and then created streams through it must resync that member
+  from a snapshot (see `docs/metadata-raft-design.md`).

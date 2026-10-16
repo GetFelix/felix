@@ -382,6 +382,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::DeleteTenant {
             tenant_id: s("t"),
             take_shards: true,
+            incarnations: true,
         },
         MetaCommand::CreateNamespace {
             namespace: namespace(),
@@ -389,8 +390,12 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::DeleteNamespace {
             key: namespace_key(),
             take_shards: true,
+            incarnations: true,
         },
-        MetaCommand::CreateStream { stream: stream() },
+        MetaCommand::CreateStream {
+            stream: stream(),
+            incarnations: true,
+        },
         MetaCommand::PatchStream {
             key: stream_key(),
             patch: stream_patch(),
@@ -399,7 +404,10 @@ fn commands() -> Vec<MetaCommand> {
             key: stream_key(),
             take_reports: true,
         },
-        MetaCommand::CreateCache { cache: cache() },
+        MetaCommand::CreateCache {
+            cache: cache(),
+            incarnations: true,
+        },
         MetaCommand::PatchCache {
             key: cache_key(),
             patch: CachePatchRequest {
@@ -409,6 +417,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::DeleteCache {
             key: cache_key(),
             take_reports: true,
+            incarnations: true,
         },
         MetaCommand::RegisterNode { node: node() },
         MetaCommand::PatchNode {
@@ -548,6 +557,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::CreateResources {
             streams: vec![stream()],
             caches: vec![cache()],
+            incarnations: true,
         },
         MetaCommand::RevokePrincipals {
             tenant_id: s("t"),
@@ -754,8 +764,22 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     let mut plain = stream();
     plain.routing = StreamRouting::Modulo;
     plain.incarnation = 0;
-    assert_eq!(MetaCommand::CreateStream { stream: plain }.version(), 0);
-    assert_eq!(MetaCommand::CreateStream { stream: stream() }.version(), 10);
+    assert_eq!(
+        MetaCommand::CreateStream {
+            stream: plain,
+            incarnations: false
+        }
+        .version(),
+        0
+    );
+    assert_eq!(
+        MetaCommand::CreateStream {
+            stream: stream(),
+            incarnations: false
+        }
+        .version(),
+        10
+    );
 
     let mut token = refresh_token();
     token.narrowing = None;

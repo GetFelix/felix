@@ -1487,7 +1487,8 @@ A new stream also gets an `incarnation` once the `stream_incarnations` fleet
 feature is finalized. Brokers keep each incarnation's data in directories of
 its own, so a stream deleted and created again starts empty (see
 `docs/durable-storage.md`, "Deleting a stream"). Finalizing it needs every
-Raft member at metadata level 10 and every serving broker reporting it, and
+Raft member at metadata level 10 (an upgraded member refuses it before then;
+one below level 10 does not, see `docs/metadata-raft-design.md`) and every serving broker reporting it, and
 like every finalize it is one-way. A stream created before is incarnation 0,
 which every answer leaves out.
 
@@ -1584,8 +1585,11 @@ store by one contract (`run_incarnation_contract` in
 **Caches have incarnations too**, under their own fleet feature,
 `cache_incarnations`, finalized separately because a broker that has
 `stream_incarnations` but predates this one would open an incarnated cache in
-the deleted cache's directories. Finalizing it needs every Raft member at
-metadata level 14. The rules are the stream rules above, applied to caches: a
+the deleted cache's directories. An upgraded Raft member refuses to finalize
+it until every member is at metadata level 14. A member on the older build
+accepts the finalize, but entries carry no cache incarnation or tombstone
+until every member is at level 14 (see `docs/metadata-raft-design.md`), so
+the members stay identical. The rules are the stream rules above, applied to caches: a
 create proposes the clock (`cache_to_create`; on Raft once every member is at
 level 14 or the feature is finalized), the store decides inside the write, a
 cache from before the finalize is incarnation 0 and every answer leaves it

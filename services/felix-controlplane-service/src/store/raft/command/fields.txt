@@ -85,6 +85,7 @@
 0 create_cache.cache.replication_factor
 0 create_cache.cache.shards
 0 create_cache.cache.tenant_id
+14 create_cache.incarnations
 0 create_namespace
 0 create_namespace.namespace
 0 create_namespace.namespace.display_name
@@ -100,6 +101,7 @@
 5 create_resources.caches[].replication_factor
 5 create_resources.caches[].shards
 5 create_resources.caches[].tenant_id
+14 create_resources.incarnations
 5 create_resources.streams
 5 create_resources.streams[].consistency
 5 create_resources.streams[].delivery
@@ -117,6 +119,7 @@
 5 create_resources.streams[].stream
 5 create_resources.streams[].tenant_id
 0 create_stream
+14 create_stream.incarnations
 0 create_stream.stream
 0 create_stream.stream.consistency
 0 create_stream.stream.delivery
@@ -138,6 +141,7 @@
 0 create_tenant.tenant.display_name
 0 create_tenant.tenant.tenant_id
 0 delete_cache
+14 delete_cache.incarnations
 0 delete_cache.key
 0 delete_cache.key.cache
 0 delete_cache.key.namespace
@@ -147,6 +151,7 @@
 0 delete_idp_issuer.issuer
 0 delete_idp_issuer.tenant_id
 0 delete_namespace
+14 delete_namespace.incarnations
 0 delete_namespace.key
 0 delete_namespace.key.namespace
 0 delete_namespace.key.tenant_id
@@ -167,6 +172,7 @@
 0 delete_stream.key.tenant_id
 10 delete_stream.take_reports
 0 delete_tenant
+14 delete_tenant.incarnations
 10 delete_tenant.take_shards
 0 delete_tenant.tenant_id
 0 ensure_signing_keys

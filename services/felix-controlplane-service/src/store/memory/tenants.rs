@@ -35,6 +35,7 @@ pub(super) async fn delete_tenant(
     store: &InMemoryStore,
     tenant_id: &str,
     cleanup: ShardCleanup,
+    decide: super::Decide,
 ) -> StoreResult<()> {
     let mut tenants = store.tenants.write().await;
     if tenants.remove(tenant_id).is_none() {
@@ -131,7 +132,8 @@ pub(super) async fn delete_tenant(
     for key in &cache_keys {
         if let Some(cache) = caches.remove(key) {
             let deleted_through =
-                super::caches::record_tombstone(store, &nodes, key, cache.incarnation).await;
+                super::caches::record_tombstone(store, &nodes, key, cache.incarnation, decide)
+                    .await;
             store.cache_changes.write().await.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Deleted,

@@ -112,9 +112,20 @@ impl RaftStore {
         let needs = MetaCommand::DeleteTenant {
             tenant_id: String::new(),
             take_shards: true,
+            incarnations: false,
         }
         .version();
         self.group_level().await >= needs
+    }
+
+    /// Whether creates and deletes are proposed as level-14 entries, which
+    /// decide incarnations and tombstones from their own fields. Not before
+    /// every member applies them: a member at 13 would decide its own way
+    /// from the finalizes, and its copy would drift. A create then always
+    /// carries a proposal, so one proposing nothing still gets an incarnation
+    /// after the finalize.
+    async fn entries_decide_incarnations(&self) -> bool {
+        self.group_level().await >= CACHE_INCARNATION_LEVEL
     }
 
     /// Propose one command and decode its outcome. A command newer than
@@ -185,6 +196,7 @@ impl ControlPlaneStore for RaftStore {
         self.propose(MetaCommand::DeleteTenant {
             tenant_id: tenant_id.to_string(),
             take_shards: self.deletes_take_shards().await,
+            incarnations: self.entries_decide_incarnations().await,
         })
         .await
         .map(|_| ())
@@ -224,6 +236,7 @@ impl ControlPlaneStore for RaftStore {
         self.propose(MetaCommand::DeleteNamespace {
             key: key.clone(),
             take_shards: self.deletes_take_shards().await,
+            incarnations: self.entries_decide_incarnations().await,
         })
         .await
         .map(|_| ())
@@ -256,8 +269,18 @@ impl ControlPlaneStore for RaftStore {
         self.local().get_stream(key).await
     }
 
-    async fn create_stream(&self, stream: Stream) -> StoreResult<Stream> {
-        match self.propose(MetaCommand::CreateStream { stream }).await? {
+    async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
+        let incarnations = self.entries_decide_incarnations().await;
+        if incarnations && stream.incarnation == 0 {
+            stream.incarnation = crate::model::proposed_incarnation();
+        }
+        match self
+            .propose(MetaCommand::CreateStream {
+                stream,
+                incarnations,
+            })
+            .await?
+        {
             MetaResponse::Stream { stream } => Ok(stream),
             _ => Err(unexpected_shape("stream")),
         }
@@ -320,8 +343,18 @@ impl ControlPlaneStore for RaftStore {
         self.local().get_cache(key).await
     }
 
-    async fn create_cache(&self, cache: Cache) -> StoreResult<Cache> {
-        match self.propose(MetaCommand::CreateCache { cache }).await? {
+    async fn create_cache(&self, mut cache: Cache) -> StoreResult<Cache> {
+        let incarnations = self.entries_decide_incarnations().await;
+        if incarnations && cache.incarnation == 0 {
+            cache.incarnation = crate::model::proposed_incarnation();
+        }
+        match self
+            .propose(MetaCommand::CreateCache {
+                cache,
+                incarnations,
+            })
+            .await?
+        {
             MetaResponse::Cache { cache } => Ok(cache),
             _ => Err(unexpected_shape("cache")),
         }
@@ -344,6 +377,7 @@ impl ControlPlaneStore for RaftStore {
         self.propose(MetaCommand::DeleteCache {
             key: key.clone(),
             take_reports: self.deletes_take_shards().await,
+            incarnations: self.entries_decide_incarnations().await,
         })
         .await
         .map(|_| ())
@@ -366,6 +400,16 @@ impl ControlPlaneStore for RaftStore {
         streams: Vec<Stream>,
         caches: Vec<Cache>,
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
+        let incarnations = self.entries_decide_incarnations().await;
+        let (mut streams, mut caches) = (streams, caches);
+        if incarnations {
+            for stream in streams.iter_mut().filter(|s| s.incarnation == 0) {
+                stream.incarnation = crate::model::proposed_incarnation();
+            }
+            for cache in caches.iter_mut().filter(|c| c.incarnation == 0) {
+                cache.incarnation = crate::model::proposed_incarnation();
+            }
+        }
         // Before a finalize, everything in the batch is stored at 0, and the
         // answer leaves out what has none.
         let at_zero = |caches: Vec<Cache>| {
@@ -381,6 +425,7 @@ impl ControlPlaneStore for RaftStore {
             .propose(MetaCommand::CreateResources {
                 streams: streams.clone(),
                 caches: caches.clone(),
+                incarnations,
             })
             .await?
         {
@@ -412,6 +457,7 @@ impl ControlPlaneStore for RaftStore {
         let needs = MetaCommand::CreateResources {
             streams: Vec::new(),
             caches: Vec::new(),
+            incarnations: false,
         }
         .version();
         self.group_level().await >= needs

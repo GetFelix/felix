@@ -375,7 +375,12 @@ would be judged by what the brokers kept for the old one. That data goes once
 the name is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
-  finalize is refused with 409 until every member is at metadata version 10.
+  finalize is refused with 409 until every member is at metadata version 10,
+  when proposed through an upgraded member. A member below version 10 does
+  not know the feature and accepts it, and stream creates proposed through
+  that member then store a different incarnation on old and new members.
+  Finalize only through an upgraded member, after every member is upgraded.
+  See `docs/metadata-raft-design.md` for the repair if it happened.
   With Postgres, the first upgraded instance runs migration 0028 for the whole
   database. An instance from before this release that is still running after
   the finalize cannot create streams (the database refuses a stream without an
@@ -415,9 +420,14 @@ incarnation's entries and counters in directories of their own, so a cache
 deleted and created again starts empty on every broker, including one that
 was down for the delete.
 
-- **Upgrade every control-plane instance first.** Under the Raft backend the
-  finalize is refused with 409 until every member is at metadata version 14.
-  With Postgres, the first upgraded instance runs migration 0032. An older
+- **Upgrade every control-plane instance first.** Under the Raft backend an
+  upgraded member refuses the finalize with 409 until every member is at
+  metadata version 14. A member still on the older release does not know
+  the feature and accepts it. That is safe, because the members still apply
+  every entry alike. Until every member is at version 14, caches are created
+  at incarnation 0 and no cache delete records a tombstone; a cache create
+  through an upgraded member is refused with 409 meanwhile. Finalize through
+  an upgraded member anyway. With Postgres, the first upgraded instance runs migration 0032. An older
   instance still running after the finalize cannot create caches, its deletes
   still record tombstones, and the database stamps its cache shard
   assignments with the incarnation.

@@ -1,5 +1,5 @@
 //! Streams and their change log.
-use super::{InMemoryStore, ShardCleanup};
+use super::{Decide, InMemoryStore, ShardCleanup};
 use crate::model::{
     NamespaceKey, ShardKind, Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest,
 };
@@ -31,7 +31,11 @@ pub(super) async fn get_stream(store: &InMemoryStore, key: &StreamKey) -> StoreR
         .ok_or_else(|| StoreError::NotFound("stream".into()))
 }
 
-pub(super) async fn create_stream(store: &InMemoryStore, stream: Stream) -> StoreResult<Stream> {
+pub(super) async fn create_stream(
+    store: &InMemoryStore,
+    stream: Stream,
+    decide: Decide,
+) -> StoreResult<Stream> {
     // Streams are scoped to a namespace; we reject creation if the parent namespace doesn't exist.
     if !store
         .namespace_exists(&NamespaceKey {
@@ -55,7 +59,7 @@ pub(super) async fn create_stream(store: &InMemoryStore, stream: Stream) -> Stor
     // read and the write: nothing is created at 0 after it.
     let nodes = store.nodes.read().await;
     let mut stream = stream;
-    stream.incarnation = incarnation_for(store, &nodes, &key, stream.incarnation).await;
+    stream.incarnation = incarnation_for(store, &nodes, &key, stream.incarnation, decide).await;
     streams.insert(key.clone(), stream.clone());
     store
         .stream_changes
@@ -201,14 +205,16 @@ pub(super) fn incarnations_finalized(nodes: &super::NodeState) -> bool {
 
 /// The incarnation a stream created now under `key` gets, from the
 /// `proposed` one its request carried. 0 until the finalize; after it, never
-/// 0 and above every earlier incarnation of the name.
+/// 0 and above every earlier incarnation of the name. A level-14 entry gets
+/// one only if it proposed one, as every member decides from the entry.
 pub(super) async fn incarnation_for(
     store: &InMemoryStore,
     nodes: &super::NodeState,
     key: &StreamKey,
     proposed: u64,
+    decide: Decide,
 ) -> u64 {
-    if !incarnations_finalized(nodes) {
+    if !incarnations_finalized(nodes) || (decide == Decide::Entry && proposed == 0) {
         return 0;
     }
     let deleted = store.stream_tombstones.read().await.get(key).copied();

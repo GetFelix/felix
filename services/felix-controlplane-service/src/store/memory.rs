@@ -170,8 +170,9 @@ impl InMemoryStore {
         &self,
         tenant_id: &str,
         cleanup: ShardCleanup,
+        decide: Decide,
     ) -> StoreResult<()> {
-        tenants::delete_tenant(self, tenant_id, cleanup).await
+        tenants::delete_tenant(self, tenant_id, cleanup, decide).await
     }
 
     /// [`ControlPlaneStore::delete_namespace`], taking `cleanup` of its shards.
@@ -179,8 +180,38 @@ impl InMemoryStore {
         &self,
         key: &NamespaceKey,
         cleanup: ShardCleanup,
+        decide: Decide,
     ) -> StoreResult<()> {
-        namespaces::delete_namespace(self, key, cleanup).await
+        namespaces::delete_namespace(self, key, cleanup, decide).await
+    }
+
+    /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
+    pub(crate) async fn apply_create_stream(
+        &self,
+        stream: Stream,
+        decide: Decide,
+    ) -> StoreResult<Stream> {
+        streams::create_stream(self, stream, decide).await
+    }
+
+    /// [`ControlPlaneStore::create_cache`], with incarnations decided by `decide`.
+    pub(crate) async fn apply_create_cache(
+        &self,
+        cache: Cache,
+        decide: Decide,
+    ) -> StoreResult<Cache> {
+        caches::create_cache(self, cache, decide).await
+    }
+
+    /// [`ControlPlaneStore::create_resources`], with incarnations decided by
+    /// `decide`.
+    pub(crate) async fn apply_create_resources(
+        &self,
+        streams: Vec<Stream>,
+        caches: Vec<Cache>,
+        decide: Decide,
+    ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
+        resources::create_resources(self, streams, caches, decide).await
     }
 
     /// [`ControlPlaneStore::delete_stream`], taking `cleanup` of its shards.
@@ -197,8 +228,9 @@ impl InMemoryStore {
         &self,
         key: &CacheKey,
         cleanup: ShardCleanup,
+        decide: Decide,
     ) -> StoreResult<()> {
-        caches::delete_cache(self, key, cleanup).await
+        caches::delete_cache(self, key, cleanup, decide).await
     }
 
     /// [`ControlPlaneStore::record_replica_report`], with the leadership
@@ -329,7 +361,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()> {
-        tenants::delete_tenant(self, tenant_id, ShardCleanup::Full).await
+        tenants::delete_tenant(self, tenant_id, ShardCleanup::Full, Decide::Here).await
     }
 
     async fn tenant_snapshot(&self) -> StoreResult<Snapshot<Tenant>> {
@@ -357,7 +389,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()> {
-        namespaces::delete_namespace(self, key, ShardCleanup::Full).await
+        namespaces::delete_namespace(self, key, ShardCleanup::Full, Decide::Here).await
     }
 
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>> {
@@ -386,7 +418,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn create_stream(&self, stream: Stream) -> StoreResult<Stream> {
-        streams::create_stream(self, stream).await
+        streams::create_stream(self, stream, Decide::Here).await
     }
 
     async fn patch_stream(
@@ -431,7 +463,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn create_cache(&self, cache: Cache) -> StoreResult<Cache> {
-        caches::create_cache(self, cache).await
+        caches::create_cache(self, cache, Decide::Here).await
     }
 
     async fn patch_cache(&self, key: &CacheKey, patch: CachePatchRequest) -> StoreResult<Cache> {
@@ -439,7 +471,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()> {
-        caches::delete_cache(self, key, ShardCleanup::Full).await
+        caches::delete_cache(self, key, ShardCleanup::Full, Decide::Here).await
     }
 
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>> {
@@ -459,7 +491,7 @@ impl ControlPlaneStore for InMemoryStore {
         streams: Vec<Stream>,
         caches: Vec<Cache>,
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
-        resources::create_resources(self, streams, caches).await
+        resources::create_resources(self, streams, caches, Decide::Here).await
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
@@ -929,6 +961,23 @@ pub(crate) enum ShardCleanup {
     Full,
 }
 
+/// Who decides incarnations and tombstones on a create or delete.
+///
+/// A Raft entry from a proposer at metadata level 14 says so, and then
+/// decides from its own fields; an entry without it applies as a member
+/// before level 14 applies it, which keeps such a member identical even after
+/// `cache_incarnations` is finalized under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decide {
+    /// The store's own call: the finalizes as they stand.
+    Here,
+    /// A level-14 entry: as `Here`, but only a proposed incarnation gives one.
+    Entry,
+    /// An entry from before level 14: streams as `Here`, caches never
+    /// incarnated or tombstoned.
+    Legacy,
+}
+
 /// Node records and their change log under one lock.
 ///
 /// Kept together so a snapshot cannot observe a record set and a `next_seq`
@@ -999,10 +1048,27 @@ pub(crate) struct Faults {
     pub(crate) refresh_writes: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
+    /// Once set, the next shard write says it has read its stream or cache,
+    /// then waits to be resumed (or 300 ms) before it writes.
+    pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,
+}
+
+#[cfg(test)]
+pub(crate) struct ShardWritePause {
+    pub(crate) reached: tokio::sync::oneshot::Sender<()>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
 }
 
 #[cfg(test)]
 impl Faults {
+    async fn pause_shard_write(&self) {
+        let pause = self.shard_write_pause.lock().expect("pause").take();
+        if let Some(pause) = pause {
+            let _ = pause.reached.send(());
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(300), pause.resume).await;
+        }
+    }
+
     fn take(remaining: &std::sync::atomic::AtomicU32) -> StoreResult<()> {
         use std::sync::atomic::Ordering;
         match remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {

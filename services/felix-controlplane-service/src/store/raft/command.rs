@@ -73,6 +73,9 @@ pub enum MetaCommand {
         tenant_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         take_shards: bool,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     CreateNamespace {
         namespace: Namespace,
@@ -82,9 +85,16 @@ pub enum MetaCommand {
         key: NamespaceKey,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         take_shards: bool,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     CreateStream {
         stream: Stream,
+        /// Proposed at metadata level 14: incarnations and tombstones are
+        /// decided from this entry's own fields (`store::memory::Decide`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     PatchStream {
         key: StreamKey,
@@ -100,6 +110,9 @@ pub enum MetaCommand {
     },
     CreateCache {
         cache: Cache,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     PatchCache {
         key: CacheKey,
@@ -110,6 +123,9 @@ pub enum MetaCommand {
         key: CacheKey,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         take_reports: bool,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     /// Registers without fleet features: the entry predates them, and an
     /// older member applies it that way, so this build does too.
@@ -337,6 +353,9 @@ pub enum MetaCommand {
     CreateResources {
         streams: Vec<Stream>,
         caches: Vec<Cache>,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     /// Revoke principals' broker tokens issued at or before `revoked_at`,
     /// which the proposer decided. Level 7.

@@ -189,12 +189,15 @@ fn script() -> Vec<MetaCommand> {
             });
             commands.push(MetaCommand::CreateStream {
                 stream: stream(t, ns, "orders"),
+                incarnations: false,
             });
             commands.push(MetaCommand::CreateStream {
                 stream: stream(t, ns, "events"),
+                incarnations: false,
             });
             commands.push(MetaCommand::CreateCache {
                 cache: cache(t, ns, "primary"),
+                incarnations: false,
             });
         }
     }
@@ -353,6 +356,7 @@ fn script() -> Vec<MetaCommand> {
     commands.push(MetaCommand::DeleteTenant {
         tenant_id: "t-c".to_string(),
         take_shards: true,
+        incarnations: false,
     });
     commands.push(MetaCommand::DeleteStream {
         key: StreamKey {
@@ -368,6 +372,7 @@ fn script() -> Vec<MetaCommand> {
             namespace: "ns-2".to_string(),
         },
         take_shards: false,
+        incarnations: false,
     });
     commands
 }

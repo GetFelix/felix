@@ -50,6 +50,7 @@ async fn a_stale_conditional_assignment_write_is_answered_not_applied() {
         },
         MetaCommand::CreateStream {
             stream: stream("t1", "ns", "orders"),
+            incarnations: false,
         },
         MetaCommand::RegisterNode {
             node: node("broker-1", 7_001),
@@ -282,6 +283,7 @@ async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
     let mut envelope: serde_json::Value =
         serde_json::from_slice(&encode_command(&MetaCommand::CreateStream {
             stream: stream("t1", "ns", "orders"),
+            incarnations: false,
         }))
         .expect("json");
     envelope["stream"]["placement_hint"] = serde_json::json!("rack-aware");
@@ -321,9 +323,11 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
         },
         MetaCommand::CreateStream {
             stream: stream("t1", "ns", "orders"),
+            incarnations: false,
         },
         MetaCommand::CreateCache {
             cache: cache("t1", "ns", "orders"),
+            incarnations: false,
         },
         MetaCommand::RegisterNode {
             node: node("broker-0", 7_000),
@@ -383,10 +387,12 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
             vec![MetaCommand::DeleteTenant {
                 tenant_id: "t1".to_string(),
                 take_shards: take,
+                incarnations: false,
             }],
             vec![MetaCommand::DeleteNamespace {
                 key: ns_key(),
                 take_shards: take,
+                incarnations: false,
             }],
             vec![
                 MetaCommand::DeleteStream {
@@ -404,6 +410,7 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
                         cache: "orders".to_string(),
                     },
                     take_reports: take,
+                    incarnations: false,
                 },
             ],
         ]
@@ -437,6 +444,7 @@ async fn an_unknown_flag_on_a_delete_is_refused() {
         serde_json::from_slice(&encode_command(&MetaCommand::DeleteTenant {
             tenant_id: "t1".to_string(),
             take_shards: false,
+            incarnations: false,
         }))
         .expect("json");
     envelope["take_everything"] = serde_json::json!(true);

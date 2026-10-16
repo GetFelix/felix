@@ -71,6 +71,8 @@ async fn write_shard_assignment(
             .ok_or_else(|| StoreError::NotFound("cache".into()))?,
     };
     assignment.validate_within(shards).map_err(invalid_shard)?;
+    #[cfg(test)]
+    store.faults.pause_shard_write().await;
 
     // Checked here rather than by a foreign key: the node reference has none
     // deliberately, so that deleting a node cannot cascade an assignment away.

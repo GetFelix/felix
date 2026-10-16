@@ -673,10 +673,50 @@ however often it restarted.
 Level 14 is cache incarnations, the same change as level 10 for caches: a
 cache's `incarnation`, a cache change's `deleted_through`, the snapshot's
 `cache_tombstones`, and a `create_resources` answer carrying the caches as
-stored. Finalizing `cache_incarnations` needs every member at level 14. Below
-it the proposer leaves the incarnation out of every cache create, so every
-cache is created at 0 and no cache delete writes a tombstone, on every member
-alike.
+stored. It also adds `incarnations` to the create commands and to
+`delete_cache`, `delete_namespace` and `delete_tenant`: the proposer sets it
+only once every member is at level 14, and apply decides incarnations and
+tombstones from the entry alone.
+
+- A flagged create stores the incarnation it proposed, raised above the
+  name's tombstone, once the feature is finalized, and 0 otherwise. A
+  proposal of 0 stays 0.
+- A flagged cache delete records the tombstone once `cache_incarnations` is
+  finalized.
+- An unflagged entry applies as level 13 applies it. A cache is created at 0,
+  and a cache delete writes no tombstone. A stream entry keeps the meaning it
+  had at levels 10 to 13, so entries already in a log replay as they did.
+
+**What the finalize gate does and does not do.** An upgraded member refuses to
+propose the finalize of `cache_incarnations` (409) until every member is at
+level 14. A member still on the older build does not know the feature, reads
+its finalize as level 2 and proposes it, so the finalize can commit in a mixed
+group. What keeps the members identical is the rules above, not the gate.
+Until every member is at level 14 no entry carries the flag, so caches are
+created at 0 and no cache delete writes a tombstone, on every member. Through
+an upgraded member a cache create is refused with 409 in that window, since
+it would carry a cache incarnation. Brokers see caches at 0, as before the
+finalize, and keep a deleted cache's data. Once every member is at level 14,
+new entries carry the flag and caches get incarnations. The first flagged
+create or delete raises the group's level floor to 14, finalized or not, so
+from then on a member below level 14 is refused at join and held by the
+leader.
+
+Streams have the same gap at level 10. A `stream_incarnations` finalize can
+be committed through a member below level 10. Every stream create that such a
+member proposes afterwards carries no incarnation. Members at level 10 or
+above give the stream one, and members below store 0. Old proposers cannot
+write the flag, and changing how unflagged entries apply would break replay,
+so this cannot be repaired in apply.
+
+- **Who can be affected.** Only a group that finalized `stream_incarnations`
+  while a member below level 10 was in it. Level 10 was never in a release:
+  `v0.6.0-preview.7` is at level 8.
+- **What the leader does.** A leader at level 10 or above holds a member that
+  reports a level below the floor, so that member applies nothing until it is
+  upgraded and replays the log on the new build.
+- **Repair.** No migration step is needed. Remove the divergent member, wipe
+  its Raft data, and add it back, so it installs the leader's snapshot.
 
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
@@ -697,13 +737,13 @@ the field itself, on every member alike, or refuses the command:
 | node `features`, snapshot `fleet_enabled` | 2 | as above |
 | stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
 | snapshot `replica_reports` | 3 | snapshot only |
-| stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | finalizing `stream_incarnations` is refused with 409, so every stream is created at incarnation 0 and no delete writes a tombstone, which leaves every one of them out |
+| stream and assignment `incarnation`, change `deleted_through`, snapshot `stream_tombstones` | 10 | an upgraded proposer refuses finalizing `stream_incarnations` with 409; one below level 10 does not, see the level-14 notes above |
 | replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
 | node `storage_id`, replica report `follower_storage`, and both in the snapshot | 12 | the registration and the report are proposed without them, which placement reads as unverified |
 | replica report `report.leader` and `node_incarnations`, and both in the snapshot | 13 | the report is proposed without them, which placement reads as at level 12 |
-| cache `incarnation`, cache change `deleted_through`, snapshot `cache_tombstones` | 14 | finalizing `cache_incarnations` is refused with 409, so every cache is created at incarnation 0 and no delete writes a tombstone |
+| cache `incarnation`, cache change `deleted_through`, snapshot `cache_tombstones`, command `incarnations` | 14 | the entry carries no flag, so every member creates caches at 0 and writes no cache tombstone; an upgraded proposer refuses the finalize and, once finalized, cache creates with 409 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

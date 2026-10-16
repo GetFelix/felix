@@ -55,6 +55,7 @@ pub(super) async fn delete_namespace(
     store: &InMemoryStore,
     key: &NamespaceKey,
     cleanup: ShardCleanup,
+    decide: super::Decide,
 ) -> StoreResult<()> {
     if !store.tenant_exists(&key.tenant_id).await? {
         return Err(StoreError::NotFound("tenant".into()));
@@ -132,8 +133,14 @@ pub(super) async fn delete_namespace(
     let nodes = store.nodes.read().await;
     for cache_key in &cache_keys {
         if let Some(cache) = caches.remove(cache_key) {
-            let deleted_through =
-                super::caches::record_tombstone(store, &nodes, cache_key, cache.incarnation).await;
+            let deleted_through = super::caches::record_tombstone(
+                store,
+                &nodes,
+                cache_key,
+                cache.incarnation,
+                decide,
+            )
+            .await;
             store.cache_changes.write().await.record(|seq| CacheChange {
                 seq,
                 op: CacheChangeOp::Deleted,

@@ -1,7 +1,7 @@
 //! Streams and caches created together, all or none.
 use std::collections::HashSet;
 
-use super::InMemoryStore;
+use super::{Decide, InMemoryStore};
 use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, NamespaceKey, Stream, StreamChange,
     StreamChangeOp, StreamKey,
@@ -12,6 +12,7 @@ pub(super) async fn create_resources(
     store: &InMemoryStore,
     streams: Vec<Stream>,
     caches: Vec<Cache>,
+    decide: Decide,
 ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
     // Same lock order as the namespace and tenant cascades. Holding all three
     // while checking means nothing can land between the check and the insert.
@@ -62,7 +63,8 @@ pub(super) async fn create_resources(
         for mut stream in streams {
             let key = stream_key(&stream);
             stream.incarnation =
-                super::streams::incarnation_for(store, &nodes, &key, stream.incarnation).await;
+                super::streams::incarnation_for(store, &nodes, &key, stream.incarnation, decide)
+                    .await;
             stream_map.insert(key.clone(), stream.clone());
             stored.push(stream.clone());
             changes.record(|seq| StreamChange {
@@ -82,7 +84,8 @@ pub(super) async fn create_resources(
         for mut cache in caches {
             let key = cache_key(&cache);
             cache.incarnation =
-                super::caches::incarnation_for(store, &nodes, &key, cache.incarnation).await;
+                super::caches::incarnation_for(store, &nodes, &key, cache.incarnation, decide)
+                    .await;
             cache_map.insert(key.clone(), cache.clone());
             stored_caches.push(cache.clone());
             changes.record(|seq| CacheChange {

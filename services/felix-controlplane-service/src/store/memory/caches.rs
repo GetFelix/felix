@@ -1,5 +1,5 @@
 //! Caches and their change log.
-use super::{InMemoryStore, ShardCleanup};
+use super::{Decide, InMemoryStore, ShardCleanup};
 use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, NamespaceKey, ShardKind,
 };
@@ -31,7 +31,11 @@ pub(super) async fn get_cache(store: &InMemoryStore, key: &CacheKey) -> StoreRes
         .ok_or_else(|| StoreError::NotFound("cache".into()))
 }
 
-pub(super) async fn create_cache(store: &InMemoryStore, cache: Cache) -> StoreResult<Cache> {
+pub(super) async fn create_cache(
+    store: &InMemoryStore,
+    cache: Cache,
+    decide: Decide,
+) -> StoreResult<Cache> {
     // Caches are scoped to a namespace; we reject creation if the parent namespace doesn't exist.
     if !store
         .namespace_exists(&NamespaceKey {
@@ -55,7 +59,7 @@ pub(super) async fn create_cache(store: &InMemoryStore, cache: Cache) -> StoreRe
     // and the write: nothing is created at 0 after it.
     let nodes = store.nodes.read().await;
     let mut cache = cache;
-    cache.incarnation = incarnation_for(store, &nodes, &key, cache.incarnation).await;
+    cache.incarnation = incarnation_for(store, &nodes, &key, cache.incarnation, decide).await;
     caches.insert(key.clone(), cache.clone());
     store.cache_changes.write().await.record(|seq| CacheChange {
         seq,
@@ -98,13 +102,14 @@ pub(super) async fn delete_cache(
     store: &InMemoryStore,
     key: &CacheKey,
     cleanup: ShardCleanup,
+    decide: Decide,
 ) -> StoreResult<()> {
     let mut caches = store.caches.write().await;
     let Some(removed) = caches.remove(key) else {
         return Err(StoreError::NotFound("cache".into()));
     };
     let nodes = store.nodes.read().await;
-    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation).await;
+    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation, decide).await;
     store
         .drop_shard_assignments_for(
             ShardKind::Cache,
@@ -180,14 +185,20 @@ fn incarnations_finalized(nodes: &super::NodeState) -> bool {
 
 /// The incarnation a cache created now under `key` gets, from the `proposed`
 /// one its request carried. 0 until the finalize; after it, never 0 and above
-/// every earlier incarnation of the name.
+/// every earlier incarnation of the name. Always 0 from an entry before level
+/// 14, which a member at 13 applies that way even after the finalize; a
+/// level-14 entry gets one only if it proposed one.
 pub(super) async fn incarnation_for(
     store: &InMemoryStore,
     nodes: &super::NodeState,
     key: &CacheKey,
     proposed: u64,
+    decide: Decide,
 ) -> u64 {
-    if !incarnations_finalized(nodes) {
+    if decide == Decide::Legacy
+        || !incarnations_finalized(nodes)
+        || (decide == Decide::Entry && proposed == 0)
+    {
         return 0;
     }
     let deleted = store.cache_tombstones.read().await.get(key).copied();
@@ -197,14 +208,16 @@ pub(super) async fn incarnation_for(
 /// Record the delete of `incarnation` of `key` once incarnations are
 /// finalized, returning what the `Deleted` change carries. Nothing before the
 /// finalize: a cache created again at 0 then still opens the deleted one's
-/// data, so it must stay.
+/// data, so it must stay. Nothing from an entry before level 14 either, as a
+/// member at 13 applies it.
 pub(super) async fn record_tombstone(
     store: &InMemoryStore,
     nodes: &super::NodeState,
     key: &CacheKey,
     incarnation: u64,
+    decide: Decide,
 ) -> Option<u64> {
-    if !incarnations_finalized(nodes) {
+    if decide == Decide::Legacy || !incarnations_finalized(nodes) {
         return None;
     }
     let mut tombstones = store.cache_tombstones.write().await;
