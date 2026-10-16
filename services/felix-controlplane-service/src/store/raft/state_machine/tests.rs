@@ -155,6 +155,8 @@ fn replica_report(
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     }
 }

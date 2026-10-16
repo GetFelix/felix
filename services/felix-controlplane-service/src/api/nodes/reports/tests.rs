@@ -519,3 +519,65 @@ async fn a_report_without_an_incarnation_is_stale_against_an_incarnated_assignme
             .is_empty()
     );
 }
+
+/// **A stored report says who made it and at which incarnations.** Placement
+/// counts a follower only from the current leader's report, and one without
+/// a storage identity only from a report taken since it last registered. The
+/// incarnations are the control plane's, never the caller's, and a node it
+/// does not know is left out.
+#[tokio::test]
+async fn a_report_is_stamped_with_its_leader_and_the_registered_incarnations() {
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+    let restarted = store
+        .register_node(store.get_node("broker-y").await.expect("broker-y"))
+        .await
+        .expect("register again");
+    let state = app_state_ready(Arc::clone(&store) as _);
+
+    let (status, _) = post_report(
+        state,
+        &keys,
+        serde_json::json!([shard_json(0, generation, 10, &["broker-y", "broker-gone"])]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let held = store.list_replica_reports().await.expect("list");
+    assert_eq!(held[0].leader.as_deref(), Some("broker-x"));
+    let leader = store.get_node("broker-x").await.expect("broker-x");
+    assert_eq!(
+        held[0].node_incarnations,
+        std::collections::BTreeMap::from([
+            ("broker-x".to_string(), leader.status.incarnation),
+            ("broker-y".to_string(), restarted.status.incarnation),
+        ])
+    );
+
+    // The stamp is what the registration said before the write. A broker-y
+    // that registers again afterwards is past it, and placement, which reads
+    // broker-y as unverified (it registered no identity), stops counting it.
+    let positions = || async {
+        crate::cluster::placement::ReplicaPositions::load(
+            store.as_ref(),
+            &crate::config::NodeLivenessConfig::default(),
+        )
+        .await
+        .expect("positions")
+    };
+    use crate::cluster::placement::CaughtUp;
+    assert!(positions().await.is_caught_up(&shard_zero(), "broker-y"));
+    let again = store
+        .register_node(store.get_node("broker-y").await.expect("broker-y"))
+        .await
+        .expect("register after the report");
+    assert_eq!(
+        store.list_replica_reports().await.expect("list")[0].node_incarnations["broker-y"],
+        restarted.status.incarnation,
+        "the stamp moved with a registration after the write"
+    );
+    assert!(again.status.incarnation > restarted.status.incarnation);
+    assert!(
+        !positions().await.is_caught_up(&shard_zero(), "broker-y"),
+        "a report from before broker-y registered again still counted it"
+    );
+}

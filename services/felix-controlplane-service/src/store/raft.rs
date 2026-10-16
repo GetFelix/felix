@@ -45,6 +45,10 @@ const INCARNATION_LEVEL: u16 = 10;
 /// The metadata level whose members store a node's storage identity and the
 /// identities a replica report names.
 const STORAGE_IDENTITY_LEVEL: u16 = 12;
+
+/// The metadata level whose members store which node made a replica report
+/// and the incarnations it was taken at.
+const REPORT_STAMP_LEVEL: u16 = 13;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -81,25 +85,19 @@ impl RaftStore {
 
     /// The metadata level the group can apply, for gating what is proposed.
     /// A member that has not answered a probe since this process started
-    /// counts as 0 in `cluster_version`. Once `stream_incarnations` is
-    /// finalized it counts at [`INCARNATION_LEVEL`] instead, since the
-    /// finalize needed every member there. A member that answered counts at
-    /// what it said, so a rolled-back member or an old build that joined
-    /// still holds newer commands back. Without the floor, a restarted member
-    /// with a peer down refuses an incarnated create the finalize allows.
+    /// counts at the join floor: the level the applied log already depends
+    /// on, through an entry that needed it or a finalized feature. A member
+    /// below it could not apply what the log already holds, so this lets
+    /// through no level above what it was already sent. A member that
+    /// answered counts at what it said, so a rolled-back member or an old
+    /// build that joined still holds newer commands back. Counted at 0, a
+    /// restarted member with a peer down dropped what the group had been
+    /// storing, such as a node's storage identity.
     async fn group_level(&self) -> u16 {
-        let finalized = self
-            .local()
-            .enabled_fleet_features()
+        use crate::raft::AppStateMachine;
+        self.handle
+            .cluster_version_with_unknown_at(self.machine.join_floor())
             .await
-            .is_ok_and(|enabled| enabled.contains(felix_common::fleet::STREAM_INCARNATIONS.name()));
-        if finalized {
-            self.handle
-                .cluster_version_with_unknown_at(INCARNATION_LEVEL)
-                .await
-        } else {
-            self.handle.cluster_version().await
-        }
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -415,9 +413,7 @@ impl ControlPlaneStore for RaftStore {
         // Stored without it, the node reads as one that sent none, which
         // placement cannot check a report against. Dropped first: the level
         // below is measured with it gone.
-        if node.status.storage_id.is_some()
-            && self.handle.cluster_version().await < STORAGE_IDENTITY_LEVEL
-        {
+        if node.status.storage_id.is_some() && self.group_level().await < STORAGE_IDENTITY_LEVEL {
             node.status.storage_id = None;
         }
         let command = MetaCommand::RegisterNodeInFleet { node: node.clone() };
@@ -687,10 +683,17 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // Without them the report is read as before: from any leader, and a
+        // follower without an identity across its restarts. Dropped first.
+        if (report.leader.is_some() || !report.node_incarnations.is_empty())
+            && self.group_level().await < REPORT_STAMP_LEVEL
+        {
+            report.leader = None;
+            report.node_incarnations.clear();
+        }
         // Without them every follower is judged by the report's age alone,
         // as before identities existed. Dropped first, like `by_round`.
-        if !report.follower_storage.is_empty()
-            && self.handle.cluster_version().await < STORAGE_IDENTITY_LEVEL
+        if !report.follower_storage.is_empty() && self.group_level().await < STORAGE_IDENTITY_LEVEL
         {
             report.follower_storage.clear();
         }

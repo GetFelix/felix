@@ -140,6 +140,9 @@ expectations=(
   "FelixShardWipe pass"
   "FelixShardWipeFull pass"
   "FelixShardWipeNoIds violates AckedSurvive"
+  "FelixShardWipeStripped violates AckedSurvive"
+  "FelixShardWipeStrippedRedial pass"
+  "FelixShardWipeStrippedNoStamp violates AckedSurvive"
   "FelixShard pass"
   "FelixShardHandoff pass"
   "FelixShardHandoffNoWait violates AtMostOneServing"
@@ -250,6 +253,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
+  "FelixShardWipeStrippedRedial 36"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"

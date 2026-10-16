@@ -410,6 +410,20 @@ pub struct ReplicaReport {
     /// it; such a follower is judged by the report's age alone.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub follower_storage: BTreeMap<String, String>,
+    /// The node that made the report, set by the control plane from the
+    /// caller. Placement counts a follower only from the report of the
+    /// assignment's current leader. Absent from a control plane that
+    /// predates it and, under Raft, until every member can apply it; such a
+    /// report is read as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+    /// The incarnation each node the report names (its leader and every
+    /// follower) was registered at when the control plane took the report,
+    /// read before it was stored. Set with `leader`. A follower without a
+    /// storage identity counts only from a report taken at its current
+    /// incarnation, since a restart says nothing about what it kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_incarnations: BTreeMap<String, u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

@@ -343,8 +343,11 @@
 3 import_state.state.replica_reports[].key.shard
 3 import_state.state.replica_reports[].key.stream
 3 import_state.state.replica_reports[].key.tenant_id
+13 import_state.state.replica_reports[].leader
 11 import_state.state.replica_reports[].leader_incarnation
 3 import_state.state.replica_reports[].leader_offset
+13 import_state.state.replica_reports[].node_incarnations
+13 import_state.state.replica_reports[].node_incarnations.*
 3 import_state.state.replica_reports[].offsets
 3 import_state.state.replica_reports[].offsets.*
 3 import_state.state.replica_reports[].reported_at_millis
@@ -590,8 +593,11 @@
 0 record_replica_report.report.key.shard
 0 record_replica_report.report.key.stream
 0 record_replica_report.report.key.tenant_id
+13 record_replica_report.report.leader
 11 record_replica_report.report.leader_incarnation
 0 record_replica_report.report.leader_offset
+13 record_replica_report.report.node_incarnations
+13 record_replica_report.report.node_incarnations.*
 0 record_replica_report.report.offsets
 0 record_replica_report.report.offsets.*
 0 record_replica_report.report.reported_at_millis
@@ -874,8 +880,11 @@
 3 snapshot.state.replica_reports[].key.shard
 3 snapshot.state.replica_reports[].key.stream
 3 snapshot.state.replica_reports[].key.tenant_id
+13 snapshot.state.replica_reports[].leader
 11 snapshot.state.replica_reports[].leader_incarnation
 3 snapshot.state.replica_reports[].leader_offset
+13 snapshot.state.replica_reports[].node_incarnations
+13 snapshot.state.replica_reports[].node_incarnations.*
 3 snapshot.state.replica_reports[].offsets
 3 snapshot.state.replica_reports[].offsets.*
 3 snapshot.state.replica_reports[].reported_at_millis

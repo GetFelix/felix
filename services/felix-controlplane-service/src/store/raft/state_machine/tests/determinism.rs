@@ -422,6 +422,8 @@ async fn storage_identities_apply_identically() {
     let mut registered = node("broker-1", 7_001);
     registered.status.storage_id = Some(id.clone());
     let report = crate::model::ReplicaReport {
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: [("broker-1".to_string(), id.clone())].into(),
         ..replica_report("t-a", "ns-1", "orders", 1_000)
     };

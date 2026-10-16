@@ -1657,6 +1657,8 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         stream_incarnation: None,
         by_round: true,
         leader_incarnation: Some(1),
+        leader: None,
+        node_incarnations: Default::default(),
         follower_storage: Default::default(),
     };
     store
@@ -1707,7 +1709,8 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
 /// Its writes leave the new columns alone (migration 0030), so an identity a
 /// row still holds came with an earlier write. A registration through it
 /// bumps the incarnation, and the node then reads as having none; an update
-/// of a report moves `reported_at_millis`, and the report then names none.
+/// of a report moves `reported_at_millis`, and the report then names none,
+/// and neither its leader nor the incarnations it was taken at (0031).
 /// Neither can match a report, so placement reads the follower as
 /// unverified until a current member writes the row again.
 #[tokio::test]
@@ -1760,6 +1763,8 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        leader: Some("broker-x".to_string()),
+        node_incarnations: [("broker-y".to_string(), 3)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
     };
     store
@@ -1773,6 +1778,8 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
             .expect("held")
     };
     assert_eq!(held().await.follower_storage, report.follower_storage);
+    assert_eq!(held().await.leader, report.leader);
+    assert_eq!(held().await.node_incarnations, report.node_incarnations);
 
     sqlx::query(
         "UPDATE replica_reports SET reported_at_millis = 6000, leader_offset = 11
@@ -1783,6 +1790,8 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
     let after = held().await;
     assert_eq!(after.reported_at_millis, 6_000);
     assert!(after.follower_storage.is_empty(), "{after:?}");
+    assert_eq!(after.leader, None, "{after:?}");
+    assert!(after.node_incarnations.is_empty(), "{after:?}");
 
     store
         .record_replica_report(

@@ -62,6 +62,9 @@ struct DbReplicaReport {
     by_round_at: Option<i64>,
     follower_storage: Option<serde_json::Value>,
     follower_storage_at: Option<i64>,
+    leader: Option<String>,
+    node_incarnations: Option<serde_json::Value>,
+    stamped_at: Option<i64>,
 }
 
 pub(super) async fn put_shard_assignment(
@@ -536,9 +539,10 @@ pub(super) async fn record_replica_report(
                    (tenant_id, namespace, kind, stream, shard, generation, caught_up, offsets,
                     reported_at_millis, drained, leader_offset, halted, counter_offsets,
                     by_round, leader_incarnation, by_round_at,
-                    follower_storage, follower_storage_at)
+                    follower_storage, follower_storage_at,
+                    leader, node_incarnations, stamped_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9,
-                       $16, $9)
+                       $16, $9, $17, $18, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -552,7 +556,10 @@ pub(super) async fn record_replica_report(
                    leader_incarnation = EXCLUDED.leader_incarnation,
                    by_round_at = EXCLUDED.by_round_at,
                    follower_storage = EXCLUDED.follower_storage,
-                   follower_storage_at = EXCLUDED.follower_storage_at
+                   follower_storage_at = EXCLUDED.follower_storage_at,
+                   leader = EXCLUDED.leader,
+                   node_incarnations = EXCLUDED.node_incarnations,
+                   stamped_at = EXCLUDED.stamped_at
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -579,6 +586,8 @@ pub(super) async fn record_replica_report(
             .map(|incarnation| incarnation as i64),
     )
     .bind(serde_json::to_value(&report.follower_storage).expect("a map of strings serializes"))
+    .bind(&report.leader)
+    .bind(serde_json::to_value(&report.node_incarnations).expect("a map of integers serializes"))
     .execute(&mut *tx)
     .await;
     match result {
@@ -599,7 +608,8 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
         r#"SELECT tenant_id, namespace, stream, shard, kind, generation, caught_up, offsets,
                       reported_at_millis, drained, leader_offset, halted, counter_offsets,
                       by_round, leader_incarnation, by_round_at,
-                      follower_storage, follower_storage_at
+                      follower_storage, follower_storage_at,
+                      leader, node_incarnations, stamped_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -654,6 +664,14 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
         }
         _ => Default::default(),
     };
+    // And for who made it and the incarnations it was taken at (0031).
+    let stamped = row.stamped_at == Some(row.reported_at_millis);
+    let node_incarnations = match row.node_incarnations {
+        Some(incarnations) if stamped => serde_json::from_value::<Option<_>>(incarnations)
+            .map_err(|err| StoreError::Unexpected(anyhow!("decode node_incarnations: {err}")))?
+            .unwrap_or_default(),
+        _ => Default::default(),
+    };
     Ok(ReplicaReport {
         key: ShardKey {
             tenant_id: row.tenant_id,
@@ -681,6 +699,8 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             .filter(|_| by_round)
             .map(|incarnation| incarnation as u64),
         follower_storage,
+        leader: row.leader.filter(|_| stamped),
+        node_incarnations,
     })
 }
 
