@@ -3,7 +3,7 @@ title: "What Felix Is For"
 ---
 
 :::caution[Read this as two documents]
-Felix is in early active development. This page separates **what Felix does
+Felix is pre-1.0. This page separates **what Felix does
 today** from **what Felix is being built to become**. Every capability below
 carries a status marker. Nothing marked *Target* should be relied on, planned
 around as if it exists, or claimed externally.
