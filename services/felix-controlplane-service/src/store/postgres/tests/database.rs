@@ -1952,6 +1952,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         .await?;
     let generation = store.get_shard_assignment(&key(0)).await?.generation;
     let report = crate::model::ReplicaReport {
+        given_up: false,
         key: key(0),
         generation,
         caught_up: ["broker-y".to_string()].into(),
@@ -2058,6 +2059,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         .await?;
     let generation = store.get_shard_assignment(&key(0)).await?.generation;
     let report = crate::model::ReplicaReport {
+        given_up: false,
         key: key(0),
         generation,
         caught_up: ["broker-y".to_string()].into(),

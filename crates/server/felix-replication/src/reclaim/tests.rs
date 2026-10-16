@@ -129,7 +129,7 @@ async fn no_follower_ahead_is_reclaimable() {
 
     assert!(probe.reclaimable);
     let report = probe.report;
-    assert!(report.given_up && report.drained);
+    assert!(report.given_up && !report.drained);
     assert_eq!(report.generation, 4);
     assert!(report.caught_up.is_empty(), "{:?}", report.caught_up);
     let mut offsets = report.offsets.clone();

@@ -185,6 +185,7 @@ fn assignment() -> ShardAssignment {
 
 fn report() -> ReplicaReport {
     ReplicaReport {
+        given_up: true,
         key: shard_key(),
         generation: 1,
         caught_up: BTreeSet::from([s("c")]),

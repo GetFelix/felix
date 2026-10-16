@@ -484,6 +484,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
     let sent = ReplicaStatusRequest {
         incarnation: 2,
         shards: vec![ShardReplicaStatus {
+            given_up: false,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "orders".to_string(),

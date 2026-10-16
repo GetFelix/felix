@@ -156,6 +156,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::the_leader_offset_is_kept(store).await;
     replica_reports::halted_copies_are_kept_with_when_they_began(store).await;
     replica_reports::follower_storage_is_kept(store).await;
+    replica_reports::a_give_up_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     why_a_move_started_is_persisted(store).await;
@@ -1157,6 +1158,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
     assert_eq!(owned(&before, ShardKind::Stream), 2);
     assert_eq!(owned(&before, ShardKind::Cache), 2);
     let doomed_report = crate::model::ReplicaReport {
+        given_up: false,
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,
@@ -1298,6 +1300,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
             store
                 .record_replica_report(
                     crate::model::ReplicaReport {
+                        given_up: false,
                         key: key.clone(),
                         generation: stored.generation,
                         caught_up: Default::default(),

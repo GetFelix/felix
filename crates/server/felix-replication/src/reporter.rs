@@ -149,9 +149,9 @@ pub struct ShardReport {
     /// sends one. Like `storage_ids`, it names who the positions describe.
     pub node_incarnations: Vec<(String, Option<u64>)>,
     /// This broker gave the shard up after a crash and measured where every
-    /// follower's copy ends (`crate::reclaim`). Sent drained and without a
-    /// tail, so it replaces the report its previous process made whatever
-    /// that one's tail; its own position is in `offsets` under its node id.
+    /// follower's copy ends (`crate::reclaim`). Sent without a tail, so it
+    /// replaces the report its previous process made whatever that one's
+    /// tail; its own position is in `offsets` under its node id.
     pub given_up: bool,
 }
 
@@ -340,6 +340,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .chain(to.storage_id.map(|id| (to.node_id.clone(), id.to_hex())))
                     .collect(),
                 replica_incarnations: report.node_incarnations.iter().cloned().collect(),
+                given_up: report.given_up,
             })
             .collect(),
     };

@@ -236,6 +236,7 @@ fn a_change_round_trips_with_and_without_a_body() {
 
 fn report_at(generation: u64, at: u64) -> ReplicaReport {
     ReplicaReport {
+        given_up: false,
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,

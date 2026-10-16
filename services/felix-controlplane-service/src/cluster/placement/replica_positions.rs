@@ -334,13 +334,11 @@ impl ReplicaPositions {
     }
 
     /// Whether `report` is `leader`'s, made at `generation` by the process
-    /// registered now, saying it gave the shard up: drained, and with no tail
-    /// of its own beside the followers' positions.
+    /// registered now, saying outright that it gave the shard up.
     fn gave_up(&self, report: &ReplicaReport, generation: u64, leader: &str) -> bool {
-        report.leader.as_deref() == Some(leader)
+        report.given_up
+            && report.leader.as_deref() == Some(leader)
             && report.generation == generation
-            && report.drained
-            && report.leader_offset.is_none()
             && self.same_incarnation(report, leader)
     }
 

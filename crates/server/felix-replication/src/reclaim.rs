@@ -3,9 +3,9 @@
 //! shard from what the copies hold now rather than from a report made before
 //! the crash (#1295).
 //!
-//! Each follower is sent a fence at the generation this broker led, which a
-//! follower that took that generation from it answers without changing
-//! anything. Only a probe every follower answered is reported: a follower not
+//! Each follower is sent a fence at the generation this broker led. One that
+//! took that generation from it changes nothing; one still at an older
+//! generation takes it, as it would this broker's batch at it. Only a probe every follower answered is reported: a follower not
 //! heard from may hold what this broker lost. When none is ahead of this
 //! broker's copy, nothing a client was promised is held beyond it, and
 //! placement may name this broker leader again at a new generation. When one
@@ -154,7 +154,7 @@ fn given_up_report(
         caught_up,
         offsets,
         tail,
-        drained: true,
+        drained: false,
         halted: Vec::new(),
         counter_offsets: Vec::new(),
         incarnation: 0,

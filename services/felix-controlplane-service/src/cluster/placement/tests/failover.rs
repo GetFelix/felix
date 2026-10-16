@@ -590,6 +590,7 @@ const C_WIPED: &str = "dddddddddddddddddddddddddddddddd";
 /// [`REPORTED_AT`], under [`C_STORAGE`].
 fn last_report() -> crate::model::ReplicaReport {
     crate::model::ReplicaReport {
+        given_up: false,
         key: assigned("orders", "broker-a", &[]).key,
         generation: 3,
         caught_up: BTreeSet::from(["broker-c".to_string()]),
@@ -1003,7 +1004,7 @@ fn an_unreplicated_leader_back_on_a_new_identity_keeps_the_shard() {
 }
 
 /// What broker-a reports once it came back under [`A_CRASHED`], gave the
-/// shard up and measured both followers: drained, no tail of its own, its
+/// shard up and measured both followers: given up, no tail of its own, its
 /// position beside theirs, each under the identity and incarnation it is
 /// registered at.
 fn given_up_report(a: u64, b: u64, c: u64) -> crate::model::ReplicaReport {
@@ -1014,8 +1015,8 @@ fn given_up_report(a: u64, b: u64, c: u64) -> crate::model::ReplicaReport {
             ("broker-b".to_string(), b),
             ("broker-c".to_string(), c),
         ]),
-        drained: true,
         leader_offset: None,
+        given_up: true,
         leader: Some("broker-a".to_string()),
         node_incarnations: BTreeMap::from([
             ("broker-a".to_string(), 1),
@@ -1096,4 +1097,31 @@ fn a_reclaim_needs_every_follower_measured_since_the_crash() {
             "{what}: the shard should wait",
         );
     }
+}
+
+/// **Only an explicit give-up counts (#1295).** A broker that predates the
+/// flag sends a drained report without a tail for an ordinary drain; read as
+/// a give-up, placement would replace a live leader on silence.
+#[test]
+fn an_old_drained_report_without_a_tail_is_not_a_give_up() {
+    let mut report = given_up_report(10, 4, 10);
+    report.given_up = false;
+    report.drained = true;
+    report
+        .follower_storage
+        .insert("broker-a".to_string(), A_STORAGE.to_string());
+    let nodes = live_leader_under(A_STORAGE);
+    let positions = ReplicaPositions::new(
+        vec![report.clone()],
+        &report_liveness(),
+        REPORTED_AT + 1_000,
+    )
+    .with_nodes(
+        &nodes,
+        &[assigned("orders", "broker-a", &["broker-b", "broker-c"])],
+    );
+    assert!(!positions.leader_gave_up(&report.key, 3, "broker-a"));
+    let plan = plan_from(&nodes, report, 3);
+    assert_eq!(plan.to_place().count(), 0, "the live leader was replaced");
+    assert_eq!(plan.unplaceable().count(), 0);
 }

@@ -112,7 +112,8 @@ entries.
   ships, reports or counts toward a mark at the old generation, and the
   broker refuses a successor's promotion fence from that copy in any replica
   set but two. Instead it asks every follower where its copy ends and
-  reports that. Replica reports name the leader's own storage id
+  reports that, flagged `given_up` (an optional report field, stored by the
+  control plane at Raft metadata level 15 and in Postgres migration 0033). Replica reports name the leader's own storage id
   (`replica_storage_ids`). Placement promotes a follower the report names
   caught up once the leader is registered under another id or reports it gave
   the shard up, without waiting for its lease. When a fresh report from the

@@ -365,7 +365,7 @@ pub(super) fn plan_abandoning(
         // so the shard fails over as if it were down, or waits for one that
         // holds the log. A shard with no followers has no other copy.
         // Or the leader said so itself, in a report it made since it came
-        // back. Outside a move, where `drained` means what the move made it.
+        // back. Not during a move, which ends through its own steps.
         let replaced = current.get(&key).is_some_and(|existing| {
             durable
                 && existing.replicas.iter().any(|r| *r != existing.leader)

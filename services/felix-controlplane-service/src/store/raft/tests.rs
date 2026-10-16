@@ -614,6 +614,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
             store
                 .record_replica_report(
                     ReplicaReport {
+                        given_up: false,
                         key: key(namespace, name),
                         generation: assigned.generation,
                         caught_up: Default::default(),
@@ -801,6 +802,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         .await
         .expect("assign");
     let report = ReplicaReport {
+        given_up: false,
         counter_offsets: [("broker-y".to_string(), 7)].into(),
         stream_incarnation: None,
         by_round: false,
@@ -911,6 +913,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         .await
         .expect("assign");
     let report = ReplicaReport {
+        given_up: false,
         counter_offsets: [("broker-y".to_string(), 7)].into(),
         stream_incarnation: None,
         by_round: true,
@@ -1040,6 +1043,7 @@ async fn storage_ids_wait_for_every_member() {
         .await
         .expect("assign");
     let report = ReplicaReport {
+        given_up: false,
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: true,

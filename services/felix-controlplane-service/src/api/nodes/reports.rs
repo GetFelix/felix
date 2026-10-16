@@ -386,6 +386,7 @@ async fn record_one(
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
         leader: Some(node_id.to_string()),
         node_incarnations: node_incarnations(node_id, shard, incarnations),
+        given_up: shard.given_up,
         // A malformed identity is no evidence either way, so it is left out
         // and the follower is judged as one that sent none.
         follower_storage: shard

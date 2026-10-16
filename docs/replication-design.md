@@ -2317,10 +2317,11 @@ holds more than the crashed leader, names it again:
   old generation, and nothing is served from it (`may_lead` in
   `shards/lifecycle.rs`, `felix_replication::unclean`).
 - **The probe.** Each tick the broker sends every follower of a shard it gave
-  up a fence at the generation it led, which a follower that took that
-  generation from it answers without changing anything, and reports what
-  they hold: drained, with no tail of its own (so it replaces the report its
-  previous process made), its own position beside every follower's, each
+  up a fence at the generation it led (a follower that took that generation
+  from it changes nothing, one still at an older generation takes it), and
+  reports what they hold: marked given up (`given_up`), with no tail of its
+  own (so it replaces the report its previous process made), its own
+  position beside every follower's, each
   under the storage identity and incarnation it gave on that connection. It
   reports only when every follower answered: one not heard from may hold what
   this broker lost. When followers are ahead of it, the furthest are reported
@@ -2329,7 +2330,7 @@ holds more than the crashed leader, names it again:
 - **In placement.** A report names the leader's own storage identity beside
   its followers'. When the assignment's leader is registered under another
   identity than the shard's last report names for it, or its own report since
-  it came back says it gave the shard up, placement treats it as gone without
+  it came back says outright that it gave the shard up, placement treats it as gone without
   waiting for its lease, and promotes a follower the report names caught up,
   keeping the old leader in the set to be copied again (`leader_replaced`,
   `leader_gave_up`). Failing that, it **reclaims**: it names the same leader
