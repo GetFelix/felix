@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792110500445,
+  "lastUpdate": 1792111496866,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -30784,6 +30784,58 @@ window.BENCHMARK_DATA = {
             "range": "3605.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798516.14\nmean: 800241.94\nstdev: 3605.89\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "357571795363fd3f18dc38a05075a4d542ea641c",
+          "message": "fix(placement): never promote a follower whose storage changed, and trust a dead leader's report past its TTL (#1266, #1250) (#1271)\n\n* fix(placement): never promote a follower whose storage changed, and trust a dead leader's report past its TTL (#1266, #1250)\n\nThe control plane now keeps each broker's registered storage identity\n(NodeStatus.storage_id, cleared by a registration without one, 400 when\nmalformed) and the identity each replica report names for every follower\n(ReplicaReport.follower_storage, copied from replica_storage_ids).\n\nPlacement judges each (report, follower) pair: a matching identity counts\nwhile the report is believed, and while the assignment is still at the\nreport's generation and its leader is down or left the report is aged to the\nleader's last heartbeat (#1250). A mismatch never counts, even fresh. A\nmissing identity on either side is today's rule: fresh within the TTL, never\nfrozen. Key-level reads (generation, leader offset, drained, halted) use the\nbelieved report so promotion works from a dead leader's report.\n\nRaft metadata level 12 for both fields, dropped by the proposer below it.\nPostgres migration 0030 adds the columns with markers\n(storage_id_incarnation, follower_storage_at) so an older instance's write\nreads as no identity.\n\nSpec-Unaffected: the model already promotes from a report of any age (reports never expire in FelixShard.tla), so the #1250 freeze only narrows what it checks, and ByLeaderReport's r.sids[f] = sid[f] is the identity comparison placement now makes; FelixShardWipe.cfg cites the new placement tests.\n\n* test(cluster): skip the harness's probe record when replaying in wiped tests\n\nSpec-Unaffected: test helper only.\n\n* docs: say which wiped followers placement still counts\n\nThe status row and the upgrade note claimed more than placement does: a\nfollower wiped before it is marked down still matches its old identity until\nit registers again, and unverified followers are still promoted. Also note\nthat the identity does not catch a tail lost under a relaxed fsync mode.\n\nSpec-Unaffected: docs only.\n\n* ci: re-run on the docs commit\n\nSpec-Unaffected: no change.",
+          "timestamp": "2026-10-16T00:40:35Z",
+          "tree_id": "e2c4aeeeaa4a86681af6a3c5cd4830e9158419e0",
+          "url": "https://github.com/GetFelix/felix/commit/357571795363fd3f18dc38a05075a4d542ea641c"
+        },
+        "date": 1792111495041,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353339.55,
+            "range": "17039.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353339.55\nmean: 349102.28\nstdev: 17039.71\ncv: 4.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353339.55,
+            "range": "17039.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353339.55\nmean: 349102.28\nstdev: 17039.71\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80435.56,
+            "range": "4174.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80435.56\nmean: 78796.82\nstdev: 4174.00\ncv: 5.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804355.62,
+            "range": "41740.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804355.62\nmean: 787968.17\nstdev: 41740.03\ncv: 5.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
