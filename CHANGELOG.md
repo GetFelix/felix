@@ -581,6 +581,13 @@ The PR performance comment now marks a change that is 10% or more worse but not 
   `storage_id`. Postgres migration `0030_storage_identity`; under Raft,
   metadata level 12.
 - A `Quorum` leader counts a follower's confirmed position toward the mark only after the follower has answered in the same pass, over a connection carrying the storage identity the position was learned under. A follower level with the tail is sent its last record again while the mark lags its position. A follower wiped after confirming more than the mark, beside another that failed fast, could release records only the leader held. The counter mark follows the same rule (#1266).
+- A leader that crashed under `periodic` or `none` and gave its shard up is
+  replaced by a follower that holds at least what it kept, and named leader
+  again only when every follower holds less (#1314). Its probe now reports a
+  follower level with it as caught up, so the outcome no longer depends on
+  whether the control plane sees the leader's new storage id or its probe
+  first. A follower counts from the probe only when measured under the
+  identity and incarnation it is registered at now.
 
 ### Performance
 - A subscription's feeder gives a batch back to `FELIX_SUB_QUEUE_MAX_BYTES` once
