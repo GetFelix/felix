@@ -239,6 +239,15 @@
 (* under the identity it has now. Without that TLC finds the wiped        *)
 (* follower promoted without a record the old leader acknowledged         *)
 (* (AckedSurvive, FelixShardWipeNoIds.cfg).                               *)
+(*                                                                         *)
+(* Placement compares with the identity a follower last registered, not   *)
+(* the one it has (`registered`). A wiped follower registers again        *)
+(* (`Register`), and under `StripIds` the registration carries no         *)
+(* identity, as through a control plane that dropped it. Such a follower  *)
+(* is unverified; with `StampIncarnations` it counts only from a report   *)
+(* the control plane took at its current registration (`incs`). Without   *)
+(* that TLC finds it promoted on a report from before the wipe            *)
+(* (AckedSurvive, FelixShardWipeStrippedNoStamp.cfg).                     *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -348,6 +357,19 @@ ASSUME Wipes \in Nat /\ StorageIds \in BOOLEAN
 ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /\ ~Counters /\ ~Handoff /\ ~Cancel
                    /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
 
+\* How placement reads a registration, as definitions rather than constants so
+\* the configurations that leave them alone need not name them. One that
+\* checks another sets it with `StripIds <- Yes` under CONSTANTS.
+\* `StripIds`: a wiped follower registers again in a step of its own and
+\* without an identity, as through a control plane that dropped it. Without
+\* it the wipe registers the new identity at once.
+\* `StampIncarnations`: placement counts a follower registered without an
+\* identity only from a report taken at its current registration.
+Yes == TRUE
+No == FALSE
+StripIds == FALSE
+StampIncarnations == TRUE
+
 VARIABLES
     now,        \* real time
     clock,      \* each broker's monotonic clock
@@ -401,7 +423,10 @@ VARIABLES
     sid,        \* each broker's storage identity, which a wipe changes
     seen,       \* per leader, the identity it last learned for each follower
     wipes,      \* how many wipes have happened
-    checked     \* per leader, the followers that answered this pass from the copy it knows
+    checked,    \* per leader, the followers that answered this pass from the copy it knows
+    registered, \* the identity each broker last registered: its sid + 1, or 0 for none
+    inc,        \* how many times each broker has registered: its incarnation
+    restarting  \* brokers wiped and not yet registered again
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -411,8 +436,9 @@ counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
-\* Storage identities: only a wipe and a leader learning one change them.
-idVars == << sid, seen, wipes, checked >>
+\* Storage identities and registrations: only a wipe, a leader learning one,
+\* and a registration change them.
+idVars == << sid, seen, wipes, checked, registered, inc, restarting >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -452,7 +478,8 @@ Promise(f, b, g) ==
 TracksOpens == Elections > 0 \/ Suspicions > 0
 Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
-NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0, sids |-> [m \in Brokers |-> 0]]
+NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0, sids |-> [m \in Brokers |-> 0],
+             incs |-> [m \in Brokers |-> 0]]
 
 \* The replica set the stream asked for: everyone but a destination still
 \* copying, a replacement still joining, and the brokers outside it. A quorum
@@ -587,6 +614,9 @@ IdInit ==
     /\ seen = [m \in Brokers |-> [n \in Brokers |-> 0]]
     /\ wipes = 0
     /\ checked = [m \in Brokers |-> {}]
+    /\ registered = [m \in Brokers |-> 1]
+    /\ inc = [m \in Brokers |-> 0]
+    /\ restarting = {}
 
 Init ==
     /\ now = 0
@@ -1048,16 +1078,20 @@ Report(b) ==
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
                        gen     |-> bgen[b],
-                       sids    |-> seen[b]] >>
+                       sids    |-> seen[b],
+                       incs    |-> [m \in Brokers |-> 0]] >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* A stored report is answered to the leader that sent it, the one leading at
 \* its generation. The answer can be lost, leaving the broker with an older one.
+\* The control plane stamps it with every broker's incarnation as it takes it
+\* (`registered_incarnations` in services/felix-controlplane-service/src/api/
+\* nodes/reports.rs).
 DeliverReport ==
     /\ inflight /= <<>>
-    /\ report' = IF inflight[1].gen = gen THEN inflight[1] ELSE report
+    /\ report' = IF inflight[1].gen = gen THEN [inflight[1] EXCEPT !.incs = inc] ELSE report
     /\ inflight' = <<>>
     /\ heard' \in IF AckOnResponse /\ inflight[1].gen = gen
                   THEN {[heard EXCEPT ![leader] = inflight[1]], heard}
@@ -1080,11 +1114,20 @@ LoseReport ==
 
 \* A candidate under the design as written: reported caught up by the last
 \* report the planner read, and not halted.
-\* With `StorageIds`, only under the identity the follower has now: a
-\* follower counted under another was counted holding a log it has lost.
+\* With `StorageIds`, only under the identity the follower registered: a
+\* follower counted under another was counted holding a log it has lost. One
+\* registered without an identity is unverified, and with `StampIncarnations`
+\* counts only from a report taken at its current registration
+\* (`counted` in services/felix-controlplane-service/src/cluster/placement/
+\* replica_positions.rs). A follower wiped and not yet registered again is
+\* left out: placement then still reads its old registration, which
+\* docs/replication-design.md ("Who may be promoted") leaves open.
 ByLeaderReport(r, f) ==
     /\ f \in r.holders /\ f \notin halted
-    /\ StorageIds => r.sids[f] = sid[f]
+    /\ f \notin restarting
+    /\ IF StorageIds /\ registered[f] /= 0
+       THEN r.sids[f] + 1 = registered[f]
+       ELSE StampIncarnations => r.incs[f] = inc[f]
 
 \* A candidate under the log-order rule: among the live replicas, one whose
 \* (last generation, length) is greatest.
@@ -1809,9 +1852,33 @@ Wipe(f) ==
     /\ hwm' = [hwm EXCEPT ![f] = 0]
     /\ sid' = [sid EXCEPT ![f] = @ + 1]
     /\ wipes' = wipes + 1
+    /\ IF StripIds
+       THEN /\ restarting' = restarting \cup {f}
+            /\ UNCHANGED << registered, inc >>
+       ELSE /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
+            /\ inc' = [inc EXCEPT ![f] = @ + 1]
+            /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, seen, checked >>
+
+\* Under `StripIds`, the wiped broker registers again without an identity;
+\* otherwise registering with one is the wipe's own step. Only once no
+\* report it was counted in before the wipe is still to come: the pass that
+\* heard it has ended (a report, or a probe that learned the new identity)
+\* and nothing is in flight. A report measured before a restart and stamped
+\* after the registration is the one case the stamp cannot tell apart,
+\* which the design takes as the restart outlasting a pass.
+Register(f) ==
+    /\ f \in restarting
+    /\ inflight = <<>>
+    /\ \A b \in Brokers : f \notin checked[b]
+    /\ registered' = [registered EXCEPT ![f] = 0]
+    /\ inc' = [inc EXCEPT ![f] = @ + 1]
+    /\ restarting' = restarting \ {f}
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes, checked >>
 
 \* The leader learns `f`'s identity from the handshake, and a new one
 \* starts `f`'s count over: `follow_storage` in
@@ -1827,7 +1894,7 @@ Probe(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, wipes >>
+    /\ UNCHANGED << sid, wipes, registered, inc, restarting >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
@@ -1842,7 +1909,7 @@ Answer(b, f) ==
     /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes, registered, inc, restarting >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -1854,7 +1921,7 @@ EndPass(b) ==
 
 \* Only a report's delivery changes what a broker has heard.
 \* The counter log changes only in the actions that name it.
-\* Identities change only in a wipe and a probe.
+\* Identities change only in a wipe, a probe and a registration.
 quietVars == << counterVars, heard, idVars >>
 loudVars == << heard, idVars >>
 
@@ -1875,7 +1942,8 @@ Next ==
         \/ Claim(b) /\ UNCHANGED quietVars
         \/ Commit(b) /\ UNCHANGED quietVars
         \/ AckQuorum(b) /\ UNCHANGED quietVars
-        \/ Report(b) /\ EndPass(b) /\ UNCHANGED << counterVars, heard, sid, seen, wipes >>
+        \/ Report(b) /\ EndPass(b)
+           /\ UNCHANGED << counterVars, heard, sid, seen, wipes, registered, inc, restarting >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -1889,6 +1957,7 @@ Next ==
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
+        \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
@@ -2057,7 +2126,7 @@ TypeOK ==
     /\ \A p \in Planners : Cardinality(cpView[p]) <= 1
     /\ staged \subseteq Brokers /\ Cardinality(staged) <= 1
     /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat,
-                               sids : [Brokers -> Nat]]]
+                               sids : [Brokers -> Nat], incs : [Brokers -> Nat]]]
     /\ promised \in [Brokers -> Nat]
     /\ fencing \in [Brokers -> BOOLEAN]
     /\ answered \in [Brokers -> SUBSET Brokers]
@@ -2078,6 +2147,7 @@ TypeOK ==
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
     /\ sid \in [Brokers -> Nat] /\ seen \in [Brokers -> [Brokers -> Nat]]
     /\ checked \in [Brokers -> SUBSET Brokers]
+    /\ registered \in [Brokers -> Nat] /\ inc \in [Brokers -> Nat] /\ restarting \subseteq Brokers
     /\ wipes \in 0..Wipes
 
 =============================================================================

@@ -1617,7 +1617,10 @@ might promote (see "Who may be promoted" below), so the stale identity a
 crashed follower's old connection still shows only ever reads as a mismatch
 once the restarted broker has registered. `FelixShardWipe.cfg` checks the
 design with that comparison in place, and `FelixShardWipeNoIds.cfg` finds the
-lost record without it.
+lost record without it. `FelixShardWipeStripped.cfg` registers the wiped
+follower again without an identity and passes with the incarnation stamp
+described below; `FelixShardWipeStrippedNoStamp.cfg` loses the record without
+it.
 
 ### Divergence and truncation
 
