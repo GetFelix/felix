@@ -767,14 +767,31 @@ fn stamped_report(c_incarnation: u64) -> crate::model::ReplicaReport {
     }
 }
 
-/// What placement does with `orders`, held by `existing`, at `now`.
+/// What placement does with a `Leader` `orders`, held by `existing`, at `now`.
 fn place_on(
     report: crate::model::ReplicaReport,
     nodes: &[Node],
     existing: ShardAssignment,
     now: u64,
 ) -> Option<String> {
-    let streams = vec![replicated_stream("orders", 1, 3)];
+    place_stream_on(
+        replicated_stream("orders", 1, 3),
+        report,
+        nodes,
+        existing,
+        now,
+    )
+}
+
+/// [`place_on`] for `stream`.
+fn place_stream_on(
+    stream: Stream,
+    report: crate::model::ReplicaReport,
+    nodes: &[Node],
+    existing: ShardAssignment,
+    now: u64,
+) -> Option<String> {
+    let streams = vec![stream];
     let existing = vec![existing];
     let positions =
         ReplicaPositions::new(vec![report], &report_liveness(), now).with_nodes(nodes, &existing);
@@ -820,12 +837,13 @@ fn a_leader_that_dies_mid_move_freezes_its_report() {
     );
 }
 
-/// **A previous leader's report promotes nobody.** broker-a reported at
-/// generation 3 and broker-b was promoted at 4; broker-b died before its
-/// first report. What broker-b acknowledged may be on broker-b alone, so
-/// broker-a's view, however fresh, says nothing about it.
+/// **A previous leader's report promotes nobody on a `Leader` shard.**
+/// broker-a reported at generation 3 and broker-b was promoted at 4;
+/// broker-b died before its first report. What broker-b acknowledged may be
+/// on broker-b alone, so broker-a's view, however fresh, says nothing about
+/// it.
 #[test]
-fn a_previous_leaders_report_promotes_nobody() {
+fn a_previous_leaders_report_promotes_nobody_on_a_leader_shard() {
     let mut nodes =
         cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
     nodes[1].status.lifecycle = NodeLifecycle::Down;
@@ -858,5 +876,34 @@ fn an_unverified_follower_that_restarted_since_the_report_is_not_counted() {
         place_on(stamped_report(3), &nodes, existing, now).as_deref(),
         Some("broker-c"),
         "a report taken at broker-c's current incarnation did not count",
+    );
+}
+
+/// **A previous leader's report still promotes on a `Quorum` shard.** The
+/// new leader acknowledged nothing before its own first report, or a
+/// majority holds it and the promoted leader's fence takes it, so refusing
+/// would only leave the shard unplaced.
+#[test]
+fn a_previous_leaders_report_still_promotes_on_a_quorum_shard() {
+    let mut nodes =
+        cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    nodes[1].status.lifecycle = NodeLifecycle::Down;
+    let mut promoted = assigned("orders", "broker-b", &["broker-a", "broker-c"]);
+    promoted.generation += 1;
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    };
+    assert_eq!(
+        place_stream_on(
+            stream,
+            stamped_report(2),
+            &nodes,
+            promoted,
+            REPORTED_AT + 1_000
+        )
+        .as_deref(),
+        Some("broker-c"),
+        "a Quorum shard waited on a report its fence makes unnecessary",
     );
 }

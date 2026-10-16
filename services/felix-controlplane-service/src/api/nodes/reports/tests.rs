@@ -552,4 +552,32 @@ async fn a_report_is_stamped_with_its_leader_and_the_registered_incarnations() {
             ("broker-y".to_string(), restarted.status.incarnation),
         ])
     );
+
+    // The stamp is what the registration said before the write. A broker-y
+    // that registers again afterwards is past it, and placement, which reads
+    // broker-y as unverified (it registered no identity), stops counting it.
+    let positions = || async {
+        crate::cluster::placement::ReplicaPositions::load(
+            store.as_ref(),
+            &crate::config::NodeLivenessConfig::default(),
+        )
+        .await
+        .expect("positions")
+    };
+    use crate::cluster::placement::CaughtUp;
+    assert!(positions().await.is_caught_up(&shard_zero(), "broker-y"));
+    let again = store
+        .register_node(store.get_node("broker-y").await.expect("broker-y"))
+        .await
+        .expect("register after the report");
+    assert_eq!(
+        store.list_replica_reports().await.expect("list")[0].node_incarnations["broker-y"],
+        restarted.status.incarnation,
+        "the stamp moved with a registration after the write"
+    );
+    assert!(again.status.incarnation > restarted.status.incarnation);
+    assert!(
+        !positions().await.is_caught_up(&shard_zero(), "broker-y"),
+        "a report from before broker-y registered again still counted it"
+    );
 }

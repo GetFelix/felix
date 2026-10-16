@@ -247,7 +247,9 @@
 (* is unverified; with `StampIncarnations` it counts only from a report   *)
 (* the control plane took at its current registration (`incs`). Without   *)
 (* that TLC finds it promoted on a report from before the wipe            *)
-(* (AckedSurvive, FelixShardWipeStrippedNoStamp.cfg).                     *)
+(* (AckedSurvive, FelixShardWipeStrippedNoStamp.cfg). Even with it, a      *)
+(* leader still on the follower's old connection reports it under its old  *)
+(* identity after the registration (FelixShardWipeStripped.cfg, #1281).    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -369,6 +371,12 @@ Yes == TRUE
 No == FALSE
 StripIds == FALSE
 StampIncarnations == TRUE
+\* `RedialBeforeRegister`: an assumption the code does NOT make, for checking
+\* the stamp on its own. A wiped follower registers again only once every
+\* broker has redialled it and learned its new identity, the pass that heard
+\* it before the wipe has ended, and no report is in flight. #1281 is the
+\* change that would make the code close the same window.
+RedialBeforeRegister == FALSE
 
 VARIABLES
     now,        \* real time
@@ -1863,26 +1871,23 @@ Wipe(f) ==
     /\ UNCHANGED << handoffVars, fenceVars, seen, checked >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
-\* otherwise registering with one is the wipe's own step. Only once no
-\* report it was counted in before the wipe is still to come: the pass that
-\* heard it has ended (a report, or a probe that learned the new identity)
-\* and nothing is in flight. By then every broker has learned its new
-\* identity, as a restart closes the old connections and the next exchange
-\* redials. Two cases are left out, both in docs/replication-design.md
-\* ("Who may be promoted"): a report measured before the restart and
-\* stamped after the registration, and a leader still on a crashed
-\* follower's old connection, which reports it under its old identity until
-\* QUIC's idle timeout. A registration without an identity cannot tell
-\* either from a report about the copy it has now.
+\* otherwise registering with one is the wipe's own step. Nothing orders the
+\* registration against the leader's passes: a leader still on a crashed
+\* follower's old connection reports it under its old identity until QUIC's
+\* idle timeout, and a report measured before the restart can be stamped
+\* after it (#1281). `RedialBeforeRegister` rules both out.
 Register(f) ==
     /\ f \in restarting
-    /\ inflight = <<>>
-    /\ \A b \in Brokers : f \notin checked[b]
+    /\ RedialBeforeRegister => /\ inflight = <<>>
+                               /\ \A b \in Brokers : f \notin checked[b]
     /\ registered' = [registered EXCEPT ![f] = 0]
     /\ inc' = [inc EXCEPT ![f] = @ + 1]
     /\ restarting' = restarting \ {f}
-    /\ seen' = [b \in Brokers |-> IF b = f THEN seen[b] ELSE [seen[b] EXCEPT ![f] = sid[f]]]
-    /\ confirmed' = [b \in Brokers |-> IF b = f THEN confirmed[b] ELSE [confirmed[b] EXCEPT ![f] = 0]]
+    /\ IF RedialBeforeRegister
+       THEN /\ seen' = [b \in Brokers |-> IF b = f THEN seen[b] ELSE [seen[b] EXCEPT ![f] = sid[f]]]
+            /\ confirmed' = [b \in Brokers |-> IF b = f THEN confirmed[b]
+                                                         ELSE [confirmed[b] EXCEPT ![f] = 0]]
+       ELSE UNCHANGED << seen, confirmed >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>

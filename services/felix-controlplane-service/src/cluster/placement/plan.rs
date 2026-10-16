@@ -327,6 +327,7 @@ pub(super) fn plan_abandoning(
         let replication_factor = placeable.map_or(1, |p| p.replication_factor);
         let durable = placeable.is_none_or(|p| p.durable);
         let fenced = placeable.is_some_and(|p| p.fenced);
+        let quorum = placeable.is_some_and(|p| p.quorum);
 
         // A node in a region this shard may not be in is, for this shard,
         // draining: it is given nothing, and whatever it holds is moved off
@@ -411,7 +412,18 @@ pub(super) fn plan_abandoning(
                 .collect(),
             _ => eligible.clone(),
         };
+        // Under `Leader` a previous leader's report predates what its
+        // successor acknowledged on itself alone, so it promotes nobody. Under
+        // `Quorum` the successor acknowledged nothing before its own first
+        // report, or a majority holds it for the next fence to take.
+        let by_predecessor = |previous: &ShardAssignment| {
+            !quorum
+                && caught_up
+                    .reported_by(&key)
+                    .is_some_and(|by| by != previous.leader)
+        };
         if let Some(previous) = current.get(&key)
+            && !by_predecessor(previous)
             && let Some(promoted) = promote(&key, previous, &promotable, caught_up)
         {
             *load.entry(promoted).or_default() += 1;
@@ -706,6 +718,8 @@ struct Placeable<'a> {
     /// fences a majority of the replica set before it serves, so failover
     /// keeps the set.
     fenced: bool,
+    /// `Quorum` consistency: nothing is acknowledged on the leader alone.
+    quorum: bool,
 }
 
 impl<'a> Placeable<'a> {
@@ -720,6 +734,7 @@ impl<'a> Placeable<'a> {
             durable: stream.durable,
             region: stream.region.as_ref(),
             fenced: stream.durable && matches!(stream.consistency, ConsistencyLevel::Quorum),
+            quorum: matches!(stream.consistency, ConsistencyLevel::Quorum),
         }
     }
 
@@ -737,6 +752,7 @@ impl<'a> Placeable<'a> {
             // A promoted `Quorum` cache fences its cache and counter logs on a
             // majority of the set before it serves, as a `Quorum` stream does.
             fenced: matches!(cache.consistency, ConsistencyLevel::Quorum),
+            quorum: matches!(cache.consistency, ConsistencyLevel::Quorum),
         }
     }
 

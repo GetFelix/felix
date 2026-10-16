@@ -9,8 +9,9 @@
 - A leader that dies partway through a move no longer leaves its last report
   to expire because the move's steps raised the generation (#1250). The
   report stays believed while its leader is still the assignment's leader.
-- A previous leader's report no longer promotes anyone once another node
-  leads. A new leader that dies before its first report leaves the shard
-  waiting for it, as documented; before, it was promoted on the old report
-  for a while and then stalled. Postgres migration
+- A `Leader` shard is no longer promoted on a previous leader's report once
+  another node leads: what the new leader acknowledged may be on it alone. A
+  new leader that dies before its first report leaves the shard waiting for
+  it; before, it was promoted on the old report for a while and then stalled.
+  `Quorum` shards still promote on it. Postgres migration
   `0031_replica_report_stamp`; under Raft, metadata level 13.

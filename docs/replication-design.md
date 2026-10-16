@@ -1618,9 +1618,11 @@ crashed follower's old connection still shows only ever reads as a mismatch
 once the restarted broker has registered. `FelixShardWipe.cfg` checks the
 design with that comparison in place, and `FelixShardWipeNoIds.cfg` finds the
 lost record without it. `FelixShardWipeStripped.cfg` registers the wiped
-follower again without an identity and passes with the incarnation stamp
-described below; `FelixShardWipeStrippedNoStamp.cfg` loses the record without
-it.
+follower again without an identity and finds the window described below
+([#1281](https://github.com/GetFelix/felix/issues/1281));
+`FelixShardWipeStrippedRedial.cfg` passes with the incarnation stamp once that
+window is assumed away, and `FelixShardWipeStrippedNoStamp.cfg` loses the
+record without the stamp.
 
 ### Divergence and truncation
 
@@ -1861,10 +1863,16 @@ The other is a leader still on a crashed follower's old connection, which
 goes on reporting it under its old identity until QUIC's idle timeout closes
 that connection (see "Storage identities" above). A follower that registered
 with its new identity reads as a mismatch in both cases. One that registered
-without an identity is counted, so the stamp closes the window only for
+without an identity is counted. So the stamp closes the window only for
 reports made before the restart, which is the case of a leader that dies
-first. `FelixShardWipeStripped.cfg` checks the stamp with both cases left
-out.
+first. For the rest it stays open while the control plane or the brokers are
+being rolled and a registration loses its identity, until the leader redials
+the follower (at most QUIC's idle timeout after a crash). Tracked as
+[#1281](https://github.com/GetFelix/felix/issues/1281): the handshake would
+carry the follower's incarnation and the report the incarnation it measured.
+`FelixShardWipeStripped.cfg` finds the stale connection's report;
+`FelixShardWipeStrippedRedial.cfg` rules both cases out by assumption and
+passes.
 
 The incarnation check costs availability in one case: an unverified follower
 that restarts after its leader's last report, whose leader then dies, is not
@@ -1908,17 +1916,16 @@ relaxed `FsyncMode`. Keeping a dead leader's report believed for longer widens
 that exposure; under `OnCommit` an acknowledged record is on disk, so there is
 none.
 
-A new leader that dies before its first report leaves no report to promote on,
-and the shard is `NoCaughtUpReplica` until that broker returns. The previous
-leader's report is still held, but it counts for nobody once another node
-leads: it predates whatever the new leader acknowledged. Under `Leader` that
-can be on the new leader alone. Under `Quorum` on the lease nothing is
-acknowledged before the new leader's first stored report, and under
-`majority_ack` the next promotion's fence would find it, but placement does
-not tell the levels apart here. The window runs from the assignment, through
-the promotion fence, to the first replication pass. A report without a stamp
-(from a control plane that predates it) is read as before: any report counts
-while it is fresh.
+A new leader that dies before its first report leaves only its predecessor's
+report, which predates whatever the new leader acknowledged. Under `Leader`
+that can be on the new leader alone, so placement promotes nobody on it and
+the shard is `NoCaughtUpReplica` until that broker returns. The window runs
+from the assignment, through the promotion fence, to the first replication
+pass. Under `Quorum` the report still counts while it is fresh: on the lease
+the new leader acknowledged nothing before its first stored report, and under
+`majority_ack` whatever it acknowledged is on a majority, which the next
+promoted leader's fence takes. A report without a stamp (from a control plane
+that predates it) is read as before under either level.
 
 A halted follower is never reported as a candidate, however close its last
 position was. It has stopped rather than fallen behind. The report names it

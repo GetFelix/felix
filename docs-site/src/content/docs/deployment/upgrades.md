@@ -106,8 +106,13 @@ registers without an identity, so its followers count only through the stamp.
 So until both the control plane and the brokers are rolled, a follower that
 lost its disk can still be promoted: before the control plane, on what was
 reported before it restarted, and before the brokers, on what a leader that
-cannot see its identity reports after. A leader that dies while placement is
-slow can leave its shard unplaceable, as before.
+cannot see its identity reports after. Even with the control plane rolled, a
+follower whose registration lost its identity (through an older instance, or
+from an older broker) can be counted on what its leader reports from the old
+connection after the restart, until the leader redials it: at most QUIC's
+idle timeout after a crash ([#1281](https://github.com/GetFelix/felix/issues/1281)).
+Avoid wiping or replacing a broker's disk until the roll is done. A leader that
+dies while placement is slow can leave its shard unplaceable, as before.
 
 ### Fleet features: on only when an operator finalizes them
 

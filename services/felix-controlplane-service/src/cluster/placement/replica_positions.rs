@@ -44,11 +44,14 @@
 //! follower's current incarnation: a restart is then the only evidence it
 //! may have lost its log.
 //!
-//! # Why only the current leader's report counts
+//! # Who made the report
 //!
 //! A report from before a promotion predates whatever the new leader
-//! acknowledged, which under `Leader` may be on the new leader alone. So a
-//! new leader that dies before its first report leaves nothing to promote on.
+//! acknowledged. Under `Leader` that may be on the new leader alone, so
+//! placement does not promote a `Leader` shard on it (`reported_by`). Under
+//! `Quorum` it still counts: the new leader acknowledged nothing before its
+//! own first report, or a majority holds it and the next promotion's fence
+//! takes it.
 //!
 //! # Why a dead leader's report stops ageing
 //!
@@ -305,20 +308,6 @@ impl ReplicaPositions {
         }
     }
 
-    /// Whether `report` may speak for the shard's followers: it was made by
-    /// the assignment's leader, or does not say who made it.
-    ///
-    /// A previous leader's report predates whatever its successor
-    /// acknowledged. Under `Leader` that can be on the successor alone, so a
-    /// successor that dies before its first report leaves nothing to promote
-    /// on rather than its predecessor's view.
-    fn made_by_current_leader(&self, key: &ShardKey, report: &ReplicaReport) -> bool {
-        match (&report.leader, self.assignments.get(key)) {
-            (Some(reporter), Some((_, leader))) => reporter == leader,
-            _ => true,
-        }
-    }
-
     /// Whether `report` was taken while `node_id` was at the incarnation it
     /// is registered at now. A report that does not say is read as before.
     fn same_incarnation(&self, report: &ReplicaReport, node_id: &str) -> bool {
@@ -346,17 +335,13 @@ impl ReplicaPositions {
 
     /// The report for `key`, if it may say anything about `node_id`.
     ///
-    /// Only the current leader's report counts. Then a matching identity is
-    /// believed as long as the report is, a mismatched one never, and an
+    /// A matching identity is believed as long as the report is, a mismatched one never, and an
     /// unverified one only while the report is fresh and was taken at the
     /// follower's current incarnation: without an identity, a restart is the
     /// only evidence the follower may have lost its log, and a report held
     /// past its TTL could vouch for one that has.
     fn counted(&self, key: &ShardKey, node_id: &str) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
-        if !self.made_by_current_leader(key, report) {
-            return None;
-        }
         match self.identity(report, node_id) {
             Identity::Match => self.believed(key),
             Identity::Mismatch => None,
@@ -424,6 +409,10 @@ impl CaughtUp for ReplicaPositions {
 
     fn reported_generation(&self, key: &ShardKey) -> Option<u64> {
         self.believed(key).map(|report| report.generation)
+    }
+
+    fn reported_by(&self, key: &ShardKey) -> Option<&str> {
+        self.reports.get(key)?.leader.as_deref()
     }
 
     fn as_of_millis(&self) -> Option<u64> {

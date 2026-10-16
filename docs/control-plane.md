@@ -770,9 +770,9 @@ each follower (`follower_storage`). Placement counts a follower from a report
 only while the two match, never once they differ, and by the report's age
 alone when either is missing. The API also stamps each report with the node
 that made it (`leader`) and the incarnation every node it names is registered
-at (`node_incarnations`), read before the write. Only the assignment's current
-leader's report counts, and a follower without an identity counts only from a
-report taken at its current incarnation. While the report's leader, at the
+at (`node_incarnations`), read before the write. A `Leader` shard is promoted
+only on its current leader's report, and a follower without an identity counts
+only from a report taken at its current incarnation. While the report's leader, at the
 same incarnation, is still the assignment's leader and is `down` or `left`, a
 matching follower's report is aged to the leader's last heartbeat instead of
 now, through any move steps since, so a dead leader's last report does not

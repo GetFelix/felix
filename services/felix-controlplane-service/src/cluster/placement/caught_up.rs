@@ -11,6 +11,12 @@ pub trait CaughtUp {
     /// Whether `node_id` is within the catch-up bound for `key`.
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool;
 
+    /// The node that made the report `key` is judged by, when the report
+    /// says. `None` from a control plane that predates it.
+    fn reported_by(&self, _key: &ShardKey) -> Option<&str> {
+        None
+    }
+
     /// How far `node_id` had got, as last reported.
     ///
     /// Used to choose *between* caught-up replicas. "Caught up" is only ever

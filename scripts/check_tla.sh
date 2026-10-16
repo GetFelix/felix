@@ -139,7 +139,8 @@ expectations=(
   "FelixShardReportFloor pass"
   "FelixShardWipe pass"
   "FelixShardWipeNoIds violates AckedSurvive"
-  "FelixShardWipeStripped pass"
+  "FelixShardWipeStripped violates AckedSurvive"
+  "FelixShardWipeStrippedRedial pass"
   "FelixShardWipeStrippedNoStamp violates AckedSurvive"
   "FelixShard pass"
   "FelixShardHandoff pass"
@@ -252,7 +253,7 @@ fi
 weights=(
   "FelixShardFencedAckMoveShort 31"
   "FelixShardWipe 35"
-  "FelixShardWipeStripped 45"
+  "FelixShardWipeStrippedRedial 45"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
