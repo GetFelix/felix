@@ -221,8 +221,12 @@ impl MetadataStateMachine {
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
-            MetaCommand::DeleteStream { key, take_reports } => store
-                .apply_delete_stream(&key, cleanup(take_reports))
+            MetaCommand::DeleteStream {
+                key,
+                take_reports,
+                incarnations,
+            } => store
+                .apply_delete_stream(&key, cleanup(take_reports), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),

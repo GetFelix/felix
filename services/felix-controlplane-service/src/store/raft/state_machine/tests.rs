@@ -365,6 +365,7 @@ fn script() -> Vec<MetaCommand> {
             stream: "events".to_string(),
         },
         take_reports: true,
+        incarnations: false,
     });
     commands.push(MetaCommand::DeleteNamespace {
         key: NamespaceKey {

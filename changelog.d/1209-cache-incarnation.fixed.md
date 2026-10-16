@@ -20,8 +20,12 @@
   `cache_incarnations` or `stream_incarnations` is committed through a member
   that predates it. Create and delete entries now carry an `incarnations`
   flag (metadata level 14), set only once every member is at level 14, and
-  apply decides incarnations and tombstones from the entry alone. Stream
-  entries from older proposers keep their old meaning so logs replay
-  unchanged; a group that finalized `stream_incarnations` through a member
-  below level 10 and then created streams through it must resync that member
-  from a snapshot (see `docs/metadata-raft-design.md`).
+  apply decides incarnations and tombstones from the entry alone (see
+  `docs/metadata-raft-design.md`).
+- Rolling a `v0.6.0-preview.7` Raft control plane to this release no longer
+  splits it if `stream_incarnations` is finalized through a preview.7 member
+  (which accepts the unknown finalize): a stream create from an older
+  proposer that names no incarnation is stored at 0, and its delete records no
+  tombstone, on every member. Clusters that ran an unreleased build at
+  metadata level 10 to 13 and logged such an entry replay it differently now
+  and must rebuild those members from a snapshot.

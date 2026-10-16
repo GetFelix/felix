@@ -91,9 +91,14 @@ pub(super) async fn delete_namespace(
     let nodes = store.nodes.read().await;
     for stream_key in &stream_keys {
         if let Some(stream) = streams.remove(stream_key) {
-            let deleted_through =
-                super::streams::record_tombstone(store, &nodes, stream_key, stream.incarnation)
-                    .await;
+            let deleted_through = super::streams::record_tombstone(
+                store,
+                &nodes,
+                stream_key,
+                stream.incarnation,
+                decide,
+            )
+            .await;
             store
                 .stream_changes
                 .write()

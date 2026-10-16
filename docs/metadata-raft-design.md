@@ -702,21 +702,29 @@ create or delete raises the group's level floor to 14, finalized or not, so
 from then on a member below level 14 is refused at join and held by the
 leader.
 
-Streams have the same gap at level 10. A `stream_incarnations` finalize can
-be committed through a member below level 10. Every stream create that such a
-member proposes afterwards carries no incarnation. Members at level 10 or
-above give the stream one, and members below store 0. Old proposers cannot
-write the flag, and changing how unflagged entries apply would break replay,
-so this cannot be repaired in apply.
+Streams have the same gap at level 10: a `stream_incarnations` finalize can be
+committed through a member below level 10, such as a `v0.6.0-preview.7`
+member (level 8) during a roll to this release. Stream entries are decided
+from the entry alone for that reason too:
 
-- **Who can be affected.** Only a group that finalized `stream_incarnations`
-  while a member below level 10 was in it. Level 10 was never in a release:
-  `v0.6.0-preview.7` is at level 8.
-- **What the leader does.** A leader at level 10 or above holds a member that
-  reports a level below the floor, so that member applies nothing until it is
-  upgraded and replays the log on the new build.
-- **Repair.** No migration step is needed. Remove the divergent member, wipe
-  its Raft data, and add it back, so it installs the leader's snapshot.
+- An unflagged stream create proposing 0 stores 0, and an unflagged delete of
+  a stream at incarnation 0 writes no tombstone, so a level-8 member and an
+  upgraded one store the same.
+- An unflagged create proposing an incarnation still gets one, as at levels 10
+  to 13. A proposer below level 10 never writes one.
+- A level-14 proposer flags every create and delete once every member is at
+  14, and fills in a proposal, so new entries never take the unflagged path.
+
+**The residual is for unreleased builds.** Levels 10 to 13 were never
+released. Their builds gave an unflagged create proposing 0 after the finalize
+the name's tombstone + 1, and tombstoned a deleted stream at incarnation 0.
+That happened when the proposer had not yet applied the finalize, or counted a
+silent peer as level 0. A cluster that ran such a build and logged one of
+these entries now stores something different when it replays them: 0, and no
+tombstone. A member that replays the log then disagrees with one restored from
+a snapshot taken before the upgrade. Rebuild such members from a snapshot:
+remove the member, wipe its Raft data and add it back. No migration step is
+needed.
 
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a

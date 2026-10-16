@@ -81,6 +81,9 @@ async fn finalize(store: &dyn ControlPlaneStore) {
 /// store decides against the finalize as it stands at the write, so the
 /// stream still gets an incarnation: one at 0 after the finalize is what
 /// brokers would take for a deleted stream's.
+// Through the store's API this still holds: Raft's proposer fills in a proposal
+// for a level-14 entry, and only an older proposer's entry proposing 0 stays 0
+// (`stream_entries_from_a_level_8_proposer_store_what_level_8_stores`).
 async fn a_create_proposing_nothing_still_gets_an_incarnation(store: &dyn ControlPlaneStore) {
     let created = store
         .create_stream(stream(NAMESPACE, "racer", 0))

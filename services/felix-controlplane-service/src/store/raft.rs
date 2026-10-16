@@ -307,6 +307,7 @@ impl ControlPlaneStore for RaftStore {
         self.propose(MetaCommand::DeleteStream {
             key: key.clone(),
             take_reports: self.deletes_take_shards().await,
+            incarnations: self.entries_decide_incarnations().await,
         })
         .await
         .map(|_| ())

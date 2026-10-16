@@ -219,8 +219,9 @@ impl InMemoryStore {
         &self,
         key: &StreamKey,
         cleanup: ShardCleanup,
+        decide: Decide,
     ) -> StoreResult<()> {
-        streams::delete_stream(self, key, cleanup).await
+        streams::delete_stream(self, key, cleanup, decide).await
     }
 
     /// [`ControlPlaneStore::delete_cache`], taking `cleanup` of its shards.
@@ -430,7 +431,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {
-        streams::delete_stream(self, key, ShardCleanup::Full).await
+        streams::delete_stream(self, key, ShardCleanup::Full, Decide::Here).await
     }
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
@@ -973,8 +974,10 @@ pub(crate) enum Decide {
     Here,
     /// A level-14 entry: as `Here`, but only a proposed incarnation gives one.
     Entry,
-    /// An entry from before level 14: streams as `Here`, caches never
-    /// incarnated or tombstoned.
+    /// An entry from before level 14. A stream proposing nothing stays at 0
+    /// and an unincarnated stream's delete writes no tombstone, as a member
+    /// before incarnations applies them; a proposal still gets one, as at
+    /// levels 10 to 13. Caches are never incarnated or tombstoned.
     Legacy,
 }
 

@@ -107,6 +107,9 @@ pub enum MetaCommand {
         key: StreamKey,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         take_reports: bool,
+        /// As for [`MetaCommand::CreateStream`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incarnations: bool,
     },
     CreateCache {
         cache: Cache,

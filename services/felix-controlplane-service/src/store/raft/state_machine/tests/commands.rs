@@ -402,6 +402,7 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
                         stream: "orders".to_string(),
                     },
                     take_reports: take,
+                    incarnations: false,
                 },
                 MetaCommand::DeleteCache {
                     key: crate::model::CacheKey {

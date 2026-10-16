@@ -119,13 +119,14 @@ pub(super) async fn delete_stream(
     store: &InMemoryStore,
     key: &StreamKey,
     cleanup: ShardCleanup,
+    decide: Decide,
 ) -> StoreResult<()> {
     let mut streams = store.streams.write().await;
     let Some(removed) = streams.remove(key) else {
         return Err(StoreError::NotFound("stream".into()));
     };
     let nodes = store.nodes.read().await;
-    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation).await;
+    let deleted_through = record_tombstone(store, &nodes, key, removed.incarnation, decide).await;
     store
         .drop_shard_assignments_for(
             ShardKind::Stream,
@@ -214,7 +215,9 @@ pub(super) async fn incarnation_for(
     proposed: u64,
     decide: Decide,
 ) -> u64 {
-    if !incarnations_finalized(nodes) || (decide == Decide::Entry && proposed == 0) {
+    // An entry's 0 proposal stays 0: a member before incarnations applies
+    // every create that way, even after a finalize it accepted unknowingly.
+    if !incarnations_finalized(nodes) || (decide != Decide::Here && proposed == 0) {
         return 0;
     }
     let deleted = store.stream_tombstones.read().await.get(key).copied();
@@ -230,8 +233,11 @@ pub(super) async fn record_tombstone(
     nodes: &super::NodeState,
     key: &StreamKey,
     incarnation: u64,
+    decide: Decide,
 ) -> Option<u64> {
-    if !incarnations_finalized(nodes) {
+    // An older entry tombstones only an incarnated stream, which a member
+    // before incarnations never holds.
+    if !incarnations_finalized(nodes) || (decide == Decide::Legacy && incarnation == 0) {
         return None;
     }
     let mut tombstones = store.stream_tombstones.write().await;

@@ -403,6 +403,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::DeleteStream {
             key: stream_key(),
             take_reports: true,
+            incarnations: true,
         },
         MetaCommand::CreateCache {
             cache: cache(),

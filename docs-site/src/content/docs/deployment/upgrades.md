@@ -376,11 +376,13 @@ the name is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
   finalize is refused with 409 until every member is at metadata version 10,
-  when proposed through an upgraded member. A member below version 10 does
-  not know the feature and accepts it, and stream creates proposed through
-  that member then store a different incarnation on old and new members.
-  Finalize only through an upgraded member, after every member is upgraded.
-  See `docs/metadata-raft-design.md` for the repair if it happened.
+  when proposed through an upgraded member. A member below version 10, such
+  as one still on `v0.6.0-preview.7`, does not know the feature and accepts
+  it. That is safe from version 14 on: until every member is at 14, streams
+  are created at incarnation 0 and no delete of one records a tombstone, on
+  every member. A cluster that ran an unreleased build between versions 10
+  and 13 may need members rebuilt from a snapshot; see
+  `docs/metadata-raft-design.md`.
   With Postgres, the first upgraded instance runs migration 0028 for the whole
   database. An instance from before this release that is still running after
   the finalize cannot create streams (the database refuses a stream without an

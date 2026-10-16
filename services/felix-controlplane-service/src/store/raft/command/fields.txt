@@ -166,6 +166,7 @@
 0 delete_shard_assignment.key.stream
 0 delete_shard_assignment.key.tenant_id
 0 delete_stream
+14 delete_stream.incarnations
 0 delete_stream.key
 0 delete_stream.key.namespace
 0 delete_stream.key.stream

@@ -90,7 +90,8 @@ pub(super) async fn delete_tenant(
     for key in &stream_keys {
         if let Some(stream) = streams.remove(key) {
             let deleted_through =
-                super::streams::record_tombstone(store, &nodes, key, stream.incarnation).await;
+                super::streams::record_tombstone(store, &nodes, key, stream.incarnation, decide)
+                    .await;
             store
                 .stream_changes
                 .write()
