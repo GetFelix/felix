@@ -229,9 +229,10 @@ caused by the byte bound is the same drop as one caused by the count: the same
 offset gap, the same `subscription_lagged` on a durable stream, the same
 counters, plus `felix_sub_queue_byte_dropped_total`.
 
-The subscriber bound counts only what waits in the broker queue. Once the
-subscription's feeder takes a batch toward the network, the batch counts
-against `subscriber_egress_max_bytes` instead: a byte bound on everything one
+The subscriber bound counts what waits in the broker queue, and lets a batch
+go once the subscription's feeder has handed its frame to the writer lanes.
+From when the feeder takes a batch toward the network, it counts against
+`subscriber_egress_max_bytes`: a byte bound on everything one
 connection's subscriptions have in the writer lanes and the connection writer,
 256 MiB by default. Each subscription on the connection gets an equal share of
 it and waits only for its own frames to be written. A subscription whose QUIC

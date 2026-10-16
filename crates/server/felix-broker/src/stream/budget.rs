@@ -238,6 +238,18 @@ impl HeldBytes {
         }
     }
 
+    /// Split off the bytes held against the subscriber's own bound, leaving
+    /// any broker-wide hold here. Dropping what is returned does what
+    /// [`Self::release_subscriber`] does, at a time the caller picks.
+    pub fn take_subscriber(&mut self) -> HeldBytes {
+        HeldBytes {
+            bytes: std::mem::take(&mut self.bytes),
+            gauge: std::mem::replace(&mut self.gauge, metrics::Gauge::noop()),
+            own: self.own.take(),
+            _broker: None,
+        }
+    }
+
     /// Hold `other`'s bytes as well, until this is dropped.
     ///
     /// Both must come from the same subscriber, as they do when one frame is

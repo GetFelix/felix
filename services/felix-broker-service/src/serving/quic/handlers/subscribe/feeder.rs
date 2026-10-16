@@ -72,15 +72,16 @@ pub(super) async fn run_lane_feeder(
         config.flush_max_delay,
         config.max_bytes_per_write,
     );
-    // A batch counts against the subscriber's queue bound until it holds room
-    // in this subscription's share of the connection's egress budget, and
-    // against that share until its frame is written. A broker-wide queue
+    // A batch counts against the subscriber's queue bound until its frame is
+    // handed to the lanes, and against this subscription's share of the
+    // connection's egress budget from when the feeder takes it until the
+    // frame is written. A broker-wide queue
     // bound, if set, covers it the whole way.
     let mut pending: Option<(DeliveryEnvelope, HeldBytes)> = None;
     let mut busy = false;
 
     loop {
-        let (envelope, queued) = match pending.take() {
+        let (envelope, mut queued) = match pending.take() {
             Some(next) => next,
             None => tokio::select! {
                 next = event_rx.recv_held() => match next {
@@ -103,6 +104,10 @@ pub(super) async fn run_lane_feeder(
                 break;
             }
         };
+        // Given back at the end of this pass, once the frame is handed to the
+        // lanes. Giving it back before encoding put the release on the
+        // delivery path and cost single-publisher throughput.
+        let mut subscriber = queued.take_subscriber();
         held.carry(queued);
         let first_enqueued_at = envelope.enqueued_at();
         let Some(manager) = manager.upgrade() else {
@@ -247,14 +252,19 @@ pub(super) async fn run_lane_feeder(
                     Some(next)
                 }
                 Err(_) => match deadline {
-                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv_held())
-                        .await
-                        .ok()
-                        .flatten(),
+                    Some(deadline) => {
+                        // Nothing taken waits out the flush delay on the
+                        // subscriber's bound.
+                        drop(std::mem::take(&mut subscriber));
+                        tokio::time::timeout_at(deadline, event_rx.recv_held())
+                            .await
+                            .ok()
+                            .flatten()
+                    }
                     None => None,
                 },
             };
-            let Some((envelope, next_held)) = next else {
+            let Some((envelope, mut next_held)) = next else {
                 break;
             };
             let payload_len = envelope.payloads().first().map_or(0, Bytes::len);
@@ -276,6 +286,7 @@ pub(super) async fn run_lane_feeder(
             };
             let payload = envelope.payloads()[0].clone();
             held.absorb(more);
+            subscriber.absorb(next_held.take_subscriber());
             held.carry(next_held);
             batch_bytes += payload.len();
             batch.push(payload);

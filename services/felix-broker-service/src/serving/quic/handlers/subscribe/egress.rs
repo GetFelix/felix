@@ -2,8 +2,8 @@
 //! writer lanes and the connection writer.
 //!
 //! The broker queue's byte bound (`FELIX_SUB_QUEUE_MAX_BYTES`) counts a batch
-//! only until the feeder takes it. From there until its frame is written it
-//! counts here. Each subscription may hold an equal share of the connection's
+//! until the feeder hands its frame to the writer lanes. From when the feeder
+//! takes it until its frame is written it counts here. Each subscription may hold an equal share of the connection's
 //! budget, and a feeder waits only for its own subscription's frames to be
 //! written. A subscription whose stream stalls fills its share and stops
 //! there, its broker queue fills and sheds as usual, and the others on the
