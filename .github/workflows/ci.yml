@@ -667,7 +667,9 @@ jobs:
     name: TLA+ model (${{ matrix.shard }}/7)
     # TLC runs a worker per core.
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '150')) }}
+    # A full run on main takes 55-75 min per shard; the rest is headroom for a
+    # slow hosted runner, which can take twice that.
+    timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '200')) }}
     # Seven shards, filled by each configuration's measured time
     # (scripts/check_tla.sh).
     strategy:
