@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792127901593,
+  "lastUpdate": 1792129496483,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39534,6 +39534,72 @@ window.BENCHMARK_DATA = {
             "range": "23.95",
             "unit": "us",
             "extra": "trials: 5\nmedian: 381.00\nmean: 389.00\nstdev: 23.95\ncv: 6.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b3f2ee67be3acd67c1a6e951bc571a6b681a820",
+          "message": "fix(replication): hold followers to the incarnation measured on their connection (#1282)\n\n* fix(replication): hold followers to the incarnation measured on their connection\n\nA leader still on a wiped follower's old connection reported it under its old\nstorage identity after the follower registered again. When that registration\nlost its identity (an older broker, an older control-plane instance, or a Raft\ngroup below the identity level), the control plane stamped the follower's\ncurrent incarnation on the report and placement counted the empty copy.\n\n- New peer bit NODE_INCARNATION (1 << 11): HelloCapableOk carries the\n  responder's node incarnation after its storage identity, or \"not registered\n  yet\". A responder closes the connections it answered once its incarnation\n  changes, so callers redial and learn it. Peers that predate the bit exchange\n  byte-identical frames.\n- The leader's per-follower identity is (storage id, incarnation);\n  follow_storage starts a cursor over on any change, including a follower\n  with no storage id whose incarnation changed.\n- Reports carry the incarnation each follower gave (replica_incarnations).\n  The control plane stores it as that follower's incarnation; a follower\n  measured before it registered gets none and never counts on it. A follower\n  without the bit falls back to the incarnation registered on arrival.\n- Model: Register no longer redials by assumption; Report records the\n  incarnations the leader learned. FelixShardWipeStripped now passes;\n  FelixShardWipeStrippedOnArrival is the old stamp and violates AckedSurvive.\n\nCloses #1281\n\n* fix(replication): keep a follower's cursor across a re-registration on the same storage\n\nA new incarnation on an unchanged storage identity is the same copy, so the\nleader updates the incarnation and keeps the position, rebuildable halts and\nany rebuild. A new storage identity, or a new incarnation with no storage\nidentity on either side, still starts the copy over. The model's Probe and\nAnswer follow. Docs list every way the arrival-stamp window opens.\n\n* docs(replication): say what a storage id does not catch; name the no-storage-id incarnation test\n\nThe id names a data directory, not its contents: an unflushed tail lost in a\ncrash, an older copy put back by rsync or a snapshot, and a copied directory\nall keep it. A hand-made restore or copy must delete storage-id.\n\n* fix(formal): seed reports at every broker's first incarnation\n\nNoReport named incarnation 0 for everyone, which the +1 encoding now reads as\nnone, so the Figure 8 histories seeded from it could never promote and their\nruns stopped after five states.",
+          "timestamp": "2026-10-16T05:41:13Z",
+          "tree_id": "881b5eb66f76181d88d873b6e3a6ea4dc09a9c02",
+          "url": "https://github.com/GetFelix/felix/commit/1b3f2ee67be3acd67c1a6e951bc571a6b681a820"
+        },
+        "date": 1792129491035,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.00\nstdev: 0.71\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 145,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 144.60\nstdev: 1.67\ncv: 1.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 200,
+            "range": "18.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 207.40\nstdev: 18.28\ncv: 8.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 142.20\nstdev: 1.30\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 288,
+            "range": "10.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 288.00\nmean: 288.00\nstdev: 10.00\ncv: 3.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 394,
+            "range": "968.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 394.00\nmean: 1048.60\nstdev: 968.28\ncv: 92.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
