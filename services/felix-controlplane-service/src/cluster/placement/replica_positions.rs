@@ -333,6 +333,15 @@ impl ReplicaPositions {
         }
     }
 
+    /// Whether `report` is `leader`'s, made at `generation` by the process
+    /// registered now, saying outright that it gave the shard up.
+    fn gave_up(&self, report: &ReplicaReport, generation: u64, leader: &str) -> bool {
+        report.given_up
+            && report.leader.as_deref() == Some(leader)
+            && report.generation == generation
+            && self.same_incarnation(report, leader)
+    }
+
     /// The report for `key`, if it may say anything about `node_id`.
     ///
     /// A matching identity is believed as long as the report is, a mismatched one never, and an
@@ -375,6 +384,43 @@ impl CaughtUp for ReplicaPositions {
                 .suspicions
                 .get(follower)
                 .is_some_and(|suspicion| suspicion.suspects.contains(leader))
+    }
+
+    fn leader_replaced(&self, key: &ShardKey, leader: &str) -> bool {
+        // Whoever made the report: the leader names its own identity, and a
+        // predecessor's report names it as a follower.
+        self.reports
+            .get(key)
+            .is_some_and(|report| self.identity(report, leader) == Identity::Mismatch)
+    }
+
+    fn leader_gave_up(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.reports
+            .get(key)
+            .is_some_and(|report| self.gave_up(report, generation, leader))
+    }
+
+    fn reclaimable(&self, key: &ShardKey, leader: &str, followers: &[&str]) -> bool {
+        // Only a report measured since the leader last registered: an older
+        // one can understate a follower that holds what the leader lost.
+        let Some(report) = self.fresh(key) else {
+            return false;
+        };
+        let Some(own) = report.offsets.get(leader) else {
+            return false;
+        };
+        let generation = self.assignments.get(key).map(|(generation, _)| *generation);
+        generation.is_some_and(|generation| self.gave_up(report, generation, leader))
+            && self.identity(report, leader) == Identity::Match
+            && !followers.is_empty()
+            && followers.iter().all(|follower| {
+                self.identity(report, follower) == Identity::Match
+                    && self.same_incarnation(report, follower)
+                    && report
+                        .offsets
+                        .get(*follower)
+                        .is_some_and(|offset| offset <= own)
+            })
     }
 
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {

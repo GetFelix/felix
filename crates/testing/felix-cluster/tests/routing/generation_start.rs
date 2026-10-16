@@ -18,9 +18,29 @@ const FEATURE: &str = "generation_start";
 /// Three brokers and a `Quorum` stream on two of them, so a move has a
 /// destination outside the replica set and the mark needs a follower.
 async fn start(finalize: bool) -> Cluster {
+    start_with(finalize, Vec::new()).await
+}
+
+/// [`start`] with every record synced before it is acknowledged. A leader
+/// killed under the default `periodic` may have lost what it acknowledged,
+/// and does not come back to its generation (#1295); under `on_commit` it
+/// does.
+async fn start_on_commit(finalize: bool) -> Cluster {
+    start_with(
+        finalize,
+        vec![(
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "on_commit".to_string(),
+        )],
+    )
+    .await
+}
+
+async fn start_with(finalize: bool, broker_env: Vec<(String, String)>) -> Cluster {
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 2)],
+        broker_env,
         ..Default::default()
     })
     .await
@@ -299,7 +319,7 @@ async fn without_a_finalize_a_move_writes_no_generation_start_record() {
 #[serial]
 #[tokio::test]
 async fn a_generation_older_than_the_finalize_serves_again_after_a_restart() {
-    let mut cluster = start(false).await;
+    let mut cluster = start_on_commit(false).await;
     let owner = cluster.owner(STREAM).await.expect("owner");
     let held = publish_before(&cluster, &owner).await;
     let before = generation(&cluster).await;

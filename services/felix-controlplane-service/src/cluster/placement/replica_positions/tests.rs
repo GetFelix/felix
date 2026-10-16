@@ -37,6 +37,7 @@ fn key(stream: &str) -> ShardKey {
 fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaReport {
     let caught_up: BTreeSet<String> = caught_up.iter().map(|n| n.to_string()).collect();
     ReplicaReport {
+        given_up: false,
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,
@@ -220,6 +221,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
     store
         .record_replica_report(
             ReplicaReport {
+                given_up: false,
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
                 by_round: false,

@@ -349,6 +349,7 @@
 12 import_state.state.replica_reports[].follower_storage
 12 import_state.state.replica_reports[].follower_storage.*
 3 import_state.state.replica_reports[].generation
+15 import_state.state.replica_reports[].given_up
 4 import_state.state.replica_reports[].halted
 4 import_state.state.replica_reports[].halted.*
 4 import_state.state.replica_reports[].halted.*.generation
@@ -599,6 +600,7 @@
 12 record_replica_report.report.follower_storage
 12 record_replica_report.report.follower_storage.*
 0 record_replica_report.report.generation
+15 record_replica_report.report.given_up
 4 record_replica_report.report.halted
 4 record_replica_report.report.halted.*
 4 record_replica_report.report.halted.*.generation
@@ -894,6 +896,7 @@
 12 snapshot.state.replica_reports[].follower_storage
 12 snapshot.state.replica_reports[].follower_storage.*
 3 snapshot.state.replica_reports[].generation
+15 snapshot.state.replica_reports[].given_up
 4 snapshot.state.replica_reports[].halted
 4 snapshot.state.replica_reports[].halted.*
 4 snapshot.state.replica_reports[].halted.*.generation

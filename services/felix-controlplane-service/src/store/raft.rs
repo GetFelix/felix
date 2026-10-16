@@ -52,6 +52,10 @@ const REPORT_STAMP_LEVEL: u16 = 13;
 
 /// The metadata level whose members store a cache's incarnation.
 const CACHE_INCARNATION_LEVEL: u16 = 14;
+
+/// The metadata level whose members store that a replica report's leader
+/// gave the shard up.
+const GIVEN_UP_LEVEL: u16 = 15;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -800,6 +804,11 @@ impl ControlPlaneStore for RaftStore {
         leader: &str,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        // Without it the leader is replaced only on its storage identity, and
+        // never reclaimed. Dropped first.
+        if report.given_up && self.group_level().await < GIVEN_UP_LEVEL {
+            report.given_up = false;
+        }
         // Without them the report is read as before: from any leader, and a
         // follower without an identity across its restarts. Dropped first.
         if (report.leader.is_some() || !report.node_incarnations.is_empty())

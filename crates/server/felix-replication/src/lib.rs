@@ -50,6 +50,7 @@ pub mod metrics;
 pub mod promotion;
 pub mod quorum;
 mod rebuild;
+pub mod reclaim;
 pub mod replica;
 pub mod reporter;
 mod shard;
@@ -57,6 +58,7 @@ mod ship;
 pub mod status;
 pub mod suspicion;
 mod throttle;
+pub mod unclean;
 
 pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, RebuildBackoff, caught_up, lag_records};
 pub use quorum::{majority_of, quorum_offset, quorum_offset_without};

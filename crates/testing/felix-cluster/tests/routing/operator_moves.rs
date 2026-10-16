@@ -352,6 +352,23 @@ async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
 /// does on the lease, since it cannot learn its followers offer the fence.
 /// With `majority_ack` there is no lease fallback, and a destination that
 /// cannot fence a majority stays closed, so it never reports or marks.
+/// Four brokers and one `Quorum` shard on three, syncing every record before
+/// acknowledging it. These tests kill the destination and the old leader and
+/// expect the destination to lead again when it returns: under the default
+/// `periodic` a killed leader may have lost what it acknowledged, and gives
+/// its generation up instead (#1295).
+fn cut_short_config() -> ClusterConfig {
+    ClusterConfig {
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        broker_env: vec![(
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "on_commit".to_string(),
+        )],
+        ..Default::default()
+    }
+}
+
 async fn cut_short_move(
     cluster: &mut Cluster,
     destination_opens: bool,
@@ -484,13 +501,9 @@ async fn cut_short_move(
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
-    let mut cluster = Cluster::start(ClusterConfig {
-        nodes: 4,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        ..Default::default()
-    })
-    .await
-    .expect("start cluster");
+    let mut cluster = Cluster::start(cut_short_config())
+        .await
+        .expect("start cluster");
     let (old, destination, mut acknowledged) = cut_short_move(&mut cluster, true).await;
 
     for _ in 0..5 {
@@ -520,13 +533,9 @@ async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
-    let mut cluster = Cluster::start(ClusterConfig {
-        nodes: 4,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        ..Default::default()
-    })
-    .await
-    .expect("start cluster");
+    let mut cluster = Cluster::start(cut_short_config())
+        .await
+        .expect("start cluster");
     cluster
         .finalize_fleet_features(
             &["generation_start", "majority_ack"],

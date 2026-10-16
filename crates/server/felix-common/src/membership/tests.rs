@@ -29,6 +29,7 @@ fn the_known_states_round_trip_as_the_wire_spells_them() {
 #[test]
 fn a_report_that_is_not_drained_omits_the_field() {
     let status = ShardReplicaStatus {
+        given_up: false,
         tenant_id: "t1".into(),
         namespace: "ns".into(),
         stream: "orders".into(),
@@ -62,6 +63,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
 #[test]
 fn a_report_without_storage_ids_is_unchanged() {
     let status = ShardReplicaStatus {
+        given_up: false,
         tenant_id: "t1".into(),
         namespace: "ns".into(),
         stream: "orders".into(),
@@ -111,6 +113,7 @@ fn a_report_round_trips() {
     let report = ReplicaStatusRequest {
         incarnation: 3,
         shards: vec![ShardReplicaStatus {
+            given_up: false,
             tenant_id: "t1".into(),
             namespace: "ns".into(),
             stream: "orders".into(),

@@ -98,6 +98,10 @@ pub struct ReportTo {
     /// registration (0 before the first). The control plane keeps a report's
     /// `by_round` only from the node's current incarnation.
     pub incarnation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// This broker's own storage identity, sent beside its followers' so
+    /// placement can tell when the leader's data directory is no longer the
+    /// one it reported from. `None` without durable storage.
+    pub storage_id: Option<StorageId>,
 }
 
 /// The token a report is sent with.
@@ -144,6 +148,11 @@ pub struct ShardReport {
     /// `None` for one that had not registered yet, for every follower that
     /// sends one. Like `storage_ids`, it names who the positions describe.
     pub node_incarnations: Vec<(String, Option<u64>)>,
+    /// This broker gave the shard up after a crash and measured where every
+    /// follower's copy ends (`crate::reclaim`). Sent without a tail, so it
+    /// replaces the report its previous process made whatever that one's
+    /// tail; its own position is in `offsets` under its node id.
+    pub given_up: bool,
 }
 
 impl ShardReport {
@@ -208,6 +217,7 @@ pub(super) fn shard_report(
                 Some((follower.node_id.clone(), at))
             })
             .collect(),
+        given_up: false,
     }
 }
 
@@ -296,7 +306,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 generation: report.generation,
                 caught_up: report.caught_up.to_vec(),
                 drained: report.drained,
-                leader_offset: Some(report.tail),
+                leader_offset: (!report.given_up).then_some(report.tail),
                 replica_offsets: report
                     .offsets
                     .iter()
@@ -327,8 +337,10 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .storage_ids
                     .iter()
                     .map(|(node_id, id)| (node_id.clone(), id.to_hex()))
+                    .chain(to.storage_id.map(|id| (to.node_id.clone(), id.to_hex())))
                     .collect(),
                 replica_incarnations: report.node_incarnations.iter().cloned().collect(),
+                given_up: report.given_up,
             })
             .collect(),
     };

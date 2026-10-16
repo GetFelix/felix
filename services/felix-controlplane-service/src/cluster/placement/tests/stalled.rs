@@ -328,6 +328,7 @@ fn a_restore_copying_only_counters_is_moving() {
     };
     let nodes = live(&["broker-a", "broker-b", "broker-c"]);
     let report = |counters: u64, now: u64| ReplicaReport {
+        given_up: false,
         key: existing.key.clone(),
         generation: existing.generation,
         caught_up: ["broker-b".to_string()].into(),

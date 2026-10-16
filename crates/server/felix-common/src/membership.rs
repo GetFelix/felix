@@ -140,8 +140,10 @@ pub struct ShardReplicaStatus {
     pub by_round: bool,
     /// The storage identity each follower gave the leader, as 32 lowercase
     /// hex digits, keyed by node id. The positions above describe that copy
-    /// of a follower's log. A follower that gives none is absent. Omitted
-    /// when empty, and by brokers that predate it.
+    /// of a follower's log. A follower that gives none is absent. The leader
+    /// names its own too, so placement can tell when it comes back on a data
+    /// directory that is no longer the one it reported from. Omitted when
+    /// empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replica_storage_ids: BTreeMap<String, String>,
     /// The node incarnation each follower gave the leader in the handshake
@@ -154,6 +156,13 @@ pub struct ShardReplicaStatus {
     /// empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replica_incarnations: BTreeMap<String, Option<u64>>,
+    /// The leader gave the shard up after a crash that may have cost it
+    /// records it acknowledged, and leads nothing from its copy. The report
+    /// then measures every follower afresh and carries no tail; the leader's
+    /// own position is under its node id in `replica_offsets`. Omitted when
+    /// false, and by brokers that predate it, which never give a shard up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub given_up: bool,
 }
 
 fn is_zero(value: &u64) -> bool {

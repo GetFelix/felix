@@ -424,6 +424,13 @@ pub struct ReplicaReport {
     /// incarnation, since a restart says nothing about what it kept.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub node_incarnations: BTreeMap<String, u64>,
+    /// The leader gave the shard up after a crash that may have cost it
+    /// records it acknowledged, and this report measures every follower
+    /// since. Only a broker that gives shards up sets it, so a report without
+    /// it never reads as one. False under Raft until every member can apply
+    /// it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub given_up: bool,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

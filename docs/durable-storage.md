@@ -1160,16 +1160,25 @@ that one start. A downgrade leaves the record as this release wrote it, and
 an older release ignores it; a crash under the older release before moving up
 again is not detected either.
 
-**A leader's own crash is not covered yet**
-([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id only
-changes how peers count the broker as a follower. A leader that crashes and
-restarts before the control plane fails its shard over is still the shard's
-leader, and reopens its old generation with the shorter log, so records it
-acknowledged from the lost tail are gone. Only `OnCommit` closes that today.
+**A start that rotated the id leads nothing from a copy that may be short
+of what it acknowledged** ([#1295](https://github.com/GetFelix/felix/issues/1295)):
+the copy it led before the crash, and one it followed at an older generation
+than it is named leader at, until a leader has shipped to it again. It gives
+each such replicated shard up instead of reopening it with the shorter log:
+the open is refused before it writes anything, and the shard's ballot is
+rewritten to name no leader (`DiskLog::give_up_generation`), so no later start
+leads that copy either until a newer leader has shipped to it. Nor does it
+answer a successor's promotion fence from that copy meanwhile. It asks every
+follower where its copy ends and reports that; placement promotes a follower
+that holds more, or, when none does, names the same broker leader again at a
+new generation, and the broker then leads its copy. A shard with no followers
+is led as before, from its only copy. See `docs/replication-design.md`, "A
+leader's own crash", for the whole of it and what it costs.
 
-Rotating the id does not reset a follower's election promises: the accepted
+Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
-them.
+them. Giving a copy up only narrows them: the ballot it writes accepts no
+leader at the generation it had already accepted.
 
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has

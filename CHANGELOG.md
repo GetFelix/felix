@@ -98,6 +98,33 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- A leader that crashed under `FsyncMode::Periodic` (the default) or `None`
+  and restarted before it was failed over no longer reopens its old
+  generation with a log that may be short of what it acknowledged (#1295).
+  Under `Quorum` it and a follower that lagged behind the lost records made a
+  majority and could write over acknowledged offsets. A start that rotated
+  the storage id now leads no replicated shard from a copy that may be short:
+  the copy it led, and one it followed at an older generation than it is
+  named leader at until a leader ships to it again. The open is refused
+  before it writes anything, and the copy is given up on disk as a ballot
+  naming no leader (`DiskLog::give_up_generation`), so no later start leads
+  it either. Replication passes over such a shard meanwhile, so nothing
+  ships, reports or counts toward a mark at the old generation, and the
+  broker refuses a successor's promotion fence from that copy in any replica
+  set but two. Instead it asks every follower where its copy ends and
+  reports that, flagged `given_up` (an optional report field, stored by the
+  control plane at Raft metadata level 15 and in Postgres migration 0033). Replica reports name the leader's own storage id
+  (`replica_storage_ids`). Placement promotes a follower the report names
+  caught up once the leader is registered under another id or reports it gave
+  the shard up, without waiting for its lease. When a fresh report from the
+  restarted leader measures every follower and none holds more than it does,
+  placement names it leader again at a new generation, so a `Leader` stream
+  whose followers lagged does not wait for an operator. Otherwise the shard
+  waits. A shard with no followers is led from its only copy as before, and
+  a clean restart is unchanged. TLA+: `FelixShardLeaderCrashKeepsGen.cfg` and
+  `FelixShardLeaderCrashReclaimBlind.cfg` (violate `AckedSurvive`),
+  `FelixShardLeaderCrashGivesUp.cfg` and `FelixShardLeaderCrashReclaim.cfg`
+  (pass).
 - A follower that crashed under `FsyncMode::Periodic` (the default) or `None`
   is no longer counted, or promoted, on records it acknowledged before the
   crash and may have lost (#1284). The broker now keeps
@@ -108,8 +135,8 @@ entries.
   leaders copy the follower again and placement stops counting its old
   reports. A clean stop, and a crash under `OnCommit`, keep the id. The
   first start on this release rotates only if startup would repair a shard,
-  so an orderly roll keeps every id. A leader's own crash is not covered yet: it
-  reopens its old generation with the shorter log (#1295). `felix-broker restore-point` records a
+  so an orderly roll keeps every id. A leader's own crash is covered by #1295,
+  below. `felix-broker restore-point` records a
   clean stop when it finishes. The shutdown drain now flushes the cache,
   consumer-group, dead-letter and counter logs too, not only stream logs
   (`Broker::shutdown_storage`, `StorageApi::shutdown`). TLA+:

@@ -263,6 +263,19 @@
 (* `RotateOnCrash` it restarts under a new identity, as the broker does    *)
 (* when it finds no clean stop recorded. No configuration in CI checks     *)
 (* that case: with a partial suffix lost it is too large for the job.      *)
+(*                                                                         *)
+(* `CrashLeader` makes the crash the leader's instead (#1295). Keeping its *)
+(* lease and its generation, it serves on without what it lost, and TLC    *)
+(* finds an acknowledged record gone (AckedSurvive,                        *)
+(* FelixShardLeaderCrashKeepsGen.cfg). With `GiveUpOnCrash` it restarts    *)
+(* under a new identity and leads nothing from that copy, its report       *)
+(* names the identity it reported from, and placement promotes a follower  *)
+(* the report names caught up once the two differ, without waiting for the *)
+(* lease (FelixShardLeaderCrashGivesUp.cfg). With `Reclaims` placement     *)
+(* names it again at the next generation when no follower's log is ahead   *)
+(* of its own (FelixShardLeaderCrashReclaim.cfg); without measuring the    *)
+(* followers TLC finds the record gone                                     *)
+(* (FelixShardLeaderCrashReclaimBlind.cfg).                                *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -389,6 +402,15 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* rather than by a wipe.
 \* `RotateOnCrash`: after such a crash it starts under a new storage
 \* identity: `felix_storage::run_state::begin`.
+\* `CrashLeader`: the crash is a leader's, not a follower's.
+\* `GiveUpOnCrash`: a leader back from such a crash leads nothing from the
+\* copy it led (`may_lead` in services/felix-broker-service/src/shards/
+\* lifecycle.rs), and placement replaces it once its registered identity is
+\* not the one its report names (`leader_replaced` in
+\* services/felix-controlplane-service/src/cluster/placement/plan.rs).
+\* `Reclaims`: placement names a leader that gave its copy up leader again
+\* at the next generation once no follower is ahead of it (Reclaim).
+\* `ReclaimBlind`: it does so without measuring the followers.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -396,6 +418,10 @@ StampIncarnations == TRUE
 StampOnArrival == FALSE
 CrashLoses == FALSE
 RotateOnCrash == FALSE
+CrashLeader == FALSE
+GiveUpOnCrash == FALSE
+Reclaims == FALSE
+ReclaimBlind == FALSE
 
 VARIABLES
     now,        \* real time
@@ -1110,7 +1136,10 @@ Report(b) ==
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
                        gen     |-> bgen[b],
-                       sids    |-> seen[b],
+                       \* With `CrashLeader` the leader names its own identity
+                       \* too, as the code does.
+                       sids    |-> IF CrashLeader THEN [seen[b] EXCEPT ![b] = sid[b]]
+                                                  ELSE seen[b],
                        incs    |-> seenInc[b]] >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
@@ -1202,6 +1231,16 @@ Snapshot(p) ==
 \* when the store compares generations.
 Cas(v) == CasWrites => v.ver = ver
 
+\* Under `GiveUpOnCrash`, the leader of read `v` is registered under another
+\* identity than its report names for it: it came back from a crash and
+\* leads nothing from that copy. Read live, as ByLeaderReport reads
+\* `registered`.
+LeaderReplaced(v) ==
+    /\ GiveUpOnCrash /\ StorageIds
+    /\ v.report.gen > 0
+    /\ registered[v.leader] /= 0
+    /\ v.report.sids[v.leader] + 1 /= registered[v.leader]
+
 \* Each decision below is made from a read `v` and leaves the planners'
 \* reads as `views`: a held read is used up by the write it decided, one
 \* write per shard per pass. Every write bumps the store's generation.
@@ -1210,7 +1249,8 @@ Promote(v, f, views) ==
     \* Under `Suspicions` the followers' word is enough, and a detector can
     \* be wrong, so any read will do: the leader may be alive, serving and
     \* heartbeating. Bounded by generation, or promotions never end.
-    /\ v.lapsed \/ v.gen <= Suspicions
+    \* A leader that gave its copy up is replaced at once.
+    /\ v.lapsed \/ v.gen <= Suspicions \/ LeaderReplaced(v)
     /\ f \notin out
     \* With it off, a `Quorum` failover never names the destination: it ends
     \* the move instead (`promote` in services/felix-controlplane-service/src/
@@ -1869,13 +1909,41 @@ CpFlip ==
                     promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
                     installed, ackGen >>
 
+\* Under `Reclaims`, placement names a leader that gave its copy up leader
+\* again at the next generation, on the same set, when no follower's log is
+\* ahead of its own: every follower measured as it stands now, as the given
+\* up leader's probe does (`crate::reclaim` in felix-replication,
+\* `reclaimable` in placement/replica_positions.rs). Nothing a client was
+\* promised is then held beyond its copy. The model lets it happen beside a
+\* promotion rather than only when none is possible, which admits more.
+\* `ReclaimBlind` skips the measurement.
+Reclaim(v, views) ==
+    /\ Reclaims
+    /\ LeaderReplaced(v)
+    /\ bgen[v.leader] = 0
+    /\ ReclaimBlind \/ \A f \in ReplicaSet \ {v.leader} : ~Ahead(f, v.leader)
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ cpExpiry' = now + L
+    /\ bgen' = [bgen EXCEPT ![v.leader] = gen + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![v.leader] = clock[v.leader] + L]
+    /\ report' = NoReport
+    /\ confirmed' = [confirmed EXCEPT ![v.leader] = [m \in Brokers |-> 0]]
+    /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, log, hwm, halted,
+                    queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << draining, successor, stopped, moves, staged, out, mine,
+                    joining, leaving, joinedAt >>
+    /\ UNCHANGED << promised, fencing, answered, ballot, opened, setVars, ackGen >>
+
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
     \/ Promote(v, f, views)
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
-          \/ Swap(v, f, views) \/ CpAdopt(v, f, views)
+          \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED counterVars
 
 -----------------------------------------------------------------------------
@@ -1905,10 +1973,16 @@ Wipe(f) ==
 \* for. Its directory, and so its identity, is the one it had, unless
 \* `RotateOnCrash` gives it a new one before it registers again. It shares
 \* the wipes' budget.
+\*
+\* With `CrashLeader` the one that crashes is a broker that believes it
+\* leads, and what it held in memory goes with the process: its queued and
+\* pending writes, its cursors and what it heard of its reports. Without
+\* `GiveUpOnCrash` it comes back still leading at its generation, on its
+\* lease; with it, it leads nothing until placement names it again.
 Crash(f) ==
     /\ CrashLoses
     /\ wipes < Wipes
-    /\ bgen[f] = 0
+    /\ IF CrashLeader THEN bgen[f] > 0 ELSE bgen[f] = 0
     /\ Len(log[f]) > 0
     /\ \E k \in 0..(Len(log[f]) - 1) :
           /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
@@ -1920,9 +1994,19 @@ Crash(f) ==
        ELSE UNCHANGED << sid, registered >>
     /\ inc' = [inc EXCEPT ![f] = @ + 1]
     /\ UNCHANGED restarting
-    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
-                    hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked >>
+    /\ IF CrashLeader
+       THEN /\ queued' = [queued EXCEPT ![f] = 0]
+            /\ pending' = [pending EXCEPT ![f] = 0]
+            /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+            /\ checked' = [checked EXCEPT ![f] = {}]
+            /\ heard' = [heard EXCEPT ![f] = NoReport]
+            /\ bgen' = IF GiveUpOnCrash THEN [bgen EXCEPT ![f] = 0] ELSE bgen
+            /\ fencing' = IF GiveUpOnCrash THEN [fencing EXCEPT ![f] = FALSE] ELSE fencing
+       ELSE UNCHANGED << queued, pending, confirmed, checked, heard, bgen, fencing >>
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, halted, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
+                    seen, seenInc >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
@@ -2026,7 +2110,7 @@ Next ==
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
-        \/ Crash(b) /\ UNCHANGED << counterVars, heard >>
+        \/ Crash(b) /\ UNCHANGED counterVars
         \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars

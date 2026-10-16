@@ -65,6 +65,8 @@ struct DbReplicaReport {
     leader: Option<String>,
     node_incarnations: Option<serde_json::Value>,
     stamped_at: Option<i64>,
+    given_up: bool,
+    given_up_at: Option<i64>,
 }
 
 pub(super) async fn put_shard_assignment(
@@ -540,9 +542,9 @@ pub(super) async fn record_replica_report(
                     reported_at_millis, drained, leader_offset, halted, counter_offsets,
                     by_round, leader_incarnation, by_round_at,
                     follower_storage, follower_storage_at,
-                    leader, node_incarnations, stamped_at)
+                    leader, node_incarnations, stamped_at, given_up, given_up_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9,
-                       $16, $9, $17, $18, $9)
+                       $16, $9, $17, $18, $9, $19, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -559,7 +561,9 @@ pub(super) async fn record_replica_report(
                    follower_storage_at = EXCLUDED.follower_storage_at,
                    leader = EXCLUDED.leader,
                    node_incarnations = EXCLUDED.node_incarnations,
-                   stamped_at = EXCLUDED.stamped_at
+                   stamped_at = EXCLUDED.stamped_at,
+                   given_up = EXCLUDED.given_up,
+                   given_up_at = EXCLUDED.given_up_at
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -588,6 +592,7 @@ pub(super) async fn record_replica_report(
     .bind(serde_json::to_value(&report.follower_storage).expect("a map of strings serializes"))
     .bind(&report.leader)
     .bind(serde_json::to_value(&report.node_incarnations).expect("a map of integers serializes"))
+    .bind(report.given_up)
     .execute(&mut *tx)
     .await;
     match result {
@@ -609,7 +614,7 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
                       reported_at_millis, drained, leader_offset, halted, counter_offsets,
                       by_round, leader_incarnation, by_round_at,
                       follower_storage, follower_storage_at,
-                      leader, node_incarnations, stamped_at
+                      leader, node_incarnations, stamped_at, given_up, given_up_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -701,6 +706,8 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
         follower_storage,
         leader: row.leader.filter(|_| stamped),
         node_incarnations,
+        // And for the give-up (0033).
+        given_up: row.given_up && row.given_up_at == Some(row.reported_at_millis),
     })
 }
 

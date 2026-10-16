@@ -55,6 +55,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
     store
         .record_replica_report(
             crate::model::ReplicaReport {
+                given_up: false,
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
                 by_round: false,

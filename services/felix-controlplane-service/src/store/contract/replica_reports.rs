@@ -362,6 +362,35 @@ pub(super) async fn follower_storage_is_kept(store: &dyn ControlPlaneStore) {
     assert!(stored(store, shard).await.follower_storage.is_empty());
 }
 
+/// A leader's give-up rides its report, and a later report without it
+/// clears it.
+pub(super) async fn a_give_up_is_kept(store: &dyn ControlPlaneStore) {
+    // Follows `follower_storage_is_kept` on the same shard.
+    let shard = 3;
+    let at = generation(store, shard).await;
+    let mut sent = report(shard, at, &[], 20_200);
+    sent.given_up = true;
+    sent.leader_offset = None;
+    assert_eq!(
+        store
+            .record_replica_report(sent, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(stored(store, shard).await.given_up);
+
+    let without = report(shard, at, &["broker-y"], 20_300);
+    assert_eq!(
+        store
+            .record_replica_report(without, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(!stored(store, shard).await.given_up);
+}
+
 /// `shard`'s report as held, stamps and all.
 async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
     store
@@ -375,6 +404,7 @@ async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
 
 fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
+        given_up: false,
         counter_offsets: Default::default(),
         stream_incarnation: None,
         by_round: false,

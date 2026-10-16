@@ -162,6 +162,41 @@ impl DiskLog {
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
+
+    /// Give up the generation this log accepted: no leader is accepted at it
+    /// from here on, this broker included. A newer generation still is, and
+    /// its ballot replaces this one. On disk before this returns.
+    ///
+    /// For a broker that led that generation and restarted after a crash that
+    /// may have cost it records it acknowledged (#1295). Kept as a ballot
+    /// naming no leader, so it survives restarts and an older build refuses
+    /// to lead the generation too.
+    pub async fn give_up_generation(&self) -> Result<u64> {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            // The writer's lock, so a raise cannot land between the read and
+            // the write and be given up unseen.
+            let _persisted = inner.replica_persisted.lock();
+            let generation = inner.accepted_generation.load(Ordering::Acquire);
+            store(
+                &inner.dir,
+                &Ballot {
+                    generation,
+                    leader: String::new(),
+                },
+            )?;
+            *inner.ballot.write() = (generation, Some(Arc::from("")));
+            Ok(generation)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// Whether this log gave up its accepted generation and has accepted no
+    /// newer one since. See [`Self::give_up_generation`].
+    pub fn gave_up(&self) -> bool {
+        self.inner.ballot.read().1.as_deref() == Some("")
+    }
 }
 
 /// What the accepted ballot says of `leader` at `generation`, or `None` when

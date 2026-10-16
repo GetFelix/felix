@@ -687,6 +687,7 @@ the leader does with it.
 | has accepted a newer generation, or its routing view has one | `FencedEpoch` |
 | is outside the replica set | `Unauthorized` |
 | has no copy of the named log to keep the promise in | `Unauthorized` |
+| led the shard before a crash that may have cost it acknowledged records, no newer leader has shipped to it since, and the replica set has other than two members | `Unavailable`; retried, and the leader waits for a majority without it (`docs/replication-design.md`, "A leader's own crash") |
 | predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
 
 The fence comes with a promotion, usually before the replica's routing view

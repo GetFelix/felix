@@ -47,6 +47,9 @@ pub struct ReplicaHandler {
     /// another log.
     mismatched:
         parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), (u64, u64)>>,
+    /// Set when this process started after a crash that may have cost it
+    /// records it acknowledged. See [`crate::unclean`].
+    unclean: Option<Arc<crate::unclean::UncleanStart>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -70,9 +73,17 @@ impl ReplicaHandler {
             router,
             verified: parking_lot::Mutex::new(HashMap::new()),
             mismatched: parking_lot::Mutex::new(HashMap::new()),
+            unclean: None,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Answer no promotion fence from a copy this broker led before an
+    /// unclean start. See [`Self::fence`].
+    pub fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
+        self.unclean = Some(unclean);
+        self
     }
 
     /// Begin this shard's log where the leader's surviving log begins.
@@ -685,6 +696,14 @@ impl ReplicaHandler {
                 )
             }
             Ok(Ok(applied)) => {
+                if let Some(unclean) = &self.unclean
+                    && matches!(
+                        log_kind,
+                        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+                    )
+                {
+                    unclean.vouch(&crate::driver::watch_key(&key));
+                }
                 // Held like the leader's copy: this one counts toward the mark,
                 // and if it led, it would be the copy a client was promised.
                 if matches!(
@@ -935,6 +954,19 @@ impl ReplicaHandler {
                 );
             }
         }
+        if let Some(refusal) = self
+            .refuse_short_copy(
+                correlation_id,
+                &key,
+                log_kind,
+                &log,
+                generation,
+                request.shard.incarnation,
+            )
+            .await
+        {
+            return refusal;
+        }
         // A fence at the generation already accepted changes nothing here: it
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
@@ -1162,6 +1194,101 @@ impl ReplicaHandler {
                 ),
             )
         })
+    }
+
+    /// Refuse a fence when this broker's copy of the shard is the one it led
+    /// before a crash that may have cost it records it acknowledged, and no
+    /// newer leader has shipped to it since. Counted, it could stand in a
+    /// majority for records only its lost tail held. Retryable: the
+    /// promotion waits for replicas that can vouch for what they hold.
+    ///
+    /// Judged on the shard's own log, which a group or counter log follows.
+    /// On an unclean start a copy whose ballot names this broker is given up
+    /// on disk here, so a later restart still refuses. Not in a set of two.
+    async fn refuse_short_copy(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        sent: Option<u64>,
+    ) -> Option<InternalMessage> {
+        let own = match log_kind {
+            felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => None,
+            felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => {
+                Some(felix_broker::LogKind::Stream)
+            }
+            felix_broker::LogKind::Counters => Some(felix_broker::LogKind::Cache),
+        };
+        let opened;
+        let log = match own {
+            None => log,
+            Some(own) => {
+                opened = self
+                    .broker
+                    .shard_log_for(
+                        own,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        None,
+                        self.expected_incarnation(key, sent),
+                    )
+                    .await?;
+                &opened
+            }
+        };
+        let led_before = self.unclean.as_ref().is_some_and(|unclean| {
+            unclean.led_before(&crate::driver::watch_key(key), log, generation)
+        });
+        if !log.gave_up() && !led_before {
+            return None;
+        }
+        // In a set of two the other copy holds every record a majority of the
+        // two acknowledged, so this broker's vote cannot stand in for one it
+        // lost, and refusing would leave the shard with no majority at all.
+        // Any other size is refused: the set that acknowledged may not be the
+        // one the routes show now, as during a replacement.
+        let set_size = self.router.snapshot().get(key).map(|route| {
+            1 + route
+                .replicas
+                .iter()
+                .filter(|replica| replica.node_id != route.leader.node_id)
+                .count()
+        });
+        if set_size == Some(2) {
+            return None;
+        }
+        if led_before
+            && let Some(unclean) = &self.unclean
+            && log.accepted_leader().as_deref() == Some(unclean.node_id())
+            && let Err(err) = log.give_up_generation().await
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record giving up the generation this broker led before its crash",
+            );
+        }
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            "refusing a fence: this copy is the one this broker led before a crash that \
+             may have cost it acknowledged records",
+        );
+        metrics::record_replicated(metrics::OUTCOME_REFUSED);
+        Some(refused(
+            correlation_id,
+            ErrorCode::Unavailable,
+            0,
+            "this broker led the shard before a crash that may have cost it acknowledged \
+             records, and no newer leader has shipped to it since"
+                .to_string(),
+        ))
     }
 
     /// Refuse a request for a shard at an incarnation this broker does
