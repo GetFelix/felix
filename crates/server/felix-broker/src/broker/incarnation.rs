@@ -260,7 +260,8 @@ impl Broker {
         let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
         if let Some(groups) = &self.consumer_groups
             && groups
-                .dirs_on_disk(tenant_id, namespace, stream)?
+                .dirs_on_disk(tenant_id, namespace, stream)
+                .await?
                 .iter()
                 .any(|(_, held)| covered(held))
         {
@@ -269,7 +270,8 @@ impl Broker {
         if let Some(reader) = &self.group_reader
             && reader
                 .dead_letters()
-                .dirs_on_disk(tenant_id, namespace, stream)?
+                .dirs_on_disk(tenant_id, namespace, stream)
+                .await?
                 .iter()
                 .any(|(_, held)| covered(held))
         {
@@ -580,12 +582,14 @@ impl Broker {
         let held: std::collections::BTreeSet<u64> = match store {
             Store::Records(_) => self.incarnations_on_disk(key).await?,
             Store::Cursors(groups) => groups
-                .dirs_on_disk(tenant_id, namespace, stream)?
+                .dirs_on_disk(tenant_id, namespace, stream)
+                .await?
                 .into_iter()
                 .map(|(_, incarnation)| incarnation)
                 .collect(),
             Store::DeadLetters(letters) => letters
-                .dirs_on_disk(tenant_id, namespace, stream)?
+                .dirs_on_disk(tenant_id, namespace, stream)
+                .await?
                 .into_iter()
                 .map(|(_, incarnation)| incarnation)
                 .collect(),
@@ -623,7 +627,9 @@ impl Broker {
         let (Some(groups), Some(reader)) = (&self.consumer_groups, &self.group_reader) else {
             return Ok(());
         };
-        let on_disk = groups.dirs_on_disk(&key.tenant_id, &key.namespace, &key.stream)?;
+        let on_disk = groups
+            .dirs_on_disk(&key.tenant_id, &key.namespace, &key.stream)
+            .await?;
         let Some(shards) = on_disk
             .iter()
             .filter(|(_, incarnation)| *incarnation == 0)

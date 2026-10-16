@@ -254,3 +254,16 @@ fn retiring_many_directories_runs_one_purge_worker() {
     let (_, peak) = LIVE_WORKERS.lock()[&deleted];
     assert_eq!(peak, 1, "one purge worker at a time per root");
 }
+
+#[test]
+fn a_panicking_purge_worker_frees_its_root() {
+    let deleted = tempfile::tempdir().expect("dir").path().join(DELETED_DIR);
+    PURGE_WORKERS.lock().insert(deleted.clone(), true);
+    let held = deleted.clone();
+    let worker = std::thread::spawn(move || {
+        let _slot = WorkerSlot(&held);
+        panic!("a purge worker failing");
+    });
+    assert!(worker.join().is_err());
+    assert!(!PURGE_WORKERS.lock().contains_key(&deleted));
+}

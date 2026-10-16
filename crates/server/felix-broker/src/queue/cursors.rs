@@ -523,7 +523,7 @@ impl ConsumerGroups {
 
     /// The shard and incarnation of every directory of a stream's cursors
     /// here.
-    pub fn dirs_on_disk(
+    pub async fn dirs_on_disk(
         &self,
         tenant_id: &str,
         namespace: &str,
@@ -531,6 +531,7 @@ impl ConsumerGroups {
     ) -> Result<Vec<(u32, u64)>> {
         self.cursors
             .dirs_on_disk(tenant_id, namespace, stream)
+            .await
             .map_err(BrokerError::from)
     }
 
