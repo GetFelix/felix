@@ -1301,7 +1301,8 @@ at, written and fsynced before the first batch at a new generation is stored or
 acknowledged, and a leader claiming a shard records its own generation the same
 way. The commit offset is kept in the same small file (`replica`, beside the
 segments). Under `FsyncMode::OnCommit` it is on disk before the batch that
-carried it is acknowledged. Under `Periodic` and `None` it is written at most once
+carried it is acknowledged, or, if that write fails, retried once a second until
+it lands. Under `Periodic` and `None` it is written at most once
 a second, and after a crash it may read back behind, which weakens the guard:
 truncation may cut into records committed since, until the next batch carries
 the offset again. Above it, a record is a proposal that the cluster may not
@@ -1552,6 +1553,19 @@ zero. A rebuild the old copy held gives its slot back. A failed lookup leaves
 the cursor alone; the shipping that follows meets the same failure. A
 follower that only restarted gives the same identity and keeps its place.
 
+The exchanges run concurrently, and the pass recounts the mark as each one
+lands, so a follower whose exchange has not got that far still carries the
+old copy's `confirmed`. Counted there, it could release records only the
+leader holds: a wiped follower that had confirmed more than the mark, beside
+one that fails at once. So the mark, the counter mark, and who a report
+offers as caught up count only followers whose identity the pass has checked
+and found unchanged (`checked_only`). Any other follower counts as holding
+nothing until its exchange hands back a reset cursor, or until a later pass
+checks it. A follower that is down counts for nothing either, though what it
+confirmed may well still be on its disk; the majority that answers carries
+the mark. Its reported offset, which placement reads for progress, is left
+alone.
+
 ```mermaid
 sequenceDiagram
     participant L as Leader
@@ -1571,7 +1585,7 @@ crashes leaves the leader's connection open until QUIC's idle timeout,
 three quarters of `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` (3.75 s by default),
 because the restarted process cannot reset a connection it never had. Until
 then the leader reports the old identity, which the restarted broker no
-longer registers under.
+longer registers under, and can count the old copy's position.
 
 Each report names the identity every follower was counted under
 (`replica_storage_ids`, lowercase hex, omitted when empty). A follower that

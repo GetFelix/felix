@@ -147,12 +147,13 @@ pub(super) enum Stragglers {
 /// passes.
 pub(super) type Exchange<'a> = futures::future::BoxFuture<'a, Shipped>;
 
-/// What an exchange hands back: the cursors it took, and whether a copy was
-/// cut at its slice.
+/// What an exchange hands back: the cursors it took, whether a copy was cut
+/// at its slice, and whether the follower's storage identity was checked.
 pub(super) struct Shipped {
     pub(super) cursor: FollowerCursor,
     pub(super) rode: RideAlong,
     pub(super) cut: bool,
+    pub(super) checked: bool,
 }
 
 /// The follower's cursors on the auxiliary logs that rode its exchange.
@@ -491,6 +492,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             .await,
         ),
     };
+    // The followers whose storage identity this pass has checked against
+    // their cursor. Exchanges run concurrently, so a follower not yet probed
+    // may be a wiped copy still carrying the old copy's `confirmed`; until it
+    // is checked it counts as holding nothing. See [`checked_only`].
+    let checked: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
+    let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
     let counter_mark = counter_log.clone().filter(|_| acks_at_quorum);
     let counters_of = |followers: Vec<FollowerCursor>| {
         let counter_mark = counter_mark.clone();
@@ -516,8 +523,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let groups_of = |aux: &AuxCursors| {
         let (group_log, dead_letter_log) = group_logs.clone();
         let followers = (
-            aux.group.followers.clone(),
-            aux.dead_letters.followers.clone(),
+            view(&aux.group.followers),
+            view(&aux.dead_letters.followers),
         );
         let learner = learner.clone();
         async move {
@@ -587,15 +594,24 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 counter_log.clone(),
             );
             let generation = route.generation;
+            let checked = Arc::clone(&checked);
             let exchange: Exchange<'a> = Box::pin(async move {
                 // On an idle shard nothing is shipped, so this is the only
                 // contact that can tell a wiped follower from the copy its
-                // cursor describes. An error leaves the cursor as it is; the
-                // shipping below meets the same failure.
+                // cursor describes. An error leaves the cursor as it is, and
+                // uncounted; the shipping below meets the same failure.
+                let mut probed = false;
                 if let Ok(seen) = requester
                     .storage_identity(&cursor.node_id, cursor.addr)
                     .await
                 {
+                    probed = true;
+                    // The pass may count this follower's position from now
+                    // on. A changed one is counted only once the reset
+                    // cursor is handed back.
+                    if seen == cursor.storage_id {
+                        checked.lock().insert(cursor.node_id.clone());
+                    }
                     if seen != cursor.storage_id && cursor.storage_id.is_some() {
                         tracing::warn!(
                             node_id = %cursor.node_id,
@@ -689,6 +705,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cursor,
                     rode,
                     cut: cut || counters_cut,
+                    checked: probed,
                 }
             });
             exchange
@@ -733,7 +750,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut copying = false;
     let mut majority = None;
     if waiting == 0 {
-        let offset = held_offset(tail, &positions);
+        let counted = view(&positions);
+        let offset = held_offset(tail, &counted);
         if offset > 0 {
             majority = Some((
                 with_counter_offsets(
@@ -741,8 +759,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         key,
                         route.generation,
                         tail,
-                        acknowledged(tail, &positions),
-                        &positions,
+                        acknowledged(tail, &counted),
+                        &counted,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -750,7 +768,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     &aux.counters.followers,
                 ),
                 offset,
-                counters_of(aux.counters.followers.clone()).await,
+                counters_of(view(&aux.counters.followers)).await,
                 groups_of(&aux).await,
             ));
         }
@@ -798,11 +816,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             voted += 1;
         }
         answered.insert(shipped.cursor.node_id.clone());
+        if shipped.checked {
+            checked.lock().insert(shipped.cursor.node_id.clone());
+        }
         settle(&mut positions, shipped.cursor);
         settle_aux(&mut aux, shipped.rode);
         let tail = log.tail_offset().await.unwrap_or(tail);
-        let offset = held_offset(tail, &positions);
-        let counters = counters_of(aux.counters.followers.clone()).await;
+        let counted = view(&positions);
+        let offset = held_offset(tail, &counted);
+        let counters = counters_of(view(&aux.counters.followers)).await;
         // With counters riding along, a majority that has answered is all
         // this pass can wait for: the cache log may have nothing to count (a
         // cache used only for counters), and the rest may include a follower
@@ -820,8 +842,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         key,
                         route.generation,
                         tail,
-                        acknowledged(tail, &positions),
-                        &positions,
+                        acknowledged(tail, &counted),
+                        &counted,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -925,6 +947,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     for shipped in rest {
         copying |= shipped.cut;
         answered.insert(shipped.cursor.node_id.clone());
+        if shipped.checked {
+            checked.lock().insert(shipped.cursor.node_id.clone());
+        }
         settle(&mut positions, shipped.cursor);
         settle_aux(&mut aux, shipped.rode);
     }
@@ -1003,15 +1028,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         Vec::new()
     };
     let tail = log.tail_offset().await.unwrap_or(tail);
-    let drained =
-        quiesced && drain_ready(key, route, &caught_up(tail, &entry.followers), &aux_behind);
+    let counted = view(&entry.followers);
+    let drained = quiesced && drain_ready(key, route, &caught_up(tail, &counted), &aux_behind);
     let mut settled = with_counter_offsets(
         shard_report(
             key,
             route.generation,
             tail,
-            acknowledged(tail, &entry.followers),
-            &entry.followers,
+            acknowledged(tail, &counted),
+            &counted,
             drained,
         )
         .at_incarnation(incarnation)
@@ -1023,7 +1048,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
-    let counters = counters_of(aux.counters.followers.clone()).await;
+    let counters = counters_of(view(&aux.counters.followers)).await;
     if let Some(counters) = &counters {
         counters.limit(&mut settled);
     }
@@ -1046,7 +1071,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             incarnation,
             route.generation,
             &settled,
-            held_offset(tail, &entry.followers),
+            held_offset(tail, &counted),
             by_followers,
         )
         .await
@@ -1725,6 +1750,25 @@ pub(super) fn staged_learner(previous: Option<&ShardCursors>, route: &Route) -> 
             .iter()
             .any(|follower| &follower.node_id == successor);
     added.then(|| successor.clone())
+}
+
+/// `followers` as this pass may count them: one whose storage identity it
+/// has not checked holds nothing.
+///
+/// A cursor's `confirmed` is what the copy it was learned from holds. Until
+/// the follower is asked who it is, that copy may be gone, and counting it
+/// would let a record held only by the leader be acknowledged.
+fn checked_only(followers: &[FollowerCursor], checked: &HashSet<String>) -> Vec<FollowerCursor> {
+    followers
+        .iter()
+        .map(|cursor| {
+            let mut cursor = cursor.clone();
+            if !checked.contains(&cursor.node_id) {
+                cursor.confirmed = 0;
+            }
+            cursor
+        })
+        .collect()
 }
 
 /// Start `cursor` over at `base` unless it already describes the copy of

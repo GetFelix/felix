@@ -262,3 +262,56 @@ async fn a_failed_commit_offset_write_is_retried_with_the_same_offset() {
     let reopened = open(&dir, FsyncMode::OnCommit);
     assert_eq!(reopened.commit_offset(), 2, "the retry reached disk");
 }
+
+/// **A failed commit-offset write is retried with nothing calling again.** On
+/// an idle follower no batch comes to carry the offset a second time.
+#[tokio::test]
+async fn a_failed_commit_offset_write_is_retried_on_its_own() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b", "c"]))
+        .await
+        .expect("append");
+
+    let blocker = dir.path().join("replica.tmp");
+    std::fs::create_dir(&blocker).expect("block the write");
+    log.advance_commit_offset(2)
+        .await
+        .expect_err("injected write failure");
+    std::fs::remove_dir(&blocker).expect("unblock");
+
+    let written = async {
+        loop {
+            let state = crate::disk_log::replica_state::load(dir.path()).expect("replica state");
+            if state.commit_offset == 2 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    tokio::time::timeout(COMMIT_PERSIST_INTERVAL * 5, written)
+        .await
+        .expect("the failed write was never retried");
+}
+
+/// **A closed log writes no replica state**, so a retry still pending cannot
+/// land in a directory another log now owns.
+#[tokio::test]
+async fn a_closed_log_writes_no_replica_state() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b", "c"]))
+        .await
+        .expect("append");
+    log.close().await.expect("close");
+
+    log.advance_commit_offset(2)
+        .await
+        .expect_err("a closed log wrote its replica state");
+    assert_eq!(
+        crate::disk_log::replica_state::load(dir.path())
+            .expect("replica state")
+            .commit_offset,
+        0
+    );
+}

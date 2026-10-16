@@ -579,8 +579,9 @@ impl DiskLog {
 
     /// Record that every record below `offset` is committed.
     ///
-    /// If the write fails the offset still holds in memory, and the next call
-    /// with it or a lower one writes again.
+    /// If the write fails the offset still holds in memory and is written
+    /// again every [`COMMIT_PERSIST_INTERVAL`] until it lands, whether or not
+    /// anything calls this again.
     ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
     /// [`DiskLog::reset_to`], which refuse to cut below it. Under
@@ -605,10 +606,44 @@ impl DiskLog {
                 .1
                 .is_none_or(|at| at.elapsed() >= COMMIT_PERSIST_INTERVAL)
         };
-        if due {
-            self.persist_replica_state().await?;
+        if due && let Err(err) = self.persist_replica_state().await {
+            self.retry_replica_state();
+            return Err(err);
         }
         Ok(())
+    }
+
+    /// Write the replica state again until it reaches disk. On a follower
+    /// only the leader's next batch would call
+    /// [`Self::advance_commit_offset`] again, and an idle shard sends none.
+    fn retry_replica_state(&self) {
+        if self.inner.replica_retry.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // Weak, so the retry neither keeps a dropped log alive nor outlives it.
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(COMMIT_PERSIST_INTERVAL).await;
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                if inner.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                if persist_replica_state(Arc::clone(&inner)).await.is_err() {
+                    continue;
+                }
+                inner.replica_retry.store(false, Ordering::Release);
+                // A write that failed while this one ran found the flag set
+                // and left the retry to this task.
+                let behind = inner.commit_offset.load(Ordering::Acquire)
+                    > inner.commit_persisted.load(Ordering::Acquire);
+                if !behind || inner.replica_retry.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+            }
+        });
     }
 
     /// Keep retention and compaction's head trims below the commit offset.
@@ -642,26 +677,7 @@ impl DiskLog {
 
     /// Write the replica state if memory is ahead of disk.
     async fn persist_replica_state(&self) -> Result<()> {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            let mut persisted = inner.replica_persisted.lock();
-            let state = replica_state::ReplicaState {
-                accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
-                commit_offset: inner.commit_offset.load(Ordering::Acquire),
-                hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
-            };
-            if state == persisted.0 {
-                return Ok(());
-            }
-            replica_state::store(&inner.dir, &state)?;
-            inner
-                .commit_persisted
-                .store(state.commit_offset, Ordering::Release);
-            *persisted = (state, Some(std::time::Instant::now()));
-            Ok(())
-        })
-        .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+        persist_replica_state(Arc::clone(&self.inner)).await
     }
 
     /// Stop background work, flush everything one last time, and refuse any
@@ -845,6 +861,7 @@ impl DiskLog {
             // Set before retention starts below, so a sweep after a restart
             // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
+            replica_retry: std::sync::atomic::AtomicBool::new(false),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -1160,6 +1177,9 @@ struct LogInner {
     /// Retention and head trims stop at `commit_offset`; see
     /// [`DiskLog::hold_retention_at_commit`].
     hold_at_commit: std::sync::atomic::AtomicBool,
+    /// A task is writing the replica state again after a failed write; see
+    /// [`DiskLog::advance_commit_offset`].
+    replica_retry: std::sync::atomic::AtomicBool,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
@@ -1379,6 +1399,35 @@ impl LogInner {
         *self.producers.lock() = state;
         Ok(())
     }
+}
+
+/// Write the replica state if memory is ahead of disk. Refused once the log
+/// is closed: its directory may already be another log's.
+async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        // Checked under the lock `close` takes for its own last write, so
+        // nothing lands after it.
+        let mut persisted = inner.replica_persisted.lock();
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(inner.label.clone()));
+        }
+        let state = replica_state::ReplicaState {
+            accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
+            commit_offset: inner.commit_offset.load(Ordering::Acquire),
+            hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
+        };
+        if state == persisted.0 {
+            return Ok(());
+        }
+        replica_state::store(&inner.dir, &state)?;
+        inner
+            .commit_persisted
+            .store(state.commit_offset, Ordering::Release);
+        *persisted = (state, Some(std::time::Instant::now()));
+        Ok(())
+    })
+    .await
+    .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
 }
 
 fn now_micros() -> u64 {

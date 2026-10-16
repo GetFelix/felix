@@ -701,7 +701,7 @@ impl ReplicaHandler {
                     }
                 }
                 // Not a reason to fail the batch: the offset only guards
-                // truncation, and the next one retries the write. Only what
+                // truncation, and the log retries the write. Only what
                 // this batch left level with the leader: past the
                 // durable offset nothing here has been compared.
                 if let Some(commit) = batch.commit_offset
@@ -712,7 +712,7 @@ impl ReplicaHandler {
                     tracing::warn!(
                         stream = %key.stream,
                         error = %err,
-                        "could not write the commit offset through; it holds in memory and the next batch that carries it writes it again",
+                        "could not write the commit offset through; it holds in memory and is retried",
                     );
                 }
                 // Past the durable offset nothing has been compared, so what

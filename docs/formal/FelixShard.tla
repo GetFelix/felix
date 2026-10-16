@@ -233,10 +233,12 @@
 (* is never. With `StorageIds` each data directory has an identity a      *)
 (* wipe changes (`sid`); the leader learns it in the peer handshake,       *)
 (* starts the follower's count over when it changes (`Probe`), and its    *)
-(* report says which identity each follower was counted under. Placement  *)
-(* promotes a follower only under the identity it has now. Without it TLC *)
-(* finds the wiped follower promoted without a record the old leader      *)
-(* acknowledged (AckedSurvive, FelixShardWipeNoIds.cfg).                  *)
+(* report says which identity each follower was counted under. It counts  *)
+(* a follower only under the identity it has now, so one wiped and not    *)
+(* yet probed releases nothing. Placement promotes a follower only under  *)
+(* the identity it has now. Without it TLC finds the wiped follower       *)
+(* promoted without a record the old leader acknowledged (AckedSurvive,   *)
+(* FelixShardWipeNoIds.cfg).                                              *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -977,8 +979,14 @@ HoldsPrefix(m, b, k) ==
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
 \* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
+\* With `StorageIds`, only under the identity `m` has now: a pass counts a
+\* follower only once it has checked its identity (`checked_only` in
+\* crates/server/felix-replication/src/driver/shard.rs), so a wiped follower
+\* the leader has not yet probed counts for nothing.
 ReportCounts(m, b, k) ==
-    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
+    IF ReportFromAnswers
+    THEN confirmed[b][m] >= k /\ (StorageIds => seen[b][m] = sid[m])
+    ELSE HoldsPrefix(m, b, k)
 
 \* How much of `b`'s log it inherited: the records written before its own
 \* generation. Any record an earlier leader acknowledged is among them.

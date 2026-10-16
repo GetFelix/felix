@@ -244,3 +244,149 @@ async fn a_follower_without_identity_is_reported_without_one() {
     assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
     assert!(report.storage_ids.is_empty());
 }
+
+/// `broker-b` is down: it fails at once, probe and batch alike. `broker-c`
+/// came back wiped under a new identity and never answers a batch.
+struct WipedAndDown;
+
+impl PeerRequester for WipedAndDown {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        _message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        if node_id == "broker-c" {
+            std::future::pending::<()>().await;
+        }
+        Err(PeerError::Unavailable {
+            node_id: node_id.to_string(),
+            detail: "down".to_string(),
+        })
+    }
+
+    async fn storage_identity(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<Option<StorageId>, PeerError> {
+        if node_id == "broker-c" {
+            return Ok(Some(id(2)));
+        }
+        Err(PeerError::Unavailable {
+            node_id: node_id.to_string(),
+            detail: "down".to_string(),
+        })
+    }
+}
+
+/// **A follower's old position does not count before its identity is
+/// checked.** `broker-c` confirmed all five records before it was wiped;
+/// `broker-b` holds two and is down. Its exchange is still under way when
+/// `broker-b`'s failure lands, and counting `broker-c` at five there
+/// acknowledged three records only the leader holds.
+#[tokio::test(start_paused = true)]
+async fn a_wiped_followers_old_position_does_not_move_the_mark() {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let at = |node: &str, confirmed: u64| FollowerCursor {
+        next_offset: confirmed,
+        confirmed,
+        stalled: false,
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
+    let mut cursors = HashMap::from([(key(), entry)]);
+
+    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let pass = replicate_once(
+        &WipedAndDown,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    // The pass waits on `broker-c` for good; the mark is decided before.
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+
+    let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+    assert!(
+        mark <= 2,
+        "acknowledged up to {mark} on a copy that was wiped",
+    );
+}
+
+/// **Nor does its old position in the counter log**, which rides the same
+/// exchange: the counter mark would release counter adds only the leader
+/// holds.
+#[tokio::test(start_paused = true)]
+async fn a_wiped_followers_old_counter_position_does_not_move_the_counter_mark() {
+    let (broker, _dir) = super::quorum::quorum_cache_leader(4).await;
+    let cache = ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    };
+    let nodes = nodes();
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    router.publish(
+        RoutingTable::build(
+            [(
+                cache.clone(),
+                LOCAL.to_string(),
+                vec!["broker-b".to_string(), "broker-c".to_string()],
+                4,
+            )],
+            &nodes,
+        ),
+        &nodes,
+    );
+    let marks = super::quorum::fleet_marks(true);
+    let at = |node: &str, confirmed: u64| FollowerCursor {
+        next_offset: confirmed,
+        confirmed,
+        stalled: false,
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    // `broker-c` held the whole cache log (two) and counter log (three).
+    let seeded = |held: u64| {
+        let mut entry = ShardCursors::at(4);
+        entry.followers = vec![at("broker-b", 0), at("broker-c", held)];
+        HashMap::from([(cache.clone(), entry)])
+    };
+    let (mut cursors, mut counters) = (seeded(2), seeded(3));
+    let (mut group, mut dead) = (HashMap::new(), HashMap::new());
+
+    let pass = replicate_once(
+        &WipedAndDown,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+
+    let watched = watch_key(&cache);
+    assert_eq!(marks.offset(&watched, 4).unwrap_or(0), 0);
+    assert_eq!(
+        marks.counters().offset(&watched, 4).unwrap_or(0),
+        0,
+        "counter adds acknowledged on a copy that was wiped",
+    );
+}

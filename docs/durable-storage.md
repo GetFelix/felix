@@ -1062,9 +1062,13 @@ tail of a log, so the same id does not promise that every acknowledged record
 survived. Only `OnCommit` makes it mean that. This is not handled; choose
 `OnCommit` where a follower's acknowledgement has to survive a power loss.
 
-Nothing compares ids yet. A follower whose disk was wiped can still be counted
-and promoted as if it held what it acknowledged before
-([#1266](https://github.com/GetFelix/felix/issues/1266)).
+The leader compares them: a follower whose id changed starts over, and a
+follower counts toward the mark only once its id has been checked in that
+pass. See "Storage identities" in `docs/replication-design.md`. Still open
+([#1266](https://github.com/GetFelix/felix/issues/1266), PR
+[#1271](https://github.com/GetFelix/felix/pull/1271)): the control plane does
+not yet compare the id a report names with the one the follower registers
+under, so promotion does not check it.
 
 ## Restoring to a backup point
 

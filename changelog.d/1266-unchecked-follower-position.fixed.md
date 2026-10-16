@@ -1,0 +1,1 @@
+- A `Quorum` leader no longer counts a follower's last confirmed position before it has checked that follower's storage identity in the same pass. A follower wiped after confirming more than the mark, beside another that failed fast, could release records only the leader held. The counter mark and the report's caught-up list follow the same rule (#1266).
