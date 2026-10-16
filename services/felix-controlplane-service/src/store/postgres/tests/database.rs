@@ -1657,6 +1657,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         stream_incarnation: None,
         by_round: true,
         leader_incarnation: Some(1),
+        follower_storage: Default::default(),
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -1699,5 +1700,100 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         again.by_round && again.leader_incarnation == Some(1),
         "{again:?}"
     );
+    Ok(())
+}
+
+/// **A member that predates storage identities cannot leave one behind.**
+/// Its writes leave the new columns alone (migration 0030), so an identity a
+/// row still holds came with an earlier write. A registration through it
+/// bumps the incarnation, and the node then reads as having none; an update
+/// of a report moves `reported_at_millis`, and the report then names none.
+/// Neither can match a report, so placement reads the follower as
+/// unverified until a current member writes the row again.
+#[tokio::test]
+#[serial]
+async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<()> {
+    use crate::store::contract::shards::{assignment, key, seed};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = fleet_store(&url).await?;
+    seed(store.as_ref()).await;
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+
+    let mut node = crate::store::contract::nodes::node("broker-s", 7_901);
+    node.status.storage_id = Some(id.clone());
+    let registered = store.register_node(node.clone()).await?;
+    assert_eq!(registered.status.storage_id.as_deref(), Some(id.as_str()));
+    // What the previous release's registration changes: the incarnation, and
+    // none of the new columns.
+    sqlx::query("UPDATE nodes SET incarnation = incarnation + 1 WHERE node_id = 'broker-s'")
+        .execute(&pool)
+        .await?;
+    let after = store.get_node("broker-s").await?;
+    assert_eq!(after.status.storage_id, None, "{after:?}");
+    assert!(
+        store
+            .list_nodes()
+            .await?
+            .iter()
+            .all(|node| node.node_id != "broker-s" || node.status.storage_id.is_none())
+    );
+    let again = store.register_node(node).await?;
+    assert_eq!(again.status.storage_id.as_deref(), Some(id.as_str()));
+    assert_eq!(store.get_node("broker-s").await?, again);
+
+    store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await?;
+    let generation = store.get_shard_assignment(&key(0)).await?.generation;
+    let report = crate::model::ReplicaReport {
+        key: key(0),
+        generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 10)].into(),
+        reported_at_millis: 5_000,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        follower_storage: [("broker-y".to_string(), id.clone())].into(),
+    };
+    store
+        .record_replica_report(report.clone(), "broker-x")
+        .await?;
+    let held = || async {
+        let reports = store.list_replica_reports().await.expect("list");
+        reports
+            .into_iter()
+            .find(|held| held.key == key(0))
+            .expect("held")
+    };
+    assert_eq!(held().await.follower_storage, report.follower_storage);
+
+    sqlx::query(
+        "UPDATE replica_reports SET reported_at_millis = 6000, leader_offset = 11
+         WHERE shard = 0",
+    )
+    .execute(&pool)
+    .await?;
+    let after = held().await;
+    assert_eq!(after.reported_at_millis, 6_000);
+    assert!(after.follower_storage.is_empty(), "{after:?}");
+
+    store
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                reported_at_millis: 7_000,
+                leader_offset: Some(12),
+                ..report.clone()
+            },
+            "broker-x",
+        )
+        .await?;
+    assert_eq!(held().await.follower_storage, report.follower_storage);
     Ok(())
 }

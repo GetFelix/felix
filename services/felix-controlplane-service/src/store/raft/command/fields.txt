@@ -264,6 +264,7 @@
 0 import_state.state.node_changes.items[].node.status.last_heartbeat_at_millis
 0 import_state.state.node_changes.items[].node.status.lifecycle
 0 import_state.state.node_changes.items[].node.status.registered_at_millis
+12 import_state.state.node_changes.items[].node.status.storage_id
 0 import_state.state.node_changes.items[].node_id
 0 import_state.state.node_changes.items[].op
 0 import_state.state.node_changes.items[].seq
@@ -287,6 +288,7 @@
 0 import_state.state.nodes[][].status.last_heartbeat_at_millis
 0 import_state.state.nodes[][].status.lifecycle
 0 import_state.state.nodes[][].status.registered_at_millis
+12 import_state.state.nodes[][].status.storage_id
 0 import_state.state.placement_holder
 0 import_state.state.placement_token
 7 import_state.state.principal_revocations
@@ -327,6 +329,8 @@
 8 import_state.state.replica_reports[].counter_offsets
 8 import_state.state.replica_reports[].counter_offsets.*
 3 import_state.state.replica_reports[].drained
+12 import_state.state.replica_reports[].follower_storage
+12 import_state.state.replica_reports[].follower_storage.*
 3 import_state.state.replica_reports[].generation
 4 import_state.state.replica_reports[].halted
 4 import_state.state.replica_reports[].halted.*
@@ -572,6 +576,8 @@
 8 record_replica_report.report.counter_offsets
 8 record_replica_report.report.counter_offsets.*
 0 record_replica_report.report.drained
+12 record_replica_report.report.follower_storage
+12 record_replica_report.report.follower_storage.*
 0 record_replica_report.report.generation
 4 record_replica_report.report.halted
 4 record_replica_report.report.halted.*
@@ -610,6 +616,7 @@
 0 register_node.node.status.last_heartbeat_at_millis
 0 register_node.node.status.lifecycle
 0 register_node.node.status.registered_at_millis
+12 register_node.node.status.storage_id
 2 register_node_in_fleet
 2 register_node_in_fleet.node
 2 register_node_in_fleet.node.node_id
@@ -630,6 +637,7 @@
 2 register_node_in_fleet.node.status.last_heartbeat_at_millis
 2 register_node_in_fleet.node.status.lifecycle
 2 register_node_in_fleet.node.status.registered_at_millis
+12 register_node_in_fleet.node.status.storage_id
 1 remove_rbac_grouping
 1 remove_rbac_grouping.grouping
 1 remove_rbac_grouping.grouping.role
@@ -787,6 +795,7 @@
 0 snapshot.state.node_changes.items[].node.status.last_heartbeat_at_millis
 0 snapshot.state.node_changes.items[].node.status.lifecycle
 0 snapshot.state.node_changes.items[].node.status.registered_at_millis
+12 snapshot.state.node_changes.items[].node.status.storage_id
 0 snapshot.state.node_changes.items[].node_id
 0 snapshot.state.node_changes.items[].op
 0 snapshot.state.node_changes.items[].seq
@@ -810,6 +819,7 @@
 0 snapshot.state.nodes[][].status.last_heartbeat_at_millis
 0 snapshot.state.nodes[][].status.lifecycle
 0 snapshot.state.nodes[][].status.registered_at_millis
+12 snapshot.state.nodes[][].status.storage_id
 0 snapshot.state.placement_holder
 0 snapshot.state.placement_token
 7 snapshot.state.principal_revocations
@@ -850,6 +860,8 @@
 8 snapshot.state.replica_reports[].counter_offsets
 8 snapshot.state.replica_reports[].counter_offsets.*
 3 snapshot.state.replica_reports[].drained
+12 snapshot.state.replica_reports[].follower_storage
+12 snapshot.state.replica_reports[].follower_storage.*
 3 snapshot.state.replica_reports[].generation
 4 snapshot.state.replica_reports[].halted
 4 snapshot.state.replica_reports[].halted.*

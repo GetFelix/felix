@@ -71,16 +71,60 @@ fn the_broker_budget_is_shared_and_a_ring_evicts_its_own_entries_for_room() {
 }
 
 #[test]
-fn a_batch_the_broker_budget_cannot_hold_leaves_the_ring_empty() {
+fn a_ring_keeps_its_newest_batch_when_other_rings_fill_the_budget() {
+    let bytes = RingBytes::new(0, 100);
+    let budget = bytes.broker.clone().expect("bounded");
+    let mut hot = Ring::new(&bytes);
+    let mut quiet = Ring::new(&bytes);
+    for seq in 0..10 {
+        assert!(push(&mut hot, seq, 50, 1024));
+    }
+    assert_eq!(budget.available(), 0);
+    assert!(push(&mut quiet, 0, 40, 1024));
+    assert_eq!(seqs(&quiet), [0]);
+    // The next batch replaces the overdrawn one rather than adding to it.
+    assert!(push(&mut quiet, 1, 40, 1024));
+    assert_eq!(seqs(&quiet), [1]);
+    assert_eq!(seqs(&hot), [8, 9]);
+    // The shortfall was never taken from the budget, so giving the batch
+    // back returns nothing the other ring holds.
+    quiet.clear();
+    assert_eq!(budget.available(), 0);
+    drop(hot);
+    assert_eq!(budget.available(), 100);
+}
+
+#[test]
+fn an_overdrawn_ring_takes_the_room_it_can_and_pays_back_the_rest_first() {
+    let bytes = RingBytes::new(0, 100);
+    let budget = bytes.broker.clone().expect("bounded");
+    let mut other = Ring::new(&bytes);
+    let mut ring = Ring::new(&bytes);
+    assert!(push(&mut other, 0, 70, 1024));
+    // 30 bytes free: the ring takes them and overdraws by 30.
+    assert!(push(&mut ring, 0, 60, 1024));
+    assert_eq!(budget.available(), 0);
+    drop(other);
+    assert_eq!(budget.available(), 70);
+    // The next batch is admitted under the budget, with the old one evicted.
+    assert!(push(&mut ring, 1, 60, 1024));
+    assert_eq!(seqs(&ring), [1]);
+    assert_eq!(budget.available(), 40);
+    drop(ring);
+    assert_eq!(budget.available(), 100);
+}
+
+#[test]
+fn a_batch_larger_than_the_broker_budget_leaves_the_ring_empty() {
     let bytes = RingBytes::new(0, 100);
     let budget = bytes.broker.clone().expect("bounded");
     let mut other = Ring::new(&bytes);
     let mut ring = Ring::new(&bytes);
     assert!(push(&mut other, 0, 50, 1024));
     assert!(push(&mut ring, 0, 20, 1024));
-    // Even with its own entry gone this ring cannot find 60 bytes, so it is
+    // No ring keeps a batch larger than the whole budget, so the ring is
     // left empty rather than keeping an entry below a missing one.
-    assert!(!push(&mut ring, 1, 60, 1024));
+    assert!(!push(&mut ring, 1, 101, 1024));
     assert!(ring.is_empty());
     assert_eq!(budget.available(), 50);
     assert!(push(&mut ring, 2, 10, 1024));

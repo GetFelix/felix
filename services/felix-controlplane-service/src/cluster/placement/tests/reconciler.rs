@@ -263,6 +263,7 @@ pub(super) async fn report(
                 drained,
                 leader_offset: None,
                 halted: Default::default(),
+                follower_storage: Default::default(),
             },
             &leader,
         )

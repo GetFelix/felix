@@ -871,7 +871,8 @@ them.
 **The model.** `SetCheck`, `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and
 `PreVote` in `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set
 check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
-set at a cut-over by more than one member with the joint fence and passes;
+set at a cut-over by more than one member with the joint fence; it has not
+completed a run yet and runs nightly;
 `FelixShardElectSwapNoJoint.cfg` without it loses a record.
 `FelixShardElectStaleSet.cfg` without the set check finds a replica that left
 opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under
@@ -1609,11 +1610,14 @@ back over the old connection.
 
 Each report names the identity every follower was counted under
 (`replica_storage_ids`, lowercase hex, omitted when empty). A follower that
-gives no identity, an older build, is reported without one and counted as
-before. The control plane does not compare them yet; that, and promoting a
-follower only while its registered identity matches the report, is the rest
-of #1266. `FelixShardWipe.cfg` checks the design with that comparison in
-place, and `FelixShardWipeNoIds.cfg` finds the lost record without it.
+gives no identity, an older build, is reported without one. The control plane
+keeps them with the report (`follower_storage`), and each broker registers its
+own identity (`storage_id`). Placement compares the two for every follower it
+might promote (see "Who may be promoted" below), so the stale identity a
+crashed follower's old connection still shows only ever reads as a mismatch
+once the restarted broker has registered. `FelixShardWipe.cfg` checks the
+design with that comparison in place, and `FelixShardWipeNoIds.cfg` finds the
+lost record without it.
 
 ### Divergence and truncation
 
@@ -1825,6 +1829,46 @@ follower *was* caught up; the leader kept writing afterwards, and promoting on a
 stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
+
+A report also says which storage identity each follower was counted under, and
+placement holds that against the identity the follower is registered with now:
+
+- **Both present and equal:** the report describes the copy the follower still
+  has, and counts while it is fresh.
+- **Both present and different:** the follower lost its data directory since,
+  and is never counted from this report, however fresh. With RF=5 and a record
+  acknowledged by {A, B, C}, a C that comes back empty and is promoted when A
+  dies forms the promotion fence's majority with D and E (the new leader's own
+  log counts as a vote) without the record.
+- **Either missing:** an older broker on one side. The follower counts while
+  the report is fresh, as before identities existed. Only a mismatch is
+  evidence; a missing identity excludes nothing.
+
+Once the leader is marked down, nothing will refresh its last report, and a
+report measured against now would expire if placement or the control plane was
+slow around the death, leaving the shard unplaceable for good (#1250). So while
+the assignment is still at the report's generation and its leader is `down` or
+`left`, the report's age is measured to the leader's last heartbeat instead of
+now, for followers whose identity matches. A follower that only restarted keeps
+its identity and still counts, however long ago the report was made. A live
+leader's report keeps ageing, so one that stopped reporting still expires.
+What the report says of the shard as a whole (its generation, the leader's
+tail, whether it drained, which copies halted) is read for as long as the
+report is believed, so promotion can work from a dead leader's report.
+
+The registered identity is the current registration's: a registration without
+one clears it, and the Postgres store reads it only while it was written at the
+node's current incarnation. Until a restarted broker's registration lands, its
+record still carries the identity its previous process registered. So a
+follower that is wiped before the control plane marks it down, whose leader
+dies before the restarted broker registers again, can still be counted on the
+old identity. Placement does not treat a missing heartbeat as evidence to close
+that window.
+
+The identity catches a lost data directory, not a tail lost in a crash under a
+relaxed `FsyncMode`. Keeping a dead leader's report believed for longer widens
+that exposure; under `OnCommit` an acknowledged record is on disk, so there is
+none.
 
 A leader that dies before its first report at its generation leaves no report
 to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.

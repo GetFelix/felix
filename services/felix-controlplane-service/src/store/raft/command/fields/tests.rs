@@ -143,6 +143,7 @@ fn node() -> Node {
             registered_at_millis: 1,
             incarnation: 1,
             features: BTreeSet::from([s("f")]),
+            storage_id: Some(s("0123456789abcdef0123456789abcdef")),
         },
     }
 }
@@ -199,6 +200,7 @@ fn report() -> ReplicaReport {
         stream_incarnation: Some(1),
         by_round: true,
         leader_incarnation: Some(1),
+        follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
     }
 }
 
@@ -762,6 +764,7 @@ fn map_keys_match_the_wildcard() {
             },
             status: NodeStatus {
                 features: BTreeSet::new(),
+                storage_id: None,
                 ..node().status
             },
             ..node()

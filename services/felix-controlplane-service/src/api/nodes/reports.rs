@@ -306,6 +306,14 @@ async fn record_one(
         stream_incarnation: Some(shard.stream_incarnation),
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
+        // A malformed identity is no evidence either way, so it is left out
+        // and the follower is judged as one that sent none.
+        follower_storage: shard
+            .replica_storage_ids
+            .iter()
+            .filter(|(_, id)| crate::model::validate_storage_id(id).is_ok())
+            .map(|(node, id)| (node.clone(), id.clone()))
+            .collect(),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

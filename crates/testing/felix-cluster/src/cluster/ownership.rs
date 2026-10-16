@@ -67,6 +67,27 @@ impl Cluster {
             .await
     }
 
+    /// The node record the control plane holds for `node_id`: its lifecycle,
+    /// incarnation and the storage identity it registered with.
+    pub async fn registered_node(
+        &self,
+        node_id: &str,
+    ) -> Result<felix_controlplane_service::model::Node> {
+        self.control_plane().registered_node(node_id).await
+    }
+
+    /// The control plane's clock, which reports and heartbeats are stamped
+    /// with.
+    pub async fn control_plane_now_millis(&self) -> Result<u64> {
+        self.control_plane().now_millis().await
+    }
+
+    /// How long placement believes a report past when it was made, under the
+    /// harness's liveness settings.
+    pub fn report_ttl_millis(&self) -> u64 {
+        crate::controlplane::report_ttl_millis()
+    }
+
     /// [`Self::replica_report`] for shard `shard` of cache `cache`.
     pub async fn cache_replica_report(
         &self,

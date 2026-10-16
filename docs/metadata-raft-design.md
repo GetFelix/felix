@@ -648,6 +648,15 @@ reports are recorded without it and leaders are failed over on the lease.
 Dropping it is the safe side: a member that applied the field and one that
 dropped it would otherwise disagree on whether a leader may be replaced.
 
+Level 12 is storage identity: a node's `storage_id` and a replica report's
+`follower_storage`. Both are plain command data, stored as proposed, so every
+member applies them alike without reading a clock or its node table. Until
+every member is at level 12 the proposer drops them, from the registration
+and from the report, and keeps the rest of each. Placement then reads every
+follower as unverified: counted while the report is fresh, and never from a
+dead leader's report past its TTL (see
+[replication-design.md](replication-design.md#who-may-be-promoted)).
+
 **Fields have levels too.** An older member decodes a newer entry with
 serde, which drops any field it does not know, so a field is as much a
 change to the command set as a variant. Every key path a command or the
@@ -671,6 +680,7 @@ the field itself, on every member alike, or refuses the command:
 | replica report `stream_incarnation` | 10 | the report is proposed without it, on every member alike |
 | delete `take_shards` and `take_reports` | 10 | the delete is proposed without them and keeps what an older member keeps, on every member |
 | replica report `by_round` and `leader_incarnation`, snapshot `replica_reports[].by_round` and `[].leader_incarnation` | 11 | the report is proposed without it, which placement reads as a leader on its lease |
+| node `storage_id`, replica report `follower_storage`, and both in the snapshot | 12 | the registration and the report are proposed without them, which placement reads as unverified |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

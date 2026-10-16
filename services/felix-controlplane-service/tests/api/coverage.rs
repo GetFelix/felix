@@ -535,6 +535,7 @@ async fn stream_routing_is_fixed_by_the_fleet_gate_at_creation() {
                 registered_at_millis: 1,
                 incarnation: 0,
                 features: [feature.to_string()].into(),
+                storage_id: None,
             },
         })
         .await

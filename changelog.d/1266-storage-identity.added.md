@@ -3,5 +3,4 @@
   start, kept across restarts, and replaced when the file is missing or does
   not decode. A broker sends it as `storage_id` with its registration; a
   broker without durable storage sends a new one each start.
-  `felix-broker restore-point` writes a new one. Nothing compares the ids yet,
-  so a follower that lost its disk can still be promoted.
+  `felix-broker restore-point` writes a new one.

@@ -65,3 +65,33 @@ async fn hold_waits_for_the_subscriptions_own_frames() {
         .expect("woken when the frame was written");
     release.await.expect("release");
 }
+
+/// The release races the waiter parking: whichever wins, the waiter must
+/// wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiter_on_a_full_share_wakes_when_its_bytes_are_released() {
+    let budget = Arc::new(EgressBudget::new(100));
+    let share = budget.join();
+    for _ in 0..2_000 {
+        let held = share.try_hold(100).expect("the share is empty");
+        let release = std::thread::spawn(move || drop(held));
+        let next = tokio::time::timeout(Duration::from_secs(5), share.hold(100))
+            .await
+            .expect("woken when the bytes were released");
+        release.join().expect("release");
+        drop(next);
+    }
+    assert_eq!(share.held.waiting.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_cancelled_wait_is_no_longer_counted() {
+    let budget = Arc::new(EgressBudget::new(100));
+    let share = budget.join();
+    let held = share.try_hold(100).expect("fits");
+    let waited = tokio::time::timeout(Duration::from_millis(10), share.hold(1)).await;
+    assert!(waited.is_err(), "the share is full");
+    assert_eq!(share.held.waiting.load(Ordering::SeqCst), 0);
+    drop(held);
+    assert_eq!(share.held.bytes.load(Ordering::SeqCst), 0);
+}

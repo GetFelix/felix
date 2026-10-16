@@ -183,7 +183,6 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectAdoptPromote pass"
-  "FelixShardElectSwap pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
@@ -240,6 +239,9 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
+# FelixShardElectSwap is not registered: it has never finished a run, and
+# the nightly exhaustive job (tla-walk.yml) checks it by name instead.
+
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
 # run); anything not listed is taken as one. Shards are filled longest first, each
@@ -247,6 +249,7 @@ fi
 # top of others and push a job past its hour.
 weights=(
   "FelixShardFencedAckMoveShort 31"
+  "FelixShardWipe 35"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
@@ -254,7 +257,6 @@ weights=(
   "FelixShardReadsRound 21"
   "FelixShardSessionsGroupRound 16"
   "FelixGroupsSplitSources 17"
-  "FelixShardWipe 30"
   "FelixShardFencedAck 12"
   "FelixGroups 12"
   "FelixShardFigure8CutOver 9"
@@ -277,7 +279,6 @@ weights=(
   "FelixShardStagedMove 3"
   "FelixShardElectHandoffLeaders 6"
   "FelixShardElectAdopt 11"
-  "FelixShardElectSwap 20"
   "FelixShardElectPreVote 5"
   "FelixShardElectAdoptPromote 3"
   "FelixShardSessionsSubscriber 2"
@@ -293,12 +294,24 @@ weight_of() {
 }
 
 # `TLA_QUICK=1` leaves out the registered configurations weighing more than
-# ten minutes. Pull requests check that tier; the rest run when the spec
-# changes on main. Configurations named on the command line always run.
+# ten minutes, except those whose own .cfg changed against `TLA_CHANGED_BASE`
+# (a revision; CI passes the PR's base), which always run. A changed .tla does
+# not pull in its heavy configurations: FelixShard.tla is behind most of them.
+# Pull requests check that tier; the rest run when the spec changes on main.
+# Configurations named on the command line always run.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
+  changed_cfgs=" "
+  if [ -n "${TLA_CHANGED_BASE:-}" ]; then
+    while read -r f; do
+      f="${f##*/}"
+      changed_cfgs="$changed_cfgs${f%.cfg} "
+    done < <(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")
+  fi
   quick=()
   for entry in "${selected[@]}"; do
-    if [ "$(weight_of "${entry%% *}")" -le 10 ]; then quick+=("$entry"); fi
+    if [ "$(weight_of "${entry%% *}")" -le 10 ] || [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
+      quick+=("$entry")
+    fi
   done
   selected=(${quick[@]+"${quick[@]}"})
 fi

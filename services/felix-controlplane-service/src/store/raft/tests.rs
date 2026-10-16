@@ -619,6 +619,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         stream_incarnation: None,
                         by_round: false,
                         leader_incarnation: None,
+                        follower_storage: Default::default(),
                     },
                     "broker-x",
                 )
@@ -811,6 +812,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             },
         )]
         .into(),
+        follower_storage: Default::default(),
     };
     let held = || async {
         store
@@ -918,6 +920,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             },
         )]
         .into(),
+        follower_storage: Default::default(),
     };
     let held = || async {
         store
@@ -960,6 +963,130 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// A member before level 12 would drop a node's storage identity and a
+/// report's follower identities, and its placement would then judge the
+/// report differently from the rest. So until every member has the level both
+/// are dropped, which placement reads as unverified, and the rest of the
+/// registration and report (with `by_round`, level 11) is kept.
+#[tokio::test]
+async fn storage_ids_wait_for_every_member() {
+    use crate::model::{ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 11).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    let with_id = |node_id: &str, port: u16| {
+        let mut node = crate::store::contract::nodes::node(node_id, port);
+        node.status.storage_id = Some(id.clone());
+        node
+    };
+    for (node_id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        let registered = store
+            .register_node(crate::store::contract::nodes::with_features(
+                with_id(node_id, port),
+                &[],
+            ))
+            .await
+            .expect("register");
+        assert_eq!(registered.status.storage_id, None);
+    }
+    let mut zoned = with_id("broker-y", 7102);
+    zoned.spec.zone = Some("z1".to_string());
+    let registered = store.register_node(zoned).await.expect("register");
+    assert_eq!(registered.status.storage_id, None);
+    assert_eq!(
+        registered.spec.zone.as_deref(),
+        Some("z1"),
+        "dropping the identity dropped the rest of the registration"
+    );
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+        })
+        .await
+        .expect("assign");
+    let report = ReplicaReport {
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: true,
+        leader_incarnation: Some(1),
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 3)].into(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: Some(3),
+        halted: Default::default(),
+        follower_storage: [("broker-y".to_string(), id.clone())].into(),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("recorded without identities"),
+        crate::store::ReportWrite::Stored
+    );
+    let first = held().await;
+    assert!(first.follower_storage.is_empty());
+    assert!(first.by_round);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("record");
+        if !held().await.follower_storage.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "follower identities still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(held().await.follower_storage, report.follower_storage);
+    let registered = store
+        .register_node(with_id("broker-y", 7102))
+        .await
+        .expect("register");
+    assert_eq!(registered.status.storage_id, Some(id.clone()));
 }
 
 /// A member before pair narrowing would drop `permissions` from a refresh

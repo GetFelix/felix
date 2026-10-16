@@ -29,6 +29,12 @@ for what the current release guarantees.
   that reached an IdP group does. Adding an audience revokes nobody.
 
 ### Changed
+- A subscription's feeder takes room in its writer-lane share without a lock
+  or a wakeup registration, and a written frame notifies only when the feeder
+  is waiting. The byte gauges (`felix_sub_egress_bytes`,
+  `felix_sub_queue_bytes`, `felix_cache_watch_queue_bytes`,
+  `felix_replay_ring_bytes`) are looked up once per subscription or ring
+  instead of on every batch, and a replay ring reports once per publish.
 - **YAML parser: `serde_yaml_ng` replaced by `serde-saphyr` (#1211).** The broker,
   control plane and `felix-client` read their config files with
   `serde-saphyr` 1.3, a pure-Rust parser. `serde_yaml_ng` pulled in
@@ -89,6 +95,10 @@ entries.
   cutoffs across control-plane members.
 
 ### Fixed
+- With `FELIX_REPLAY_RING_MAX_BYTES_TOTAL` set, a busy stream could keep
+  every other stream's replay ring empty, since a ring made room only from its
+  own records. A ring with nothing left to give up now keeps its newest batch,
+  exceeding the total by at most that batch.
 - The power-loss test model no longer mixes up a file with an earlier one that
   had the same inode number (#1221). A file created after another was deleted
   could get its inode number, and the model then spliced the new file's bytes

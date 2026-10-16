@@ -7,7 +7,8 @@ protocol without touching a test the spec cited, and without touching the spec,
 and the model went on describing the old design for three weeks (#598).
 
 So this forces the confrontation. A change touching the modelled paths below
-must also touch `docs/formal/`, or say why it does not with a line
+must also change a spec or configuration under `docs/formal/` (a `.tla` or
+`.cfg`, beyond its comments; prose in the README does not count), or say why it does not with a line
 
     Spec-Unaffected: <reason>
 
@@ -55,6 +56,16 @@ MODELLED = (
     "services/felix-controlplane-service/src/api/nodes/reports",
     "services/felix-controlplane-service/src/cluster/membership",
     "services/felix-controlplane-service/src/cluster/placement",
+    # FelixAtomicCommit, FelixGroups and FelixShardSessions: the commit record
+    # and the views that apply it, the dead-letter and cursor logs a promotion
+    # fences, and the cache index. fleet.rs holds the feature gates that turn
+    # on promotion by suspicion.
+    "crates/server/felix-broker/src/broker/commit",
+    "crates/server/felix-broker/src/broker/publish",
+    "crates/server/felix-broker/src/broker/shard_logs",
+    "crates/server/felix-broker/src/queue/cursors",
+    "crates/server/felix-storage/src/cache/log_cache",
+    "crates/server/felix-common/src/fleet",
 )
 SPEC = "docs/formal/"
 MARKER = re.compile(r"^\s*Spec-Unaffected:\s*\S", re.MULTILINE)
@@ -67,6 +78,63 @@ def modelled(path: str) -> bool:
     # evidence test is check_spec_evidence.py's to catch.
     name = path.rsplit("/", 1)[-1]
     return name not in ("tests.rs", "metrics.rs") and "/tests/" not in path
+
+
+def strip_comments(text: str, suffix: str) -> str:
+    """The text with TLA+ comments and whitespace removed.
+
+    One left-to-right pass, so a `\\*` inside a block comment or a `(*` inside
+    a line comment or string means what the language says. Block comments
+    nest. `suffix` is kept for callers; specs and configurations read alike.
+    """
+    out = []
+    depth = 0
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i : i + 2]
+        if depth:
+            if two == "(*":
+                depth += 1
+                i += 2
+            elif two == "*)":
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        elif two == "(*":
+            depth = 1
+            i += 2
+        elif two == "\\*":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        else:
+            out.append(text[i])
+            i += 1
+    return " ".join("".join(out).split())
+
+
+def spec_changed(base: str, changed: list[str]) -> bool:
+    """Whether a changed spec or configuration differs beyond its comments."""
+    merge_base = git("merge-base", base, "HEAD").strip()
+    for path in changed:
+        suffix = os.path.splitext(path)[1]
+        if not path.startswith(SPEC) or suffix not in (".tla", ".cfg"):
+            continue
+        sides = []
+        for rev in (merge_base, "HEAD"):
+            shown = subprocess.run(
+                ["git", "show", f"{rev}:{path}"], capture_output=True, text=True
+            )
+            sides.append(strip_comments(shown.stdout, suffix) if shown.returncode == 0 else None)
+        if sides[0] != sides[1]:
+            return True
+    return False
 
 
 def git(*args: str) -> str:
@@ -85,8 +153,8 @@ def main() -> int:
     if not touched:
         print("spec pairing: no modelled code changed")
         return 0
-    if any(p.startswith(SPEC) for p in changed):
-        print(f"spec pairing: {len(touched)} modelled file(s) changed, and so did {SPEC}")
+    if spec_changed(args.base, changed):
+        print(f"spec pairing: {len(touched)} modelled file(s) changed, and so did the spec")
         return 0
 
     messages = git("log", "--format=%B", f"{args.base}..HEAD")
@@ -101,7 +169,8 @@ def main() -> int:
     for path in touched:
         print(f"  {path}")
     print(
-        f"\nand nothing under {SPEC}. If it changes the protocol -- the lease, the\n"
+        f"\nand no spec or configuration under {SPEC} beyond comments. If it changes\n"
+        "the protocol -- the lease, the\n"
         "quorum mark, reports, promotion or handoff -- update the model. If it does\n"
         "not, say so with a line in a commit message or the PR description:\n\n"
         "  Spec-Unaffected: <why>\n\n"

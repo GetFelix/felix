@@ -22,6 +22,7 @@ fn node(node_id: &str, region: &str, lifecycle: NodeLifecycle) -> Node {
             registered_at_millis: 1,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }

@@ -1062,13 +1062,13 @@ tail of a log, so the same id does not promise that every acknowledged record
 survived. Only `OnCommit` makes it mean that. This is not handled; choose
 `OnCommit` where a follower's acknowledgement has to survive a power loss.
 
-The leader compares them: a follower whose id changed starts over, and a
-follower counts toward the mark only once it has answered that pass under
-the id its position was learned under. See "Storage identities" in `docs/replication-design.md`. Still open
-([#1266](https://github.com/GetFelix/felix/issues/1266), PR
-[#1271](https://github.com/GetFelix/felix/pull/1271)): the control plane does
-not yet compare the id a report names with the one the follower registers
-under, so promotion does not check it.
+Leaders learn each follower's id in the peer handshake and start its copy
+over when it changes, and a follower counts toward the mark only once it has
+answered that pass under the id its position was learned under. Placement
+promotes a follower from a report only while the id the report names matches
+the one the follower registered with (see `docs/replication-design.md`,
+"Storage identities" and "Who may be promoted"). A follower that registers
+without an id, an older build, is judged by the report's age alone.
 
 ## Restoring to a backup point
 

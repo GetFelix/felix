@@ -16,6 +16,7 @@ pub(crate) use cache::{
 };
 pub(crate) use identifier::validate_identifier;
 pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey};
+pub(crate) use node::validate_storage_id;
 pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, NodeSuspicion, NodeValidationError,

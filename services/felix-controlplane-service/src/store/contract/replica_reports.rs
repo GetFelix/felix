@@ -321,6 +321,45 @@ pub(super) async fn halted_copies_are_kept_with_when_they_began(store: &dyn Cont
     assert!(stored(store, shard).await.halted.is_empty());
 }
 
+/// The storage identity the leader saw for each follower rides the report,
+/// and a later report replaces it.
+pub(super) async fn follower_storage_is_kept(store: &dyn ControlPlaneStore) {
+    // Follows `halted_copies_are_kept_with_when_they_began` on the same shard.
+    let shard = 3;
+    store
+        .put_shard_assignment(assignment(shard, "broker-x"))
+        .await
+        .expect("assign");
+    let at = generation(store, shard).await;
+    let mut sent = report(shard, at, &["broker-y"], 20_000);
+    sent.follower_storage = [(
+        "broker-y".to_string(),
+        "0123456789abcdef0123456789abcdef".to_string(),
+    )]
+    .into();
+    assert_eq!(
+        store
+            .record_replica_report(sent.clone(), LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(
+        stored(store, shard).await.follower_storage,
+        sent.follower_storage
+    );
+
+    let without = report(shard, at, &["broker-y"], 20_100);
+    assert_eq!(
+        store
+            .record_replica_report(without, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(stored(store, shard).await.follower_storage.is_empty());
+}
+
 /// `shard`'s report as held, stamps and all.
 async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
     store
@@ -346,6 +385,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         drained: false,
         leader_offset: None,
         halted: Default::default(),
+        follower_storage: Default::default(),
     }
 }
 

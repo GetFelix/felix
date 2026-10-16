@@ -107,6 +107,7 @@ fn node(node_id: &str, port: u16, region: &str, rack: &str) -> Node {
             registered_at_millis: 1,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }

@@ -591,7 +591,7 @@ export FELIX_SUB_QUEUE_MAX_BYTES="134217728"
 
 ### `FELIX_SUB_EGRESS_MAX_BYTES`
 
-**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share (this divided by the subscriptions on the connection) and waits only for its own frames, so one whose QUIC stream stalls stops at its share and never holds up the others; its broker queue fills behind it and `FELIX_SUB_QUEUE_POLICY` applies. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only. `felix_sub_egress_bytes` shows what the lanes hold.
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share (this divided by the subscriptions on the connection) and waits only for its own frames, so one whose QUIC stream stalls stops at its share and, under `FELIX_SUB_LANE_QUEUE_POLICY=drop_new` (the default), never holds up the others; its broker queue fills behind it and `FELIX_SUB_QUEUE_POLICY` applies. Under `block`, one subscription with a full frame queue stops the connection writer for all of them. The share shrinks as subscriptions are added, so at very many subscriptions per connection each has about one frame in flight at a time. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only. `felix_sub_egress_bytes` shows what the lanes hold.
 
 **Type**: Non-negative integer (bytes)
 
@@ -627,7 +627,7 @@ export FELIX_REPLAY_RING_MAX_BYTES="67108864"
 
 ### `FELIX_REPLAY_RING_MAX_BYTES_TOTAL`
 
-**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records to make room, never another ring's. A batch that does not fit even in an empty ring is not kept, and that ring is left empty until the next batch.
+**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records to make room, never another ring's. A ring with nothing left to give up keeps its newest batch anyway, so one busy stream cannot leave the others empty; the total can then be exceeded by at most one batch per ring. A batch larger than the whole total is not kept, and that ring is left empty until the next batch.
 
 **Type**: Non-negative integer (bytes)
 
