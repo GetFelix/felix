@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792143571476,
+  "lastUpdate": 1792151518932,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31304,6 +31304,58 @@ window.BENCHMARK_DATA = {
             "range": "3787.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806962.48\nmean: 806644.04\nstdev: 3787.67\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7ffc2eeca09679e1833b24448fa8afa8e4325f05",
+          "message": "perf(broker): give subscriber queue bytes back after the frame is in the lanes (#1309)\n\n* perf(broker): give subscriber queue bytes back after the frame is in the lanes\n\n#1243 made the subscription feeder release a batch's hold on the\nsubscriber's own byte bound as soon as it took the batch, before encoding\nthe frame. That put a semaphore release on the delivery path, and P1 cells\nran 1-2% below 0.6.0-preview.7 in throughput with the tails leaning the same\nway. The feeder now splits the subscriber's hold off and drops it at the end\nof the pass, once the frame is handed to the lanes, and before any wait for\nthe flush delay. The egress share and any broker-wide hold are unchanged.\n\n* docs, test: describe and test where the feeder gives subscriber bytes back\n\nThe concurrency notes, the budget module doc and the queue-bytes builder\nstill described the release as happening when the feeder takes a batch.\nThey now say it happens once the frame is handed to the lanes, so the\nsubscriber bound also covers the encode and any wait for lane room.\n\nThe new feeder test checks the subscriber bound around a stalled lane, a\nfailed encode and the flush-delay wait.\n\n* chore: mark the egress release-point change as outside the model\n\nSpec-Unaffected: moves when a subscriber's own byte bound is given back on the delivery path; the lease, quorum mark, reports, promotion and handoff are untouched",
+          "timestamp": "2026-10-16T11:46:58Z",
+          "tree_id": "fa98d1903a2bcf631f15eed11f2fdab0dbe3ec89",
+          "url": "https://github.com/GetFelix/felix/commit/7ffc2eeca09679e1833b24448fa8afa8e4325f05"
+        },
+        "date": 1792151518305,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 538768.91,
+            "range": "51609.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538768.91\nmean: 534978.75\nstdev: 51609.75\ncv: 9.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 538768.91,
+            "range": "51609.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538768.91\nmean: 534978.75\nstdev: 51609.75\ncv: 9.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120618.42,
+            "range": "5209.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120618.42\nmean: 119390.21\nstdev: 5209.28\ncv: 4.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1206184.17,
+            "range": "52092.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1206184.17\nmean: 1193902.08\nstdev: 52092.85\ncv: 4.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
