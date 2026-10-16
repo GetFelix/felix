@@ -166,3 +166,17 @@ fn pooled_bytes_round_to_whole_units_above_four_gib() {
     pool.shrink(2);
     assert_eq!(budget.available(), full);
 }
+
+#[test]
+fn the_subscriber_share_taken_off_goes_back_when_dropped_and_the_broker_share_stays() {
+    let sub = bytes(100, 150).for_subscriber();
+    let mut held = sub.try_hold(60).expect("fits both");
+    let own = held.take_subscriber();
+    assert_eq!(sub.own_available(), Some(40));
+    drop(own);
+    assert_eq!(sub.own_available(), Some(100));
+    let broker = sub.broker.as_ref().expect("broker budget");
+    assert_eq!(broker.available(), 90);
+    drop(held);
+    assert_eq!(broker.available(), 150);
+}

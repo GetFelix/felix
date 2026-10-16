@@ -270,7 +270,8 @@ impl Broker {
     /// bound. When it is full the queue policy applies, as for a full count.
     /// A batch larger than the bound is still queued into an empty queue.
     /// A receiver that moves a batch on into a queue of its own can stop
-    /// counting it here ([`HeldBytes::release_subscriber`](crate::HeldBytes::release_subscriber)).
+    /// counting it here once it has handed the batch on
+    /// ([`HeldBytes::take_subscriber`](crate::HeldBytes::take_subscriber)).
     /// Defaults to 128 MiB.
     pub fn with_subscriber_queue_max_bytes(mut self, bytes: usize) -> Self {
         self.subscriber_queue_bytes.per_subscriber = bytes;
