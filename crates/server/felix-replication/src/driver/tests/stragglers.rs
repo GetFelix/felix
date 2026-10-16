@@ -209,7 +209,9 @@ async fn a_follower_beyond_the_majority_holds_no_later_mark() {
 /// move on it instead of waiting out c.
 #[tokio::test(start_paused = true)]
 async fn a_busy_followers_answer_moves_a_mark_the_pass_waits_on() {
-    let (broker, _dir) = leader_with(3).await;
+    // `Quorum`, where the mark gates a publish: only there is a level follower
+    // asked again for an answer the mark can count.
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     let marks = Arc::new(QuorumMarks::new());
     let peers = Arc::new(ShiftingPeer::default());

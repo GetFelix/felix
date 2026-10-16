@@ -754,7 +754,9 @@ async fn answered(
     incarnation: u64,
     exchange: Exchange<'_>,
 ) -> Answered {
-    let Shipped { cursor, rode, cut } = exchange.await;
+    let Shipped {
+        cursor, rode, cut, ..
+    } = exchange.await;
     Answered {
         key,
         generation,

@@ -233,10 +233,12 @@
 (* is never. With `StorageIds` each data directory has an identity a      *)
 (* wipe changes (`sid`); the leader learns it in the peer handshake,       *)
 (* starts the follower's count over when it changes (`Probe`), and its    *)
-(* report says which identity each follower was counted under. Placement  *)
-(* promotes a follower only under the identity it has now. Without it TLC *)
-(* finds the wiped follower promoted without a record the old leader      *)
-(* acknowledged (AckedSurvive, FelixShardWipeNoIds.cfg).                  *)
+(* report says which identity each follower was counted under. Its mark   *)
+(* counts a follower only under the identity it has now, so one wiped and *)
+(* not yet probed releases nothing. Placement promotes a follower only    *)
+(* under the identity it has now. Without that TLC finds the wiped        *)
+(* follower promoted without a record the old leader acknowledged         *)
+(* (AckedSurvive, FelixShardWipeNoIds.cfg).                               *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -398,7 +400,8 @@ VARIABLES
     cpNextGen,  \* the generation that set was written at
     sid,        \* each broker's storage identity, which a wipe changes
     seen,       \* per leader, the identity it last learned for each follower
-    wipes       \* how many wipes have happened
+    wipes,      \* how many wipes have happened
+    checked     \* per leader, the followers that answered this pass from the copy it knows
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -409,7 +412,7 @@ nextVars == << cpNext, cpNextGen >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities: only a wipe and a leader learning one change them.
-idVars == << sid, seen, wipes >>
+idVars == << sid, seen, wipes, checked >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -583,6 +586,7 @@ IdInit ==
     /\ sid = [m \in Brokers |-> 0]
     /\ seen = [m \in Brokers |-> [n \in Brokers |-> 0]]
     /\ wipes = 0
+    /\ checked = [m \in Brokers |-> {}]
 
 Init ==
     /\ now = 0
@@ -860,6 +864,36 @@ Ship(b, f) ==
                     hbOut, hbAt, hwm, acked, writes, staleCommit >>
     /\ UNCHANGED << placeVars, answered, opened, installed, nextVars, ackGen >>
 
+\* Whether `m` holds the first `k` records of `b`'s log.
+HoldsPrefix(m, b, k) ==
+    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+
+\* Whether `b` counts `m` as holding its first `k` records in a report: by
+\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
+\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
+ReportCounts(m, b, k) ==
+    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
+
+\* Whether `b` counts `m` toward its mark. Where wipes are modelled with
+\* `StorageIds`, only once `m` has answered this pass from the copy `b` knows
+\* (`Answer`; `checked_only` in
+\* crates/server/felix-replication/src/driver/shard.rs). A wipe between that
+\* answer and the count is not seen. The report still names `m`, under the
+\* identity it was counted under, and placement checks that.
+MarkCounts(m, b, k) ==
+    /\ ReportCounts(m, b, k)
+    /\ ReportFromAnswers /\ StorageIds /\ Wipes > 0 => m \in checked[b]
+
+\* The most of `b`'s log a majority holds, `b` included and halted followers
+\* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
+\* `b`'s own generation, as the mark.
+MajorityLen(b) ==
+    LET held == { k \in 0..Len(log[b]) :
+                    /\ k > 0 => OwnGen(b, k)
+                    /\ MajorityOf({ m \in Brokers \ halted : MarkCounts(m, b, k) } \cup {b},
+                                  QuorumSet) }
+    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
+
 \* Under `Quorum`, a record is acknowledged once a majority including the
 \* leader holds it, and the leader's mark moves up to it.
 \*
@@ -890,7 +924,11 @@ Ship(b, f) ==
 AckReadyOver(b, i, of) ==
     LET r == IF AckOnResponse THEN heard[b] ELSE report IN
     /\ OwnGen(b, i)
-    /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
+    \* Where wipes are modelled with identities, by what the leader counts, as
+    \* the code's mark is, rather than by the logs it cannot see.
+    /\ IF Wipes > 0 /\ StorageIds
+       THEN i <= MajorityLen(b)
+       ELSE MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
     /\ ReportBeforeAck => /\ r.gen = bgen[b]
                           /\ i <= r.len
                           /\ MajorityOf(r.holders \cup {b}, of)
@@ -970,29 +1008,9 @@ LearnHwm(b, f) ==
 \* is invisible to it, as it is to the broker's fence -- which is why the
 \* claim has to check the fence rather than trust the report to cover it.
 \* A write that holds the fence from admission is counted from there.
-\* Whether `m` holds the first `k` records of `b`'s log.
-HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
-
-\* Whether `b` counts `m` as holding its first `k` records in a report: by
-\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
-\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
-ReportCounts(m, b, k) ==
-    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
-
 \* How much of `b`'s log it inherited: the records written before its own
 \* generation. Any record an earlier leader acknowledged is among them.
 Inherited(b) == Cardinality({ i \in 1..Len(log[b]) : log[b][i].g < bgen[b] })
-
-\* The most of `b`'s log a majority holds, `b` included and halted followers
-\* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
-\* `b`'s own generation, as the mark.
-MajorityLen(b) ==
-    LET held == { k \in 0..Len(log[b]) :
-                    /\ k > 0 => OwnGen(b, k)
-                    /\ MajorityOf({ m \in Brokers \ halted : ReportCounts(m, b, k) } \cup {b},
-                                  QuorumSet) }
-    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* What a follower must hold to be reported caught up. Under `Quorum`, the
 \* records the mark sent with this report may release, and never below the
@@ -1793,7 +1811,7 @@ Wipe(f) ==
     /\ wipes' = wipes + 1
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, checked >>
 
 \* The leader learns `f`'s identity from the handshake, and a new one
 \* starts `f`'s count over: `follow_storage` in
@@ -1805,10 +1823,32 @@ Probe(b, f) ==
     /\ seen[b][f] /= sid[f]
     /\ seen' = [seen EXCEPT ![b][f] = sid[f]]
     /\ confirmed' = [confirmed EXCEPT ![b][f] = 0]
+    /\ checked' = [checked EXCEPT ![b] = @ \ {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
     /\ UNCHANGED << sid, wipes >>
+
+\* `f` answers one of `b`'s requests over a connection from the copy `b`
+\* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
+\* A connection opened to the process before a wipe answers nothing. Only
+\* the current leader, and only a follower whose answer would count, which
+\* keeps the state space down.
+Answer(b, f) ==
+    /\ StorageIds /\ Wipes > 0
+    /\ leader = b /\ bgen[b] = gen
+    /\ f /= b /\ f \notin checked[b] /\ confirmed[b][f] > 0
+    /\ seen[b][f] = sid[f]
+    /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, wipes >>
+
+\* A report ends `b`'s pass: what it heard before counts toward no later
+\* mark.
+EndPass(b) ==
+    checked' = IF StorageIds /\ Wipes > 0 THEN [checked EXCEPT ![b] = {}] ELSE checked
+
 
 -----------------------------------------------------------------------------
 
@@ -1835,7 +1875,7 @@ Next ==
         \/ Claim(b) /\ UNCHANGED quietVars
         \/ Commit(b) /\ UNCHANGED quietVars
         \/ AckQuorum(b) /\ UNCHANGED quietVars
-        \/ Report(b) /\ UNCHANGED quietVars
+        \/ Report(b) /\ EndPass(b) /\ UNCHANGED << counterVars, heard, sid, seen, wipes >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -1847,6 +1887,7 @@ Next ==
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard >>
+            \/ Answer(b, f) /\ UNCHANGED << counterVars, heard >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
@@ -1969,6 +2010,19 @@ AckedOnMajority ==
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
+\* The records a leader acknowledges in a step (raising its `hwm`, as
+\* AckQuorum does) are held then by a majority of the copies that exist, a
+\* wiped one holding nothing. A follower wiped after it answered the pass
+\* that counted it is let off: to the leader that wipe is a fault after the
+\* acknowledgement. Counting a follower's old answer without one in the pass
+\* breaks it (FelixShardWipe.cfg).
+AckedOnLiveMajority ==
+    [][\A b \in Brokers :
+          hwm'[b] > hwm[b] =>
+              \A id \in acked' \ acked :
+                  Majority({ m \in Brokers : \E i \in 1..Len(log'[m]) : log'[m][i].id = id }
+                           \cup { f \in checked'[b] : seen'[b][f] /= sid'[f] })]_vars
+
 \* A `Quorum` write is never held back by a destination's copy: whenever the
 \* stream's own replica set would acknowledge it, the leader can. A latency
 \* property, stated as the enabling condition of AckQuorum so TLC can check
@@ -2023,6 +2077,7 @@ TypeOK ==
     /\ cpNext \subseteq Brokers /\ cpNextGen \in Nat
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
     /\ sid \in [Brokers -> Nat] /\ seen \in [Brokers -> [Brokers -> Nat]]
+    /\ checked \in [Brokers -> SUBSET Brokers]
     /\ wipes \in 0..Wipes
 
 =============================================================================

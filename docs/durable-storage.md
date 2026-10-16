@@ -1069,11 +1069,12 @@ survived. Only `OnCommit` makes it mean that. This is not handled; choose
 `OnCommit` where a follower's acknowledgement has to survive a power loss.
 
 Leaders learn each follower's id in the peer handshake and start its copy
-over when it changes, and placement promotes a follower from a report only
-while the id the report names matches the one the follower registered with
-(see `docs/replication-design.md`, "Who may be promoted"). A follower that
-registers without an id, an older build, is judged by the report's age
-alone.
+over when it changes, and a follower counts toward the mark only once it has
+answered that pass under the id its position was learned under. Placement
+promotes a follower from a report only while the id the report names matches
+the one the follower registered with (see `docs/replication-design.md`,
+"Storage identities" and "Who may be promoted"). A follower that registers
+without an id, an older build, is judged by the report's age alone.
 
 ## Restoring to a backup point
 

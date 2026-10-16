@@ -131,6 +131,20 @@ impl PeerPool {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
+        self.request_identified(node_id, addr, message)
+            .await
+            .map(|(answer, _)| answer)
+    }
+
+    /// [`Self::request`], with the storage identity of the connection the
+    /// answer came over. Unlike [`Self::storage_identity`] this says who
+    /// answered: a pooled connection can outlive the process it was opened to.
+    pub async fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
         let started = Instant::now();
         let result = self.request_inner(node_id, addr, message).await;
         match &result {
@@ -217,7 +231,7 @@ impl PeerPool {
         node_id: &str,
         addr: SocketAddr,
         message: InternalMessage,
-    ) -> std::result::Result<InternalMessage, PeerError> {
+    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
         if self.shutdown.is_cancelled() {
             return Err(PeerError::ShuttingDown);
         }
@@ -269,7 +283,7 @@ impl PeerPool {
         .await;
 
         match response {
-            Ok(result) => result,
+            Ok(result) => result.map(|answer| (answer, connection.identity())),
             Err(_) => Err(PeerError::Timeout {
                 node_id: node_id.to_string(),
                 timeout: self.config.request_timeout,
@@ -474,7 +488,7 @@ impl PeerError {
 /// whether a batch may be sent a second time — can be tested against an owner
 /// that answers on command, including with the answers a healthy cluster
 /// almost never produces.
-pub trait PeerRequester {
+pub trait PeerRequester: Sync {
     fn request(
         &self,
         node_id: &str,
@@ -511,9 +525,27 @@ pub trait PeerRequester {
     {
         async { Ok(None) }
     }
+
+    /// [`Self::request`], with the storage identity of the connection the
+    /// answer came over. A requester that cannot tell answers with
+    /// [`Self::storage_identity`].
+    fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<(InternalMessage, Option<StorageId>), PeerError>,
+    > + Send {
+        async move {
+            let answer = self.request(node_id, addr, message).await?;
+            let identity = self.storage_identity(node_id, addr).await?;
+            Ok((answer, identity))
+        }
+    }
 }
 
-impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
+impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
     fn request(
         &self,
         node_id: &str,
@@ -545,6 +577,17 @@ impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
     {
         T::storage_identity(self, node_id, addr)
     }
+
+    fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<(InternalMessage, Option<StorageId>), PeerError>,
+    > + Send {
+        T::request_identified(self, node_id, addr, message)
+    }
 }
 
 impl PeerRequester for PeerPool {
@@ -575,6 +618,15 @@ impl PeerRequester for PeerPool {
         addr: SocketAddr,
     ) -> std::result::Result<Option<StorageId>, PeerError> {
         PeerPool::storage_identity(self, node_id, addr).await
+    }
+
+    async fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<(InternalMessage, Option<StorageId>), PeerError> {
+        PeerPool::request_identified(self, node_id, addr, message).await
     }
 }
 

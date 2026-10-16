@@ -356,7 +356,7 @@ async fn before_finalize_inherited_records_count_as_before() {
 
 /// Marks as a fleet that finalized both `generation_start` and
 /// `majority_ack` counts them: by the followers.
-fn follower_ack_marks() -> QuorumMarks {
+pub(super) fn follower_ack_marks() -> QuorumMarks {
     use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
     let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
     let fleet = FleetGate::new(names);
@@ -412,7 +412,10 @@ impl PeerRequester for OnlyB {
 }
 
 /// [`leader_led_from`], with the stream registered as `Quorum`.
-async fn quorum_leader(count: usize, generation: u64) -> (Arc<Broker>, tempfile::TempDir) {
+pub(super) async fn quorum_leader(
+    count: usize,
+    generation: u64,
+) -> (Arc<Broker>, tempfile::TempDir) {
     let (broker, dir) = leader_led_from(count, generation, 0).await;
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
@@ -610,7 +613,15 @@ impl PeerRequester for CacheOnlyB {
 
 /// A `Quorum` cache led here at `generation` since offset zero, with two
 /// records in its cache log and three in its counter log.
-async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
+pub(super) async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
+    cache_leader(generation, felix_broker::ConsistencyLevel::Quorum).await
+}
+
+/// [`quorum_cache_leader`] at any consistency level.
+pub(super) async fn cache_leader(
+    generation: u64,
+    consistency: felix_broker::ConsistencyLevel,
+) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
@@ -641,9 +652,7 @@ async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
             TENANT,
             NAMESPACE,
             STREAM,
-            felix_broker::CacheMetadata {
-                consistency: felix_broker::ConsistencyLevel::Quorum,
-            },
+            felix_broker::CacheMetadata { consistency },
         )
         .await
         .expect("cache");
@@ -664,7 +673,7 @@ async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
 
 /// Marks as a fleet that finalized `generation_start` and `majority_ack`,
 /// and `fenced_caches` when `caches` says so.
-fn fleet_marks(caches: bool) -> QuorumMarks {
+pub(super) fn fleet_marks(caches: bool) -> QuorumMarks {
     use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
     let mut names = vec![GENERATION_START.name(), MAJORITY_ACK.name()];
     if caches {

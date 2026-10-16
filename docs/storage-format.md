@@ -579,8 +579,8 @@ restart too, whatever the routing view says by then.
 Under `FsyncMode::OnCommit` the commit offset is written through on every
 advance, and the call returns an error if the write fails. A follower still
 acknowledges the batch in that case: the offset only guards truncation, so no
-acknowledged record depends on it. The next batch that carries the offset
-writes it again.
+acknowledged record depends on it. The log writes it again once a second until
+it lands, without waiting for another batch: an idle shard sends none.
 
 Under `Periodic` and `None` it is written at most once a second and at
 shutdown, as its records are written behind too. Read back behind after a
