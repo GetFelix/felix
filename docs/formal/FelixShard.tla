@@ -866,6 +866,36 @@ Ship(b, f) ==
                     hbOut, hbAt, hwm, acked, writes, staleCommit >>
     /\ UNCHANGED << placeVars, answered, opened, installed, nextVars, ackGen >>
 
+\* Whether `m` holds the first `k` records of `b`'s log.
+HoldsPrefix(m, b, k) ==
+    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+
+\* Whether `b` counts `m` as holding its first `k` records in a report: by
+\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
+\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
+ReportCounts(m, b, k) ==
+    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
+
+\* Whether `b` counts `m` toward its mark. Where wipes are modelled with
+\* `StorageIds`, only once `m` has answered this pass from the copy `b` knows
+\* (`Answer`; `checked_only` in
+\* crates/server/felix-replication/src/driver/shard.rs). A wipe between that
+\* answer and the count is not seen. The report still names `m`, under the
+\* identity it was counted under, and placement checks that.
+MarkCounts(m, b, k) ==
+    /\ ReportCounts(m, b, k)
+    /\ ReportFromAnswers /\ StorageIds /\ Wipes > 0 => m \in checked[b]
+
+\* The most of `b`'s log a majority holds, `b` included and halted followers
+\* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
+\* `b`'s own generation, as the mark.
+MajorityLen(b) ==
+    LET held == { k \in 0..Len(log[b]) :
+                    /\ k > 0 => OwnGen(b, k)
+                    /\ MajorityOf({ m \in Brokers \ halted : MarkCounts(m, b, k) } \cup {b},
+                                  QuorumSet) }
+    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
+
 \* Under `Quorum`, a record is acknowledged once a majority including the
 \* leader holds it, and the leader's mark moves up to it.
 \*
@@ -980,39 +1010,9 @@ LearnHwm(b, f) ==
 \* is invisible to it, as it is to the broker's fence -- which is why the
 \* claim has to check the fence rather than trust the report to cover it.
 \* A write that holds the fence from admission is counted from there.
-\* Whether `m` holds the first `k` records of `b`'s log.
-HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
-
-\* Whether `b` counts `m` as holding its first `k` records in a report: by
-\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
-\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
-ReportCounts(m, b, k) ==
-    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
-
-\* Whether `b` counts `m` toward its mark. Where wipes are modelled with
-\* `StorageIds`, only once `m` has answered this pass from the copy `b` knows
-\* (`Answer`; `checked_only` in
-\* crates/server/felix-replication/src/driver/shard.rs). A wipe between that
-\* answer and the count is not seen. The report still names `m`, under the
-\* identity it was counted under, and placement checks that.
-MarkCounts(m, b, k) ==
-    /\ ReportCounts(m, b, k)
-    /\ ReportFromAnswers /\ StorageIds /\ Wipes > 0 => m \in checked[b]
-
 \* How much of `b`'s log it inherited: the records written before its own
 \* generation. Any record an earlier leader acknowledged is among them.
 Inherited(b) == Cardinality({ i \in 1..Len(log[b]) : log[b][i].g < bgen[b] })
-
-\* The most of `b`'s log a majority holds, `b` included and halted followers
-\* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
-\* `b`'s own generation, as the mark.
-MajorityLen(b) ==
-    LET held == { k \in 0..Len(log[b]) :
-                    /\ k > 0 => OwnGen(b, k)
-                    /\ MajorityOf({ m \in Brokers \ halted : MarkCounts(m, b, k) } \cup {b},
-                                  QuorumSet) }
-    IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* What a follower must hold to be reported caught up. Under `Quorum`, the
 \* records the mark sent with this report may release, and never below the
