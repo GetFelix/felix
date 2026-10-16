@@ -1568,12 +1568,16 @@ though what it confirmed may well still be on its disk; the majority that
 answers carries the mark.
 
 A follower level with the leader is sent nothing, so on an idle shard it
-would never answer. While the mark is below what such a follower confirmed,
-the leader sends it its last record again (`reship_last`): the follower
-compares the overlap and answers where it is. That happens when the pass
+would never answer. On a shard whose publishes wait on the mark, while this
+broker still leads, the leader sends such a follower its last record again
+(`reship_last`) when counting it would raise the mark, the counter mark
+likewise, with the other followers that are not stalled counted as they
+stand. The follower compares the overlap and answers where it is. That happens when the pass
 that heard the answer could not count it, for instance an answer that
 arrived after its pass had handed the exchange to the driver, or a report
-that did not land. Once the mark has caught up, nothing extra is sent.
+that did not land. Once the mark has caught up, nothing extra is sent. While
+a report keeps failing to land the record goes again each pass, since the
+mark it would raise is not published.
 The report is left alone: a leader cut off from its followers names them as
 they last stood, which is what failover reads, and the identity each was
 counted under goes with it.

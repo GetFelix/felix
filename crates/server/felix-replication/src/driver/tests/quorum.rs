@@ -614,6 +614,14 @@ impl PeerRequester for CacheOnlyB {
 /// A `Quorum` cache led here at `generation` since offset zero, with two
 /// records in its cache log and three in its counter log.
 pub(super) async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
+    cache_leader(generation, felix_broker::ConsistencyLevel::Quorum).await
+}
+
+/// [`quorum_cache_leader`] at any consistency level.
+pub(super) async fn cache_leader(
+    generation: u64,
+    consistency: felix_broker::ConsistencyLevel,
+) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
@@ -644,9 +652,7 @@ pub(super) async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDi
             TENANT,
             NAMESPACE,
             STREAM,
-            felix_broker::CacheMetadata {
-                consistency: felix_broker::ConsistencyLevel::Quorum,
-            },
+            felix_broker::CacheMetadata { consistency },
         )
         .await
         .expect("cache");

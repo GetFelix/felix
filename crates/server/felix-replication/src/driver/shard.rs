@@ -500,7 +500,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // offers it: a leader cut off from its followers names them as they last
     // stood, and failover needs that. See [`checked_only`].
     let checked: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
-    let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
+    // Only where a publish waits on the mark: elsewhere a position counted
+    // late releases nothing, and a draining shard's fence holds its writes.
+    let view = |followers: &[FollowerCursor]| {
+        if acks_at_quorum {
+            checked_only(followers, &checked.lock())
+        } else {
+            followers.to_vec()
+        }
+    };
     let counter_mark = counter_log.clone().filter(|_| acks_at_quorum);
     let counters_of = |followers: &[FollowerCursor]| {
         let counter_mark = counter_mark.clone();
@@ -560,6 +568,46 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut launched: Vec<(String, bool)> = Vec::new();
     let mut launched_rode: Vec<String> = Vec::new();
     let base = entry.base;
+    // Which level followers to send their last record again for an answer
+    // the mark can count (see `reship_last`): only where the mark gates a
+    // publish, while this broker still leads, and only a follower whose
+    // position would raise it, counting the others that are not stalled.
+    // Anything else would resend a record every pass to no end.
+    let leading = log.accepted_generation() <= route.generation;
+    let counter_tail = match &counter_log {
+        Some(log) if acks_at_quorum && leading => log.tail_offset().await.ok(),
+        _ => None,
+    };
+    let would_raise = |node: &str,
+                       followers: &[FollowerCursor],
+                       held: &dyn Fn(&[FollowerCursor]) -> u64,
+                       mark: u64| {
+        let mine = followers.iter().find(|cursor| cursor.node_id == node);
+        if !acks_at_quorum || !leading || learner.as_deref() == Some(node) {
+            return false;
+        }
+        if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.halted.is_none()) {
+            return false;
+        }
+        let hopeful: Vec<FollowerCursor> = followers
+            .iter()
+            .map(|cursor| {
+                let mut cursor = cursor.clone();
+                if cursor.stalled && cursor.node_id != node {
+                    cursor.confirmed = 0;
+                }
+                cursor
+            })
+            .collect();
+        held(&hopeful) > mark
+    };
+    let mark_now = marks
+        .offset_at(mark_key, incarnation, route.generation)
+        .unwrap_or(0);
+    let counter_mark_now = marks
+        .counters()
+        .offset(mark_key, route.generation)
+        .unwrap_or(0);
     let mut in_flight: futures::stream::FuturesUnordered<Exchange<'a>> = entry
         .followers
         .iter()
@@ -567,6 +615,20 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .map(|cursor| {
             let mut cursor = cursor.clone();
             let sliced = learner.as_deref() == Some(cursor.node_id.as_str());
+            let ping = would_raise(
+                &cursor.node_id,
+                &entry.followers,
+                &|followers| held_offset(tail, followers),
+                mark_now,
+            );
+            let ping_counters = counter_tail.is_some_and(|counter_tail| {
+                would_raise(
+                    &cursor.node_id,
+                    &aux.counters.followers,
+                    &|followers| quorum_offset_without(counter_tail, followers, learner.as_deref()),
+                    counter_mark_now,
+                )
+            });
             let held = |log: &Option<felix_broker::StreamLog>, entry: &ShardCursors| {
                 log.as_ref().and_then(|_| {
                     entry
@@ -694,11 +756,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // last record goes again for an answer; once the mark has
                 // caught up this costs nothing.
                 if requester.answered().is_empty() {
-                    let mark = marks
-                        .offset_at(&mark_key, incarnation, generation)
-                        .unwrap_or(0);
-                    let counter_mark = marks.counters().offset(&mark_key, generation).unwrap_or(0);
-                    if cursor.confirmed > mark {
+                    if ping {
                         reship_last(
                             requester,
                             &log,
@@ -706,12 +764,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log_kind,
                             &mut cursor,
                             rebuilds,
-                            Some(mark),
+                            Some(mark_now),
                         )
                         .await;
-                    } else if let (Some(log), Some(counters)) =
-                        (&counter_log, rode.counters.as_mut())
-                        && counters.confirmed > counter_mark
+                    } else if ping_counters
+                        && let (Some(log), Some(counters)) = (&counter_log, rode.counters.as_mut())
                     {
                         reship_last(
                             requester,

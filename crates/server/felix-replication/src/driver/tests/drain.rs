@@ -86,15 +86,8 @@ async fn a_draining_shard_reports_drained_once_its_fence_is_quiet() {
         .find(|report| report.drained)
         .expect("a quiet fence should report drained");
     assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
-    // Counted by offset: a pass with no mark to read sends a level follower
-    // its last record again.
-    let shipped: std::collections::HashSet<u64> = follower
-        .batches()
-        .into_iter()
-        .flat_map(|(_, first, n)| first..first + n as u64)
-        .collect();
     assert_eq!(
-        shipped.len(),
+        follower.batches().iter().map(|(_, _, n)| n).sum::<usize>(),
         4,
         "the write that was in flight was shipped to the successor",
     );

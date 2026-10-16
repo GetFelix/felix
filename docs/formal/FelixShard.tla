@@ -2014,16 +2014,18 @@ AckedOnMajority ==
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
-\* Each step's newly acknowledged records are held then by a majority of the
-\* copies that exist, a wiped one holding nothing. A follower wiped after it
-\* answered the pass that counted it is let off: to the leader that wipe is a
-\* fault after the acknowledgement. Counting a follower's old answer without
-\* one in the pass breaks it (FelixShardWipe.cfg).
+\* The records a leader acknowledges in a step (raising its `hwm`, as
+\* AckQuorum does) are held then by a majority of the copies that exist, a
+\* wiped one holding nothing. A follower wiped after it answered the pass
+\* that counted it is let off: to the leader that wipe is a fault after the
+\* acknowledgement. Counting a follower's old answer without one in the pass
+\* breaks it (FelixShardWipe.cfg).
 AckedOnLiveMajority ==
-    [][\A id \in acked' \ acked :
-          \E b \in Brokers :
-              Majority({ m \in Brokers : \E i \in 1..Len(log'[m]) : log'[m][i].id = id }
-                       \cup lost'[b])]_vars
+    [][\A b \in Brokers :
+          hwm'[b] > hwm[b] =>
+              \A id \in acked' \ acked :
+                  Majority({ m \in Brokers : \E i \in 1..Len(log'[m]) : log'[m][i].id = id }
+                           \cup lost'[b])]_vars
 
 \* A `Quorum` write is never held back by a destination's copy: whenever the
 \* stream's own replica set would acknowledge it, the leader can. A latency
