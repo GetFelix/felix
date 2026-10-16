@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792157640096,
+  "lastUpdate": 1792160170746,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31512,6 +31512,58 @@ window.BENCHMARK_DATA = {
             "range": "5676.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810642.12\nmean: 810134.75\nstdev: 5676.62\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8c5c5d04cd5849596337067c79f27fc8c9779ba",
+          "message": "fix(placement): promote a caught-up follower before reclaiming a crashed leader (#1315)\n\n* fix(placement): promote a caught-up follower before reclaiming a crashed leader\n\nThe given-up leader's probe now names followers level with it caught up,\nand placement reclaims only when every follower is behind. A follower\ncounts from the probe only when measured under its current identity and\nincarnation. Closes #1314.\n\n* test(cluster): let the replacement test's probe reach placement first\n\nWith the probe naming a level follower caught up, the outcome no longer\ndepends on the order, so the fault that kept the probe out goes.\n\n* fix(placement): keep a cache's way out and make the reclaim model reachable\n\nThe probe names a cache follower furthest on both logs first, else the\nfurthest on the first log not behind the leader, so a split between the\ncache and counter logs never leaves the shard waiting. Crash in the model\nmay lose nothing, so a leader can return holding a record no follower has\nand Reclaim fires with one write.\n\n* fix(placement): reclaim when every follower is behind on the cache log\n\nA follower ahead only on the counter log is behind on what the leader\nkept, so the probe names nobody and the shard is reclaimed.",
+          "timestamp": "2026-10-16T14:12:40Z",
+          "tree_id": "84fe0e0f347ff9c82ffab47646096310b1a23108",
+          "url": "https://github.com/GetFelix/felix/commit/b8c5c5d04cd5849596337067c79f27fc8c9779ba"
+        },
+        "date": 1792160170071,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 623390.02,
+            "range": "29384.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 623390.02\nmean: 628892.77\nstdev: 29384.71\ncv: 4.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 623390.02,
+            "range": "29384.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 623390.02\nmean: 628892.77\nstdev: 29384.71\ncv: 4.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161987.09,
+            "range": "445.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161987.09\nmean: 161936.33\nstdev: 445.67\ncv: 0.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1619870.87,
+            "range": "4456.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1619870.87\nmean: 1619363.27\nstdev: 4456.71\ncv: 0.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
