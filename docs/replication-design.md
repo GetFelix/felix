@@ -1488,6 +1488,11 @@ passes the old one, and its `Quorum` publishes wait meanwhile. That is a
 liveness cost, not a safety one: the held report describes records the
 followers do have.
 
+That covers the report, not the records. The restarted leader itself serves
+its old generation without the lost tail, and acknowledgements it made from
+that tail can be gone from it; see the storage-identity note below and
+[#1295](https://github.com/GetFelix/felix/issues/1295).
+
 **A follower counts only for what it has answered.** The mark and the report
 count each follower up to the last offset it answered holding at the leader's
 generation. A new leader starts its cursor for a follower it has not heard
@@ -1966,15 +1971,28 @@ as evidence to close that window. The rotation after a crash does not widen
 it: the new id is written before the broker registers, so the window is the
 same one a wipe has.
 
-The identity catches a tail lost in a crash under a relaxed `FsyncMode` the
-same way it catches a lost directory, because the broker starts under a new
-one after such a crash. The price is availability after correlated crashes:
-when the leader dies and every follower it reported has crashed and come back
-under a new id, nobody matches the report, and the shard waits for the old
-leader (or an operator) rather than promote a copy that may be short. Under
-`OnCommit` an acknowledged record is on disk, so a crash keeps the id. A
-crash of an older release, or one the first start on this release finds no
-torn tail for, is not detected (see `docs/durable-storage.md`).
+The identity catches a tail a follower lost in a crash under a relaxed
+`FsyncMode` the same way it catches a lost directory, because the broker
+starts under a new one after such a crash. The price is availability after
+correlated crashes: when the leader dies and every follower it reported has
+crashed and come back under a new id, nobody matches the report, and the
+shard is `NoCaughtUpReplica`. It resolves if the old leader returns. If it
+cannot, an operator either gives up the log with `felixctl placement abandon
+<stream> <shard> --yes` (`felix-controlplane admin abandon`; records only the
+old copies held are lost) or restores the shard from a backup point with
+`felix-broker restore-point` (see `deployment/backup-and-restore.md` in the
+docs site). Under `OnCommit` an acknowledged record is on disk, so a crash
+keeps the id. A crash of an older release, or one the first start on this
+release finds no torn tail for, is not detected (see
+`docs/durable-storage.md`).
+
+**A leader's own crash is not covered yet**
+([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id changes
+how peers count a broker as a follower. A leader that crashes under
+`Periodic` or `None` and restarts before placement fails the shard over is
+still the assignment's leader, and it reopens its old generation with a log
+shorter than what it acknowledged; nothing makes it step aside or fence its
+followers first. Until that is fixed, only `OnCommit` closes it.
 
 A new leader that dies before its first report leaves only its predecessor's
 report, which predates whatever the new leader acknowledged. Under `Leader`

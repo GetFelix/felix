@@ -268,7 +268,7 @@ weights=(
   "FelixShardFigure8CutOver 9"
   "FelixShard 7"
   "FelixShardWipeFull 5"
-  "FelixShardCrash 5"
+  "FelixShardCrash 15"
   "FelixShardFencedPromotion 7"
   "FelixShardCancelResend 6"
   "FelixShardFigure8FollowerAcks 6"

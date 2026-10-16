@@ -1160,6 +1160,13 @@ that one start. A downgrade leaves the record as this release wrote it, and
 an older release ignores it; a crash under the older release before moving up
 again is not detected either.
 
+**A leader's own crash is not covered yet**
+([#1295](https://github.com/GetFelix/felix/issues/1295)). The new id only
+changes how peers count the broker as a follower. A leader that crashes and
+restarts before the control plane fails its shard over is still the shard's
+leader, and reopens its old generation with the shorter log, so records it
+acknowledged from the lost tail are gone. Only `OnCommit` closes that today.
+
 Rotating the id does not reset a follower's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
 them.

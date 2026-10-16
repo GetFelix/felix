@@ -131,7 +131,12 @@ no longer counts it on reports from before the crash.
 A clean stop keeps the id, and so does a crash under `on_commit`, which
 acknowledged nothing it had not synced. The first start after upgrading to a
 release with this record has none to read, and rotates only if startup would
-repair a torn tail, so an orderly roll keeps every id. The full rules are in
+repair a torn tail, so an orderly roll keeps every id. This covers a broker as a follower only. A **leader** that crashes under
+`periodic` or `none` and restarts before its shard fails over reopens its old
+generation with the shorter log, losing what it acknowledged from the lost
+tail; that is not handled yet
+([#1295](https://github.com/GetFelix/felix/issues/1295)), and only `on_commit`
+avoids it. The full rules are in
 [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#storage-identity).
 
 ## On-disk layout

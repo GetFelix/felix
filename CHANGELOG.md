@@ -108,7 +108,8 @@ entries.
   leaders copy the follower again and placement stops counting its old
   reports. A clean stop, and a crash under `OnCommit`, keep the id. The
   first start on this release rotates only if startup would repair a shard,
-  so an orderly roll keeps every id. `felix-broker restore-point` records a
+  so an orderly roll keeps every id. A leader's own crash is not covered yet: it
+  reopens its old generation with the shorter log (#1295). `felix-broker restore-point` records a
   clean stop when it finishes. The shutdown drain now flushes the cache,
   consumer-group, dead-letter and counter logs too, not only stream logs
   (`Broker::shutdown_storage`, `StorageApi::shutdown`). TLA+:
