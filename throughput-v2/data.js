@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792151518932,
+  "lastUpdate": 1792153467119,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31356,6 +31356,58 @@ window.BENCHMARK_DATA = {
             "range": "52092.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1206184.17\nmean: 1193902.08\nstdev: 52092.85\ncv: 4.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6c069f9959575a67c06e5bb51140120cda80366",
+          "message": "fix(replication): a crashed leader gives up the generation it led (#1305)\n\n* fix(replication): a crashed leader gives up the generation it led (#1295)\n\nA leader that lost an unsynced tail in a crash under Periodic or None fsync\nand restarted before failover reopened its old generation with the shorter\nlog. Under Quorum it and a follower that lagged behind the lost records made\na majority and could write over acknowledged offsets.\n\nA start that rotated the storage id now leads no replicated shard from a\ncopy it led before the crash: the open is refused before it writes, the copy\nis given up on disk as a ballot naming no leader, replication passes over the\nshard meanwhile, and the broker refuses a successor's promotion fence from\nthat copy in a replica set of odd size. Reports name the leader's own storage\nid, and placement promotes a caught-up follower once the leader is registered\nunder another. TLA+: FelixShardLeaderCrashKeepsGen.cfg (violates\nAckedSurvive) and FelixShardLeaderCrashGivesUp.cfg (passes).\n\n* fix(replication): reclaim a given-up leader no follower is ahead of, and close review findings\n\n* fix(replication): make a leader's give-up an explicit report field\n\n* fix(replication): treat a copy led at generation 0 as led",
+          "timestamp": "2026-10-16T12:20:02Z",
+          "tree_id": "d1f7eb08b97d0abd22517741199160d82850674f",
+          "url": "https://github.com/GetFelix/felix/commit/d6c069f9959575a67c06e5bb51140120cda80366"
+        },
+        "date": 1792153466611,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340332.4,
+            "range": "14919.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340332.40\nmean: 345805.38\nstdev: 14919.26\ncv: 4.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340332.4,
+            "range": "14919.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340332.40\nmean: 345805.38\nstdev: 14919.26\ncv: 4.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80426.67,
+            "range": "725.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80426.67\nmean: 80360.41\nstdev: 725.74\ncv: 0.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804266.74,
+            "range": "7257.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804266.74\nmean: 803604.13\nstdev: 7257.44\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
