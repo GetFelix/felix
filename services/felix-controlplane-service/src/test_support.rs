@@ -120,6 +120,7 @@ pub(crate) async fn one_shard_cluster() -> (
                     registered_at_millis: 1,
                     incarnation: 0,
                     features: Default::default(),
+                    storage_id: None,
                 },
             })
             .await

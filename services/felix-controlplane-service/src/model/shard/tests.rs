@@ -248,6 +248,7 @@ fn report_at(generation: u64, at: u64) -> ReplicaReport {
         drained: false,
         leader_offset: None,
         halted: BTreeMap::new(),
+        follower_storage: Default::default(),
     }
 }
 

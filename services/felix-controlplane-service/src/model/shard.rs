@@ -402,6 +402,14 @@ pub struct ReplicaReport {
     /// replication pass, while its last report still says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_incarnation: Option<u64>,
+    /// The storage identity (32 lowercase hex) the leader saw for each
+    /// follower when it reported. Placement counts a follower from this
+    /// report as holding what it says only while this matches the identity
+    /// the follower registered with, and never once they differ. Empty from
+    /// brokers that predate it and, under Raft, until every member can apply
+    /// it; such a follower is judged by the report's age alone.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub follower_storage: BTreeMap<String, String>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

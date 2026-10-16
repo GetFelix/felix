@@ -101,6 +101,7 @@ fn node(id: &str, port: u16) -> Node {
             registered_at_millis: 1_000,
             incarnation: 0,
             features: Default::default(),
+            storage_id: None,
         },
     }
 }
@@ -154,6 +155,7 @@ fn replica_report(
         stream_incarnation: None,
         by_round: false,
         leader_incarnation: None,
+        follower_storage: Default::default(),
     }
 }
 

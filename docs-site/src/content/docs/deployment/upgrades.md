@@ -87,6 +87,22 @@ every control-plane instance runs a release that has it, so finish the roll
 before relying on it, and keep catalog writes to a minimum while it is under
 way.
 
+**Storage identities during a roll.** A broker now registers the identity of
+its data directory, and its replica reports name the identity each follower
+was counted under. Placement never promotes a follower whose two identities
+differ, and keeps a dead leader's last report believed past the usual window
+for one whose identities match. A Postgres control plane runs migration `0030` on start. Until every
+instance runs this release, a registration or report written through an older
+instance carries no identity and reads as unverified: that follower is judged
+by the report's age alone, as on the previous release, until a current
+instance takes the broker's next registration or the leader's next report. A
+Raft control plane stores identities only once every member is at metadata
+level 12, and reads every follower as unverified until then. A broker on the
+previous release registers without an identity and is read the same way. So
+until both the control plane and the brokers are rolled, a follower that lost
+its disk can still be promoted on what it reported before, and a leader that
+dies while placement is slow can leave its shard unplaceable, as before.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,

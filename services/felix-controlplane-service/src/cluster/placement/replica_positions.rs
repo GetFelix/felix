@@ -32,12 +32,36 @@
 //! already say how quickly a dead leader is detected, and a report has to
 //! survive exactly that long to be usable.
 //!
+//! # Why a follower's storage identity is checked
+//!
+//! A report names, for each follower, the storage identity the leader saw,
+//! and each node registers its own. A follower whose data directory was wiped
+//! comes back under a new identity, and a report taken under the old one says
+//! nothing about what it holds now. So a follower counts from a report only
+//! while the two identities match, and never once they differ, however fresh
+//! the report. When either side has none (a broker that predates them) the
+//! follower is judged by the report's age alone, as before.
+//!
+//! # Why a dead leader's report stops ageing
+//!
+//! Only the leader reports on its shard, so once it dies nothing refreshes
+//! its last report. Measured against now, that report would expire while
+//! placement or the control plane was slow, and the shard would stay
+//! unplaceable for good. So once the leader is down, and the assignment is
+//! still at the report's generation, the report's age is measured to the
+//! leader's last heartbeat instead. That holds only for a follower whose
+//! identity matches: one that lost its log since the report would otherwise
+//! still look caught up.
+//!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{HaltedCopy, NodeSuspicion, ReplicaReport, ShardKey, ShardKind};
+use crate::model::{
+    HaltedCopy, Node, NodeLifecycle, NodeSuspicion, ReplicaReport, ShardAssignment, ShardKey,
+    ShardKind,
+};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -93,6 +117,27 @@ pub struct ReplicaPositions {
     /// When this instance last saw each restore's new copy move; see
     /// `progress`.
     progressed: HashMap<(ShardKey, String), u64>,
+    /// Each node as a report is judged against: its registered storage
+    /// identity, and whether a leader that is down stopped reporting.
+    nodes: HashMap<String, NodeView>,
+    /// Each shard's assignment: its generation and leader.
+    assignments: HashMap<ShardKey, (u64, String)>,
+}
+
+/// What reading a report needs of a node.
+struct NodeView {
+    storage_id: Option<String>,
+    down: bool,
+    last_heartbeat_at_millis: u64,
+}
+
+/// How a report's identity for a follower compares with its registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Identity {
+    Match,
+    Mismatch,
+    /// One side has none: a broker that predates identities.
+    Unverified,
 }
 
 impl ReplicaPositions {
@@ -112,7 +157,40 @@ impl ReplicaPositions {
             incarnations: HashMap::new(),
             followers_decide: false,
             progressed: HashMap::new(),
+            nodes: HashMap::new(),
+            assignments: HashMap::new(),
         }
+    }
+
+    /// With the nodes and assignments from the same read.
+    ///
+    /// Without them every follower is unverified and no report outlives
+    /// its TTL, which is how reports were read before identities.
+    pub fn with_nodes(mut self, nodes: &[Node], assignments: &[ShardAssignment]) -> Self {
+        self.nodes = nodes
+            .iter()
+            .map(|node| {
+                let view = NodeView {
+                    storage_id: node.status.storage_id.clone(),
+                    down: matches!(
+                        node.status.lifecycle,
+                        NodeLifecycle::Down | NodeLifecycle::Left
+                    ),
+                    last_heartbeat_at_millis: node.status.last_heartbeat_at_millis,
+                };
+                (node.node_id.clone(), view)
+            })
+            .collect();
+        self.assignments = assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.key.clone(),
+                    (assignment.generation, assignment.leader.clone()),
+                )
+            })
+            .collect();
+        self
     }
 
     /// With what brokers said about the leaders they cannot reach, and the
@@ -159,16 +237,79 @@ impl ReplicaPositions {
         store: &dyn crate::store::ControlPlaneStore,
         liveness: &NodeLivenessConfig,
     ) -> crate::store::StoreResult<Self> {
+        let nodes = store.list_nodes().await?;
+        let assignments = store.list_shard_assignments().await?;
         let reports = store.list_replica_reports().await?;
         let now_millis = store.now_millis().await?;
-        Ok(Self::new(reports, liveness, now_millis))
+        Ok(Self::new(reports, liveness, now_millis).with_nodes(&nodes, &assignments))
     }
 
-    /// The report for `key`, if there is one and it is still believed.
+    /// The report for `key`, if there is one and it is within its TTL of now.
     fn fresh(&self, key: &ShardKey) -> Option<&ReplicaReport> {
         let report = self.reports.get(key)?;
         (self.now_millis.saturating_sub(report.reported_at_millis) <= self.ttl_millis)
             .then_some(report)
+    }
+
+    /// The report for `key` if it is fresh, or within its TTL of the last
+    /// heartbeat of the leader that made it, now down. What it says about
+    /// a follower still needs [`Self::counted`].
+    fn believed(&self, key: &ShardKey) -> Option<&ReplicaReport> {
+        let report = self.reports.get(key)?;
+        (self
+            .aged_to(key, report)
+            .saturating_sub(report.reported_at_millis)
+            <= self.ttl_millis)
+            .then_some(report)
+    }
+
+    /// The instant `report`'s age is measured to: now, or the last heartbeat
+    /// of a leader that is down and will not report again.
+    ///
+    /// Only while the assignment is at the report's generation: the store
+    /// took the report from that generation's leader, so the down node is
+    /// the one that made it. A live leader's report keeps ageing, so one that
+    /// stopped reporting still expires.
+    fn aged_to(&self, key: &ShardKey, report: &ReplicaReport) -> u64 {
+        let Some((generation, leader)) = self.assignments.get(key) else {
+            return self.now_millis;
+        };
+        match self.nodes.get(leader) {
+            Some(leader) if *generation == report.generation && leader.down => {
+                leader.last_heartbeat_at_millis.min(self.now_millis)
+            }
+            _ => self.now_millis,
+        }
+    }
+
+    /// How the identity `report` names for `node_id` compares with the one
+    /// the node is registered under now.
+    fn identity(&self, report: &ReplicaReport, node_id: &str) -> Identity {
+        let reported = report.follower_storage.get(node_id);
+        let registered = self
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.storage_id.as_ref());
+        match (reported, registered) {
+            (Some(reported), Some(registered)) if reported == registered => Identity::Match,
+            (Some(_), Some(_)) => Identity::Mismatch,
+            _ => Identity::Unverified,
+        }
+    }
+
+    /// The report for `key`, if it may say anything about `node_id`.
+    ///
+    /// A matching identity is believed as long as the report is, a
+    /// mismatched one never, and an unverified one only while the report
+    /// is fresh: without an identity, a report held past its TTL could
+    /// vouch for a follower that has lost its log since.
+    fn counted(&self, key: &ShardKey, node_id: &str) -> Option<&ReplicaReport> {
+        let report = self.reports.get(key)?;
+        match self.identity(report, node_id) {
+            Identity::Match => self.believed(key),
+            Identity::Mismatch => None,
+            Identity::Unverified => self.fresh(key),
+        }
     }
 }
 
@@ -198,30 +339,37 @@ impl CaughtUp for ReplicaPositions {
     }
 
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
-        self.fresh(key)
+        self.counted(key, node_id)
             .is_some_and(|report| report.caught_up.contains(node_id))
     }
 
     fn reported_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        self.fresh(key)?.offsets.get(node_id).copied()
+        self.counted(key, node_id)?.offsets.get(node_id).copied()
     }
 
     fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        self.fresh(key)?.counter_offsets.get(node_id).copied()
+        self.counted(key, node_id)?
+            .counter_offsets
+            .get(node_id)
+            .copied()
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
-        let report = self.fresh(key)?;
+        let report = self.counted(key, node_id)?;
         let tail = report.leader_offset?;
         Some(tail.saturating_sub(*report.offsets.get(node_id)?))
     }
 
+    // What the report says of the shard rather than of one follower is read
+    // as long as the report is believed, so promotion can work from a dead
+    // leader's report; each follower is still checked through `counted`.
+
     fn leader_offset(&self, key: &ShardKey) -> Option<u64> {
-        self.fresh(key)?.leader_offset
+        self.believed(key)?.leader_offset
     }
 
     fn reported_generation(&self, key: &ShardKey) -> Option<u64> {
-        self.fresh(key).map(|report| report.generation)
+        self.believed(key).map(|report| report.generation)
     }
 
     fn as_of_millis(&self) -> Option<u64> {
@@ -229,7 +377,7 @@ impl CaughtUp for ReplicaPositions {
     }
 
     fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
-        self.fresh(key)?.halted.get(node_id)
+        self.believed(key)?.halted.get(node_id)
     }
 
     fn progressed_at_millis(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
@@ -241,7 +389,7 @@ impl CaughtUp for ReplicaPositions {
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
         // The held report may predate the fence, when the leader was still
         // writing.
-        self.fresh(key)
+        self.believed(key)
             .is_some_and(|report| report.generation == generation && report.drained)
     }
 }

@@ -1062,9 +1062,12 @@ tail of a log, so the same id does not promise that every acknowledged record
 survived. Only `OnCommit` makes it mean that. This is not handled; choose
 `OnCommit` where a follower's acknowledgement has to survive a power loss.
 
-Nothing compares ids yet. A follower whose disk was wiped can still be counted
-and promoted as if it held what it acknowledged before
-([#1266](https://github.com/GetFelix/felix/issues/1266)).
+Leaders learn each follower's id in the peer handshake and start its copy
+over when it changes, and placement promotes a follower from a report only
+while the id the report names matches the one the follower registered with
+(see `docs/replication-design.md`, "Who may be promoted"). A follower that
+registers without an id, an older build, is judged by the report's age
+alone.
 
 ## Restoring to a backup point
 

@@ -54,6 +54,8 @@ pub enum NodeValidationError {
     LabelValueTooLong(String),
     #[error("capacity hint max_shards must be greater than zero when set")]
     ZeroMaxShards,
+    #[error("storage_id must be 32 lowercase hex digits")]
+    InvalidStorageId,
     #[error("cannot move a node from {from:?} to {to:?}")]
     UnsupportedTransition {
         from: NodeLifecycle,
@@ -241,6 +243,11 @@ pub struct NodeStatus {
     /// (`felix_common::fleet`). Empty for a broker that predates them.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub features: BTreeSet<String>,
+    /// The identity of this incarnation's data directory (32 lowercase hex),
+    /// which a wipe changes and a restart keeps. `None` from a broker that
+    /// predates it, which placement then cannot check against a report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_id: Option<String>,
 }
 
 /// The leaders a broker last said it cannot reach, from its heartbeat.
@@ -266,12 +273,15 @@ pub struct Node {
 }
 
 impl Node {
-    /// Check identity, address, labels, and capacity hints.
+    /// Check identity, address, labels, capacity hints and storage identity.
     ///
     /// Does not check cluster-wide uniqueness of `node_id` or
     /// `spec.advertise_addr`; only a store sees enough to do that.
     pub fn validate(&self) -> Result<(), NodeValidationError> {
         validate_node_id(&self.node_id)?;
+        if let Some(storage_id) = &self.status.storage_id {
+            validate_storage_id(storage_id)?;
+        }
         self.spec.validate()
     }
 }
@@ -350,6 +360,17 @@ pub(crate) fn validate_node_id(node_id: &str) -> Result<(), NodeValidationError>
         return Err(NodeValidationError::NodeIdCharacter(bad));
     }
     Ok(())
+}
+
+/// A storage identity as brokers send it: 16 bytes in lowercase hex. One
+/// spelling only, so two equal identities always compare equal as strings.
+pub(crate) fn validate_storage_id(storage_id: &str) -> Result<(), NodeValidationError> {
+    let hex = |c: char| c.is_ascii_digit() || ('a'..='f').contains(&c);
+    if storage_id.len() == 32 && storage_id.chars().all(hex) {
+        Ok(())
+    } else {
+        Err(NodeValidationError::InvalidStorageId)
+    }
 }
 
 fn validate_advertise_addr(addr: &str) -> Result<(), NodeValidationError> {

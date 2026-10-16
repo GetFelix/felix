@@ -180,6 +180,7 @@ impl Cluster {
                         registered_at_millis: 1,
                         incarnation: 0,
                         features: Default::default(),
+                        storage_id: None,
                     },
                 })
                 .await

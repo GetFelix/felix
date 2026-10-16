@@ -188,6 +188,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
                 registered_at_millis: 1_000,
                 incarnation: 0,
                 features: Default::default(),
+                storage_id: None,
             },
         })
         .await

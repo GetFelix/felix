@@ -330,6 +330,11 @@ pub struct NodeRegistrationRequest {
     /// 409, so an enabled feature is never withdrawn by a late joiner.
     #[serde(default)]
     pub features: std::collections::BTreeSet<String>,
+    /// The identity of the broker's data directory, 32 lowercase hex digits.
+    /// A restart keeps it and a wipe changes it. Absent from a broker that
+    /// predates it, and a registration without one clears the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_id: Option<String>,
 }
 
 /// What a broker learns from registering.

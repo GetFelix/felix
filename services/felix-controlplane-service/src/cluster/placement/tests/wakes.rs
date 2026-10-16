@@ -67,6 +67,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
                 drained: true,
                 leader_offset: None,
                 halted: Default::default(),
+                follower_storage: Default::default(),
             },
             &fenced.leader,
         )

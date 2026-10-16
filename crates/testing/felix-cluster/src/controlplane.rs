@@ -57,6 +57,12 @@ const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     shard_reconcile_interval_ms: 500,
 };
 
+/// How long placement believes a report: twice the expiry plus a heartbeat
+/// (`report_ttl_millis` in the control plane's placement).
+pub(crate) fn report_ttl_millis() -> u64 {
+    LIVENESS.expiry_timeout_ms * 2 + LIVENESS.heartbeat_interval_ms
+}
+
 /// How long [`Runtime::stop`] waits for the runtime's threads to exit.
 const RUNTIME_STOP: Duration = Duration::from_secs(5);
 
@@ -333,6 +339,19 @@ impl ControlPlane {
                 )
             })
             .collect())
+    }
+
+    /// The node record the store holds for `node_id`.
+    pub async fn registered_node(
+        &self,
+        node_id: &str,
+    ) -> Result<felix_controlplane_service::model::Node> {
+        Ok(self.store.get_node(node_id).await?)
+    }
+
+    /// The store's clock.
+    pub async fn now_millis(&self) -> Result<u64> {
+        Ok(self.store.now_millis().await?)
     }
 
     /// The last replica report placement holds for a stream's shard, if any.

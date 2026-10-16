@@ -9,17 +9,17 @@ use crate::model::{
 };
 use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
-const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes ORDER BY node_id"#;
+const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation FROM nodes ORDER BY node_id"#;
 
-const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes ORDER BY node_id LIMIT $1"#;
+const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation FROM nodes ORDER BY node_id LIMIT $1"#;
 
-const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
+const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
 
-const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id = $1"#;
+const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation FROM nodes WHERE node_id = $1"#;
 
 /// `FOR UPDATE` so a concurrent register or patch of the same node waits rather
 /// than reading the row this transaction is about to replace.
-const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id = $1 FOR UPDATE"#;
+const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation FROM nodes WHERE node_id = $1 FOR UPDATE"#;
 
 /// The advisory lock registrations and finalizes serialize on ("felixreg" in
 /// ASCII).
@@ -42,6 +42,8 @@ struct DbNode {
     registered_at_millis: i64,
     incarnation: i64,
     features: serde_json::Value,
+    storage_id: Option<String>,
+    storage_id_incarnation: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -106,8 +108,8 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
     };
 
     let upsert = sqlx::query(
-        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr, zone, features)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr, zone, features, storage_id, storage_id_incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $10)
                ON CONFLICT (node_id) DO UPDATE SET
                  advertise_addr = EXCLUDED.advertise_addr,
                  client_addr = EXCLUDED.client_addr,
@@ -122,9 +124,16 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
                  registered_at_millis = EXCLUDED.registered_at_millis,
                  incarnation = EXCLUDED.incarnation,
                  features = EXCLUDED.features,
+                 storage_id = EXCLUDED.storage_id,
+                 storage_id_incarnation = EXCLUDED.storage_id_incarnation,
                  updated_at = now()"#,
     );
-    let upsert = bind_node(upsert, &stored).execute(&mut *tx).await;
+    // Written with the incarnation it belongs to, so a registration through
+    // a member that predates the column leaves an id that no longer reads.
+    let upsert = bind_node(upsert, &stored)
+        .bind(stored.status.storage_id.as_deref())
+        .execute(&mut *tx)
+        .await;
     if let Err(err) = upsert {
         if is_unique_violation(&err) {
             return Err(StoreError::Conflict(format!(
@@ -425,7 +434,7 @@ pub(super) async fn expire_stale_nodes(
     let rows = sqlx::query_as::<_, DbNode>(
         r#"UPDATE nodes SET lifecycle = 'down', updated_at = now()
                WHERE lifecycle IN ('live', 'draining') AND last_heartbeat_at_millis < $1
-               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features"#,
+               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features, storage_id, storage_id_incarnation"#,
     )
     .bind(expiry_before_millis as i64)
     .fetch_all(&mut *tx)
@@ -572,6 +581,12 @@ fn node_from_db(row: DbNode) -> StoreResult<Node> {
             registered_at_millis: row.registered_at_millis as u64,
             incarnation: row.incarnation as u64,
             features: serde_json::from_value(row.features)?,
+            // Only the registration that wrote it speaks for it (migration
+            // 0030): an older member's registration bumps the incarnation and
+            // leaves the column behind.
+            storage_id: row
+                .storage_id
+                .filter(|_| row.storage_id_incarnation == Some(row.incarnation)),
         },
     })
 }

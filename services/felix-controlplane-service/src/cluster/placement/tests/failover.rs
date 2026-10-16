@@ -568,3 +568,184 @@ fn a_quorum_cache_failover_does_not_promote_a_move_destination() {
         "the move's destination was promoted",
     );
 }
+
+/// Liveness for the tests on a dead leader's last report: believed for
+/// 2 x 1 500 + 500 ms.
+fn report_liveness() -> crate::config::NodeLivenessConfig {
+    crate::config::NodeLivenessConfig {
+        heartbeat_interval_ms: 500,
+        expiry_timeout_ms: 1_500,
+        regrant_margin_ms: None,
+        ..Default::default()
+    }
+}
+
+const REPORTED_AT: u64 = 10_000;
+const B_STORAGE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const C_STORAGE: &str = "cccccccccccccccccccccccccccccccc";
+const C_WIPED: &str = "dddddddddddddddddddddddddddddddd";
+
+/// broker-a led `orders` at generation 3 and reported broker-c caught up at
+/// [`REPORTED_AT`], under [`C_STORAGE`].
+fn last_report() -> crate::model::ReplicaReport {
+    crate::model::ReplicaReport {
+        key: assigned("orders", "broker-a", &[]).key,
+        generation: 3,
+        caught_up: BTreeSet::from(["broker-c".to_string()]),
+        offsets: BTreeMap::from([("broker-b".to_string(), 4), ("broker-c".to_string(), 10)]),
+        reported_at_millis: REPORTED_AT,
+        drained: false,
+        leader_offset: Some(10),
+        halted: Default::default(),
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        follower_storage: BTreeMap::from([
+            ("broker-b".to_string(), B_STORAGE.to_string()),
+            ("broker-c".to_string(), C_STORAGE.to_string()),
+        ]),
+    }
+}
+
+/// broker-a in `lifecycle`, last heard from at `leader_heartbeat`, and
+/// broker-b and broker-c live, broker-c at `c_incarnation` and registered
+/// with `c_storage`.
+fn cluster_after_report(
+    lifecycle: NodeLifecycle,
+    leader_heartbeat: u64,
+    c_incarnation: u64,
+    c_storage: Option<&str>,
+) -> Vec<Node> {
+    let with = |id: &str, lifecycle, heartbeat, incarnation, storage: Option<&str>| {
+        let mut node = node(id, lifecycle, None);
+        node.status.last_heartbeat_at_millis = heartbeat;
+        node.status.incarnation = incarnation;
+        node.status.storage_id = storage.map(str::to_string);
+        node
+    };
+    vec![
+        with("broker-a", lifecycle, leader_heartbeat, 1, None),
+        with(
+            "broker-b",
+            NodeLifecycle::Live,
+            REPORTED_AT,
+            2,
+            Some(B_STORAGE),
+        ),
+        with(
+            "broker-c",
+            NodeLifecycle::Live,
+            REPORTED_AT,
+            c_incarnation,
+            c_storage,
+        ),
+    ]
+}
+
+/// What placement reads of the report at `now`.
+fn positions_after_report(nodes: &[Node], now: u64) -> ReplicaPositions {
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    ReplicaPositions::new(vec![last_report()], &report_liveness(), now).with_nodes(nodes, &existing)
+}
+
+/// What placement does with `orders` at `now`.
+fn place_after_report(nodes: &[Node], now: u64) -> Option<String> {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    let positions = positions_after_report(nodes, now);
+    let plan = plan(&streams, &[], nodes, &existing, &positions);
+    plan.to_place()
+        .next()
+        .map(|(_, leader, _)| leader.to_string())
+}
+
+fn report_ttl() -> u64 {
+    super::super::replica_positions::report_ttl_millis(&report_liveness())
+}
+
+/// **A dead leader's last report stops ageing (#1250).** Nothing else will
+/// ever report on the shard, so measured against now it would expire while
+/// placement was slow, and the shard would stay unplaceable. Its age is
+/// measured to the leader's last heartbeat instead.
+#[test]
+fn a_dead_leaders_report_promotes_past_the_ttl() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    // Long past the TTL by now, well within it of the last heartbeat.
+    assert_eq!(
+        place_after_report(&nodes, REPORTED_AT + report_ttl() * 10).as_deref(),
+        Some("broker-c"),
+        "the dead leader's report expired and the shard stayed unplaced",
+    );
+}
+
+/// **A follower that only restarted still counts (#1266).** Its storage
+/// identity survives the restart, so the report still describes its log,
+/// however many times it registered since.
+#[test]
+fn a_restarted_follower_counts_past_the_ttl_of_a_dead_leader() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 7, Some(C_STORAGE));
+    assert_eq!(
+        place_after_report(&nodes, REPORTED_AT + report_ttl() * 10).as_deref(),
+        Some("broker-c"),
+        "a follower that restarted on the same data directory was not promoted",
+    );
+}
+
+/// **A follower whose storage changed is not promoted, even inside the
+/// TTL (#1266).** It came back under a new identity, so it may hold none of
+/// what the report says. With the promoted node's own log counted toward
+/// the fence's majority, promoting it can lose an acknowledged record.
+#[test]
+fn a_follower_whose_storage_changed_is_not_promoted_inside_the_ttl() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 3, Some(C_WIPED));
+    let key = assigned("orders", "broker-a", &[]).key;
+    for now in [REPORTED_AT + 1_000, REPORTED_AT + report_ttl() * 10] {
+        let positions = positions_after_report(&nodes, now);
+        assert!(!positions.is_caught_up(&key, "broker-c"), "at {now}");
+        assert_eq!(positions.reported_offset(&key, "broker-c"), None);
+        assert_eq!(positions.lag_records(&key, "broker-c"), None);
+        assert_eq!(
+            place_after_report(&nodes, now),
+            None,
+            "at {now}, broker-c was promoted on a report about its wiped log",
+        );
+    }
+}
+
+/// **A follower without an identity is read as before.** One that
+/// registered none (a broker that predates them) counts while the report is
+/// fresh, and never from a report held past its TTL for a dead leader.
+#[test]
+fn unverified_counts_within_ttl_but_never_frozen() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, None);
+    assert_eq!(
+        place_after_report(&nodes, REPORTED_AT + 1_000).as_deref(),
+        Some("broker-c"),
+    );
+    assert_eq!(
+        place_after_report(&nodes, REPORTED_AT + report_ttl() * 10),
+        None,
+        "an unverified follower was promoted from a report past its TTL",
+    );
+}
+
+/// **A live leader's report still expires.** One that heartbeats but stopped
+/// reporting may have moved on, so its old report must not make a follower
+/// look caught up: an operator move or a later failover would act on it.
+/// This holds while its heartbeat is old too, as when expiry has not caught
+/// up after a control-plane outage: only a leader marked down freezes it.
+#[test]
+fn a_live_leaders_old_report_still_expires() {
+    let now = REPORTED_AT + report_ttl() + 1;
+    let key = assigned("orders", "broker-a", &[]).key;
+    for heartbeat in [now, REPORTED_AT + 200] {
+        let nodes = cluster_after_report(NodeLifecycle::Live, heartbeat, 2, Some(C_STORAGE));
+        let positions = positions_after_report(&nodes, now);
+        assert!(
+            !positions.is_caught_up(&key, "broker-c"),
+            "a live leader heard from at {heartbeat} had its stale report believed",
+        );
+        assert_eq!(positions.reported_offset(&key, "broker-c"), None);
+    }
+}

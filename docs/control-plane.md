@@ -762,6 +762,24 @@ it. Nothing about a report survives the assignment it describes: deleting the
 assignment deletes the report, so a shard removed and recreated does not
 inherit the old one's promotability.
 
+**A follower counts only under its own storage identity.** A broker registers
+with the identity of its data directory (`storage_id`, 32 lowercase hex
+digits; any other spelling is refused with 400), and a registration without
+one clears the stored one. The leader's report names the identity it saw for
+each follower (`follower_storage`). Placement counts a follower from a report
+only while the two match, never once they differ, and by the report's age
+alone when either is missing. While the assignment is still at the report's
+generation and its leader is `down` or `left`, a matching follower's report is
+aged to the leader's last heartbeat instead of now, so a dead leader's last
+report does not expire while placement is slow (#1250). Both fields are plain
+data written as received. Under Postgres each has a marker (migration 0030):
+the node's `storage_id_incarnation` and the report's `follower_storage_at`.
+A member that predates the columns writes the row without them, and what it
+leaves behind reads as missing while the marker no longer matches the row's
+`incarnation` or `reported_at_millis`. Under Raft they need metadata level 12
+and are dropped by the proposer below it. See
+[replication-design.md](replication-design.md#who-may-be-promoted).
+
 #### How shards get placed
 
 Rendezvous hashing: every eligible node is scored against the shard, and the
