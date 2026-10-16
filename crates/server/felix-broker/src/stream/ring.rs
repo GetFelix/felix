@@ -3,10 +3,15 @@
 //!
 //! Bounded by entries and by payload bytes. The byte bound is per ring, and
 //! an optional budget is shared by every ring on the broker. Either way the
-//! oldest entries go first, so what is left is always the tail. A batch that
-//! cannot fit even into an empty ring is not kept: the ring is left empty, as
-//! a reset leaves it, and a reader below the live edge is served from disk
-//! (or told its cursor is too old, for an in-memory stream).
+//! oldest entries go first, so what is left is always the tail.
+//!
+//! A ring makes room under the shared budget only from its own entries, so
+//! a busy stream could otherwise keep every other ring empty. Each ring may
+//! therefore keep its newest batch past the shared budget, which is exceeded
+//! by at most one batch per ring. A batch larger than the whole shared
+//! budget is not kept: the ring is left empty, as a reset leaves it, and a
+//! reader below the live edge is served from disk (or told its cursor is too
+//! old, for an in-memory stream).
 
 use std::collections::VecDeque;
 
@@ -33,11 +38,16 @@ impl RingBytes {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Ring {
     entries: VecDeque<LogEntry>,
     held: PooledBytes,
     per_ring: usize,
+    /// Bytes not yet reported to `gauge`. The ring changes under the stream's
+    /// log lock on every publish, so it reports once per publish, from
+    /// [`Self::trim`].
+    unreported: isize,
+    gauge: metrics::Gauge,
 }
 
 impl Ring {
@@ -46,6 +56,8 @@ impl Ring {
             entries: VecDeque::new(),
             held: PooledBytes::new(bytes.broker.clone()),
             per_ring: bytes.per_ring,
+            unreported: 0,
+            gauge: metrics::gauge!("felix_replay_ring_bytes"),
         }
     }
 
@@ -72,26 +84,26 @@ impl Ring {
     }
 
     /// Make room for a batch of `bytes` under the broker-wide budget,
-    /// evicting this ring's oldest entries as needed. `false` when even an
-    /// empty ring cannot take it; the ring is then empty, and the caller
-    /// skips the batch so nothing newer sits above a missing record.
+    /// evicting this ring's oldest entries as needed. Once the ring is empty
+    /// the batch goes in past the budget, so other rings filling it cannot
+    /// starve this one. `false` only for a batch larger than the whole
+    /// budget; the ring is then empty, and the caller skips the batch so
+    /// nothing newer sits above a missing record.
     pub(crate) fn admit(&mut self, bytes: usize) -> bool {
-        let mut freed = 0;
         let admitted = loop {
             if self.held.try_grow(bytes) {
                 break true;
             }
             match self.entries.pop_front() {
                 Some(entry) => {
-                    freed += entry.payload.len();
+                    self.unreported -= entry.payload.len() as isize;
                     self.held.shrink(entry.payload.len());
                 }
-                None => break false,
+                None => break self.held.overdraw(bytes),
             }
         };
-        let grown = if admitted { bytes as f64 } else { 0.0 };
-        if grown != freed as f64 {
-            metrics::gauge!("felix_replay_ring_bytes").increment(grown - freed as f64);
+        if admitted {
+            self.unreported += bytes as isize;
         }
         admitted
     }
@@ -126,11 +138,18 @@ impl Ring {
         self.release(self.held.bytes());
     }
 
+    /// Give `bytes` back and report what changed since the last report.
     fn release(&mut self, bytes: usize) {
         if bytes > 0 {
             self.held.shrink(bytes);
-            metrics::gauge!("felix_replay_ring_bytes").decrement(bytes as f64);
+            self.unreported -= bytes as isize;
         }
+        match self.unreported {
+            0 => {}
+            grown if grown > 0 => self.gauge.increment(grown as f64),
+            shrunk => self.gauge.decrement(shrunk.unsigned_abs() as f64),
+        }
+        self.unreported = 0;
     }
 }
 

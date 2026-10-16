@@ -345,8 +345,14 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   equal share (the bound divided by the subscriptions on the connection), and a feeder waits only
   for its own subscription's frames. A subscription whose QUIC stream stalls stops at its share,
   its broker queue then fills and the queue policy applies, and the other subscriptions on the
-  connection carry on. A batch larger than the share still goes once the subscription has nothing
-  else in the lanes. This is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
+  connection carry on. That holds under `subscriber_lane_queue_policy: drop_new` (the default).
+  Under `block`, one subscription with `subscriber_lane_queue_depth` frames waiting stops the
+  connection writer for every subscription on the connection until it drains. A batch larger
+  than the share still goes once the subscription has nothing else in the lanes. This is not a
+  hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can
+  hold the larger of its share and one batch. The share shrinks as subscriptions are added, so a
+  connection with very many subscriptions leaves each about one frame in flight at a time. `0`
+  leaves the lanes bounded by entry counts only.
 - `subscriber_queue_max_bytes_total` (env: `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL`, default `0`, off)
   bounds the bytes all subscriber queues hold together, including batches in the writer lanes
   until they are written. It caps memory but gives up isolation: once slow subscribers fill it,
@@ -364,8 +370,10 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   bytes each stream shard's replay ring keeps, on top of its 1024 records. The oldest records go
   first; the newest is kept even when it alone is larger. `replay_ring_max_bytes_total` (env:
   `FELIX_REPLAY_RING_MAX_BYTES_TOTAL`, default `0`, off) bounds all rings together: a ring that
-  finds the total full gives up its own oldest records for room, and a batch that does not fit
-  even in an empty ring is not kept, leaving that ring empty. A shorter ring costs replay depth
+  finds the total full gives up its own oldest records for room. A ring with nothing left to give
+  up keeps its newest batch anyway, so a busy stream cannot leave every other ring empty; the
+  total is then exceeded by at most one batch per ring. A batch larger than the whole total is
+  not kept, leaving that ring empty. A shorter ring costs replay depth
   only. A resume from below it reads from disk on a durable stream, and is refused as too old on
   an in-memory stream. Neither ring bound touches fanout.
 - `cache_watch_max_bytes` (env: `FELIX_CACHE_WATCH_MAX_BYTES`, default 64 MiB) bounds the key and

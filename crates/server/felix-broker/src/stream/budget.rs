@@ -111,7 +111,7 @@ impl QueueBytes {
         SubscriberBytes {
             own: ByteBudget::new(self.per_subscriber),
             broker: self.broker.clone(),
-            gauge: self.gauge,
+            gauge: metrics::gauge!(self.gauge),
         }
     }
 }
@@ -128,7 +128,8 @@ impl Default for QueueBytes {
 pub(crate) struct SubscriberBytes {
     own: Option<ByteBudget>,
     broker: Option<ByteBudget>,
-    gauge: &'static str,
+    /// Looked up once here rather than on every batch.
+    gauge: metrics::Gauge,
 }
 
 impl SubscriberBytes {
@@ -150,7 +151,7 @@ impl SubscriberBytes {
             Some(budget) => Some(budget.try_take(bytes).ok_or(ByteBound::Broker)?),
             None => None,
         };
-        Ok(HeldBytes::new(bytes, own, broker, self.gauge))
+        Ok(HeldBytes::new(bytes, own, broker, &self.gauge))
     }
 
     /// Hold `bytes`, waiting for room in both budgets.
@@ -167,7 +168,7 @@ impl SubscriberBytes {
             Some(budget) => Some(budget.take(bytes).await),
             None => None,
         };
-        HeldBytes::new(bytes, own, broker, self.gauge)
+        HeldBytes::new(bytes, own, broker, &self.gauge)
     }
 }
 
@@ -189,11 +190,11 @@ impl ByteBound {
 
 /// Bytes one or more queued batches hold against a subscriber's byte
 /// bounds, given back on drop.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HeldBytes {
     /// What the gauge counts: zero once the subscriber's share is released.
     bytes: usize,
-    gauge: &'static str,
+    gauge: metrics::Gauge,
     own: Option<OwnedSemaphorePermit>,
     _broker: Option<OwnedSemaphorePermit>,
 }
@@ -203,14 +204,18 @@ impl HeldBytes {
         bytes: usize,
         own: Option<OwnedSemaphorePermit>,
         broker: Option<OwnedSemaphorePermit>,
-        gauge: &'static str,
+        gauge: &metrics::Gauge,
     ) -> Self {
         if bytes > 0 {
-            metrics::gauge!(gauge).increment(bytes as f64);
+            gauge.increment(bytes as f64);
         }
         Self {
             bytes,
-            gauge,
+            gauge: if bytes > 0 {
+                gauge.clone()
+            } else {
+                metrics::Gauge::noop()
+            },
             own,
             _broker: broker,
         }
@@ -228,7 +233,7 @@ impl HeldBytes {
     pub fn release_subscriber(&mut self) {
         self.own = None;
         if self.bytes > 0 {
-            metrics::gauge!(self.gauge).decrement(self.bytes as f64);
+            self.gauge.decrement(self.bytes as f64);
             self.bytes = 0;
         }
     }
@@ -240,7 +245,7 @@ impl HeldBytes {
     pub fn absorb(&mut self, mut other: HeldBytes) {
         if other.bytes > 0 {
             // Moved across without touching the gauge, which counts it once.
-            self.gauge = other.gauge;
+            self.gauge = std::mem::replace(&mut other.gauge, metrics::Gauge::noop());
         }
         self.bytes += std::mem::take(&mut other.bytes);
         merge(&mut self.own, other.own.take());
@@ -256,10 +261,22 @@ fn merge(into: &mut Option<OwnedSemaphorePermit>, from: Option<OwnedSemaphorePer
     }
 }
 
+impl Default for HeldBytes {
+    /// Holds nothing.
+    fn default() -> Self {
+        Self {
+            bytes: 0,
+            gauge: metrics::Gauge::noop(),
+            own: None,
+            _broker: None,
+        }
+    }
+}
+
 impl Drop for HeldBytes {
     fn drop(&mut self) {
         if self.bytes > 0 {
-            metrics::gauge!(self.gauge).decrement(self.bytes as f64);
+            self.gauge.decrement(self.bytes as f64);
         }
     }
 }
@@ -301,6 +318,30 @@ impl PooledBytes {
                     Ok(more) => merge(&mut self.permit, Some(more)),
                     Err(_) => return false,
                 }
+            }
+        }
+        self.bytes += more;
+        true
+    }
+
+    /// Hold `more` bytes even though the budget has no room for them, taking
+    /// what room it has. The shortfall is held against nothing, so the budget
+    /// is exceeded by at most `more`, and the first [`Self::shrink`] pays it
+    /// back before returning anything. `false`, holding nothing more, when
+    /// `more` is larger than the whole budget.
+    pub(crate) fn overdraw(&mut self, more: usize) -> bool {
+        if let Some(budget) = &self.budget {
+            if budget.units(more) > budget.max as usize {
+                return false;
+            }
+            let held = self.permit.as_ref().map_or(0, |p| p.num_permits());
+            let need = budget.units(self.bytes + more).saturating_sub(held);
+            let take = need.min(budget.permits.available_permits());
+            if let Ok(take) = u32::try_from(take)
+                && take > 0
+                && let Ok(more) = Arc::clone(&budget.permits).try_acquire_many_owned(take)
+            {
+                merge(&mut self.permit, Some(more));
             }
         }
         self.bytes += more;

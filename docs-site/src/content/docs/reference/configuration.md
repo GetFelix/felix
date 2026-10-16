@@ -459,7 +459,7 @@ subscriber_queue_max_bytes: 134217728
 
 #### `subscriber_egress_max_bytes`
 
-**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share, this divided by the subscriptions on the connection, and its feeder waits only for its own frames to be written. A subscription whose QUIC stream stalls stops at its share and its broker queue fills behind it, while the other subscriptions on the connection carry on. A shared pool would let one stalled subscription take everything. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
+**Description**: Payload bytes one connection's subscriptions may have in the writer lanes and the connection writer, from the feeder taking a batch until its frame is written. Each subscription gets an equal share, this divided by the subscriptions on the connection, and its feeder waits only for its own frames to be written. A subscription whose QUIC stream stalls stops at its share and its broker queue fills behind it, while the other subscriptions on the connection carry on. That holds under `subscriber_lane_queue_policy: drop_new`, the default; under `block`, one subscription with a full frame queue stops the connection writer for all of them. A shared pool would let one stalled subscription take everything. The share shrinks as subscriptions are added, so at very many subscriptions per connection each has about one frame in flight at a time. A batch larger than the share still goes once the subscription has nothing else in the lanes. It is not a hard ceiling: a subscription with nothing in the lanes always admits one batch, so each can hold the larger of its share and one batch. `0` leaves the lanes bounded by entry counts only.
 
 **Type**: `usize` (bytes)
 
@@ -501,7 +501,7 @@ replay_ring_max_bytes: 67108864
 
 #### `replay_ring_max_bytes_total`
 
-**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records, never another ring's; a batch that does not fit even in an empty ring is not kept, and the ring stays empty until the next one.
+**Description**: Payload bytes all replay rings on the broker may keep together. A ring that finds the total full gives up its own oldest records, never another ring's. A ring with nothing left to give up keeps its newest batch anyway, so one busy stream cannot leave the others empty; the total can then be exceeded by at most one batch per ring. A batch larger than the whole total is not kept, and the ring stays empty until the next one.
 
 **Type**: `usize` (bytes)
 
@@ -618,7 +618,7 @@ subscriber_lane_queue_depth: 64
 
 #### `subscriber_lane_queue_policy`
 
-**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `subscriber_queue_policy`; gates the actual QUIC write). `drop_new` drops the frame for that subscription alone, counted in `felix_sub_queue_dropped_total`; `block` stops the writer taking frames until it drains.
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `subscriber_queue_policy`; gates the actual QUIC write). `drop_new` drops the frame for that subscription alone, counted in `felix_sub_queue_dropped_total`; `block` stops the writer taking frames for every subscription on the connection until that queue drains.
 
 **Type**: `enum` (`block`, `drop_new`, `drop_old`)
 

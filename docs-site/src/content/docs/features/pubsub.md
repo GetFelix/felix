@@ -236,9 +236,13 @@ connection's subscriptions have in the writer lanes and the connection writer,
 256 MiB by default. Each subscription on the connection gets an equal share of
 it and waits only for its own frames to be written. A subscription whose QUIC
 stream stalls fills its share and stops there; its broker queue then fills and
-the overflow policy applies to it alone. The other subscriptions on the
-connection never wait for it. A frame larger than the share still goes once
-the subscription has nothing else waiting. Splitting the two keeps a
+the overflow policy applies to it alone. Under the default
+`subscriber_lane_queue_policy: drop_new`, the other subscriptions on the
+connection never wait for it; under `block`, a subscription with a full frame
+queue stops the connection's writer for all of them. A frame larger than the
+share still goes once the subscription has nothing else waiting. The share is
+the bound divided by the connection's subscriptions, so with very many
+subscriptions on one connection each has about one frame in flight at a time. Splitting the two keeps a
 subscriber that is keeping up from looking like one that has fallen behind
 just because its batches are in the middle of being written.
 
