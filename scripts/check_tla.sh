@@ -200,6 +200,8 @@ expectations=(
   "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
   "FelixShardSuspicion pass"
   "FelixShardSuspicionLease violates AtMostOneServing"
+  "FelixShardSuspicionWipeRoutes pass"
+  "FelixShardSuspicionWipeUnbacked violates AckedHeldByLeader"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -295,6 +297,8 @@ weights=(
   "FelixShardElectAdoptPromote 3"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
+  "FelixShardSuspicionWipeRoutes 3"
+  "FelixShardSuspicionWipeUnbacked 2"
 )
 
 weight_of() {
