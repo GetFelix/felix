@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792143568195,
+  "lastUpdate": 1792151515786,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -39732,6 +39732,72 @@ window.BENCHMARK_DATA = {
             "range": "846.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 698.00\nmean: 1082.60\nstdev: 846.84\ncv: 78.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7ffc2eeca09679e1833b24448fa8afa8e4325f05",
+          "message": "perf(broker): give subscriber queue bytes back after the frame is in the lanes (#1309)\n\n* perf(broker): give subscriber queue bytes back after the frame is in the lanes\n\n#1243 made the subscription feeder release a batch's hold on the\nsubscriber's own byte bound as soon as it took the batch, before encoding\nthe frame. That put a semaphore release on the delivery path, and P1 cells\nran 1-2% below 0.6.0-preview.7 in throughput with the tails leaning the same\nway. The feeder now splits the subscriber's hold off and drops it at the end\nof the pass, once the frame is handed to the lanes, and before any wait for\nthe flush delay. The egress share and any broker-wide hold are unchanged.\n\n* docs, test: describe and test where the feeder gives subscriber bytes back\n\nThe concurrency notes, the budget module doc and the queue-bytes builder\nstill described the release as happening when the feeder takes a batch.\nThey now say it happens once the frame is handed to the lanes, so the\nsubscriber bound also covers the encode and any wait for lane room.\n\nThe new feeder test checks the subscriber bound around a stalled lane, a\nfailed encode and the flush-delay wait.\n\n* chore: mark the egress release-point change as outside the model\n\nSpec-Unaffected: moves when a subscriber's own byte bound is given back on the delivery path; the lease, quorum mark, reports, promotion and handoff are untouched",
+          "timestamp": "2026-10-16T11:46:58Z",
+          "tree_id": "fa98d1903a2bcf631f15eed11f2fdab0dbe3ec89",
+          "url": "https://github.com/GetFelix/felix/commit/7ffc2eeca09679e1833b24448fa8afa8e4325f05"
+        },
+        "date": 1792151511285,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.80\nstdev: 1.30\ncv: 1.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 118,
+            "range": "6.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 119.60\nstdev: 6.58\ncv: 5.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 148,
+            "range": "4.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 148.40\nstdev: 4.72\ncv: 3.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 103,
+            "range": "2.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 103.00\nmean: 104.00\nstdev: 2.83\ncv: 2.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 236,
+            "range": "538.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 236.00\nmean: 478.00\nstdev: 538.40\ncv: 112.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 872,
+            "range": "3165.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 872.00\nmean: 2532.00\nstdev: 3165.98\ncv: 125.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
