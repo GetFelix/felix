@@ -984,14 +984,15 @@ fn no_routes() -> Arc<ShardRouter> {
     ))
 }
 
-/// **A wiped broker answers no fence its routing view cannot back (#1267).**
-/// Its ballots went with the directory, so a leader its old copy had refused
-/// would otherwise count it. Nothing is persisted for the refusal, and once
-/// the view has the shard the same leader is answered.
+/// **A copy with no promise answers no fence its routing view cannot back
+/// (#1267).** A wiped broker's ballots went with the directory, so a leader
+/// its old copy had refused would otherwise count it. Nothing is persisted
+/// for the refusal, and once the view has the shard the same leader is
+/// answered.
 #[tokio::test]
-async fn a_wiped_copy_takes_no_fence_its_routes_do_not_have() {
+async fn a_copy_with_no_promise_takes_no_fence_its_routes_do_not_have() {
     let (broker, _dir) = broker_with_storage().await;
-    let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes()).with_fresh_storage();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes());
 
     let answer = handler.fence(SENDER, fence(5)).await;
     let refused = refusal(&answer);
@@ -1004,20 +1005,61 @@ async fn a_wiped_copy_takes_no_fence_its_routes_do_not_have() {
     assert_eq!(log.accepted_generation(), 0);
     assert!(log.accepted_leader().is_none());
 
-    let handler =
-        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5)).with_fresh_storage();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
     taken(&handler.fence(SENDER, fence(5)).await);
 }
 
-/// At the generation its routing view has, a wiped broker answers only the
-/// leader the view names: the control plane named one leader there, and any
-/// ballot the old directory gave at it was that leader's. A newer generation
-/// was never promised, and is answered as before.
+/// **The wipe, end to end over the peer transport.** The replica took
+/// broker-a's fence at 5, its directory is wiped, and it starts again, twice, the
+/// second time with the storage id the first one wrote. Its view does not
+/// have the shard yet. The deposed leader's fence at 4 is refused both
+/// times: nothing on disk says which start was the wiped one.
 #[tokio::test]
-async fn a_wiped_copy_answers_only_the_routed_leader_at_the_routed_generation() {
+async fn a_wiped_copy_refuses_a_deposed_leaders_fence_across_restarts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        taken(&handler.fence(SENDER, fence(5)).await);
+    }
+    std::fs::remove_dir_all(dir.path()).expect("wipe");
+    std::fs::create_dir_all(dir.path()).expect("recreate");
+
+    for start in ["after the wipe", "after a second restart"] {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes());
+        let config = crate::peer::PeerTransportConfig {
+            bind: "127.0.0.1:0".parse().expect("addr"),
+            ..Default::default()
+        };
+        let server = crate::peer::PeerServer::bind(
+            LOCAL.to_string(),
+            &config,
+            Arc::new(OverTheWire(handler)),
+        )
+        .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(server.serve(shutdown.clone()));
+        let deposed = crate::peer::PeerPool::new("broker-c".to_string(), config, shutdown.clone())
+            .expect("pool");
+        let answer = deposed
+            .request(LOCAL, addr, InternalMessage::Fence(fence(4)))
+            .await
+            .expect("fence");
+        assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute, "{start}");
+        shutdown.cancel();
+    }
+}
+
+/// At the generation its routing view has, a copy with no promise answers
+/// only the leader the view names: the control plane named one leader there,
+/// and any ballot a wiped directory gave at it was that leader's. A newer
+/// generation was never promised, and is answered as before.
+#[tokio::test]
+async fn a_copy_with_no_promise_answers_only_the_routed_leader_at_the_routed_generation() {
     let (broker, _dir) = broker_with_storage().await;
-    let handler =
-        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5)).with_fresh_storage();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
 
     assert_eq!(
         refusal(&handler.fence(Some("broker-c"), fence(5)).await).code,
@@ -1026,13 +1068,12 @@ async fn a_wiped_copy_answers_only_the_routed_leader_at_the_routed_generation() 
     taken(&handler.fence(Some("broker-c"), fence(6)).await);
 }
 
-/// Once a wiped copy has taken a generation, its ballot answers, as on any
-/// other broker: the routing view is no longer needed.
+/// Once a copy has taken a generation, its ballot answers: the routing view
+/// is no longer needed.
 #[tokio::test]
-async fn a_wiped_copy_with_a_promise_since_answers_by_its_ballot() {
+async fn a_copy_with_a_promise_answers_by_its_ballot() {
     let (broker, _dir) = broker_with_storage().await;
-    let handler =
-        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4)).with_fresh_storage();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     let answer = handler
         .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
@@ -1041,7 +1082,7 @@ async fn a_wiped_copy_with_a_promise_since_answers_by_its_ballot() {
         "{answer:?}"
     );
 
-    let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes()).with_fresh_storage();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes());
     taken(&handler.fence(SENDER, fence(5)).await);
     assert_eq!(
         refusal(&handler.fence(SENDER, fence(4)).await).code,

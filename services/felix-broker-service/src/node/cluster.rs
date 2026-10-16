@@ -123,7 +123,6 @@ pub(super) fn bind_peer_listener(
     storage_id: felix_storage::StorageId,
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    fresh_storage: bool,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -142,7 +141,17 @@ pub(super) fn bind_peer_listener(
                             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
                             Arc::clone(auth),
                         ),
-                        replica_handler(broker, router, unclean, fresh_storage),
+                        match unclean {
+                            Some(unclean) => replication::ReplicaHandler::new(
+                                Arc::clone(broker),
+                                Arc::clone(router),
+                            )
+                            .with_unclean_start(unclean),
+                            None => replication::ReplicaHandler::new(
+                                Arc::clone(broker),
+                                Arc::clone(router),
+                            ),
+                        },
                     )),
                     peer_tls.clone(),
                 )
@@ -399,27 +408,5 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
             })
         }
         _ => None,
-    }
-}
-
-/// The handler for replication requests, told how this start found its data
-/// directory.
-fn replica_handler(
-    broker: &Arc<Broker>,
-    router: &Arc<ShardRouter>,
-    unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    fresh_storage: bool,
-) -> replication::ReplicaHandler {
-    let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router));
-    let handler = match unclean {
-        Some(unclean) => handler.with_unclean_start(unclean),
-        None => handler,
-    };
-    if fresh_storage {
-        // A wiped directory has lost the ballots it gave: a fence for a copy
-        // with none waits for the routing view to back it (#1267).
-        handler.with_fresh_storage()
-    } else {
-        handler
     }
 }

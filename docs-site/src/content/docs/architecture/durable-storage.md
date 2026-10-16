@@ -150,10 +150,9 @@ rules are in
 [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#storage-identity).
 
 A crash keeps the fence promises a broker gave, since those files are synced
-under every policy. A **wiped** data directory loses them, so a broker that
-starts without its storage id answers a promoted leader's fence for a copy it
-holds no promise for only once its routing view has the shard, and at that
-generation only for the leader the view names
+under every policy. A **wiped** data directory loses them, so a copy with no
+promise on disk answers a promoted leader's fence only once its routing view
+has the shard, and at that generation only for the leader the view names
 ([#1267](https://github.com/GetFelix/felix/issues/1267)).
 
 ## On-disk layout

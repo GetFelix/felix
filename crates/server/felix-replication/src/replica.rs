@@ -50,10 +50,6 @@ pub struct ReplicaHandler {
     /// Set when this process started after a crash that may have cost it
     /// records it acknowledged. See [`crate::unclean`].
     unclean: Option<Arc<crate::unclean::UncleanStart>>,
-    /// Set when this process created its data directory's storage id: the
-    /// directory is new or was wiped, so it holds no ballot it gave before.
-    /// See [`Self::refuse_unbacked`].
-    fresh_storage: bool,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -78,7 +74,6 @@ impl ReplicaHandler {
             verified: parking_lot::Mutex::new(HashMap::new()),
             mismatched: parking_lot::Mutex::new(HashMap::new()),
             unclean: None,
-            fresh_storage: false,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -88,14 +83,6 @@ impl ReplicaHandler {
     /// unclean start. See [`Self::fence`].
     pub fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
         self.unclean = Some(unclean);
-        self
-    }
-
-    /// Answer a fence for a copy with no promise on disk only when the
-    /// routing view backs it, because this process created its data
-    /// directory's storage id. See [`Self::refuse_unbacked`].
-    pub fn with_fresh_storage(mut self) -> Self {
-        self.fresh_storage = true;
         self
     }
 
@@ -1311,11 +1298,14 @@ impl ReplicaHandler {
         ))
     }
 
-    /// Refuse a fence for a copy that holds no promise, on a broker whose
-    /// data directory is new this start, unless the routing view backs it.
+    /// Refuse a fence for a copy that holds no promise on disk unless the
+    /// routing view backs it.
     ///
     /// A wiped broker has lost every ballot it gave, so on its own it would
-    /// answer a leader its old directory had promised to refuse (#1267). The
+    /// answer a leader its old directory had promised to refuse (#1267).
+    /// Every copy without a promise is held to this, not only those on a
+    /// directory new this start: nothing on disk tells a wiped copy from a
+    /// new one once the broker has restarted again. The
     /// control plane issued each generation it promised before the wipe, and
     /// a routing view taken since names the newest of them or a later one.
     /// An older generation is already refused by the routing view; at the
@@ -1336,9 +1326,6 @@ impl ReplicaHandler {
         sender: Option<&str>,
         sent: Option<u64>,
     ) -> Option<InternalMessage> {
-        if !self.fresh_storage {
-            return None;
-        }
         let opened;
         let log = match own_kind(log_kind) {
             None => log,
@@ -1472,23 +1459,23 @@ fn own_kind(log_kind: felix_broker::LogKind) -> Option<felix_broker::LogKind> {
     }
 }
 
-/// A fence refused for a wiped copy the routing view cannot back yet.
+/// A fence refused for a copy with no promise the routing view cannot back
+/// yet.
 /// Retryable: the leader asks again once this broker's watch has the shard.
 fn unbacked(correlation_id: u64, key: &felix_router::ShardKey, generation: u64) -> InternalMessage {
     tracing::info!(
         stream = %key.stream,
         shard = key.shard,
         generation,
-        "refusing a fence: this data directory is new, holds no promise for the shard, \
-         and the routing view does not have it yet",
+        "refusing a fence: this copy holds no promise and the routing view does not \
+         have the shard yet",
     );
     metrics::record_replicated(metrics::OUTCOME_BEHIND);
     refused(
         correlation_id,
         ErrorCode::StaleRoute,
         0,
-        "this broker's data directory is new and its routing view does not have the shard yet"
-            .to_string(),
+        "this copy holds no promise and the routing view does not have the shard yet".to_string(),
     )
 }
 

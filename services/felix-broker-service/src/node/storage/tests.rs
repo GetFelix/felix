@@ -94,26 +94,3 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
         );
     }
 }
-
-/// **Only a directory without its storage id starts fresh (#1267).** A new
-/// or wiped one has lost every ballot it gave; a restart, clean or not,
-/// keeps them, since ballots are synced whatever the fsync mode.
-#[test]
-fn only_a_directory_without_its_storage_id_starts_fresh() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let log = felix_storage::log::LogConfig {
-        fsync_mode: FsyncMode::None,
-        ..Default::default()
-    };
-    let first = begin_run(root.path(), &log).expect("first run");
-    assert!(RunStart::of(&first).fresh);
-    mark_clean_stop(root.path(), first.id).expect("clean stop");
-    let clean = RunStart::of(&begin_run(root.path(), &log).expect("after a clean stop"));
-    assert!(!clean.fresh && !clean.unclean);
-    // No clean stop: the process died and the id rotates, ballots kept.
-    let crashed = RunStart::of(&begin_run(root.path(), &log).expect("after a crash"));
-    assert!(!crashed.fresh && crashed.unclean);
-
-    std::fs::remove_file(root.path().join("storage-id")).expect("wipe the id");
-    assert!(RunStart::of(&begin_run(root.path(), &log).expect("after a wipe")).fresh);
-}

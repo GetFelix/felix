@@ -634,10 +634,9 @@ The broker cannot get the promise back, but the control plane can bound
 it. Without elections the control plane issues every generation before
 anyone fences for it, so the routing view a wiped broker seeds after it
 restarts names the newest generation it ever promised, or a later one, and
-the one leader named at it. So a broker that created its storage id at this
-start (a new or wiped directory, or one whose id did not decode) answers a
-fence for a copy holding no promise only as that view backs it
-(`refuse_unbacked` in `crates/server/felix-replication/src/replica.rs`):
+the one leader named at it. So a copy that holds no promise on disk
+answers a fence only as that view backs it (`refuse_unbacked` in
+`crates/server/felix-replication/src/replica.rs`):
 
 - With no route for the shard, it refuses with `StaleRoute`, which the leader
   retries, and writes nothing. The fence normally takes a view behind it,
@@ -647,22 +646,29 @@ fence for a copy holding no promise only as that view backs it
 - An older generation is refused by the view, as on any broker, and a newer
   one was never promised.
 
-Batches already need the view at their exact generation. Once the copy has
-taken a generation, its ballot answers, and the view is not consulted
-again. A restart that keeps the id keeps the ballots, so it does not apply.
-Nothing new is persisted or sent: the refusals are the ones a fence already
-gets, so old and new peers exchange the same frames.
+This holds for every copy without a promise, on any broker, not only on a
+directory whose storage id was created at this start. A wiped broker that
+restarts again before its copy takes anything starts on the id the first
+start wrote, so the start cannot tell it apart, and a copy that never held a
+promise loses nothing by waiting for the view. Batches already need the view
+at their exact generation. Once the copy has taken a generation, its ballot
+answers, and the view is not consulted again. Nothing new is persisted or
+sent: the refusals are the ones a fence already gets, so old and new peers
+exchange the same frames.
 
 This rests on the view being no older than the control plane was when the
-directory was lost. A read from a lagging Raft member can break that, as it
-can for a batch's check today. It also does not cover elections: a
-candidate's generation is not in the control plane until it is adopted, so
-no view can back a promise made to one. A wiped broker must not answer a
-candidate's fence at all before [electing without the control
-plane](#electing-without-the-control-plane) ships.
+directory was lost. The watch reads the control plane's local applied
+state, so a snapshot from a lagging Raft member can break that, as it can
+for a batch's check today. Closing it needs a leader-confirmed read of the
+assignments before such a copy answers, which the control plane does not
+serve today. It also does not cover elections: a candidate's generation is
+not in the control plane until it is adopted, so no view can back a promise
+made to one. The election driver needs its own guard before [electing
+without the control plane](#electing-without-the-control-plane) ships
+([#1331](https://github.com/GetFelix/felix/issues/1331)).
 
-The cost is a fence round trip or a few, while a wiped broker's watch
-catches up, and only for copies it has no promise for. With one replica of a
+The cost is a fence round trip or a few while a follower's watch catches up,
+only for copies with no promise: a wiped one, or a new shard's first fence. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -678,12 +684,14 @@ write acknowledged on it and lost; `FelixShardSuspicionWipeRoutes.cfg`
 passes with the follower answering only what its view backs
 (`docs/formal/README.md`, "A follower that loses its promises").
 
-Evidence: `a_wiped_copy_takes_no_fence_its_routes_do_not_have`,
-`a_wiped_copy_answers_only_the_routed_leader_at_the_routed_generation` and
-`a_wiped_copy_with_a_promise_since_answers_by_its_ballot` (replica);
-`only_a_directory_without_its_storage_id_starts_fresh` (the start);
-`a_wiped_follower_votes_in_the_next_fence` (cluster: the wiped copy still
-makes the successor's majority once its view has the shard).
+Evidence: `a_copy_with_no_promise_takes_no_fence_its_routes_do_not_have`,
+`a_wiped_copy_refuses_a_deposed_leaders_fence_across_restarts` (over the
+peer transport, after the wipe and after a second restart),
+`a_copy_with_no_promise_answers_only_the_routed_leader_at_the_routed_generation`
+and `a_copy_with_a_promise_answers_by_its_ballot` (replica);
+`a_wiped_follower_votes_in_the_next_fence` (cluster, liveness only: the
+wiped copy still makes the successor's majority once its view has the
+shard).
 
 ### Every change of leader
 

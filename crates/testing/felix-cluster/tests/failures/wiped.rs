@@ -275,7 +275,9 @@ async fn a_wiped_follower_is_not_promoted() {
 /// ballots went with the directory, so it answers a fence only as its routing
 /// view backs it. Its leader never reached it after the wipe, so its copy
 /// holds no promise when the successor fences it, and with the old leader dead
-/// the successor's majority needs it.
+/// the successor's majority needs it. Liveness only: the refusal does not
+/// strand the failover. The refusal itself is tested in
+/// `felix-replication`'s replica tests.
 #[tokio::test]
 #[serial]
 async fn a_wiped_follower_votes_in_the_next_fence() {

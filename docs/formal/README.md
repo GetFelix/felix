@@ -225,7 +225,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardSuspicion.cfg` | `FelixShardFencedAck.cfg` with placement promoting at the first generation before the lease lapses (`Suspicions = 1`), on any read, as it does on the followers' word; promotion from the leader's report, ballots and every change fenced as the broker ships, time standing still, so no lease lapses in a run | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (1.14M distinct states, 75 s on a CI runner, measured before ballots and the fence on every change were turned on, which add no states here). Not `AtMostOneServing`: the old leader serves until it hears of its successor, as under `FelixShardFencedAck.cfg` |
 | `FelixShardSuspicionLease.cfg` | `FelixShardFencedPromotion.cfg` with the same early promotion: acknowledgements on the report and the lease, time to 4 | violate `AtMostOneServing`: the old leader still serves on its lease after the new one opens |
 | `FelixShardSuspicionWipeUnbacked.cfg` | `FelixShardSuspicion.cfg` with one write and a follower that loses its data directory once, and with it the generation and ballot it promised (`LosePromises`, #1267); its log stays | violate `AckedHeldByLeader`: the follower took the successor's fence, loses it, and takes the deposed leader's write, which that leader acknowledges on the two of them; the successor opened without it |
-| `FelixShardSuspicionWipeRoutes.cfg` | the same with the fix (`PromiseFromRoutes`): a follower on a new data directory answers only what its routing view backs, which names the newest generation the control plane had issued or a later one | pass, the same invariants as `FelixShardSuspicion.cfg` (state count and time to be measured in CI) |
+| `FelixShardSuspicionWipeRoutes.cfg` | the same with the fix (`PromiseFromRoutes`): a follower with no promise on disk answers only what its routing view backs, which names the newest generation the control plane had issued or a later one | pass, the same invariants as `FelixShardSuspicion.cfg` (state count and time to be measured in CI) |
 | `FelixShardFencedAckAnyKept.cfg` | `FelixShardFencedAck.cfg` with a spare fourth broker outside the replica set (`Spares`), promotion of any replica however far behind (`Promotion = "any"`), and the promotion keeping the replica set, the old leader in it; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (0.48M distinct states, depth 31, 27 s on four workers; with `Drift = 1`, 39.0M distinct states in 35 min on four workers, by hand) |
 | `FelixShardFencedAckAnyReplaced.cfg` | the same with the promotion swapping the old leader for the spare (`ReplaceOnPromote`), as failover's `choose_replicas` would | violate `AckedHeldByLeader`: the new leader and the spare are a majority of the new set and open without the record the old leader and the third replica acknowledged |
 | `FelixShardFencedAckSeat.cfg` | `FelixShardFencedAckAnyKept.cfg` with one follower replacement (`MaxMoves = 1`): a spare joins beside a leaving follower at one generation, counting toward the quorum, and the leaving one goes at the next, once the newcomer holds what a majority of the set held when it joined (`SeatHoldsCopy`); one write, `L = 2`, time to 3, no start records | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.20M distinct states, depth 27, 90 s on a four-core CI runner) |
@@ -848,8 +848,8 @@ elections the control plane issues every generation, before anyone fences
 for it, so the routing view a wiped broker seeds on restart names the newest
 generation it ever promised, or a later one, and the one leader named there.
 With `PromiseFromRoutes` the follower answers only what that view backs,
-which is what the broker does for a copy that has no promise on a new data
-directory (`refuse_unbacked` in `crates/server/felix-replication/src/replica.rs`),
+which is what the broker does for any copy with no promise on disk
+(`refuse_unbacked` in `crates/server/felix-replication/src/replica.rs`),
 and `FelixShardSuspicionWipeRoutes.cfg` passes. The model seeds the view at
 the wipe, the oldest view a restart can read, so the code refuses at least
 as much as the model does.
@@ -857,7 +857,7 @@ as much as the model does.
 Two things this does not cover. With elections a candidate's generation is
 not in the control plane until it is adopted, so a view cannot back a
 promise made to one, and the configuration assumes `Elections = 0`; electing
-without the control plane needs another answer before it ships. And it
+without the control plane needs its own guard before it ships (#1331). And it
 takes the routing view to be no older than the control plane was at the
 wipe, which a read from a lagging Raft member can break.
 

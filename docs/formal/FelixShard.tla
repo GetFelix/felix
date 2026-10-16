@@ -287,7 +287,7 @@
 (* record acknowledged on the two of them that the new leader does not     *)
 (* hold (AckedHeldByLeader, FelixShardSuspicionWipeUnbacked.cfg). With     *)
 (* `PromiseFromRoutes` it answers only what its routing view backs, as the *)
-(* broker does for a copy on a new data directory                          *)
+(* broker does for a copy with no promise on disk                          *)
 (* (FelixShardSuspicionWipeRoutes.cfg).                                    *)
 (***************************************************************************)
 
@@ -438,7 +438,7 @@ Reclaims == FALSE
 ReclaimBlind == FALSE
 \* `LosePromises`: a follower loses its data directory once, with what it
 \* promised (`Forget`).
-\* `PromiseFromRoutes`: a follower on a new data directory answers only what
+\* `PromiseFromRoutes`: a follower with no promise on disk answers only what
 \* its routing view backs: `refuse_unbacked` and `check_role` in
 \* crates/server/felix-replication/src/replica.rs.
 LosePromises == FALSE
