@@ -41,12 +41,16 @@ impl EgressBudget {
         self.subscriptions.fetch_add(1, Ordering::Relaxed);
         EgressShare {
             budget: Arc::clone(self),
-            held: Arc::new(ShareHeld {
-                returned: AtomicUsize::new(0),
-                waiting: AtomicUsize::new(0),
-                freed: Notify::new(),
-                gauge: metrics::gauge!("felix_sub_egress_bytes"),
-            }),
+            held: {
+                let held = Arc::new(ShareHeld {
+                    returned: AtomicUsize::new(0),
+                    waiting: AtomicUsize::new(0),
+                    freed: Notify::new(),
+                    gauge: metrics::gauge!("felix_sub_egress_bytes"),
+                });
+                std::mem::forget(Arc::clone(&held));
+                held
+            },
             taken: 0,
             returned: 0,
         }
@@ -123,7 +127,7 @@ impl EgressShare {
         self.held.gauge.increment(bytes as f64);
         Some(EgressBytes {
             bytes,
-            held: Some(Arc::clone(&self.held)),
+            held: Some(Leaked(Arc::as_ptr(&self.held))),
             queue: HeldBytes::default(),
         })
     }
@@ -172,7 +176,7 @@ impl Drop for EgressShare {
 #[derive(Debug, Default)]
 pub(crate) struct EgressBytes {
     bytes: usize,
-    held: Option<Arc<ShareHeld>>,
+    held: Option<Leaked>,
     queue: HeldBytes,
 }
 
@@ -200,6 +204,7 @@ impl Drop for EgressBytes {
             return;
         }
         if let Some(held) = &self.held {
+            let held: &ShareHeld = unsafe { &*held.0 };
             // SeqCst pairs with `hold`: either the waiter's check sees this
             // release, or this sees the waiter and wakes it.
             held.returned.fetch_add(self.bytes, Ordering::SeqCst);
@@ -213,3 +218,8 @@ impl Drop for EgressBytes {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone, Copy)]
+struct Leaked(*const ShareHeld);
+unsafe impl Send for Leaked {}
+unsafe impl Sync for Leaked {}
