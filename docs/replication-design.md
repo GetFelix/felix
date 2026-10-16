@@ -1540,12 +1540,17 @@ promote it, and an acknowledged record was gone after two faults.
 
 Each broker's data directory has a **storage identity**, 16 random bytes in
 `<data dir>/storage-id`. A restart keeps it; a wiped or replaced directory
-gets a new one. The peer handshake carries it
+gets a new one. It names the directory, not what is in it, and only
+`felix-broker restore-point` rotates it. So three losses keep the id: a crash
+under `FsyncMode::Periodic` or `None` that drops an unflushed tail, an older
+copy put back by rsync or a volume snapshot, and a directory copied to
+another node. A restore or copy made by hand must delete `storage-id` so the
+broker creates a new one. The peer handshake carries it
 (`STORAGE_IDENTITY`, see `docs/internal-protocol.md`), and the pool keeps it
 with the connection.
 
 At the start of each exchange with a follower, before anything is shipped,
-the leader asks the pool for the follower's identity (`storage_identity`),
+the leader asks the pool for the follower's identity (`identity`),
 dialling if there is no connection. When it differs from the one the cursor
 was learned under, including a first identity from a follower that had none,
 the cursor starts over at the shard's base with nothing confirmed, and the

@@ -175,12 +175,12 @@ async fn a_restarted_follower_still_counts() {
     assert_eq!(report.storage_ids, vec![("broker-b".to_string(), id(1))]);
 }
 
-/// **A new incarnation starts the copy over even without a storage
-/// identity.** A follower that sends none cannot be told from a wiped copy
+/// **Without a storage identity on either side, a new incarnation starts
+/// the copy over.** A follower that sends none cannot be told from a wiped copy
 /// of itself by its storage, so before the incarnation the leader went on
 /// counting its old position across a restart.
 #[tokio::test]
-async fn a_new_incarnation_on_the_same_storage_starts_the_copy_over() {
+async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let at = |incarnation| PeerIdentity {
