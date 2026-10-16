@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792124539343,
+  "lastUpdate": 1792127904743,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31096,6 +31096,58 @@ window.BENCHMARK_DATA = {
             "range": "3532.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 786853.32\nmean: 786879.26\nstdev: 3532.99\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf7ffa36191884028e291d5257545bf0f2ade1e6",
+          "message": "fix(sdk): read the CA file with rustls-pki-types and drop the RUSTSEC-2025-0134 ignore (#1285)\n\nrustls-pemfile is unmaintained and its parsing now lives in pki-types as\nPemObject, which felix-client and the control plane already use. With\nthe SDK lockfiles clean, the repo-wide deny.toml ignore can go.\n\nCloses #1255",
+          "timestamp": "2026-10-16T05:14:33Z",
+          "tree_id": "92af63720ba19b69b03881dff9f88b31dcb24f8a",
+          "url": "https://github.com/GetFelix/felix/commit/bf7ffa36191884028e291d5257545bf0f2ade1e6"
+        },
+        "date": 1792127903892,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 500688.61,
+            "range": "44499.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500688.61\nmean: 518068.54\nstdev: 44499.25\ncv: 8.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 500688.61,
+            "range": "44499.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500688.61\nmean: 518068.54\nstdev: 44499.25\ncv: 8.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124149.7,
+            "range": "1172.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124149.70\nmean: 124067.39\nstdev: 1172.77\ncv: 0.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1241496.97,
+            "range": "11727.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1241496.97\nmean: 1240673.87\nstdev: 11727.72\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
