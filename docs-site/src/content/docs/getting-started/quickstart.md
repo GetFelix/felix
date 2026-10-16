@@ -6,8 +6,32 @@ The shortest path to a running Felix cluster with something happening on it.
 
 A broker on its own is not a working system: it authenticates every connection
 against a control plane, so it needs one to talk to and a credential to present.
-The local cluster command below starts all of that for you, which is why it is
-the first thing here rather than the last.
+Both ways of starting Felix below set all of that up for you, which is why they
+come first here rather than last.
+
+## Try it in one command
+
+With Docker or Podman and nothing else, this runs a control plane, a broker and
+development credentials from the released images:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up                       # or: podman compose up
+```
+
+When the broker is ready it prints its connection settings. Then, from the
+same directory, subscribe in one terminal and publish in another:
+
+```bash
+docker compose run --rm felixctl sub orders
+docker compose run --rm felixctl pub orders 'hello'
+```
+
+The credentials are for your machine only, and the printed settings show how
+to use an installed `felixctl` instead. See
+[Docker Compose](/deployment/docker-compose/#try-it-in-one-command) for what
+the stack runs and why its credentials are safe locally. The rest of this page
+builds Felix from source.
 
 ## Prerequisites
 

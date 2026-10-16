@@ -41,6 +41,95 @@ it drops the images' `HEALTHCHECK`.
 Use Docker Compose for local development and testing. For production, see the [Kubernetes guide](/deployment/kubernetes/).
 :::
 
+## Try it in one command
+
+`compose.yaml` at the root of the repository runs a control plane, one broker
+and development credentials from the released images. It is a single file, so
+it works from a clone or on its own:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up
+```
+
+It sits at the root because `compose.yaml` is the name Compose looks for, so
+`docker compose up` in a fresh clone finds it with no `-f`.
+
+Once the broker is ready, the stack prints its connection settings. In a second
+terminal, from the same directory:
+
+```bash
+docker compose run --rm felixctl sub orders
+```
+
+and in a third:
+
+```bash
+docker compose run --rm felixctl pub orders 'hello'
+```
+
+The subscriber prints `hello`. That `felixctl` runs inside the stack, with the
+settings already in its environment. To use one installed on your machine
+instead, copy the token and the broker's certificate out and add a context:
+
+```bash
+docker compose cp felix-broker:/var/lib/felix/client.jwt felix-dev.jwt
+docker compose cp felix-broker:/var/lib/felix/controlplane.jwt felix-dev-cp.jwt
+docker compose cp felix-broker:/var/lib/felix/broker-cert.pem felix-dev.pem
+felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
+  --token-file felix-dev.jwt --ca-file felix-dev.pem \
+  --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
+felixctl pub orders 'hello'
+```
+
+The broker makes a new certificate every time it starts, so copy
+`broker-cert.pem` again after a restart.
+
+What it runs:
+
+| Service | What it does | Host ports |
+|---------|--------------|------------|
+| `felix-controlplane` | The control plane, with its store in memory | `8443` (REST), `8081` (metrics, `/ready`) |
+| `felix-dev-auth` | Runs once: initializes tenant `dev`, creates namespace `default` and stream `orders`, and mints the tokens | none |
+| `felix-broker` | One broker, not durable | `5000-5003/udp` (QUIC), `8080` (metrics, `/ready`) |
+| `felix-dev-ready` | Prints the connection settings once the broker is ready | none |
+| `felixctl` | Only for `docker compose run` | none |
+
+Every host port is bound to `127.0.0.1`, so nothing in the stack is reachable
+from another machine. Everything is in memory: `docker compose down` discards
+the streams, the tenant and the tokens, and the next `up` starts clean.
+
+### The development credentials
+
+`felix-dev-auth` uses the control plane's
+[development tokens](/features/security/#development-tokens) through the
+ordinary bootstrap API, with no identity provider. None of this is a mode the
+control plane or broker runs in by default:
+
+- **The bootstrap token**, `felix-dev-only-bootstrap-token`, is fixed in the
+  file. With `FELIX_BOOTSTRAP_DEV_TOKENS` on, its holder can mint a token for
+  any principal. The control plane refuses to start with dev tokens unless the
+  bootstrap listener is on loopback, and logs a warning that they are on. The
+  listener is `127.0.0.1:9095` inside the control plane's container and is not
+  published; `felix-dev-auth` reaches it only because it shares that
+  container's network namespace.
+- **The broker's node token and refresh token** (`node.jwt`,
+  `node-refresh.jwt`) carry `node.view:cluster:*`, enough to read the catalog.
+  The broker renews its own token with the refresh token.
+- **The client token** (`client.jwt`) can publish and subscribe in tenant
+  `dev`, and **the control-plane token** (`controlplane.jwt`) can manage its
+  namespaces and streams. Both last a day
+  (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS=86400`), so a copy on the host outlives a
+  working session. After that, `docker compose down` and `up` mint new ones.
+
+The tokens are signed by keys the in-memory control plane generates at start
+and verified only by this stack, so they mean nothing anywhere else. Never use
+this file, or `FELIX_BOOTSTRAP_DEV_TOKENS`, for anything shared. The rest of
+this page builds a real one.
+
+CI brings the stack up on every change and does one round trip through it
+(`scripts/ci/compose_smoke.sh`, which takes `CONTAINER_ENGINE=podman`).
+
 ## What a broker needs
 
 A broker cannot run on its own. Before writing a compose file, know what it
@@ -186,8 +275,9 @@ broker a refresh token at `FELIX_NODE_REFRESH_TOKEN_FILE` (a writable path) and
 it renews its own token before it expires; see
 [Kubernetes](/deployment/kubernetes/).
 
-To try Felix without any of this, `task cluster:up` starts a control plane and
-brokers on your machine and mints the credentials itself. See
+To try Felix without any of this, `compose.yaml` mints development credentials
+for you (see [Try it in one command](#try-it-in-one-command)), and `task
+cluster:up` starts a control plane and brokers on your machine from source. See
 [Local development](/deployment/local/).
 
 ## Adding Prometheus

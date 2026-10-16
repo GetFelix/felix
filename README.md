@@ -1,6 +1,19 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/GetFelix/felix/main/docs/assets/logo.PNG" alt="Felix logo" width="360" />
 </p>
+
+**Try it in one command.** A control plane, a broker and development credentials, from the released images:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up                                      # or: podman compose up
+docker compose run --rm felixctl sub orders            # in a second terminal
+docker compose run --rm felixctl pub orders 'hello'    # and a third
+```
+
+The stack prints how to point an installed `felixctl` at it. The credentials are for local use only;
+see [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
+
 <p align="center">
   <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">
     <img src="https://github.com/GetFelix/felix/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status" />
