@@ -142,6 +142,7 @@ Its jobs:
 | `cluster` | `task test:cluster SUITE=…`, one job each for `routing`, `failures` and `history`, and one for the rest of `felix-cluster`'s suites |
 | `checks` | `task lint`, `task deny`, `task publish:check`, `task ci:toolchains`, `task ci:timeouts`, `task docs:evidence`, `task changelog:check`, `scripts/check_release_version.py`, `task demo:check` (then fails if a demo lockfile changed), `task deny:rsa:default` |
 | `images` | Builds `docker/broker.Dockerfile` and `docker/controlplane.Dockerfile`, then checks each image starts, serves `/ready` and does not run as root |
+| `compose` | Loads the images `images` built, brings up `compose.yaml` with them and does one `felixctl` publish/subscribe round trip (`scripts/ci/compose_smoke.sh`) |
 | `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
 | `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
 | `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
@@ -176,7 +177,7 @@ Other workflows:
 Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
 (`v0.6.0-preview`) is a GitHub prerelease, and its images are not tagged
 `latest`. The tag has to match every version field in the tree, and every image tag the
-docs pin (`scripts/check_release_version.py`), and its release notes are its
+docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its release notes are its
 `CHANGELOG.md` section. The workflow:
 
 - creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
