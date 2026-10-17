@@ -21,10 +21,9 @@ async fn start(finalize: bool) -> Cluster {
     start_with(finalize, Vec::new()).await
 }
 
-/// [`start`] with every record synced before it is acknowledged. A leader
-/// killed under the default `periodic` may have lost what it acknowledged,
-/// and does not come back to its generation (#1295); under `on_commit` it
-/// does.
+/// [`start`] with every record synced before it is acknowledged, so a
+/// restarted leader comes back to its generation even if its machine had
+/// crashed (#1295). Under the default `periodic` only a killed process does.
 async fn start_on_commit(finalize: bool) -> Cluster {
     start_with(
         finalize,

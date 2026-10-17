@@ -115,21 +115,36 @@ cache belongs to the kernel. It does not survive a machine crash or power loss.
 `periodic` is the default. It is the only policy whose cost is invisible on the
 append path while still bounding loss.
 
-### A crash under `periodic` or `none` changes the storage id
+### A machine crash under `periodic` or `none` changes the storage id
 
 Under those two policies a follower may have answered its leader for records a
-crash then lost, while its data directory, and so its storage id, survived.
+power loss, kernel panic or reboot then lost, while its data directory, and so
+its storage id, survived.
 Peers would go on counting it on the old position, and placement could promote
 it without those records. So a broker records, in `<root>/run-state`, that a
 run is under way before any store opens, and that it stopped cleanly once a
 SIGTERM drain has flushed every store with nothing cut short and no log
-stopped by a failed fsync. A start that finds no clean stop after a
-`periodic` or `none` run writes a new storage id before it registers or
-answers a peer. Its leaders then copy it again from the start, and placement
-no longer counts it on reports from before the crash.
+stopped by a failed fsync. The record also names the machine's boot id
+(`/proc/sys/kernel/random/boot_id` on Linux).
+A start that finds no clean stop after a `periodic` or `none` run writes a new
+storage id before it registers or answers a peer, unless the record names the
+boot still running. Its leaders then copy it again from the start, and
+placement no longer counts it on reports from before the crash.
 
-A clean stop keeps the id, and so does a crash under `on_commit`, which
-acknowledged nothing it had not synced. The first start after upgrading to a
+On Linux, a crash of the process alone, such as `SIGKILL` or an OOM kill, keeps the id.
+Every record the broker acknowledged had already been handed to the kernel,
+and the page cache that holds it outlives the process, so nothing it answered
+for is gone. Before keeping it, the broker calls `syncfs` on every filesystem
+under the data directory, with no timeout, so a later clean stop vouches only
+for what is on the device; if that sync fails, the id rotates. macOS cannot
+make that sync wait for the device, so there a process crash still rotates
+the id and costs a re-copy. A VM or container restored from a memory
+snapshot keeps its boot id, so for snapshot-restore workflows run `on_commit`
+or delete `storage-id` before starting the broker. A failed fsync takes that away: the kernel may have dropped the
+pages, so after one the broker forgets the boot, and a crash rotates the id
+whatever the boot. A boot id that cannot be read, or a record from an older
+release, counts as a machine crash. A clean stop keeps the id, and so does a
+crash under `on_commit`, which acknowledged nothing it had not synced. The first start after upgrading to a
 release with this record has none to read, and rotates only if startup would
 repair a torn tail, so an orderly roll keeps every id.
 
@@ -143,7 +158,7 @@ new storage id. A snapshot taken during the node's current registration
 looks like the live directory and is not caught; see
 [Backup and restore](/deployment/backup-and-restore/).
 
-A **leader** that crashes the same way and restarts before its shard fails
+A **leader** whose machine crashes the same way and restarts before its shard fails
 over may have acknowledged records from the tail it lost. It does not reopen
 its old generation with the shorter log: it gives up each replicated shard it
 led, on disk, so no later start leads that copy either, and does not vote

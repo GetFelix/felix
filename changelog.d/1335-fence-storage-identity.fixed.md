@@ -14,7 +14,8 @@
   gone for good and no majority that counts, the shard waits. The way out is
   to stop the promoted broker and run `felixctl placement abandon`. That keeps
   every copy in the new replica set and takes the furthest of them.
-  Under `Periodic`, the default, this includes a leader and a follower killed
-  together. The follower comes back under a new identity even when its page
-  cache kept everything, so the shard no longer serves when it returns. It
-  waits for the operator instead.
+  Under `Periodic`, the default, this includes a leader and a follower whose
+  machines go down together. The follower comes back under a new identity even
+  when nothing was lost, so the shard no longer serves when it returns. It
+  waits for the operator instead. A process killed on Linux keeps its identity
+  in the same boot (#1367), so its answer still counts.

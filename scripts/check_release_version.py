@@ -55,9 +55,17 @@ def read(path: str, kind: str) -> str | None:
 #: (or `ghcr.io/gabloe/...` for 0.6.0-preview and earlier). Only the images
 #: this repo releases: felix-gateway and the other projects built on Felix
 #: publish under the same org with versions of their own.
-DOC_ROOTS = ["docs", "docs-site/src/content/docs", "crates/tools/felixctl/README.md"]
+#: compose.yaml pins its default as `${FELIX_VERSION:-<version>}`; CI runs it
+#: from the images it builds, so bumping it in the release PR is safe.
+DOC_ROOTS = [
+    "docs",
+    "docs-site/src/content/docs",
+    "crates/tools/felixctl/README.md",
+    "compose.yaml",
+]
 IMAGE_PIN = re.compile(
-    r"ghcr\.io/(?:getfelix|gabloe)/(?:felix-broker|felix-controlplane|felixctl):(\d[0-9A-Za-z.+-]*)"
+    r"ghcr\.io/(?:getfelix|gabloe)/(?:felix-broker|felix-controlplane|felixctl)"
+    r":(?:\$\{FELIX_VERSION:-)?(\d[0-9A-Za-z.+-]*)"
 )
 
 

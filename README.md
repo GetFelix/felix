@@ -11,8 +11,20 @@ Felix is a replicated log over QUIC that serves streams, caches and queues from 
 - **Replication.** Quorum acknowledgement and fenced failover, with the protocol model-checked
   in TLA+ and fault-injection tests that kill brokers and simulate power loss mid-write.
 
-**Try it:** the [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) runs a broker and
-publishes your first message. **Read more:** [docs.getfelix.dev](https://docs.getfelix.dev).
+**Try it in one command.** A control plane, a broker and development credentials, from the released images:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up                                      # Podman: PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up
+docker compose run --rm felixctl sub orders            # in a second terminal
+docker compose run --rm felixctl pub orders 'hello'    # and a third
+```
+
+The stack prints how to point an installed `felixctl` at it. The credentials are for local use only;
+see [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
+
+The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes further, and the rest is at
+[docs.getfelix.dev](https://docs.getfelix.dev).
 
 <p align="center">
   <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">

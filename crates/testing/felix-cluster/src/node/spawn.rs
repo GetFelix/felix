@@ -5,7 +5,9 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
-use super::{BrokerNode, clock_fault_file, partition_file, storage_dir, storage_fault_file};
+use super::{
+    BrokerNode, boot_id_file, clock_fault_file, partition_file, storage_dir, storage_fault_file,
+};
 use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, Credentials, pki, ports};
 
@@ -76,6 +78,7 @@ pub(crate) fn spawn_broker(
         .env("FELIX_PEER_PARTITION_FILE", partition_file(&data_dir))
         .env("FELIX_CLOCK_FAULT_FILE", clock_fault_file(&data_dir))
         .env("FELIX_STORAGE_FAULT_FILE", storage_fault_file(&data_dir))
+        .env("FELIX_STORAGE_BOOT_ID_FILE", boot_id_file(&data_dir))
         // Each broker generates its own certificate, so each needs its own
         // file: one shared path would leave every broker but the last
         // exporting a certificate nobody can read. The client fixture

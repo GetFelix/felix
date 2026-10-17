@@ -92,7 +92,14 @@ podman run -p 8443:8443 \
 # Build the broker image, keeping its health check
 podman build --format docker -t felix-broker -f docker/broker.Dockerfile .
 
-# The Compose example
-podman compose up -d
-podman compose logs -f felix-broker
+# The one-command stack (compose.yaml at the repository root)
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose up
+podman compose run --rm felixctl pub orders 'hello'
 ```
+
+`compose.yaml` uses fully qualified image names and declares its own health
+checks, so it runs the same under both, given the `docker-compose` provider.
+Under `podman-compose` it does not: `run` cannot start the profiled `felixctl`
+service, and the broker starts even if `felix-dev-auth` failed. Its smoke test,
+`scripts/ci/compose_smoke.sh`, takes `CONTAINER_ENGINE=podman`.

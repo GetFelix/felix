@@ -593,9 +593,8 @@ async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
 /// record.
 ///
 /// Fsync on every commit, so the holder's SIGKILL loses nothing and it comes
-/// back under the identity the report named. Under `Periodic` it would come
-/// back under a new one, as a copy that may have lost the record, and the
-/// fence rightly would not count it (#1335; `FelixShardFencedCrash.cfg`).
+/// back under the identity the report named on any platform. The `Periodic`
+/// twin is `under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot`.
 #[serial]
 #[tokio::test]
 async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
@@ -686,18 +685,16 @@ async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
     cluster.shutdown().await;
 }
 
-/// **Under `Periodic`, the default, the same promotion waits for an
-/// operator.** As above, but the holder's SIGKILL is an unclean stop under
-/// `Periodic`, so it comes back under a new storage identity: a copy that may
-/// have lost the record it acknowledged with the dead leader. The promoted
-/// follower does not count it, so the shard stays closed though a holder is
-/// back (#1335). The operator's way out is to stop the promoted broker and
-/// abandon the shard's log. That places it afresh on the brokers still up,
-/// which keep the copies they hold, so the holder serves with the record its
-/// page cache kept.
+/// **Under `Periodic`, the default, the same promotion serves once a holder
+/// is back in the same boot.** The holder's SIGKILL is the process's alone:
+/// its page cache kept the record, and it restarts under the identity the
+/// failover's report named (#1367), so the promoted follower counts it
+/// (#1335). A machine crash would rotate the identity and the shard would wait
+/// for an operator; the harness cannot crash a machine, and
+/// `FelixShardFencedCrash.cfg` checks that case.
 #[serial]
 #[tokio::test]
-async fn under_periodic_a_promotion_waits_for_an_operator_after_its_holders_crash() {
+async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
     let mut cluster = start(Duration::from_secs(2)).await;
     let assignment = assignment(&cluster).await;
     let old = assignment.leader.clone();
@@ -744,41 +741,19 @@ async fn under_periodic_a_promotion_waits_for_an_operator_after_its_holders_cras
         .restart_node(&holder)
         .await
         .expect("bring a holder back");
-    // The holder answers under its new identity, which the failover's report
-    // never named, so the fence has nobody to count beside the new leader.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
-    while tokio::time::Instant::now() < deadline {
-        cluster
-            .publish_via(&new, STREAM, b"too-early".to_vec())
-            .await
-            .expect_err("the new leader counted a holder that may have lost the record");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-
-    // The operator's way out: stop the promoted broker, so placement finds
-    // the shard stranded, and give its log up.
-    cluster.kill_node(&new).expect("stop the promoted broker");
     felix_cluster::wait::until(
         Duration::from_secs(30),
-        "the shard to be abandoned",
-        || async { cluster.abandon_log(STREAM, 0).await.is_ok() },
-    )
-    .await
-    .expect("the operator abandons the stranded shard");
-    felix_cluster::wait::until(
-        Duration::from_secs(30),
-        "the holder to serve the abandoned shard",
+        "the new leader to serve",
         || async {
-            cluster.place_shards().await;
             cluster
-                .publish_via(&holder, STREAM, b"after".to_vec())
+                .publish_via(&new, STREAM, b"after".to_vec())
                 .await
                 .is_ok()
         },
     )
     .await
-    .expect("the holder serves");
-    assert_holds(&cluster, &holder, &acknowledged).await;
+    .expect("the new leader counts the holder that kept its identity, and serves");
+    assert_holds(&cluster, &new, &acknowledged).await;
     cluster.shutdown().await;
 }
 

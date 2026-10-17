@@ -354,9 +354,8 @@ async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
 /// cannot fence a majority stays closed, so it never reports or marks.
 /// Four brokers and one `Quorum` shard on three, syncing every record before
 /// acknowledging it. These tests kill the destination and the old leader and
-/// expect the destination to lead again when it returns: under the default
-/// `periodic` a killed leader may have lost what it acknowledged, and gives
-/// its generation up instead (#1295).
+/// expect the destination to lead again when it returns, which under the
+/// default `periodic` holds only while its machine did not crash (#1295).
 fn cut_short_config() -> ClusterConfig {
     ClusterConfig {
         nodes: 4,

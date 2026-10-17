@@ -1115,18 +1115,38 @@ every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felix-broker restore-point` also writes a
 new one, because restored logs are an older copy of what peers last saw here.
 
-A crash under `Periodic` or `None` keeps the directory but can lose the
-unsynced tail of a log, records the broker may already have acknowledged to a
-client or a leader. So the broker gives the directory a new id when it starts
-after one. `<root>/run-state` (format in `docs/storage-format.md`) records
-which it was:
+A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
+reboot) keeps the directory but can lose the unsynced tail of a log, records
+the broker may already have acknowledged to a client or a leader. So the
+broker gives the directory a new id when it starts after one. A crash of the
+broker's process alone (`SIGKILL`, an OOM kill, a panic) loses none of them:
+every acknowledged record was handed to the kernel with `write` before it was
+acknowledged, and the page cache that holds it outlives the process and is
+still written back. So on Linux the id stays. `<root>/run-state` (format in
+`docs/storage-format.md`) records which it was:
 
 - **At startup**, before any store opens, the broker reads the id and the
   record. If the last run was under `Periodic` or `None` and did not record a
-  clean stop, it writes a new id. Then it records that a run is under way,
-  and under which mode, and syncs that with the directory before any store
-  opens. Recovery is this run's first write, and only the id this returns is
-  sent to peers or the control plane.
+  clean stop, it writes a new id unless the record names the boot of the
+  machine still running ([#1367](https://github.com/GetFelix/felix/issues/1367)).
+  Keeping the id that way first calls `syncfs` once for each filesystem
+  under the data directory (one per device among the root and every
+  directory below it, so a shard on another mount is covered). What the
+  crashed process left to the page cache is then on the device before the
+  id is announced, and a later clean stop vouches only for what is there.
+  Without it, a retired segment the crashed run never sealed would stay
+  dirty, and a power loss after the next clean stop would lose it under the
+  same id. The sync also reports a writeback error the crashed process never
+  saw. If it fails, the id rotates. It has no timeout: a dead or very slow
+  disk holds startup here, as recovery would anyway.
+- **Linux only.** macOS's `sync` only queues the writes, so nothing there
+  can say the page cache reached the device, and a relaxed crash on macOS,
+  or any platform but Linux, rotates the id as it did before: a process
+  crash under `periodic` or `none` still costs a re-copy there.
+  Then it records that a run is under way, under which mode, and in which
+  boot, and syncs that with the directory before any store opens. Recovery is
+  this run's first write, and only the id this returns is sent to peers or the
+  control plane.
 - **On a stop**, after every store (streams, caches, groups, dead letters,
   counters) is flushed, the broker records a clean stop. Only if the flush
   succeeded, no drain step that can write ran past its deadline (one still
@@ -1140,15 +1160,61 @@ which it was:
   task the runtime contains does not stop the process, and the stop that
   follows is judged like any other. So is a record that does not decode or
   names another id.
+- **A failed fsync forgets the boot.** The kernel may drop the pages it could
+  not write, so from then on the page cache no longer vouches for what the run
+  acknowledged. The first failed sync of a segment, and the first log
+  poisoned in the process, rewrite the record without its boot, and so does
+  a stop whose flush failed. A crash after that
+  rotates the id in any boot. That rewrite is not synced: only a process crash
+  has to find it, and a machine crash rotates anyway.
+
+The boot is the kernel's boot id, `/proc/sys/kernel/random/boot_id`, read
+once at startup (macOS records `kern.bootsessionuuid`, but never keeps an id
+on it). Every restart, kernel
+panic and `kexec` gives a new one. A container sees its host's, which is the
+right one, since the page cache is the host's too. A volume moved to another
+machine meets a different boot id and rotates, as it should. Where there is
+no boot id, on another platform or when it cannot be read, a crash rotates as
+if the machine had gone down, and so does a record an older release wrote,
+which names no boot. Silence never keeps the id.
+
+One rollback the boot id cannot see: restoring a VM or container from a
+memory snapshot, or a disk snapshot taken with the machine running, puts
+the broker back in a boot whose id has not changed, with the page cache and
+the disk both older than what peers last saw. A run that crashes after such
+a restore keeps its id. Where snapshot restores are part of operations, run
+`on_commit`, or delete `storage-id` from the restored data directory before
+the broker starts, as for any restored copy (see "Restoring to a backup
+point" and [#1334](https://github.com/GetFelix/felix/issues/1334)).
 
 A crash under `OnCommit` keeps the id, since every record it acknowledged was
 synced first. The record names the mode of the run that crashed, so changing
 the mode across a restart does not hide one. A clean stop keeps the id under
-every mode. The cost of a crash is one copy started over per shard the broker
-follows: its leaders learn the new id and compare from the shard's base. A
-crash of a process does not lose its page cache, so the rotation is often
-more than the crash needed; nothing at startup can tell a process crash from
-a power loss.
+every mode. The cost of a machine crash is one copy started over per shard
+the broker follows: its leaders learn the new id and compare from the shard's
+base.
+
+Keeping the id after a process crash rests on one property of the write path:
+nothing is acknowledged while it is still only in the process's memory.
+
+- A batch is encoded into a staging buffer and handed to the kernel with one
+  `write` on the log's append thread. The append is acknowledged only after
+  that `write` returned, so a record a client or a leader heard about is in
+  the page cache.
+- No log uses `O_DIRECT`, `mmap` or a user-space write buffer for data. The
+  optional `io_uring` path (`FELIX_STORAGE_IO_URING`) submits only `fsync` and
+  polls, never a write, and under `OnCommit` the acknowledgement waits for its
+  completion.
+- What is written behind is derived: a segment's sparse index and a cache's
+  key index (`keys.idx`), both rebuilt from the segment when short, and the
+  `durable.mark`, which only bounds what recovery may call damage.
+- The one exception is a replicated log's commit offset, which under a relaxed
+  mode reaches disk at most once a second (`DiskLog::advance_commit_offset`).
+  After a process crash it can read back behind, so a follower's refusal to
+  truncate below it guards less until the leader's next batch carries it
+  again. It is not a record and not what the id vouches for: a follower
+  truncates only at the request of a leader at a generation it accepted, and
+  such a leader holds every committed record.
 
 The first start on a release with this record finds none. It rotates only if
 the id was already there and startup would repair a shard: a torn tail, a
@@ -1156,9 +1222,14 @@ rollover left half done, or damage it refuses (it runs the recovery plan for
 every shard to find out, which reads the active segments once more). An
 orderly roll therefore keeps every id. A crash of the older release that left
 no torn tail, which a power loss on page boundaries can, is not detected on
-that one start. A downgrade leaves the record as this release wrote it, and
-an older release ignores it; a crash under the older release before moving up
-again is not detected either.
+that one start. A downgrade after a clean stop keeps the id: a clean stop is
+written in the layout older releases read. A relaxed run under way is written
+in a newer layout that names the boot, which an older release does not
+decode and so reads as a relaxed crash, as it would its own record of that
+run: a downgrade after a crash rotates, as it did before. A record written by
+the release before boot ids (#1284) names no boot, so the first crash after
+moving up rotates. A crash under a release older than #1284, before moving up
+again, is not detected.
 
 **A directory older than the node's last registration also gets a new id**
 ([#1334](https://github.com/GetFelix/felix/issues/1334)). A data directory put

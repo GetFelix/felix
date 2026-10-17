@@ -201,6 +201,51 @@ jobs:
             exit 1
           }
 
+      # For the compose job, which runs the stack from these images.
+      - name: Save ${{ matrix.image }}
+        run: docker save ${{ matrix.image }}:ci | gzip -1 > "${{ runner.temp }}/${{ matrix.image }}.tar.gz"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.image }}
+          path: ${{ runner.temp }}/${{ matrix.image }}.tar.gz
+          retention-days: 1
+
+  # The one-command stack in compose.yaml, run from the images this tree
+  # builds rather than the release it pins: one publish/subscribe round trip,
+  # so the README's command keeps working and a release PR that bumps the pin
+  # does not depend on images that are not published yet.
+  compose:
+    needs: [changes, images]
+    name: Compose stack round trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      needs.changes.outputs.code == 'true' && (
+        github.event_name == 'push' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+      )
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/images
+          pattern: image-*
+          merge-multiple: true
+      - name: Load the images under the names compose.yaml uses
+        run: |
+          set -euo pipefail
+          for image in felix-controlplane felix-broker felixctl; do
+            gunzip -c "${{ runner.temp }}/images/$image.tar.gz" | docker load
+            docker tag "$image:ci" "ghcr.io/getfelix/$image:ci"
+          done
+      - name: Publish and subscribe through compose.yaml
+        env:
+          FELIX_VERSION: ci
+          COMPOSE_PULL: never
+        run: scripts/ci/compose_smoke.sh
+
   # Heavy, so pushes to main run it on the self-hosted Azure runners. Every PR
   # runs on GitHub-hosted: that keeps PRs out of the Azure queue, and fork code
   # never reaches a persistent machine. See docs-site development/building.md.
@@ -777,7 +822,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, test, cluster, checks, docs-evidence, chart, python, typescript, spec-pairing, formal, fuzz]
+    needs: [changes, images, compose, test, cluster, checks, docs-evidence, chart, python, typescript, spec-pairing, formal, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

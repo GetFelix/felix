@@ -56,10 +56,11 @@ fn the_storage_id_is_kept_on_disk_and_random_without_one() {
     );
 }
 
-/// **A crash under `Periodic` or `None` starts under a new storage id
-/// (#1284)**, since its unsynced tail may be gone. A clean stop keeps the id
-/// under every mode, and so does a crash under `OnCommit`, which acknowledged
-/// nothing it had not synced.
+/// **A crash under `Periodic` or `None` that the boot cannot vouch for
+/// starts under a new storage id (#1284)**, since its unsynced tail may be
+/// gone. On Linux a process crash in the same boot keeps it (#1367): the
+/// page cache kept the tail. A clean stop keeps the id under every mode, and so does a
+/// crash under `OnCommit`, which acknowledged nothing it had not synced.
 #[test]
 fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
     let modes = [
@@ -72,7 +73,10 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
         ),
         (FsyncMode::OnCommit, false),
     ];
-    for (fsync_mode, rotates) in modes {
+    // Only Linux can sync the page cache to the device and has a boot id to
+    // compare; elsewhere, macOS included, every relaxed crash rotates.
+    let known_boot = cfg!(target_os = "linux") && felix_storage::run_state::this_boot().is_some();
+    for (fsync_mode, relaxed) in modes {
         let root = tempfile::tempdir().expect("tempdir");
         let log = felix_storage::log::LogConfig {
             fsync_mode,
@@ -84,11 +88,16 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
             .expect("after a clean stop")
             .id;
         assert_eq!(second, first, "{fsync_mode:?}: a clean stop kept the id");
-        // No clean stop: the process died.
+        // No clean stop: the process died, the machine did not.
+        let killed = begin_run(root.path(), &log, None).expect("after a process crash");
+        assert_eq!(killed.rotated, relaxed && !known_boot, "{fsync_mode:?}");
+        // A failed fsync, or a boot that cannot be compared, leaves the
+        // boot unknown, as a machine crash does.
+        forget_boot(root.path()).expect("forget the boot");
         let third = begin_run(root.path(), &log, None).expect("after a crash");
-        assert_eq!(third.rotated, rotates, "{fsync_mode:?}");
+        assert_eq!(third.rotated, relaxed, "{fsync_mode:?}");
         let third = third.id;
-        assert_eq!(third != second, rotates, "{fsync_mode:?}");
+        assert_eq!(third != killed.id, relaxed, "{fsync_mode:?}");
         assert_eq!(
             storage_id(Some(root.path())).expect("load"),
             third,

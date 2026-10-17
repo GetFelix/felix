@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::Cluster;
 use super::startup::MAX_SPAWN_ATTEMPTS;
-use crate::node::{power_loss_image, storage_fault_file};
+use crate::node::{new_boot, power_loss_image, storage_fault_file};
 
 /// How long a broker told to lose power has to build its image and die. The
 /// image is a copy of its storage, which in a harness run is small.
@@ -86,6 +86,9 @@ impl Cluster {
         for index in running {
             let node = &self.nodes[index];
             clear_power_loss(&storage_fault_file(&node.data_dir))?;
+            // Its machine comes back in a new boot, so the page cache that
+            // held its unsynced writes is gone and its next start says so.
+            new_boot(&node.data_dir)?;
             let image = power_loss_image(&node.data_dir);
             remove_dir_if_present(&image.with_extension("partial"))?;
             if !image.exists() {
