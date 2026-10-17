@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792256518166,
+  "lastUpdate": 1792258445891,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32188,6 +32188,58 @@ window.BENCHMARK_DATA = {
             "range": "6743.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1212179.28\nmean: 1210235.20\nstdev: 6743.52\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9fd2930ac43eada3e7ede6d43425a7e6ae343197",
+          "message": "docs: make the case for Felix on each use-case page, with a try-it path (#1392)\n\n* docs: make the case for Felix on each use-case page, with a try-it path\n\nEach scenario page gets a Why Felix fits section with mechanism-backed\nreasons, comparisons that say what Felix does better as well as what the\nother system does, and a Try it section that runs against the compose\nstack. The overview leads with what Felix changes.\n\nThe compose dev stack now runs the broker with durable storage, so caches\nare log-backed and watchable, makes orders durable for consumer groups,\ncreates config and stats caches, and widens the dev tokens to manage and\nuse them. The compose smoke test runs the try-it commands: retained and\nprefix watches with a delete, counters, replay by offset, a nacked group\nclaim coming back, a cross-tenant refusal and TTL expiry.\n\n* compose: create the broker's storage dir before it starts\n\n* compose smoke: match the refusal felixctl actually prints for a foreign tenant",
+          "timestamp": "2026-10-17T17:29:39Z",
+          "tree_id": "ab4c1532046839aa65e84eb5358fe364e8528985",
+          "url": "https://github.com/GetFelix/felix/commit/9fd2930ac43eada3e7ede6d43425a7e6ae343197"
+        },
+        "date": 1792258445266,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340054.51,
+            "range": "8847.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340054.51\nmean: 341610.24\nstdev: 8847.04\ncv: 2.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340054.51,
+            "range": "8847.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340054.51\nmean: 341610.24\nstdev: 8847.04\ncv: 2.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81036.44,
+            "range": "505.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81036.44\nmean: 80852.81\nstdev: 505.39\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810364.4,
+            "range": "5053.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810364.40\nmean: 808528.05\nstdev: 5053.89\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
