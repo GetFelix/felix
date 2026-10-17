@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792204928606,
+  "lastUpdate": 1792206630535,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31928,6 +31928,58 @@ window.BENCHMARK_DATA = {
             "range": "21805.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1733453.48\nmean: 1733306.21\nstdev: 21805.25\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de88f3b3d0c73bb767998ada2eb614ef801b8f6d",
+          "message": "fix(storage): keep the storage id across a process crash; rotate only after a new boot (#1371)\n\n* fix(storage): keep the storage id across a process crash; rotate only after a new boot\n\nUnder periodic or none fsync, run-state now records the machine's boot id\n(Linux /proc/sys/kernel/random/boot_id, macOS kern.bootsessionuuid via\nsysctlbyname). An unclean stop in the same boot keeps the storage id: the\npage cache outlived the process and every acknowledged record had already\nbeen write()n. A different or unknown boot rotates, as before. The first\npoisoned log in the process, or a stop whose flush failed, forgets the boot\nso a later crash still rotates.\n\nThe boot is written only in a relaxed run's \"running\" record (version 2,\n44 bytes). A clean stop and every other record keep the version 1 layout,\nso a downgrade after a clean stop keeps the id, and an older build reads a\nversion 2 record as the relaxed crash it would have recorded itself.\n\nTLA+: Crash tells a process crash (keeps the log) from a machine crash\n(may lose the suffix). FelixShardProcessCrashKeepsId and\nFelixShardLeaderProcessCrash pass; FelixShardMachineCrashKeepsId, where\nthe boot check takes a machine crash for a process crash, violates\nAckedSurvive.\n\nCloses #1367.\n\n* fix(storage): sync the filesystem before keeping the id after a process crash\n\nA kept-id restart could later record a clean stop over pages only the\nkernel held: a retired segment the crashed run never sealed is opened as\nsealed and never synced, so a power loss after the clean stop would lose\nacknowledged records under the same id. run_state::begin now syncs the\ndata directory's filesystem (syncfs on Linux, sync plus one F_FULLFSYNC on\nmacOS) before it keeps the id, and rotates if that fails or the platform\nhas no such sync. The sync also surfaces writeback errors the crashed\nprocess never saw.\n\nA segment writer's failed sync or seal now forgets the boot at once rather\nthan at the log's next flush.\n\nTLA+: CleanStop, after a kept process crash, stops cleanly and may lose\npower while down. FelixShardProcessCrashKeepsId runs it with SyncOnKeep;\nFelixShardCleanStopUnsynced, without it, violates AckedSurvive.\nFelixShardLeaderProcessCrash now runs the clock to 3.\n\nDocs: the sync, and the memory-snapshot restore a boot id cannot see.\n\n* fix(storage): keep the id only on Linux, syncing every filesystem under the root\n\nXNU's sync() only queues writes, so on macOS nothing can show the crashed\nrun's page cache reached the device before the kept id is announced.\nsync_filesystems is now Linux only and returns Unsupported elsewhere, so a\nrelaxed crash on macOS rotates as before #1367.\n\nOn Linux it calls syncfs once per device among the data root and every\ndirectory below it, so a shard on another mount is covered. It has no\ntimeout.\n\nEvery log's poison now forgets the boot, not only the first in the\nprocess: a second log could otherwise return before the first one's\nrewrite landed.\n\n* fix(storage): skip unreadable subdirectories when finding filesystems to sync\n\nA root-owned lost+found under a mount-point data root would otherwise fail\nthe sync and rotate the id after every crash. Its device is already\nrecorded from the stat.",
+          "timestamp": "2026-10-17T03:06:08Z",
+          "tree_id": "1fa1dc3b719af521f34b45422e126820b363df2e",
+          "url": "https://github.com/GetFelix/felix/commit/de88f3b3d0c73bb767998ada2eb614ef801b8f6d"
+        },
+        "date": 1792206630001,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343076.49,
+            "range": "17481.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343076.49\nmean: 346860.03\nstdev: 17481.61\ncv: 5.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343076.49,
+            "range": "17481.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343076.49\nmean: 346860.03\nstdev: 17481.61\ncv: 5.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81018.23,
+            "range": "807.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81018.23\nmean: 81113.21\nstdev: 807.63\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810182.32,
+            "range": "8076.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810182.32\nmean: 811132.14\nstdev: 8076.32\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
