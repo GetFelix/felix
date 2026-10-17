@@ -15,7 +15,7 @@ design.
 
 | Day | Night |
 |---|---|
-| ![felix-metro style frame at noon: suburbs, downtown towers and an industrial district on a road grid, seen from above through a tilt-shift lens](/built-on-felix/metro-day.webp) | ![The same city at night, with lit windows, street lights and the Felix tower's cyan crown](/built-on-felix/metro-night.webp) |
+| ![felix-metro style frame at noon: suburbs, downtown towers and an industrial district on a road grid, seen from above through a tilt-shift lens](/built-on-felix/metro-day.webp?v=3) | ![The same city at night, with lit windows, street lights and the Felix tower's cyan crown](/built-on-felix/metro-night.webp?v=3) |
 
 ## How it uses Felix
 
