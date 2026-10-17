@@ -509,13 +509,15 @@ ASSUME LosePromises => /\ Elections = 0 /\ Wipes = 0 /\ AckByFollowers /\ FenceO
 ASSUME PromiseFromRoutes => LosePromises
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
-\* identities the report named. There a leader knows no follower's identity
-\* until it has asked (`Unnamed`, any value no identity reaches), and asks
-\* before it ships, as `follow_storage` runs at the start of each exchange. A
-\* report made before then names none for it. On the report path every
-\* identity starts known, as those configurations were measured.
+\* identities the report named. With `UnprobedStart` the first leader knows
+\* neither follower's identity until it has asked (`Unnamed`, any value no
+\* identity reaches), so a report made before then names none for it. The
+\* code asks before it ships; the model lets it ship first, which only admits
+\* more. Elsewhere every identity starts known, which keeps the state space
+\* down.
 FencedIds == FenceOnPromote /\ StorageIds /\ Wipes > 0
 Unnamed == 99
+UnprobedStart == FALSE
 
 VARIABLES
     now,        \* real time
@@ -771,8 +773,10 @@ CounterInit ==
 
 IdInit ==
     /\ sid = [m \in Brokers |-> 0]
-    /\ seen = [m \in Brokers |-> [n \in Brokers |-> IF FencedIds /\ n /= m THEN Unnamed ELSE 0]]
-    /\ seenInc = [m \in Brokers |-> [n \in Brokers |-> IF FencedIds /\ n /= m THEN 0 ELSE 1]]
+    /\ seen = [m \in Brokers |-> [n \in Brokers |->
+                 IF FencedIds /\ UnprobedStart /\ m = leader /\ n /= m THEN Unnamed ELSE 0]]
+    /\ seenInc = [m \in Brokers |-> [n \in Brokers |->
+                    IF FencedIds /\ UnprobedStart /\ m = leader /\ n /= m THEN 0 ELSE 1]]
     /\ wipes = 0
     /\ checked = [m \in Brokers |-> {}]
     /\ registered = [m \in Brokers |-> 1]
@@ -1033,7 +1037,6 @@ Ship(b, f) ==
        ELSE UNCHANGED << bgen, fencing, queued, pending >>
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
-    /\ FencedIds => seen[b][f] /= Unnamed
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
