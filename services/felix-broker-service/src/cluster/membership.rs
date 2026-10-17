@@ -92,6 +92,16 @@ struct RegistrationResponse {
     fleet_features: BTreeSet<String>,
 }
 
+/// `GET /v1/nodes/{node_id}`.
+#[derive(Debug, Deserialize)]
+struct NodeDetail {
+    node: NodeView,
+}
+
+/// The longest wait between asks at startup, where nothing is served until
+/// the control plane answers.
+const STARTUP_RETRY_CAP: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Deserialize)]
 struct NodeView {
     status: NodeStatusView,
@@ -262,6 +272,80 @@ pub async fn register(
         heartbeat_interval_ms: registered.heartbeat_interval_ms,
         fleet_features: registered.fleet_features,
     })
+}
+
+/// The incarnation the control plane has `node_id` registered at, or `None`
+/// when it has never registered it.
+pub async fn registered_incarnation(
+    client: &reqwest::Client,
+    base_url: &str,
+    node_id: &str,
+    credential: &crate::cluster::credential::NodeCredential,
+) -> std::result::Result<Option<u64>, MembershipError> {
+    let response = client
+        .get(format!(
+            "{}/v1/nodes/{node_id}",
+            base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(credential.bearer())
+        .send()
+        .await
+        .with_context(|| format!("look up node {node_id} at {base_url}"))
+        .map_err(MembershipError::Unavailable)?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        // A refreshed credential can still come in, so a 401 is waited out.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(MembershipError::Unavailable(anyhow!(
+                "control plane did not accept the credential looking up {node_id} ({status}): {body}"
+            )));
+        }
+        return Err(MembershipError::from_status(
+            status,
+            format!("control plane refused to look up {node_id} ({status}): {body}"),
+        ));
+    }
+    let detail: NodeDetail = response
+        .json()
+        .await
+        .context("decode node lookup response")
+        .map_err(MembershipError::Unavailable)?;
+    Ok(Some(detail.node.status.incarnation))
+}
+
+/// [`registered_incarnation`], asked until the control plane answers. Fails
+/// only when it refuses. The broker announces no storage id until this
+/// returns, so an outage holds startup rather than letting a directory older
+/// than the node's last registration be counted on.
+pub async fn await_registered_incarnation(
+    client: &reqwest::Client,
+    base_url: &str,
+    node_id: &str,
+    credential: &crate::cluster::credential::NodeCredential,
+) -> Result<Option<u64>> {
+    let mut attempt = 0u64;
+    loop {
+        match registered_incarnation(client, base_url, node_id, credential).await {
+            Ok(incarnation) => return Ok(incarnation),
+            Err(MembershipError::Rejected(message)) => return Err(anyhow!(message)),
+            Err(MembershipError::Unavailable(err)) => {
+                attempt += 1;
+                tracing::warn!(
+                    node_id,
+                    attempt,
+                    error = %err,
+                    "could not ask the control plane for this node's incarnation; the data \
+                     directory's storage id is not announced until it answers; retrying",
+                );
+                let delay = backoff(Duration::from_millis(500), attempt).min(STARTUP_RETRY_CAP);
+                tokio::time::sleep(jittered(delay)).await;
+            }
+        }
+    }
 }
 
 /// Why [`run_heartbeat`] returned.
@@ -455,6 +539,7 @@ pub fn spawn(
     incarnation: Arc<AtomicU64>,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
+    record_in: Option<std::path::PathBuf>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
@@ -503,6 +588,9 @@ pub fn spawn(
                         }
                     }
                 };
+                if let Some(root) = &record_in {
+                    record_registration(root, registration.incarnation).await;
+                }
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
                 incarnation.store(registration.incarnation, Ordering::Release);
@@ -538,6 +626,30 @@ pub fn spawn(
         consecutive_failures,
         lease,
         fleet,
+    }
+}
+
+/// Note in the data directory under `root` that the node registered at
+/// `incarnation`, so a later start can tell this directory from an older
+/// copy of it. A failure is logged and not retried: the next start then reads
+/// the directory as older and rotates its id, which is safe.
+async fn record_registration(root: &std::path::Path, incarnation: u64) {
+    let root = root.to_path_buf();
+    let written = tokio::task::spawn_blocking(move || {
+        felix_storage::run_state::record_registration(&root, incarnation)
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::error!(
+            incarnation,
+            error = %err,
+            "could not record the registration in the data directory; its next start will \
+             give it a new storage id"
+        ),
+        Err(err) => {
+            tracing::error!(incarnation, error = %err, "recording the registration panicked")
+        }
     }
 }
 

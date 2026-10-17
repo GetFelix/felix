@@ -617,6 +617,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
     let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
         30,
     )));
+    let data = tempfile::tempdir().expect("tempdir");
 
     let task = spawn(
         client,
@@ -631,6 +632,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         Arc::default(),
         tokio::sync::watch::channel(None).0,
         None,
+        Some(data.path().to_path_buf()),
     );
 
     for _ in 0..300 {
@@ -660,6 +662,11 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         "the new registration renews the lease"
     );
     assert!(!task.fatal.is_cancelled());
+    assert_eq!(
+        felix_storage::run_state::read_registration(data.path()).expect("read"),
+        felix_storage::run_state::Recorded::At(1),
+        "each registration is recorded in the data directory",
+    );
 
     let _ = stop.send(());
     let _ = handle.await;
@@ -838,6 +845,134 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
 
     shutdown.cancel();
     beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that answers `GET /v1/nodes/{id}` with `status` until
+/// `failures` run out, then with the node at `incarnation` (404 when `None`).
+async fn serve_lookup(
+    failures: usize,
+    status: axum::http::StatusCode,
+    incarnation: Option<u64>,
+) -> (
+    String,
+    Arc<Mutex<usize>>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let asked = Arc::new(Mutex::new(0usize));
+    let app = axum::Router::new()
+        .route(
+            "/v1/nodes/{node_id}",
+            axum::routing::get(
+                move |State(asked): State<Arc<Mutex<usize>>>, Path(id): Path<String>| async move {
+                    let mut asked = asked.lock().expect("lock");
+                    *asked += 1;
+                    if *asked <= failures {
+                        return Err(status);
+                    }
+                    match incarnation {
+                        Some(incarnation) if id == "broker-a" => Ok(Json(json!({
+                            "node": {
+                                "node_id": id,
+                                "status": { "incarnation": incarnation, "lifecycle": "live" },
+                            },
+                            "placement": { "eligible": true },
+                        }))),
+                        _ => Err(axum::http::StatusCode::NOT_FOUND),
+                    }
+                },
+            ),
+        )
+        .with_state(Arc::clone(&asked));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    (format!("http://{addr}"), asked, stop, handle)
+}
+
+/// The startup check reads the node's current incarnation, and a node the
+/// control plane has never registered is no evidence either way.
+#[tokio::test]
+async fn the_lookup_reads_the_registered_incarnation() {
+    let ok = axum::http::StatusCode::OK;
+    let (base_url, _, stop, handle) = serve_lookup(0, ok, Some(7)).await;
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    assert_eq!(
+        registered_incarnation(&client, &base_url, "broker-a", &credential)
+            .await
+            .expect("lookup"),
+        Some(7)
+    );
+    assert_eq!(
+        registered_incarnation(&client, &base_url, "broker-z", &credential)
+            .await
+            .expect("lookup"),
+        None
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// **An unreachable control plane holds startup (#1334).** The broker keeps
+/// asking rather than starting without an answer, since starting would
+/// announce an id the answer might have rotated. A credential not yet
+/// accepted is waited out the same way.
+#[tokio::test]
+async fn the_startup_lookup_waits_for_an_answer() {
+    for status in [
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::http::StatusCode::UNAUTHORIZED,
+    ] {
+        let (base_url, asked, stop, handle) = serve_lookup(2, status, Some(3)).await;
+        let client = build_test_client().expect("client");
+        let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+        let answer = tokio::time::timeout(
+            Duration::from_secs(20),
+            await_registered_incarnation(&client, &base_url, "broker-a", &credential),
+        )
+        .await
+        .expect("answered once the control plane did")
+        .expect("lookup");
+        assert_eq!(answer, Some(3), "{status}");
+        assert_eq!(*asked.lock().expect("lock"), 3, "{status}");
+        let _ = stop.send(());
+        let _ = handle.await;
+    }
+
+    // Nothing listening at all: still waiting when the test gives up.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener);
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let waiting = tokio::time::timeout(
+        Duration::from_millis(1500),
+        await_registered_incarnation(&client, &format!("http://{addr}"), "broker-a", &credential),
+    )
+    .await;
+    assert!(waiting.is_err(), "returned without an answer: {waiting:?}");
+}
+
+/// A refusal does not change by asking again, so the start fails with it.
+#[tokio::test]
+async fn a_refused_startup_lookup_fails_the_start() {
+    let (base_url, _, stop, handle) =
+        serve_lookup(usize::MAX, axum::http::StatusCode::FORBIDDEN, Some(3)).await;
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        await_registered_incarnation(&client, &base_url, "broker-a", &credential),
+    )
+    .await
+    .expect("a refusal is final");
+    assert!(refused.is_err());
     let _ = stop.send(());
     let _ = handle.await;
 }

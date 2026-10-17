@@ -168,9 +168,28 @@ any log. See
 6. **Start the brokers.**
 
 A data directory put back any other way, by rsync, from a volume snapshot, or
-copied from another broker, keeps its old storage id, and peers go on trusting
-what it acknowledged before. Delete `<FELIX_DURABLE_STORAGE_DIR>/storage-id`
-before starting that broker so it gets a new one.
+copied from another broker, keeps its old storage id, and peers would go on
+trusting what it acknowledged before. A broker in a cluster gives such a
+directory a new id on its own when the node has registered with the control
+plane since the copy was taken: the copy recorded an older node incarnation
+than the control plane holds. A restart, or a re-registration after the
+control plane marked the broker down, between the copy and the restore is
+enough.
+
+Deleting `<FELIX_DURABLE_STORAGE_DIR>/storage-id` before starting that broker
+is still required in every other case:
+
+- The copy was taken during the broker's last run and nothing registered it
+  since. It recorded the incarnation the control plane still holds, so the
+  broker cannot tell it from the directory it replaces.
+- The broker runs without cluster membership, so there is no registration to
+  compare.
+- The control plane was restored too, so its incarnations went back.
+- The node was deleted from the control plane after the copy was taken. It
+  registers again from incarnation 0.
+
+Deleting the file is always safe. It costs one full copy of each shard the
+broker follows. When in doubt, delete it.
 
 Stopping every broker is also what makes generations safe across a restore.
 The restored control plane hands out change sequence numbers, and so first
