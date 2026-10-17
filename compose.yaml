@@ -68,6 +68,8 @@ services:
         BOOT=http://127.0.0.1:9095/internal/bootstrap/tenants/dev
         CP=http://127.0.0.1:8443/v1/tenants/dev
         OUT=/var/lib/felix
+        # The broker opens its storage dir but does not create it.
+        mkdir -p $$OUT/data
 
         # POST $$2 to $$1 with header $$3. Sets $$status; the body is in /tmp/body.
         post() {
