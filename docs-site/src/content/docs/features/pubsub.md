@@ -118,7 +118,7 @@ nothing more is waiting, or when a bound is hit:
 
 ```yaml
 event_batch_max_events: 64      # this many events, or
-event_batch_max_bytes: 262144   # this many bytes, or
+event_batch_max_bytes: 65536    # this many bytes, or
 event_batch_max_delay_us: 250   # under load, this much time since the first event
 ```
 
@@ -432,7 +432,9 @@ the queue, not the request.
 
 Roughly: Kafka is durable-first and batch-oriented, with a far bigger
 ecosystem and higher per-message latency; Redis pub/sub and NATS (core) are
-fast fire-and-forget with no per-subscriber isolation or replay. Felix sits
+fast fire-and-forget with no replay, and handle a slow subscriber by
+disconnecting it (NATS) or dropping the client once its output buffer limit is
+hit (Redis). Felix sits
 between: at-most-once fanout with real isolation, plus durable streams and
 consumer groups on the same log when you need replay or redelivery. If your
 workload is heavy stream *processing* (joins, windows, transformations),

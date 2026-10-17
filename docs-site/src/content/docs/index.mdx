@@ -158,17 +158,34 @@ rule and one replication path.
 
 ## Use Cases
 
-Felix is a good fit today for:
+Each scenario shows how it is usually built, how to build it on Felix with
+working code, and how it compares with Kafka, NATS, Redis or etcd.
 
-- **Real-time streaming** with high fanout and tunable latency/throughput trade-offs
-- **Event pipelines** with batch publishing and batch delivery
-- **Low-latency caching** over QUIC with predictable tail latency under load
-- **Work distribution** across consumers, where each job goes to one of them and
-  is retried if nobody says it was handled
-- **Microservice communication** with unified stream, cache and queue semantics
+<CardGrid>
+  <LinkCard
+    title="Config and feature flags"
+    href="/use-cases/config-and-feature-flags/"
+    description="Every consumer reads the current value, then every change after it with no gap."
+  />
+  <LinkCard
+    title="Live updates at high fanout"
+    href="/use-cases/live-fanout/"
+    description="One publish encoded once for every subscriber; a slow one never holds up the rest."
+  />
+  <LinkCard
+    title="Leases, locks and idempotency"
+    href="/use-cases/leases-and-locks/"
+    description="Compare-and-set writes with TTLs that survive a restart."
+  />
+  <LinkCard
+    title="Events and state together"
+    href="/use-cases/event-and-state/"
+    description="An event and the state it changes written as one record, with no outbox."
+  />
+</CardGrid>
 
-See [What Felix Is For](/getting-started/what-felix-is-for/) for where
-Felix fits and where it does not.
+[All use cases](/use-cases/overview/), including work queues, rate limits,
+audit logs, Kafka migration, multi-tenant SaaS and data residency.
 
 ## Current Status
 

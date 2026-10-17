@@ -476,9 +476,10 @@ keep going through a lapsed lease once `lease_free_reads` is finalized, since
 they deliver only what the control plane has recorded as committed.
 
 At every level one owner applies each key's changes in order, so there are no
-torn writes. Not provided:
+torn writes. `cache_put_if` and `cache_delete_if` write only when the key is
+absent or at the version the caller read (see
+[Conditional writes](/features/cache/#9-conditional-writes)). Not provided:
 
-- Compare-and-swap or conditional put
 - Multi-key transactions
 - Causal consistency across keys
 
@@ -509,9 +510,11 @@ client
 **Expiration behavior**:
 
 - TTL countdown starts when `cache_put` returns `ok`
-- Expiration is **lazy**: checked on access, not proactively
-- Expired entries return `null` on `cache_get`
-- Expired entries may occupy memory until accessed or evicted
+- Reads treat an entry as absent the moment its TTL passes, so `cache_get` returns `null`
+- On a log-backed cache the shard's leader also writes a delete for each expired entry,
+  once a second and at most 1024 per shard per pass, and every watch of the key receives it
+- On an in-memory cache expiry is lazy: an expired entry occupies memory until it is
+  accessed or evicted
 
 ### Cache Scoping
 
@@ -815,7 +818,7 @@ assert!(fast_count >= expected_count);
 | **Subscriber isolation** | Yes | None |
 | **Single-writer fencing** | `publish_if`, and `commit` with `expected_offset`: written only at the shard's next offset, atomic with the claim | Per-key version preconditions on a commit; writer epochs |
 | **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads`; conditional put and delete by version | Multi-key transactions |
-| **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
+| **TTL precision** | Absent on read the moment it passes, against an absolute expiry; a log-backed cache's leader writes the delete once a second | Exact-time expiry deletes |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | None |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | None |
 | **Quotas** | Per-tenant publish rate, per broker | Per-namespace; subscriptions, cache and storage; set in the control plane |
