@@ -84,7 +84,10 @@ later:
 ```bash
 git clone --depth 1 https://github.com/GetFelix/felix-webhook-relay
 cd felix-webhook-relay/deploy/compose
-sed -i.bak "s|^RELAY_SECRET_KEY=.*|RELAY_SECRET_KEY=$(openssl rand -base64 32)|" .env
+sed -i.bak \
+  -e "s|^FELIX_BOOTSTRAP_TOKEN=.*|FELIX_BOOTSTRAP_TOKEN=$(openssl rand -base64 32)|" \
+  -e "s|^FELIX_RAFT_PEER_TOKEN=.*|FELIX_RAFT_PEER_TOKEN=$(openssl rand -base64 32)|" \
+  -e "s|^RELAY_SECRET_KEY=.*|RELAY_SECRET_KEY=$(openssl rand -base64 32)|" .env
 docker compose up -d --wait        # or: podman compose up -d --wait
 ```
 
