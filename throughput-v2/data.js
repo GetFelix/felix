@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792214807414,
+  "lastUpdate": 1792247609858,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32084,6 +32084,58 @@ window.BENCHMARK_DATA = {
             "range": "12200.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813083.90\nmean: 814905.78\nstdev: 12200.13\ncv: 1.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d390ceef0cbcfe14f5e766f35527d035dde3f26e",
+          "message": "ci(tla): set the fenced wipe and crash weights from a measured run (#1375)\n\nWeights are minutes from the Finished in lines of the main run for da56a371: Wipe 25, Crash 26, CrashUnprobed 31. The violating twins and FencedLeaderCrash finish in seconds, so they fall back to the default of one.\n\nSpec-Unaffected: only the shard weights in check_tla.sh change; no model or configuration is touched.",
+          "timestamp": "2026-10-17T14:29:44Z",
+          "tree_id": "c88822a5d2ed2f4caea603d20ecc58b237637232",
+          "url": "https://github.com/GetFelix/felix/commit/d390ceef0cbcfe14f5e766f35527d035dde3f26e"
+        },
+        "date": 1792247609042,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 523176.05,
+            "range": "38465.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523176.05\nmean: 518162.75\nstdev: 38465.93\ncv: 7.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 523176.05,
+            "range": "38465.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523176.05\nmean: 518162.75\nstdev: 38465.93\ncv: 7.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123392.42,
+            "range": "2187.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123392.42\nmean: 123684.24\nstdev: 2187.92\ncv: 1.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1233924.2,
+            "range": "21879.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1233924.20\nmean: 1236842.39\nstdev: 21879.20\ncv: 1.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
