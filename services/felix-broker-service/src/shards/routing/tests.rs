@@ -30,6 +30,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         successor: None,
         routing: Default::default(),
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 
@@ -286,6 +287,40 @@ fn keys_spread_across_shards() {
 fn a_single_shard_stream_always_maps_to_zero() {
     assert_eq!(shard_for(0, Some(b"anything")), 0);
     assert_eq!(shard_for(1, Some(b"anything")), 0);
+}
+
+/// **A failover's storage identities reach the route its fence reads**, and
+/// an assignment that carries none, as from an older control plane, has none.
+#[test]
+fn a_failovers_storage_ids_reach_the_route() {
+    let promoted: ShardAssignment = serde_json::from_value(serde_json::json!({
+        "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0, "kind": "stream",
+        "leader": "broker-a", "replicas": ["broker-b"], "generation": 5, "state": "active",
+        "fence_storage_ids": {"broker-b": "00112233445566778899aabbccddeeff"},
+    }))
+    .expect("assignment");
+    let older = assignment(1, "broker-a", 5);
+    let assignments: HashMap<ShardKey, ShardAssignment> = [promoted, older]
+        .into_iter()
+        .map(|a| (a.key.clone(), a))
+        .collect();
+
+    let table = routing_table_from(&assignments, &catalog());
+
+    let ids = table
+        .get(&to_router_key(&key(0)))
+        .and_then(|route| route.fence_storage_ids.clone())
+        .expect("ids");
+    assert_eq!(
+        ids.get("broker-b").map(String::as_str),
+        Some("00112233445566778899aabbccddeeff")
+    );
+    assert_eq!(
+        table
+            .get(&to_router_key(&key(1)))
+            .map(|route| route.fence_storage_ids.clone()),
+        Some(None)
+    );
 }
 
 /// The feed task: it keeps local shard state, the servable set, and the routing

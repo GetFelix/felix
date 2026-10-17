@@ -674,6 +674,13 @@ caller. A broker reports status against the generation it read, so a broker that
 was slow, partitioned, or restarted cannot resurrect an ownership decision that
 placement has already replaced.
 
+An assignment that promotes a follower on failover also carries
+`fence_storage_ids`: the storage id the replica report it was decided on named
+for each replica, by node id. The promoted leader's fence counts a replica only
+from that copy (`docs/replication-design.md`, "Fencing a promotion"). Every
+other write leaves it out. Postgres keeps it only for the generation that wrote
+it, and the Raft store writes it only at metadata level 16.
+
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
 stop serving at this generation so the shard can move). A drained shard leaves

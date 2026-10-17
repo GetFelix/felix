@@ -146,6 +146,7 @@ async fn each_command_drives_the_api() {
             move_started_at_millis: None,
             move_reason: None,
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         })
         .await
         .expect("assign");

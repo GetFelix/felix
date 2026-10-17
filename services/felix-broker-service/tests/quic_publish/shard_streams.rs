@@ -45,6 +45,7 @@ fn leading_both_shards() -> Arc<IngressRouter> {
                     successor: None,
                     routing: Default::default(),
                     incarnation: 0,
+                    fence_storage_ids: Default::default(),
                 },
             )
         })

@@ -184,6 +184,7 @@ fn draining_router(leader: &str, replicas: &[&str], generation: u64) -> Arc<Shar
             successor: replicas.first().map(|r| r.to_string()),
             routing: Default::default(),
             incarnation: 0,
+            fence_storage_ids: Default::default(),
         }],
         &nodes,
     );

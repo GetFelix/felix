@@ -469,6 +469,7 @@ fn assignment(name: &str) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 

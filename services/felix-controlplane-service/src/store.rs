@@ -796,6 +796,9 @@ impl From<serde_json::Error> for StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// What [`ControlPlaneStore::put_shard_assignment_if`] did.
+// One per write, so the size of the written variant costs nothing worth a box
+// at every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignmentWrite {
     Written(ShardAssignment),

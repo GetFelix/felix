@@ -299,6 +299,7 @@ pub(super) fn move_step<'a>(
                         successor: None,
                         replicas,
                         generation: 0,
+                        fence_storage_ids: Default::default(),
                         ..existing.clone()
                     },
                 );
@@ -356,6 +357,7 @@ pub(super) fn move_step<'a>(
                 move_started_at_millis: None,
                 move_reason: None,
                 incarnation: 0,
+                fence_storage_ids: Default::default(),
             },
         );
     }
@@ -375,6 +377,7 @@ pub(super) fn move_step<'a>(
                     move_reason: None,
                     replicas,
                     generation: 0,
+                    fence_storage_ids: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -385,6 +388,7 @@ pub(super) fn move_step<'a>(
                 ShardAssignment {
                     state: ShardState::Draining,
                     generation: 0,
+                    fence_storage_ids: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -590,6 +594,7 @@ pub(super) fn start(
         move_started_at_millis: started,
         move_reason: Some(reason),
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.
@@ -624,6 +629,7 @@ pub(super) fn undo_staged(
         move_reason: None,
         replicas,
         generation: 0,
+        fence_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -638,6 +644,7 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
         generation: 0,
         joining: None,
         move_reason: None,
+        fence_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -704,6 +711,7 @@ fn reseat<'a>(
             joining: Some(replacement.node_id.clone()),
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Replace),
+            fence_storage_ids: Default::default(),
             ..existing.clone()
         },
     )
@@ -762,6 +770,7 @@ fn replacement_step(
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                fence_storage_ids: Default::default(),
                 ..existing.clone()
             },
         );

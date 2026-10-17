@@ -62,6 +62,12 @@ pub struct ShardAssignment {
     /// incarnations, or a control plane that predates them.
     #[serde(default)]
     pub incarnation: u64,
+    /// The storage identity the replica report a failover was decided on
+    /// named for each replica. Absent from every other assignment, and from a
+    /// control plane that predates it. See
+    /// [`felix_router::Route::fence_storage_ids`].
+    #[serde(default)]
+    pub fence_storage_ids: std::collections::BTreeMap<String, String>,
 }
 
 impl ShardAssignment {

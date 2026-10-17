@@ -20,12 +20,20 @@
 //! Only when every replica offered the capabilities. Otherwise the shard
 //! opens as it always has, on the lease, and a mixed fleet behaves exactly as
 //! before. See "Fencing a promotion" in `docs/replication-design.md`.
+//!
+//! A failover's assignment names the storage identity each replica had in
+//! the report it was decided on ([`Route::fence_storage_ids`]). An answer
+//! counts only from that copy, by the identity its connection's handshake
+//! gave: a replica wiped or restarted after a crash under a new identity may
+//! have lost what it answered for before (#1335). `FenceCounts` in the model.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use felix_broker::replication::{self, Divergence};
 use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
+use felix_storage::StorageId;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog, ReplicateFetch,
     ShardRef,
@@ -149,6 +157,7 @@ pub async fn fence_shard<R: PeerRequester>(
     }
 
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
+    let reported_ids = route.fence_storage_ids.as_deref();
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
@@ -202,6 +211,7 @@ pub async fn fence_shard<R: PeerRequester>(
                 kind,
                 &log,
                 lease_fallback,
+                reported_ids,
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
@@ -216,7 +226,7 @@ pub async fn fence_shard<R: PeerRequester>(
         ShardKind::Stream => {
             futures::join!(
                 own_logs,
-                fence_groups(requester, broker, key, &shard, &replicas)
+                fence_groups(requester, broker, key, &shard, &replicas, reported_ids)
             )
         }
         ShardKind::Cache => (own_logs.await, Ok(None)),
@@ -253,6 +263,7 @@ async fn fence_log<R: PeerRequester>(
     kind: LogKind,
     log: &felix_broker::StreamLog,
     lease_fallback: bool,
+    reported_ids: Option<&BTreeMap<String, String>>,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -263,6 +274,9 @@ async fn fence_log<R: PeerRequester>(
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
+    // Answers from a copy the report did not name: they took the promise,
+    // which still refuses the old leader, but count for nothing here.
+    let mut other_copies = 0;
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         asks.push(ask_fence(
@@ -271,13 +285,18 @@ async fn fence_log<R: PeerRequester>(
             replica.advertise_addr,
             shard.clone(),
             crate::ship::replica_log(kind),
+            reported_ids.is_some(),
         ));
     }
     while answered.len() + 1 < needed {
-        let Some((node_id, addr, answer)) = asks.next().await else {
+        let Some((node_id, addr, answer, identity)) = asks.next().await else {
             break;
         };
         match answer {
+            Ok(InternalMessage::FenceOk(_)) if !reported_copy(reported_ids, &node_id, identity) => {
+                other_copies += 1;
+                uncounted(key, kind, &node_id, reported_ids, identity);
+            }
             Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
@@ -308,15 +327,18 @@ async fn fence_log<R: PeerRequester>(
     }
     drop(asks);
     if answered.len() + 1 < needed {
-        return Err(Outcome::pending(
-            format!(
-                "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
-                answered.len(),
-                replicas.len(),
-                needed - 1
-            ),
-            took(&answered),
-        ));
+        let mut why = format!(
+            "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
+            answered.len(),
+            replicas.len(),
+            needed - 1
+        );
+        if other_copies > 0 {
+            why.push_str(&format!(
+                "; {other_copies} answered from another copy than the failover's report named"
+            ));
+        }
+        return Err(Outcome::pending(why, took(&answered)));
     }
 
     // The tail that wins, by the order promotion by log order uses (`Ahead`).
@@ -371,6 +393,7 @@ async fn fence_groups<R: PeerRequester>(
     key: &ShardKey,
     shard: &ShardRef,
     replicas: &[&felix_router::NodeRef],
+    reported_ids: Option<&BTreeMap<String, String>>,
 ) -> Result<Option<GroupRound>, Outcome> {
     if broker.group_reader().is_none() {
         return Ok(None);
@@ -408,6 +431,7 @@ async fn fence_groups<R: PeerRequester>(
                     addr,
                     shard.clone(),
                     ReplicaLog::GroupDeadLetters,
+                    reported_ids.is_some(),
                 ),
                 ask_fence(
                     requester,
@@ -415,9 +439,13 @@ async fn fence_groups<R: PeerRequester>(
                     addr,
                     shard.clone(),
                     ReplicaLog::GroupCursors,
+                    reported_ids.is_some(),
                 ),
             );
-            (node_id, addr, dead_letters.2, cursors.2)
+            // Both answers from the copy the report named, or neither counts.
+            let copy = reported_copy(reported_ids, &node_id, dead_letters.3)
+                && reported_copy(reported_ids, &node_id, cursors.3);
+            (node_id, addr, dead_letters.2, cursors.2, copy)
         });
     }
     let mut answered = Vec::new();
@@ -425,7 +453,7 @@ async fn fence_groups<R: PeerRequester>(
         answered.iter().map(|(node, ..)| node.clone()).collect()
     };
     while answered.len() + 1 < needed {
-        let Some((node_id, addr, dead, cursor)) = asks.next().await else {
+        let Some((node_id, addr, dead, cursor, copy)) = asks.next().await else {
             break;
         };
         if let Some(detail) = newer_leader(&dead).or(newer_leader(&cursor)) {
@@ -435,6 +463,15 @@ async fn fence_groups<R: PeerRequester>(
             ));
         }
         match (dead, cursor) {
+            (Ok(InternalMessage::FenceOk(_)), Ok(InternalMessage::FenceOk(_))) if !copy => {
+                tracing::info!(
+                    node_id = %node_id,
+                    stream = %key.stream,
+                    shard = key.shard,
+                    "not counting a group logs' fence answer from another copy than the \
+                     failover's report named",
+                );
+            }
             (Ok(InternalMessage::FenceOk(dead)), Ok(InternalMessage::FenceOk(cursor))) => {
                 answered.push((node_id, addr, dead, cursor));
             }
@@ -662,24 +699,83 @@ async fn drop_superseded(
     Ok(())
 }
 
+/// A replica's answer to a fence, and with `identified` the storage identity
+/// the connection it came over gave in its handshake.
 async fn ask_fence<R: PeerRequester>(
     requester: &R,
     node_id: String,
     addr: std::net::SocketAddr,
     shard: ShardRef,
     log: ReplicaLog,
+    identified: bool,
 ) -> (
     String,
     std::net::SocketAddr,
     Result<InternalMessage, PeerError>,
+    Option<StorageId>,
 ) {
     let request = InternalMessage::Fence(Fence {
         correlation_id: 0,
         shard,
         log,
     });
-    let answer = requester.request(&node_id, addr, request).await;
-    (node_id, addr, answer)
+    if !identified {
+        let answer = requester.request(&node_id, addr, request).await;
+        return (node_id, addr, answer, None);
+    }
+    match requester.request_identified(&node_id, addr, request).await {
+        Ok((answer, identity)) => (node_id, addr, Ok(answer), identity.storage),
+        Err(err) => (node_id, addr, Err(err), None),
+    }
+}
+
+/// Whether an answer from `node_id`, over a connection whose handshake gave
+/// `identity`, may count toward the fence's majority. Every answer may when
+/// the assignment names no identities.
+///
+/// A replica the assignment names counts only from that identity: under
+/// another, or with none, it cannot show it still holds what it answered
+/// for. Placement names every member of the old set it can: by the report,
+/// or with an empty identity, which nothing matches, for one the report could
+/// not vouch for (a member its leader had not asked yet). A replica it does
+/// not name gave the old leader nothing to count, or predates identities,
+/// and counts as it always has. The fence's majority both refuses the old
+/// leader and holds what it acknowledged, so a promise alone cannot stand in
+/// for an answer.
+fn reported_copy(
+    expected: Option<&BTreeMap<String, String>>,
+    node_id: &str,
+    identity: Option<StorageId>,
+) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    match (expected.get(node_id), identity) {
+        (None, _) => true,
+        (Some(named), Some(identity)) => {
+            !named.is_empty() && named.eq_ignore_ascii_case(&identity.to_hex())
+        }
+        (Some(_), None) => false,
+    }
+}
+
+fn uncounted(
+    key: &ShardKey,
+    kind: LogKind,
+    node_id: &str,
+    expected: Option<&BTreeMap<String, String>>,
+    identity: Option<StorageId>,
+) {
+    tracing::warn!(
+        node_id,
+        stream = %key.stream,
+        shard = key.shard,
+        log = ?kind,
+        named = expected.and_then(|ids| ids.get(node_id)).map(String::as_str),
+        answered_from = identity.map(|id| id.to_hex()),
+        "not counting a fence answer from another copy than the failover's report named: \
+         it may have lost records it held before",
+    );
 }
 
 /// Take `from`'s copy of the `kind` log where it is ahead of this broker's:

@@ -26,6 +26,7 @@ fn assigned_to(leader: &str, generation: u64) -> ShardAssignment {
         successor: None,
         routing: Default::default(),
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     }
 }
 

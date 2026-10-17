@@ -1574,6 +1574,7 @@ async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyho
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     };
     // Its write path: the row with no incarnation, then the change.
     let mut tx = pool.begin().await?;
@@ -1775,6 +1776,7 @@ async fn an_instance_before_cache_incarnations_assigns_the_live_incarnation() ->
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     };
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1849,6 +1851,7 @@ async fn an_instance_before_cache_incarnations_keeps_the_incarnation_on_update()
         move_started_at_millis: None,
         move_reason: None,
         incarnation: 0,
+        fence_storage_ids: Default::default(),
     };
     let held = store.put_shard_assignment(first.clone()).await?;
     assert_eq!(held.incarnation, created.incarnation);

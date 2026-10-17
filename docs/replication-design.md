@@ -412,6 +412,79 @@ leadership begins is recorded only then, so the records it took keep their
 own generation. Answers that arrive after the majority are not waited for,
 as in the model.
 
+**An answer counts only from the copy the failover's report named.** A
+follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
+new storage identity without the tail it had not synced, and it may already
+have answered for that tail: under `majority_ack` the old leader acknowledged
+a record on itself and that follower. Counted in the fence, the short copy and
+a successor that never held the record are a majority without it, and once
+the old leader is gone the record is too (#1335). A wiped follower is the same
+case with nothing left. So a failover's assignment carries the storage
+identity the replica report it was decided on named for each replica, the old
+leader's own included (`fence_storage_ids`), and the promoted leader counts an
+answer only when the handshake identity of the connection it came over is
+that one. An answer from another identity, or with none from a replica the
+report named, still takes the promise and so still refuses the old leader
+there, but it counts toward no majority and its log is not taken. The
+promise cannot count on its own: the majority that took the fence is the
+same one the catch-up trusts to hold every acknowledged record, so a
+replica that may have lost some cannot be part of it. A member of the old
+set the report named no identity for, but that is registered with one, was
+not yet known to its leader when the report was made, so everything it
+answered that leader came later: the assignment names it with an empty
+identity, which nothing matches (`FelixShardFencedCrashCountsUnnamed.cfg`
+finds the record lost when it counts). A replica the assignment does not
+name counts as it always has: one outside the old set, which gave the old
+leader nothing to count, such as a new copy a `Leader` failover brings in,
+and one registered without an identity, a build from before them, where
+there is no evidence either way. The fence waits for replicas that can
+vouch for what they answered, which is the old leader itself when the other
+follower is the one that lost the tail. The group logs' round follows the
+same rule. Every other assignment carries no identities, and a fence on one
+counts every answer, as does a broker under a control plane that predates
+the field.
+
+The identities are fixed when the failover is written, so a replica that
+does not count stays uncounted for that generation, after a clean restart or
+an upgrade too. With the old leader gone for good and the remaining followers
+unable to make a majority that counts, the shard waits, and the old leader
+coming back ends the wait. There are two ways to get there:
+
+- A follower came back under a new identity after a crash or a wipe. With
+  the leader gone too, that is two faults, and the records the follower lost
+  may be on no copy at all.
+- A follower the report named no identity for, because its leader had not
+  asked it yet when it reported, and that gives an identity now. It may hold
+  everything; nothing vouches for it. Naming it by the identity it is
+  registered under would not do: the report's incarnation for such a follower
+  is the control plane's stamp as the report arrives, which can come after a
+  crash the report predates (`FelixShardFencedCrashNamesByRegistration.cfg`).
+
+The way out is the operator's, as for a crashed leader: stop the broker the
+shard was promoted to, so placement finds no caught-up replica, run
+`felixctl placement abandon`, and start the broker again. While the promoted
+broker is up, placement keeps the shard where it is and `abandon` answers
+`not_stranded`. `abandon` deletes no copy. It writes a fresh assignment on
+live brokers chosen as for a new shard, each opens the copy it already holds,
+and the new leader's fence names no identities, so it counts every answer and
+takes the copy furthest ahead. What is lost is what no copy in the new set
+holds: the old leader's, a copy left out of the new set, and whatever a
+rotated follower had really lost. A waiting follower that holds everything
+keeps it, as long as the new set includes it. Under Raft the
+field waits for metadata level 16. `FelixShardFencedCrash.cfg`,
+`FelixShardFencedWipe.cfg` and `FelixShardFencedLeaderCrash.cfg` check it on
+the fenced, follower-acked path, and `FelixShardFencedCrashCountsRotated.cfg`
+finds the lost record when the rotated copy counts.
+
+The identity is the evidence because it is what changes on every loss: a
+wipe, a crash under a relaxed fsync mode and a restore all give a new one
+(see [Storage identities](#storage-identities)). The same identity as the
+report means the copy lost nothing since the leader counted it there. A copy
+the old leader had already probed under its new identity is named under that
+one, but only by a report made after the old leader started its count over,
+and that report names the promoted leader caught up to the mark, so it holds
+every record the follower's old answers released.
+
 What makes the deposed leader harmless is the majority, not the clock. The
 follower it can still reach may never have heard of the promotion from the
 control plane, and its routing view would take the batch; the fence it took
@@ -689,9 +762,12 @@ Evidence: `a_copy_with_no_promise_takes_no_fence_its_routes_do_not_have`,
 peer transport, after the wipe and after a second restart),
 `a_copy_with_no_promise_answers_only_the_routed_leader_at_the_routed_generation`
 and `a_copy_with_a_promise_answers_by_its_ballot` (replica);
-`a_wiped_follower_votes_in_the_next_fence` (cluster, liveness only: the
-wiped copy still makes the successor's majority once its view has the
-shard).
+`a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out`
+(cluster: a follower wiped after it took the successor's fence refuses the
+deposed leader's batches), and
+`a_wiped_follower_takes_the_fence_but_does_not_count` (cluster: under its new
+identity the wiped copy does not make the successor's majority, which waits
+for the old leader; see [Fencing a promotion](#fencing-a-promotion)).
 
 ### Every change of leader
 
@@ -1759,10 +1835,14 @@ suffix and rotates, and it passes; `FelixShardMachineCrashKeepsId.cfg` lets a
 machine crash keep the identity and loses the record, and
 `FelixShardCleanStopUnsynced.cfg` loses it when a kept identity is not
 synced before a later clean stop vouches for it.
-`FelixShardLeaderProcessCrash.cfg` does the same for the leader. The passing
-case with a partial suffix loss is too large for the CI job and is not
-model-checked (see `docs/formal/README.md`). A leader's crash has a pair of
-its own, under [A leader's own crash](#a-leaders-own-crash).
+`FelixShardLeaderProcessCrash.cfg` does the same for the leader. On the report path
+the passing case with a partial suffix loss is too large for the CI job. On
+the fenced, follower-acked path it is checked, with the promotion fence
+counting only the identities the report named (`FelixShardFencedCrash.cfg`,
+`FelixShardFencedWipe.cfg`; see [Fencing a promotion](#fencing-a-promotion)).
+A leader's crash has a pair of its own, under
+[A leader's own crash](#a-leaders-own-crash), and
+`FelixShardFencedLeaderCrash.cfg` on the fenced path.
 
 ### Divergence and truncation
 
@@ -2521,6 +2601,7 @@ with a crash use the lease and the report.
 | A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
 | Leader's machine crashes under `Periodic` or `None` and the broker restarts before it is failed over | It comes back under a new storage identity and leads nothing from the copy it led, which may have lost records it acknowledged. Placement sees the identity change and promotes a follower the last report names caught up, without waiting for the lease. Failing that, once the leader has measured every follower and none holds more than it does, placement names it again at a new generation; otherwise the shard waits. See [A leader's own crash](#a-leaders-own-crash). |
 | Leader's process is killed under any fsync mode and restarts (Linux) | The page cache kept everything it wrote, so it comes back under the same storage identity in the same boot and leads its copy at its generation again. Followers keep counting. On Linux only a machine crash, a boot it cannot compare, or a failed fsync before the kill rotates the identity; on macOS every relaxed crash still does ([#1367](https://github.com/GetFelix/felix/issues/1367)). |
+| A follower's machine crashes under `Periodic` or `None`, or it loses its disk, and the leader is lost after | The follower comes back under a new storage identity, possibly without records it had answered for. The promoted leader's fence counts it only under the identity the failover's report named, so it waits for a copy that can vouch for what it holds, the old leader's if need be, rather than open on the short copy. With the old leader gone for good and no other majority that counts, the shard stays closed: two faults. This includes a leader and a follower whose machines both go down at once under `Periodic`, the default, such as a power loss: the follower comes back under a new identity even if nothing was lost, so the shard no longer serves when it returns, as it did before #1335, and waits for the operator. A process killed on Linux keeps its identity in the same boot and counts ([#1367](https://github.com/GetFelix/felix/issues/1367)). The operator's way out is to stop the promoted broker, run `felixctl placement abandon`, and start it again. `abandon` keeps every copy in the new set and takes the furthest one. It loses only what no copy in the new set holds, which here may really be gone. See [Fencing a promotion](#fencing-a-promotion). |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |

@@ -86,6 +86,7 @@ fn route() -> Route {
         draining: false,
         successor: None,
         incarnation: 0,
+        fence_storage_ids: None,
     }
 }
 

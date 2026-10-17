@@ -1,10 +1,12 @@
 //! Applying a plan to the store, on a timer or when woken.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use super::metrics::MoveClock;
 use super::progress::CopyProgress;
-use super::{MovePolicy, PlacementWakes, Plan, ReplicaPositions, assignment_for, plan_with};
+use super::{
+    CaughtUp, MovePolicy, PlacementWakes, Plan, ReplicaPositions, assignment_for, plan_with,
+};
 use crate::model::{Cache, Node, ShardAssignment, ShardKey, Stream};
 use crate::store::AssignmentWrite;
 
@@ -120,6 +122,9 @@ pub(super) struct PlannedPass {
     /// Placements that take an assigned shard to a node that held no copy of
     /// it: the failovers [`FAILOVERS_PER_PASS`] limits.
     unseeded: HashSet<ShardKey>,
+    /// For each placement that promotes a follower, the storage identities
+    /// the report it was decided on named, read from the same positions.
+    fence_storage: HashMap<ShardKey, BTreeMap<String, String>>,
 }
 
 impl PlannedPass {
@@ -278,6 +283,7 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let plan = read.plan(policy);
     let existing = read.existing;
+    let positions = read.positions;
     let read = existing
         .iter()
         .map(|assignment| (assignment.key.clone(), assignment.generation))
@@ -300,12 +306,30 @@ pub(super) async fn plan_pass(
         })
         .map(|(key, _, _)| key.clone())
         .collect();
+    // A reclaim keeps its leader, so only a changed leader is a promotion.
+    let fence_storage = plan
+        .to_place()
+        .filter(|(key, leader, _)| {
+            previous
+                .get(key)
+                .is_some_and(|previous| previous.leader != *leader)
+        })
+        .map(|(key, _, _)| {
+            let old_set: Vec<&str> = previous
+                .get(key)
+                .map(|previous| previous.nodes().map(String::as_str).collect())
+                .unwrap_or_default();
+            (key.clone(), positions.report_storage_ids(key, &old_set))
+        })
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect();
     Some(PlannedPass {
         fence,
         plan,
         read,
         staged,
         unseeded,
+        fence_storage,
     })
 }
 
@@ -452,12 +476,12 @@ pub(super) async fn apply_pass(
             }
             failovers += 1;
         }
+        let mut placed = assignment_for(key, leader, replicas.to_vec());
+        if let Some(ids) = pass.fence_storage.get(key) {
+            placed.fence_storage_ids = ids.clone();
+        }
         match store
-            .put_shard_assignment_if(
-                assignment_for(key, leader, replicas.to_vec()),
-                pass.read.get(key).copied(),
-                fence,
-            )
+            .put_shard_assignment_if(placed, pass.read.get(key).copied(), fence)
             .await
         {
             Ok(AssignmentWrite::Fenced { token }) => {

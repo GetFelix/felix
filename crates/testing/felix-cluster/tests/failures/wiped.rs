@@ -282,17 +282,27 @@ async fn a_wiped_follower_is_not_promoted() {
     not_promoted_after(Stop::Wipe).await;
 }
 
-/// **A wiped follower still votes in the next leader's fence (#1267).** Its
-/// ballots went with the directory, so it answers a fence only as its routing
-/// view backs it. Its leader never reached it after the wipe, so its copy
-/// holds no promise when the successor fences it, and with the old leader dead
-/// the successor's majority needs it. Liveness only: the refusal does not
-/// strand the failover. The refusal itself is tested in
+/// **A wiped follower takes the next leader's fence but does not count in
+/// it (#1267, #1335).** Its ballots went with the directory, so it answers a
+/// fence only as its routing view backs it, and its leader never reached it
+/// after the wipe. It comes back under a new storage identity, holding none of
+/// what it answered for, so the successor's majority cannot rest on it: with
+/// the old leader dead the successor waits, and serves with every record once
+/// the old leader is back. Fsync on every commit, so the old leader's SIGKILL
+/// keeps its identity and its answer counts. The refusal itself is tested in
 /// `felix-replication`'s replica tests.
 #[tokio::test]
 #[serial]
-async fn a_wiped_follower_votes_in_the_next_fence() {
-    let mut cluster = Cluster::start(config()).await.expect("start");
+async fn a_wiped_follower_takes_the_fence_but_does_not_count() {
+    let mut cluster = Cluster::start(ClusterConfig {
+        broker_env: vec![(
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "on_commit".to_string(),
+        )],
+        ..config()
+    })
+    .await
+    .expect("start");
     let (leader, b, c) = written(&cluster).await;
     restart_unreached(&mut cluster, &leader, &c, Stop::Wipe).await;
     cluster.kill_node(&leader).expect("kill the leader");
@@ -311,6 +321,21 @@ async fn a_wiped_follower_votes_in_the_next_fence() {
 
     let promoted = promoted_away_from(&cluster, &leader).await;
     assert_eq!(promoted, b, "the wiped follower was promoted");
+    // b and the wiped copy are a majority by count, but not one that can
+    // vouch for what the old leader acknowledged.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline {
+        cluster
+            .publish_keyed_via(&b, STREAM, b"k", b"too-early".to_vec())
+            .await
+            .expect_err("b served on a fence the wiped copy made up");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    cluster
+        .restart_node(&leader)
+        .await
+        .expect("bring the old leader back");
     cluster
         .publish_keyed_via_settled(
             &b,
@@ -320,7 +345,7 @@ async fn a_wiped_follower_votes_in_the_next_fence() {
             Duration::from_secs(30),
         )
         .await
-        .expect("the new leader fences b and the wiped follower, and serves");
+        .expect("the new leader fences the old one and serves");
     assert_eq!(replay(&cluster, &b).await, all_records());
     cluster.shutdown().await;
 }

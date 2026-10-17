@@ -1305,7 +1305,11 @@ answered that pass under the id its position was learned under. Placement
 promotes a follower from a report only while the id the report names matches
 the one the follower registered with (see `docs/replication-design.md`,
 "Storage identities" and "Who may be promoted"). A follower that registers
-without an id, an older build, is judged by the report's age alone.
+without an id, an older build, is judged by the report's age alone. The
+leader that promotion names counts a replica's fence answer only under the id
+the same report named for it, so a follower back under a new id after a crash
+or a wipe does not vote with the copy it has now (#1335; see
+`docs/replication-design.md`, "Fencing a promotion").
 
 ## Restoring to a backup point
 

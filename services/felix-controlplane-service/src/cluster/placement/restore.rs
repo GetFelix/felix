@@ -145,6 +145,7 @@ pub(super) fn restore<'a>(
             joining: Some(to.node_id.clone()),
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Restore),
+            fence_storage_ids: Default::default(),
             ..existing.clone()
         },
     ))
@@ -202,6 +203,7 @@ pub(super) fn restore_step(
                 joining: None,
                 move_started_at_millis: None,
                 move_reason: None,
+                fence_storage_ids: Default::default(),
                 ..existing.clone()
             },
         );

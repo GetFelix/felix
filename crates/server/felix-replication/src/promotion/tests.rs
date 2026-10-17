@@ -17,6 +17,7 @@ use crate::ReplicaHandler;
 
 mod cache;
 mod groups;
+mod identity;
 mod times;
 
 const TENANT: &str = "t1";
@@ -158,6 +159,11 @@ struct Replica {
     reachable: bool,
     /// Logs whose fence never reaches this replica.
     unreachable_logs: Vec<ReplicaLog>,
+    /// The storage identity its handshake gives.
+    storage: Option<StorageId>,
+    /// The identity its handshake gives on the group logs' fences, when it
+    /// differs from `storage`.
+    group_storage: Option<StorageId>,
     _dir: TempDir,
 }
 
@@ -171,6 +177,8 @@ impl Replica {
             capabilities: REQUIRED,
             reachable: true,
             unreachable_logs: Vec::new(),
+            storage: Some(storage_of(node_id)),
+            group_storage: None,
             _dir: dir,
         }
     }
@@ -289,6 +297,52 @@ impl PeerRequester for Replicas {
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         Some(self.get(node_id).capabilities)
     }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<crate::peer::PeerIdentity, PeerError> {
+        Ok(crate::peer::PeerIdentity {
+            storage: self.get(node_id).storage,
+            ..Default::default()
+        })
+    }
+
+    async fn request_identified(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<(InternalMessage, crate::peer::PeerIdentity), PeerError> {
+        let group = matches!(
+            &message,
+            InternalMessage::Fence(fence)
+                if matches!(fence.log, ReplicaLog::GroupDeadLetters | ReplicaLog::GroupCursors)
+        );
+        let answer = self.request(node_id, addr, message).await?;
+        let replica = self.get(node_id);
+        let storage = match replica.group_storage {
+            Some(rotated) if group => Some(rotated),
+            _ => replica.storage,
+        };
+        Ok((
+            answer,
+            crate::peer::PeerIdentity {
+                storage,
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+/// The storage identity a replica starts with: one per node.
+fn storage_of(node_id: &str) -> StorageId {
+    let mut bytes = [0u8; 16];
+    for (i, byte) in node_id.bytes().enumerate() {
+        bytes[i % 16] ^= byte;
+    }
+    StorageId::from_bytes(bytes)
 }
 
 /// The promoted leader's broker, holding `records` at `generation`.

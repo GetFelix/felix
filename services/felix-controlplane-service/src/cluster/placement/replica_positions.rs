@@ -65,7 +65,7 @@
 //! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
@@ -411,6 +411,31 @@ impl CaughtUp for ReplicaPositions {
         self.reports
             .get(key)
             .is_some_and(|report| self.identity(report, leader) == Identity::Mismatch)
+    }
+
+    fn report_storage_ids(&self, key: &ShardKey, old_set: &[&str]) -> BTreeMap<String, String> {
+        let Some(report) = self.reports.get(key) else {
+            return BTreeMap::new();
+        };
+        let mut ids = report.follower_storage.clone();
+        if ids.is_empty() {
+            return ids;
+        }
+        // A member the report names no identity for had not been asked by its
+        // leader when it reported, so every answer it gave came later and the
+        // report vouches for none of them. One registered without an identity
+        // predates identities and is left unnamed, as is a replica outside the
+        // old set, which gave the old leader nothing to count.
+        for member in old_set {
+            let registered = self
+                .nodes
+                .get(*member)
+                .is_some_and(|node| node.storage_id.is_some());
+            if registered && !ids.contains_key(*member) {
+                ids.insert(member.to_string(), String::new());
+            }
+        }
+        ids
     }
 
     fn leader_gave_up(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
