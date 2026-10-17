@@ -58,8 +58,8 @@ fn the_storage_id_is_kept_on_disk_and_random_without_one() {
 
 /// **A crash under `Periodic` or `None` that the boot cannot vouch for
 /// starts under a new storage id (#1284)**, since its unsynced tail may be
-/// gone. A process crash in the same boot keeps it (#1367): the page cache
-/// kept the tail. A clean stop keeps the id under every mode, and so does a
+/// gone. On Linux a process crash in the same boot keeps it (#1367): the
+/// page cache kept the tail. A clean stop keeps the id under every mode, and so does a
 /// crash under `OnCommit`, which acknowledged nothing it had not synced.
 #[test]
 fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
@@ -73,8 +73,9 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
         ),
         (FsyncMode::OnCommit, false),
     ];
-    // Where the platform has no boot id, every relaxed crash rotates.
-    let known_boot = felix_storage::run_state::this_boot().is_some();
+    // Only Linux can sync the page cache to the device and has a boot id to
+    // compare; elsewhere, macOS included, every relaxed crash rotates.
+    let known_boot = cfg!(target_os = "linux") && felix_storage::run_state::this_boot().is_some();
     for (fsync_mode, relaxed) in modes {
         let root = tempfile::tempdir().expect("tempdir");
         let log = felix_storage::log::LogConfig {

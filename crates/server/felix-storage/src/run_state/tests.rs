@@ -133,16 +133,28 @@ fn a_failed_sync_after_a_crash_rotates_the_id() {
     assert_ne!(second.id, first.id);
 }
 
-/// The real sync works where the platform has one.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// The real sync works on Linux, and anywhere else a crash cannot keep the
+/// id: macOS's `sync` only queues the writes.
 #[test]
-fn the_filesystem_sync_runs_on_this_platform() {
+fn the_filesystem_sync_runs_only_where_it_reaches_the_device() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut fresh = counter(0);
-    // Creates the storage id the macOS path syncs through.
-    begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
-    crate::io::sync_filesystem(dir.path(), &dir.path().join(storage_identity::FILE_NAME))
-        .expect("sync");
+    let synced = crate::io::sync_filesystems(dir.path());
+    assert_eq!(synced.is_ok(), cfg!(target_os = "linux"), "{synced:?}");
+}
+
+/// One device per filesystem: a tree on one mount syncs once, and a nested
+/// directory or a symlink to one is found without walking it twice.
+#[cfg(unix)]
+#[test]
+fn a_tree_on_one_filesystem_is_one_device() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("caches/shard-a")).expect("mkdir");
+    std::fs::create_dir_all(dir.path().join("shard-b")).expect("mkdir");
+    std::os::unix::fs::symlink(dir.path().join("shard-b"), dir.path().join("linked"))
+        .expect("symlink");
+    let devices = crate::io::devices_under(dir.path()).expect("walk");
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices.values().next(), Some(&dir.path().to_path_buf()));
 }
 
 /// **An unknown boot on either side rotates.** Silence never vouches for a

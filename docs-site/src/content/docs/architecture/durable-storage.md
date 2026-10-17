@@ -125,18 +125,20 @@ it without those records. So a broker records, in `<root>/run-state`, that a
 run is under way before any store opens, and that it stopped cleanly once a
 SIGTERM drain has flushed every store with nothing cut short and no log
 stopped by a failed fsync. The record also names the machine's boot id
-(`/proc/sys/kernel/random/boot_id` on Linux, `kern.bootsessionuuid` on macOS).
+(`/proc/sys/kernel/random/boot_id` on Linux).
 A start that finds no clean stop after a `periodic` or `none` run writes a new
 storage id before it registers or answers a peer, unless the record names the
 boot still running. Its leaders then copy it again from the start, and
 placement no longer counts it on reports from before the crash.
 
-A crash of the process alone, such as `SIGKILL` or an OOM kill, keeps the id.
+On Linux, a crash of the process alone, such as `SIGKILL` or an OOM kill, keeps the id.
 Every record the broker acknowledged had already been handed to the kernel,
 and the page cache that holds it outlives the process, so nothing it answered
-for is gone. Before keeping it, the broker syncs the data directory's
-filesystem, so a later clean stop vouches only for what is on the device; if
-that sync fails, the id rotates. A VM or container restored from a memory
+for is gone. Before keeping it, the broker calls `syncfs` on every filesystem
+under the data directory, with no timeout, so a later clean stop vouches only
+for what is on the device; if that sync fails, the id rotates. macOS cannot
+make that sync wait for the device, so there a process crash still rotates
+the id and costs a re-copy. A VM or container restored from a memory
 snapshot keeps its boot id, so for snapshot-restore workflows run `on_commit`
 or delete `storage-id` before starting the broker. A failed fsync takes that away: the kernel may have dropped the
 pages, so after one the broker forgets the boot, and a crash rotates the id

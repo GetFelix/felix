@@ -153,22 +153,24 @@ pub fn begin(
 /// held, such as a retired segment whose seal never ran, and a power loss
 /// after it would lose them under the same id. A failure, which includes a
 /// writeback error the crashed run never saw, or a platform that cannot do
-/// it, means the id cannot be kept.
+/// it (anything but Linux), means the id cannot be kept.
 fn synced_after_crash(root: &Path) -> bool {
     #[cfg(test)]
     {
+        // Unit tests judge the decision on every platform; the real call is
+        // tested on its own.
+        let _ = root;
         tests::SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
-        if tests::SYNC_FAILS.with(std::cell::Cell::get) {
-            return false;
-        }
+        !tests::SYNC_FAILS.with(std::cell::Cell::get)
     }
-    match crate::io::sync_filesystem(root, &root.join(storage_identity::FILE_NAME)) {
+    #[cfg(not(test))]
+    match crate::io::sync_filesystems(root) {
         Ok(()) => true,
         Err(err) => {
             tracing::warn!(
                 root = %root.display(),
                 error = %err,
-                "could not sync the data directory's filesystem after a process crash; \
+                "could not sync the data directory's filesystems after a process crash; \
                  taking a new storage id"
             );
             false

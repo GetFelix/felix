@@ -1122,21 +1122,27 @@ broker gives the directory a new id when it starts after one. A crash of the
 broker's process alone (`SIGKILL`, an OOM kill, a panic) loses none of them:
 every acknowledged record was handed to the kernel with `write` before it was
 acknowledged, and the page cache that holds it outlives the process and is
-still written back. So the id stays. `<root>/run-state` (format in
+still written back. So on Linux the id stays. `<root>/run-state` (format in
 `docs/storage-format.md`) records which it was:
 
 - **At startup**, before any store opens, the broker reads the id and the
   record. If the last run was under `Periodic` or `None` and did not record a
   clean stop, it writes a new id unless the record names the boot of the
   machine still running ([#1367](https://github.com/GetFelix/felix/issues/1367)).
-  Keeping the id that way first syncs the data directory's whole filesystem
-  (`syncfs` on Linux; `sync` and one `F_FULLFSYNC` on macOS), so what the
-  crashed process left to the page cache is on the device before the id is
-  announced, and a later clean stop vouches only for what is there. Without
-  it, a retired segment the crashed run never sealed would stay dirty, and
-  a power loss after the next clean stop would lose it under the same id.
-  The sync also reports a writeback error the crashed process never saw. If
-  it fails, or the platform has none, the id rotates.
+  Keeping the id that way first calls `syncfs` once for each filesystem
+  under the data directory (one per device among the root and every
+  directory below it, so a shard on another mount is covered). What the
+  crashed process left to the page cache is then on the device before the
+  id is announced, and a later clean stop vouches only for what is there.
+  Without it, a retired segment the crashed run never sealed would stay
+  dirty, and a power loss after the next clean stop would lose it under the
+  same id. The sync also reports a writeback error the crashed process never
+  saw. If it fails, the id rotates. It has no timeout: a dead or very slow
+  disk holds startup here, as recovery would anyway.
+- **Linux only.** macOS's `sync` only queues the writes, so nothing there
+  can say the page cache reached the device, and a relaxed crash on macOS,
+  or any platform but Linux, rotates the id as it did before: a process
+  crash under `periodic` or `none` still costs a re-copy there.
   Then it records that a run is under way, under which mode, and in which
   boot, and syncs that with the directory before any store opens. Recovery is
   this run's first write, and only the id this returns is sent to peers or the
@@ -1162,8 +1168,9 @@ still written back. So the id stays. `<root>/run-state` (format in
   rotates the id in any boot. That rewrite is not synced: only a process crash
   has to find it, and a machine crash rotates anyway.
 
-The boot is the kernel's boot id: `/proc/sys/kernel/random/boot_id` on Linux,
-`kern.bootsessionuuid` on macOS, read once at startup. Every restart, kernel
+The boot is the kernel's boot id, `/proc/sys/kernel/random/boot_id`, read
+once at startup (macOS records `kern.bootsessionuuid`, but never keeps an id
+on it). Every restart, kernel
 panic and `kexec` gives a new one. A container sees its host's, which is the
 right one, since the page cache is the host's too. A volume moved to another
 machine meets a different boot id and rotates, as it should. Where there is

@@ -557,20 +557,20 @@ impl LogInner {
     /// one, and a later flush failing for the same underlying reason should not
     /// overwrite it.
     pub(super) fn poison(&self, reason: String) {
-        let first_in_process = {
+        {
             let mut failure = self.failure.lock();
             if failure.is_some() {
                 return;
             }
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
             *failure = Some(reason);
-            !super::ANY_POISONED.swap(true, Ordering::AcqRel)
-        };
-        // A process crash from here on may have lost what this log
-        // acknowledged, so the next start must not keep the storage id.
-        if first_in_process {
-            crate::run_state::forget_watched();
+            super::ANY_POISONED.store(true, Ordering::Release);
         }
+        // A process crash from here on may have lost what this log
+        // acknowledged, so the next start must not keep the storage id. On
+        // every log's poison, not only the first: this one must not return
+        // before the record says so. Forgetting twice writes nothing.
+        crate::run_state::forget_watched();
     }
 
     /// Poison the log if a truncation or reset failed partway. Its segment,
