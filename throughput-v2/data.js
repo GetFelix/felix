@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792191464543,
+  "lastUpdate": 1792201313119,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31772,6 +31772,58 @@ window.BENCHMARK_DATA = {
             "range": "7021.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805751.42\nmean: 807036.58\nstdev: 7021.47\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d75a421b58f6711dc0189116e5d37e71581989ae",
+          "message": "fix(controlplane): drop the bundled Swagger UI (#1360)\n\nutoipa-swagger-ui pulls zip 8 as a build dependency (RUSTSEC-2026-0367,\nRUSTSEC-2026-0368 and a third zip advisory, fixed only in zip 9, which no\nutoipa-swagger-ui release accepts) and downloads the UI archive at build\ntime. Serve /v1/openapi.json directly and leave the viewer to the operator.\n\nSpec-Unaffected: an HTTP docs endpoint only",
+          "timestamp": "2026-10-17T01:33:44Z",
+          "tree_id": "5f59621cb21924f1cd3986acc5af25f1cd6ebaa2",
+          "url": "https://github.com/GetFelix/felix/commit/d75a421b58f6711dc0189116e5d37e71581989ae"
+        },
+        "date": 1792201312631,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348862.68,
+            "range": "16145.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348862.68\nmean: 346834.40\nstdev: 16145.12\ncv: 4.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348862.68,
+            "range": "16145.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348862.68\nmean: 346834.40\nstdev: 16145.12\ncv: 4.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82324.3,
+            "range": "552.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82324.30\nmean: 82417.18\nstdev: 552.54\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 823243.02,
+            "range": "5525.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 823243.02\nmean: 824171.80\nstdev: 5525.40\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
