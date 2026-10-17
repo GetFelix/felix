@@ -329,7 +329,18 @@ pub(crate) fn devices_under(
     devices.insert(std::fs::metadata(root)?.dev(), root.to_path_buf());
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
+        // A subdirectory the broker cannot read (a root-owned `lost+found`
+        // under a mount point) holds nothing of its; its device is already
+        // recorded from the stat.
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if dir != root => {
+                tracing::warn!(dir = %dir.display(), error = %err, "skipping an unreadable directory");
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        for entry in entries {
             let path = entry?.path();
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;

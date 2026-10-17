@@ -157,6 +157,21 @@ fn a_tree_on_one_filesystem_is_one_device() {
     assert_eq!(devices.values().next(), Some(&dir.path().to_path_buf()));
 }
 
+/// An unreadable subdirectory, such as a root-owned `lost+found`, is
+/// skipped rather than failing the sync.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_subdirectory_does_not_fail_the_walk() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let locked = dir.path().join("lost+found");
+    std::fs::create_dir(&locked).expect("mkdir");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let walked = crate::io::devices_under(dir.path());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    assert_eq!(walked.expect("walk").len(), 1);
+}
+
 /// **An unknown boot on either side rotates.** Silence never vouches for a
 /// crash: not a platform without a boot id, and not a record from a build
 /// that wrote none.
