@@ -1181,6 +1181,12 @@ generation and ballot are synced whatever the fsync mode, so a crash keeps
 them. Giving a copy up only narrows them: the ballot it writes accepts no
 leader at the generation it had already accepted.
 
+Losing the directory does reset them. So a copy with no promise on disk, on
+any broker, answers a fence only as its routing view backs it: with no route
+for the shard it refuses, retryably, and at the view's generation it answers
+only the leader the view names ([#1267](https://github.com/GetFelix/felix/issues/1267)).
+See `docs/replication-design.md`, "A directory that lost its ballots".
+
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has
 answered that pass under the id its position was learned under. Placement
