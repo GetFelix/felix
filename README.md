@@ -34,7 +34,7 @@ The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes fur
     <img src="https://raw.githubusercontent.com/GetFelix/felix/badges/coverage.svg" alt="Coverage" />
   </a>
   <a href="https://github.com/GetFelix/felix/releases">
-    <img src="https://img.shields.io/github/v/release/GetFelix/felix?include_prereleases&label=release" alt="Latest release" />
+    <img src="https://img.shields.io/github/v/release/GetFelix/felix?include_prereleases&sort=semver&label=release" alt="Latest release" />
   </a>
   <a href="https://crates.io/crates/felix-client">
     <img src="https://img.shields.io/crates/v/felix-client?label=crates.io" alt="felix-client on crates.io" />
