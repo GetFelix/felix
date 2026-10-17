@@ -42,6 +42,31 @@ is replaced by the broker's append time. A consumer that reads meaning from the
 key needs it in the value instead. Topics cannot be created from Kafka tools;
 create the stream through the control plane or felixctl.
 
+## Why Felix fits
+
+Moving a producer behind the Kafka listener changes a bootstrap address. The
+records land in a durable Felix stream, so the same data is also reachable with
+Felix's own features, and the Kafka producers keep working unchanged.
+
+A Felix subscriber gets its own bounded queue, so a slow instance reaches its
+own bound and does not hold the others back. Each event carries its offset, so
+a drop shows as a jump, and one subscription per instance gives every instance
+every event.
+
+On a log-backed cache, a retained watch delivers each key's current value and
+then every change after it, resuming by offset with no gap. That replaces the
+consumer that rebuilt a table from a compacted topic.
+
+Consumer groups, caches and counters run on the same log and offsets as the
+stream your Kafka producers write, with acknowledgement, redelivery and dead
+letters on the group. The queue and the cache do not need a second system
+that must agree with the log.
+
+Felix clients reach the broker over QUIC with tenant-scoped tokens that can be
+narrowed by action and resource, and revoking a principal ends its open streams
+and Kafka connections within about one control-plane sync interval. Both
+kinds of client use the same tokens, so one place sets who can read what.
+
 ## Example
 
 Start a development broker with the Kafka listener and no authentication (see
@@ -124,13 +149,21 @@ it uses groups, so a copy is a producer you write.
 
 Kafka is the more mature system. It has consumer groups with rebalancing,
 transactions, compaction, a deep connector and stream-processing ecosystem, and
-years of operation at large scale. Felix is not a replacement where those are
-needed. Where the workload is fanout to many live subscribers with isolation
-between them, work queues, caches and counters next to a durable log, Felix
-puts them on one log and one set of offsets, over QUIC, and Kafka clients can
-still reach the log. Latency and throughput figures, with their conditions, are
-on [Benchmarks](/features/benchmarks/). Do not compare them with a Kafka
-number from another setup.
+years of operation at large scale. Pick Kafka, or keep a stage on it, when you
+need any of those. Felix is the better fit when the workload is fanout to many
+live subscribers with isolation between them, or work queues, caches and
+counters next to a durable log: they share one log and one set of offsets, are
+reached over QUIC, and Kafka clients can still read the log. Latency and
+throughput figures, with their conditions, are on
+[Benchmarks](/features/benchmarks/). Do not compare them with a Kafka number
+from another setup.
+
+## Try it
+
+The one-command stack does not turn on the Kafka listener. The example above
+starts a development broker with it and gives the `kcat` produce and consume
+commands, and [Kafka compatibility](/features/kafka/) covers authentication
+and what else is supported.
 
 ## Where it stops
 

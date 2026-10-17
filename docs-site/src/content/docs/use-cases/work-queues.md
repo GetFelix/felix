@@ -44,6 +44,33 @@ record that must be retried is re-published to a retry topic by the
 application. What Kafka gives in return is ordering within a partition and
 a log that can be replayed.
 
+## Why Felix fits
+
+Parallelism does not depend on a partition count. Any number of workers poll
+one group, each record goes to one of them, and a slow record delays only the
+worker holding it. A Kafka consumer group stops at the partition count and
+holds the records behind a slow one.
+
+Each record is settled on its own. A worker acknowledges it, hands it back with
+`nack` and a delay, extends the claim, or dead-letters it. After the attempt
+bound the broker records a dead letter and the group moves on, so one poison
+job does not stop the jobs behind it, and `group_redrive` makes it owed again
+once the bug is fixed.
+
+The queue is the log. Enqueuing is an ordinary publish, a dead letter is a
+pointer to a record that is still readable, and the same stream can feed a
+worker pool, an audit subscriber and a replay. That replaces a job broker plus
+a separate event bus, and the two copies of each fact that have to be kept in
+step.
+
+An idempotent producer numbers its batches and the shard's leader answers a
+re-send of a sequence it already holds without appending, so a retried enqueue
+lands once.
+
+The group's position and dead letters replicate with the shard, and the
+position advances only over a contiguous run of finished records. A restart or
+failover redelivers anything unfinished and never skips it.
+
 ## How it works on Felix
 
 A queue is a durable stream read through a **consumer group** instead of by
@@ -163,33 +190,57 @@ of after the visibility timeout, polls under a stable name with
 
 ## Compared with SQS, RabbitMQ, Kafka and JetStream
 
-SQS is the simplest to run if you are on AWS, and it scales without any
-shard count to choose. Felix needs you to run brokers and pick a shard count
-at creation. In exchange, a queue is a log: a job that failed is still
-there to read, a dead letter is a pointer and not a second queue to drain,
-and one stream can feed both a worker pool and an audit subscriber. SQS FIFO
+SQS is the simplest to run on AWS and scales without a shard count to choose.
+Felix needs brokers and a shard count at creation. In exchange a failed job is
+still readable in the log, a dead letter is a pointer and not a second queue
+to drain, and one stream can feed both a worker pool and a subscriber. SQS FIFO
 queues order within a message group and deduplicate by deduplication ID. Felix
 hands out new records in offset order, with redeliveries first, and promises
-nothing about the order they finish.
+nothing about the order they finish. Pick SQS when you want no servers.
 
-RabbitMQ is the better choice when routing is the problem. Exchanges,
-priorities and per-message TTL have no counterpart in Felix, which has a
-stream and a group. Felix is the better fit when the queue shares a system
-with streaming, state and replay and you want one thing to operate.
+RabbitMQ is the better choice when routing is the problem, because exchanges,
+priorities and per-message TTL have no counterpart in Felix. Felix is the
+better choice when the queue shares a system with streaming, state and replay.
+Pick RabbitMQ when jobs need routing or priorities.
 
 Compared with Kafka consumer groups, workers are not limited by partition
-count. Any number of workers poll one group, each record goes to one of them,
-and a slow record delays only its own worker. There is per-record
-acknowledgement, retry delay and a dead-letter list. What you give up is
-ordering across consumers, which Kafka preserves per partition. If jobs for
-one key must run in order, keep them on one shard with a routing key and
-accept that two workers can still hold adjacent records.
+count, a slow record delays only its own worker, and there is per-record
+acknowledgement, retry delay and a dead-letter list. Kafka preserves ordering
+per partition across consumers and Felix does not. If jobs for one key must run
+in order, keep them on one shard with a routing key and accept that two workers
+can still hold adjacent records. Pick Kafka when order per partition is the
+requirement.
 
-JetStream work-queue streams are the closest design: pull consumers, ack
-wait, maximum deliveries. JetStream removes an acknowledged message from the
-stream under work-queue retention, while a Felix record stays until retention
-removes it, which keeps replay and redrive available but means storage is
-bounded by retention and not by what is still pending.
+JetStream work-queue streams are the closest design. JetStream removes an
+acknowledged message under work-queue retention, while a Felix record stays
+until retention removes it, which keeps replay and redrive available and means
+storage is bounded by retention and not by what is still pending. Pick
+JetStream when you want acknowledged messages gone.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+`orders` is durable, which consumer groups need, and it may already hold
+records such as the quickstart's `hello`. Create a group at the live tail, so
+it sees only what you publish next. Creating a group that exists fails, so use
+a new name each run:
+
+```bash
+docker compose run --rm felixctl group create orders workers-1 --from latest
+docker compose run --rm felixctl pub orders 'job-1'
+docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
+docker compose run --rm felixctl group nack orders workers-1 0:OFFSET:1
+docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
+docker compose run --rm felixctl group ack orders workers-1 0:OFFSET:2
+```
+
+`poll` prints a claim, `SHARD:OFFSET:ATTEMPTS`, then a tab and the payload.
+Replace `OFFSET` with the offset it printed. After the `nack`, the second `poll`
+claims the same record with the attempt count at 2, which is the redelivery.
+The `ack` finishes it, and `group describe orders workers-1` shows nothing owed.
 
 ## Where it stops
 

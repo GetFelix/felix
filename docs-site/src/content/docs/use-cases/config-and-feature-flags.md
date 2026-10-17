@@ -30,6 +30,18 @@ mechanism. Plain polling with an ETag is simpler still, and for a few hundred
 consumers it is often the right answer. Its cost is a staleness bound equal to
 the poll interval and a burst of requests whenever many consumers start at once.
 
+## Why Felix fits
+
+A retained watch delivers a key's current value and then every change after it. The broker registers the watcher before it reads the tail, so a consumer needs no separate `GET` and cannot miss a write that lands between the read and the subscribe. That is the step Redis pub/sub plus `GET` leaves to the client, and it is why no poll timer is needed as a backstop.
+
+`retained_count()` says how many changes make up the starting state. A proxy can hold off serving traffic until it has exactly that many, and zero is a definite answer for an empty prefix. A poller cannot tell a complete table from a partial one.
+
+A consumer that falls behind is told. The watch ends with `Lagged { resume_from }`, and re-watching from that offset is gapless. After a reconnect, `offset + 1` replays exactly what was missed, or the current value of each key if the cache has compacted past it. The staleness check is part of the API, not a timer you write.
+
+Each watcher has its own bounded queue, so thousands of watchers do not each need a stream into a consensus store, and you do not build a watch cache in front of one. Measured on a three-broker Azure cluster: 500 watchers on one key received every put at 4.6 ms p50, and a late joiner to a 10,000-key prefix held the full state in 38 ms ([conditions](/features/real-network-performance/#cache-counter-watch-and-queue)).
+
+Writers use `cache_put_if`, whose check and write are one step on the key's owner, so two operators editing the same table cannot overwrite each other. With `Quorum` consistency a write is acknowledged once a majority of replicas hold it.
+
 ## How it works on Felix
 
 Configuration goes in a cache. A log-backed cache is a log: every write appends
@@ -214,43 +226,42 @@ clients have their own watch examples.
 
 ## Compared with etcd, Consul, JetStream KV, Redis and polling
 
-etcd gives you more consistency machinery than Felix does. It offers
-multi-key transactions, linearizable reads by default, a global revision across
-all keys and leases, and Kubernetes has years of production behind it. If your
-config changes need to commit atomically across several keys, or you already run
-etcd and a few hundred watchers, use it. Where Felix differs is the shape of the
-watch tier. Watch delivery is built for fanout: each watcher has its own
-bounded queue, and a slow watcher is ended with a resume offset instead of
-holding up the writer. On a three-broker Azure cluster, a keyed watch
-with 500 watchers on one key delivered every put to every watcher (1,100,000 of
-1,100,000) at 4.6 ms p50, and a late joiner to a 10,000-key prefix held the
-complete state in 38 ms ([measurements and conditions](/features/real-network-performance/#cache-counter-watch-and-queue)).
-Counts above 500 watchers have not been measured.
+etcd has multi-key transactions, linearizable reads by default, a global revision across all keys and years of Kubernetes production use. If a change must commit atomically across several keys, or you already run etcd for a few hundred watchers, use etcd. Felix is built for the other end of the problem: many watchers of a small keyspace. Each watcher has a bounded queue, and a slow one is ended with a resume offset instead of holding up the writer. The measured numbers are in the section above. Counts above 500 watchers have not been measured.
 
-Consul's watches are blocking queries: the client long-polls with the index it
-last saw, and the agent returns when something newer exists. It works well
-through the local agent and suits service discovery, but each change costs the
-client a new request, and the semantics are an index comparison rather than a
-resumable stream of changes.
+Consul's watches are blocking queries: the client long-polls with the last index it saw and makes a new request per change. They work well through the local agent and suit service discovery. A Felix watch is one stream per consumer that carries each change as it happens and resumes at an offset, so a change costs no new request.
 
-NATS JetStream's key-value store is the closest relative. It is a stream under
-the hood, a watch delivers the current values and then updates, an ordered
-consumer resets itself after a gap, and a revision-based `Update` is a
-compare-and-set. It also keeps per-key history. If you already run NATS, it is a
-strong choice. Felix differs in that the lag signal is explicit and carries the
-offset to resume from, `Quorum` caches have a documented acknowledgement and read
-contract, and the same cluster also serves streams, counters and queues from one
-log.
+NATS JetStream's key-value store is the closest relative. It is a stream underneath, a watch delivers current values and then updates, and a revision-based `Update` is a compare-and-set. It also keeps per-key history. If you already run NATS, it is a strong choice. Felix adds an explicit lag signal that carries the offset to resume from, a documented acknowledgement and read contract for `Quorum` caches, and the same cluster for your streams, counters and queues.
 
-Redis with pub/sub plus `GET` is the fastest to stand up and the weakest on
-delivery: the channel keeps nothing, so a consumer is only correct if it
-re-reads after every reconnect and on a timer. Redis Streams do keep an offset
-and fix that, at the price of a separate stream per feed and manual snapshotting
-of current state. Redis can do compare-and-set with `WATCH`/`MULTI` or a Lua
-script, and `SET NX PX` for leases.
+Redis with pub/sub plus `GET` is the fastest to stand up. The channel keeps nothing, so it is correct only if every consumer re-reads after each reconnect and on a timer. Redis Streams keep an offset and fix that, at the price of a separate stream per feed and snapshotting current state by hand. A Felix retained watch gives the snapshot and the feed as one call. Redis can do compare-and-set with `WATCH`/`MULTI` or a Lua script.
 
-Polling stays the right answer when the fleet is small, a staleness of tens of
-seconds is fine, and you do not want a stateful connection per consumer.
+Polling is the right answer when the fleet is small, tens of seconds of staleness are fine, and you do not want a connection per consumer.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+Put two flags, then watch the prefix in one terminal:
+
+```bash
+docker compose run --rm felixctl cache put config flag/new-checkout on
+docker compose run --rm felixctl cache put config flag/beta-search on
+docker compose run --rm felixctl cache watch config --prefix flag/ --retained
+```
+
+The watcher prints both flags straight away, `flag/new-checkout<TAB>on` and its
+neighbour: those are the retained values. In a second terminal, change one flag
+and delete the other:
+
+```bash
+docker compose run --rm felixctl cache put config flag/new-checkout off
+docker compose run --rm felixctl cache del config flag/beta-search
+```
+
+The first terminal prints `flag/new-checkout<TAB>off` and then
+`flag/beta-search<TAB>(deleted)` as they happen. Stop the watcher and start it
+again with `--retained`: it begins from the current values, with nothing missing.
 
 ## Where it stops
 

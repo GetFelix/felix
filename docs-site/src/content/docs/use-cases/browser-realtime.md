@@ -25,6 +25,18 @@ run the edge, that is the sensible choice. NATS can also accept WebSocket
 clients directly, with per-user permissions on subjects, which removes the tier
 at the cost of running NATS at the edge of your network.
 
+## Why Felix fits
+
+Authorization is enforced by the brokers. The gateway exchanges the person's sign-in for a token narrowed to one scope, and the brokers check that token on every request. A token for room `lobby` cannot reach another room's streams, caches or counters, so a bug in the relay cannot leak across rooms. In a hand-built tier that check is application code on every message.
+
+The relay holds no application state and never decodes a payload. The scope file maps aliases to resources, and the sign-in comes from your existing identity provider through token exchange, so there is no session store and no second permission system. Whether a person may open a scope is decided by Felix roles.
+
+Resume is built in. On a durable stream every event carries its log offset, and a browser that was dropped subscribes again from the last offset it handled plus one. The gateway holds up to 1,024 events per connection and then stops reading, so a browser that stops reading is dropped by Felix's bounded queue and resumed from the log, receiving every record in order.
+
+Narrowing reaches a single cache key or prefix, so a token can read `sessions/room1/*` and nothing else in that cache.
+
+The same cluster serves the browser scope and your backend services' streams, caches and queues, so a native service can subscribe to the room's stream over QUIC without a second system between them.
+
 ## How it works on Felix
 
 Browsers cannot speak QUIC, so
@@ -159,27 +171,19 @@ simulator publishes ticks to a durable stream that the gateway relays.
 
 ## Compared with a hand-built WebSocket tier, hosted services and NATS WebSocket
 
-A hand-built tier gives you full control: any protocol, any auth model, any
-payload handling, and presence or rate limits in your own code. It also leaves
-you responsible for fanout memory per connection, resume after reconnect and
-authorization on every message. The gateway moves authorization into the
-brokers, so the relay holds no application state and no application names. It
-cannot decode a payload, so it cannot make a payload-level decision either:
-anything that needs one, such as stamping a sender, is declared in the scope file
-(`stamp_sender`) or done by a service that subscribes as a normal client.
+A hand-built tier gives you full control: any protocol, any auth model, any payload handling, and presence or rate limits in your own code. It also leaves you responsible for per-connection fanout memory, resume after reconnect and authorization on every message. The Felix gateway moves authorization into the brokers and resume into the log. The cost is that it cannot decode a payload, so anything that needs a payload-level decision, such as stamping a sender, is declared in the scope file (`stamp_sender`) or done by a service that subscribes as a normal client.
 
-Hosted realtime services remove operations entirely and bring features Felix
-does not have, such as presence APIs, multi-region edge points of presence and
-mobile SDKs. Felix is self-hosted: you run brokers, a control plane with
-Postgres or its embedded Raft store, an identity provider and the gateway. In
-return, state lives in your cluster, resume uses offsets in your own log, and the
-same cluster serves your services' streams, caches and queues.
+Hosted realtime services remove operations entirely and bring features Felix does not have, such as presence APIs, multi-region edge points of presence and mobile SDKs. If you want someone else to run the edge, pick one. Felix is self-hosted: you run brokers, a control plane with Postgres or its embedded Raft store, an identity provider and the gateway. In return, state lives in your cluster, resume uses offsets in your own log, and the same cluster serves your services' streams, caches and queues.
 
-NATS WebSocket is the closest in shape: browsers connect to the server itself,
-and permissions are per user on subjects with wildcards, which is more flexible
-than a scope file. JetStream adds replay. The Felix gateway differs by taking
-the sign-in from your identity provider through token exchange, narrowing per
-scope, and relaying resumable offsets and cache watches in its protocol.
+NATS WebSocket is the closest in shape: browsers connect to the server itself, and permissions are per user on subjects with wildcards, which is more flexible than a scope file. JetStream adds replay. The Felix gateway takes the sign-in from your identity provider through token exchange, narrows per scope, and relays resumable offsets and cache watches in its protocol. Pick NATS if wildcard subject permissions matter more to you than those.
+
+## Try it
+
+The one-command stack has no gateway, so a browser cannot connect to it. Run
+the gateway command from the example above against a broker, or use the
+Quickstart stack to see the stream a browser would be fed:
+`docker compose run --rm felixctl sub orders` in one terminal and
+`docker compose run --rm felixctl pub orders 'hello'` in another.
 
 ## Where it stops
 

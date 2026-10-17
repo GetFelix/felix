@@ -35,6 +35,35 @@ tenant its own namespace, quotas or identity provider, and one tenant's
 In all three, the application usually does its own mapping from end user to
 tenant, and its own check on every call.
 
+## Why Felix fits
+
+The tenant is part of every data-plane request. Each operation names its tenant
+and namespace and the broker rejects ones it does not know, so there is no
+unscoped call to forget a check on and no prefix rule that can leak. A token for
+one tenant fails against another because the `tid` claim is checked after the
+signature.
+
+Your identity provider is the source of identity. The control plane exchanges a
+user's OIDC token for a Felix token, with trust configured per tenant, and the
+request can narrow the grant by action and resource. A browser can hold a token
+for one stream and a few cache keys, so the application does not need its own
+mapping from end user to permission on every call.
+
+Cache grants go down to a key or key prefix and cover gets, puts, deletes,
+conditional writes, counters and key watches. Redis ACLs match key patterns but
+carry no tenant, identity provider or quota.
+
+The broker checks the permissions inside the token without a call to the
+control plane per request. A gateway serving many users holds one connection and
+gives each user a handle with `Client::with_identity`, with that user's own
+subscription cap and publish byte budget. Revoking a principal ends its open
+streams and watches within about one control-plane sync interval.
+
+A per-tenant publish cap keeps one customer's import from starving the rest.
+Publishes queue per shard behind a per-tenant fair queue with a guaranteed
+share, and the tenant over its rate is refused with a retryable `overloaded`
+and `retry_after_ms`.
+
 ## How it works on Felix
 
 The scope is part of the protocol. A tenant contains namespaces, and a
@@ -139,24 +168,43 @@ broker's decision change without a restart. See [Demos](/demos/overview/).
 
 ## Compared with Kafka, NATS and Redis
 
-Against Kafka, tenancy is in the model instead of in names, so there is no
-prefix rule to get wrong, and a token can be narrowed by action and resource
-to something a single browser session needs. Kafka's quotas cover more:
-bandwidth and request rate for producers and consumers, per user or client.
-Felix limits only publish rate today.
+Against Kafka, tenancy is in the model and not in topic names, so a prefix ACL
+mistake is not a leak, and a token can be narrowed to what one browser session
+needs. Kafka's quotas cover more, with bandwidth and request rate for producers
+and consumers per user or client, and Felix limits only publish rate today.
+Pick Kafka when per-client bandwidth quotas are the main requirement.
 
-Against NATS, Felix's tenants are weaker in one respect: a tenant is a scope
-in a shared cluster, with no per-tenant limits on subscriptions, storage or
-connections beyond the per-source-address connection cap. NATS accounts have those limits,
-and per-account JetStream storage, and can share data with other accounts
-through exports and imports under the account owner's control. Felix has a
-single identity story built around OIDC exchange and key-level cache grants,
-which suits a SaaS where end users hold tokens directly, and it puts streams,
-a cache, counters and consumer groups behind the same scope.
+Against NATS, accounts are the stronger isolation unit. They carry limits on
+subscriptions, JetStream storage and connections, and share data only through
+exports and imports under the account owner's control. A Felix tenant is a scope
+in a shared cluster, with no per-tenant limits beyond the publish rate and the
+per-source-address connection cap. Felix puts streams, a cache, counters and
+consumer groups behind that scope, with OIDC exchange and key-level cache
+grants for a SaaS where end users hold tokens directly. Pick NATS when hard
+per-tenant resource limits are the whole requirement.
 
-Against Redis key prefixes, the tenant is part of every request,
-the cache is scoped to it, and credentials come from your identity provider
-through token exchange instead of static ACL users.
+Against Redis key prefixes, the tenant is part of every request and the cache
+is scoped to it. Credentials come from your identity provider through token
+exchange and not from static ACL users. Pick Redis when you need only a fast
+cache for one trusted application.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+The stack's credentials belong to tenant `dev`. Ask for another tenant with the
+same token:
+
+```bash
+docker compose run --rm felixctl pub orders 'hello'
+docker compose run --rm felixctl --tenant acme pub orders 'hello'
+```
+
+The first publish succeeds. The second fails with `auth rejected`, because the
+token was minted for `dev` and the broker will not accept it for `acme`. The [cross-tenant demo](/demos/overview/) goes further, with two
+tenants of its own and RBAC changes taking effect while it runs.
 
 ## Where it stops
 

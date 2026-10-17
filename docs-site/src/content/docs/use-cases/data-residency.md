@@ -27,6 +27,18 @@ and JetStream streams can be placed on a named cluster or tagged servers. These
 are real and mature. What they ask is that the residency boundary lives in how you
 wired the clusters, not in a per-stream property.
 
+## Why Felix fits
+
+Region is a property of the stream, not of the wiring. The control plane applies it at every point where it chooses where a shard lives: first placement, rebalancing, drains, failover promotion and operator moves. An operator move outside the allowed regions is refused as `region_not_allowed`, so a routine drain cannot quietly carry data across a border.
+
+A copy found outside its allowed regions, because a broker's region changed or a bridge was removed, is moved back the way a draining broker's copies are.
+
+Brokers also refuse to forward to a leader outside their region and its bridges, with `shard_unavailable` and reason `region_not_routable`. The `a_stream_homed_in_one_region_is_refused_by_another` test checks this with two regions and no bridge.
+
+One control plane, one set of clients and one operations team cover every region, and tenants stay separately addressed and authorized on shared brokers. Cross-region replication happens only where an operator wrote a directional bridge such as `eu-west-1>us-east-1`.
+
+Inside a region, `FELIX_NODE_ZONE` spreads each shard's followers across failure zones and keeps the spread through drains and rebalances. A shard that cannot be spread is placed anyway and raises `felix_shards_zone_unspread`, and a dry-run move reports `zones_before` and `zones_after`.
+
 ## How it works on Felix
 
 A stream created with a `region` has its leader and every replica only on brokers
@@ -97,6 +109,21 @@ felix-controlplane admin move t1/payments/orders-eu/0 broker-us-1 --dry-run
 See [Moving shards](/deployment/moving-shards/) for the arguments. The
 `a_stream_homed_in_one_region_is_refused_by_another` test runs two regions with no
 bridge and checks that each refuses the other's stream.
+
+## Compared with a cluster per region, Kafka and NATS
+
+A separate cluster per jurisdiction is the strongest boundary available, because it is a network boundary, and it covers every kind of data including caches and counters, which Felix cannot pin today. It costs N sets of operations and credentials, and application code that knows which cluster holds which tenant. Felix puts the region on the stream and has the control plane enforce it across placement, drains and failover, so the clients and operations stay single. Pick separate clusters when the requirement is a hard network boundary or covers caches.
+
+Kafka places replicas by rack with `broker.rack`, and moving data between regions is a separate tool such as MirrorMaker that you configure to move only what you intend. Felix does the equivalent of rack awareness with `FELIX_NODE_ZONE`, and the region limit is part of the stream's definition, not a replicator's topic list.
+
+NATS has superclusters and leaf nodes, and JetStream streams can be placed on a named cluster or on servers matching tags. Those are mature. Felix's difference is that the region is checked by the control plane on every later placement decision (failover, rebalancing, drains) and a stray copy is moved back. Felix lacks a bridge agent, per-region encryption and a cross-region audit log, as listed below.
+
+## Try it
+
+Placement by region needs brokers that report one, and the one-command stack runs
+a single broker with none. The example above starts brokers in two regions and
+creates the pinned stream; `felixctl stream info orders-eu` then shows where its
+shards landed.
 
 ## Where it stops
 

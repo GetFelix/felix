@@ -43,6 +43,35 @@ write rate that is modest by design.
 Idempotency keys are usually a database table with a unique constraint, or
 Redis `SET NX` with a result stored beside the key.
 
+## Why Felix fits
+
+The claim returns its own fencing token. `cache_put_if` with `Absent` hands
+back the version of the write. On a log-backed cache that is a log offset,
+which only grows, across compaction and restart. A storage service that remembers
+the highest version it has seen can refuse a stalled holder's late write. A
+plain `SET NX` gives you the lock but no number to fence with.
+
+On a `Quorum` cache the acknowledgement means a majority of the shard's
+replicas hold the claim, so losing the owner does not hand the same lease to a
+second worker. That closes the failover gap of an asynchronously replicated
+Redis, without running a second consensus system next to your event stream.
+
+Waiting workers do not poll. `watch_cache` on the lease key delivers the
+expiry delete in order with its offset, and the worker then tries its own
+`Absent` put. A renewal with `Version(v)` and a release with `cache_delete_if`
+cannot act on a lease that has since moved to someone else.
+
+A single writer of a stream needs no lease at all. `publish_if` carries the
+offset the writer expects the batch to start at, the broker checks it where it
+assigns offsets, and of two writers expecting the same offset exactly one is
+written. The fence sits on the data, so a paused writer cannot append after a
+replacement took over.
+
+If you already run Felix for events and state, this replaces a separate Redis
+or etcd used only for leases. The lease, the data it protects and the
+permissions on both share one tenant scope, and the fencing token is an offset
+that other parts of the system can already read.
+
 ## How it works on Felix
 
 A cache key is the lease. `cache_put_if` with `CacheCondition::Absent` claims
@@ -52,8 +81,9 @@ same name cannot both win. An entry past its TTL counts as absent, so the
 next `Absent` put wins as soon as the lease lapses.
 
 Every value has a version, which is the log offset of the put that wrote it.
-It only grows and is never reused, including across compaction and restart.
-A holder renews with `CacheCondition::Version(v)` and releases with
+On a log-backed cache it only grows, including across compaction and restart.
+An in-memory cache starts each run's versions from the clock, so fence only on
+a log-backed cache. A holder renews with `CacheCondition::Version(v)` and releases with
 `cache_delete_if`, so neither can act on a lease that has since passed to
 someone else. The version is also a fencing token: a database or storage
 service that remembers the highest version it has seen can refuse a write
@@ -243,33 +273,55 @@ to see what happened.
 
 ## Compared with Redis, etcd and ZooKeeper
 
-Against Redis `SET NX PX`, Felix adds a version that grows with every write
-and works as a fencing token, a `Quorum` level whose acknowledgement survives
-losing the owner, and a watch that tells waiters when a lease is deleted.
-Redis is faster to adopt and has the larger ecosystem of lock libraries; a
-single Redis instance is also simpler to reason about than a replicated
-cache, and for a lock whose failure is merely wasteful it is usually enough.
+Against Redis `SET NX PX`, Felix returns a version that works as a fencing
+token, offers a `Quorum` level whose acknowledgement survives losing the owner,
+and tells waiters when a lease is deleted. Redis is quicker to adopt, has the
+larger ecosystem of lock libraries, and a single instance is simpler to reason
+about than a replicated cache. Pick Redis for a lock whose failure is merely
+wasteful.
 
-Against etcd, Felix has no session. An etcd lease can own many keys and a
-keepalive stream renews all of them, and a lease's expiry removes them
-together. A Felix lease is one key with one TTL, renewed by writing it. etcd
-also gives a revision across the whole keyspace and multi-key transactions,
-and Felix's conditional writes check one key. etcd is built around
-linearizable reads and writes as its main promise. In Felix, reads on a
-`Quorum` cache are linearizable without clocks once `lease_free_reads` is
-finalized; writes still rely on the owner's lease.
+Against etcd, a Felix lease is one key with one TTL, renewed by writing it,
+where an etcd lease can own many keys and expire them together. etcd also gives
+a revision across the whole keyspace and multi-key transactions, and its
+reads and writes are linearizable by design. In Felix, reads on a `Quorum`
+cache are linearizable without clocks once `lease_free_reads` is finalized,
+and writes still rely on the owner's lease. In return the lease sits next to
+your streams and cache, and a conditional publish fences the data itself. Pick
+etcd when you need multi-key transactions or one lease over many keys.
 
-ZooKeeper ephemeral nodes disappear when a client's session ends, which is
-detected by heartbeats from the connection. Felix expires by TTL alone, so
-a crashed holder is detected only after its TTL, not when its connection
-drops. Pick a TTL to match how long you can tolerate no leader. Expiry is
+ZooKeeper ephemeral nodes disappear when a client's session ends, so a crashed
+holder is noticed as soon as its heartbeats stop. Felix expires by TTL alone,
+so choose a TTL that matches how long you can tolerate no leader. Expiry is
 decided by the leader's clock, and a leader whose clock jumps forward expires
-entries early, for good, so lease TTLs depend on that clock being sane.
+entries early. Felix needs no session library and no separate ensemble. Pick
+ZooKeeper when you need ephemeral nodes tied to a connection.
 
-Use Felix when you already run it for events and state and want leases,
-fencing and expiry watches without a second cluster. They get the same tenant
-scoping and permissions as everything else, and the fencing token is a log
-offset other parts of the system can already read.
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+Conditional writes, which make the lease safe, are not in `felixctl`, so the
+election code on this page is Rust. What `felixctl` shows is how a lapsing
+lease reaches the workers waiting for it. In one terminal, watch the key:
+
+```bash
+docker compose run --rm felixctl cache watch config --key lease/job-1
+```
+
+In another, take a lease for ten seconds and read it:
+
+```bash
+docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 10000
+docker compose run --rm felixctl cache get config lease/job-1
+```
+
+The watcher prints the put. The `get` prints `worker-a`. Ten seconds later the
+watcher prints `lease/job-1<TAB>(deleted)` without anyone polling, and `get`
+exits with status 5. To see the compare-and-set, run the Rust example above
+against a cluster from the
+[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command).
 
 ## Where it stops
 

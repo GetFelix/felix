@@ -38,6 +38,28 @@ folding them. The write is atomic because there is only one. The reads are the
 problem. Every service builds and maintains its own projection, and a read of
 current state waits on the projection catching up.
 
+## Why Felix fits
+
+Here the log is the place the state lives. A commit writes the event and the
+`put` and `delete` operations as one record in one shard's log, so there is no
+second system to fall out of step with. The dual-write crash window does not
+exist, and neither does the outbox table, the relay, its lag, or the
+deduplication every consumer needs when the relay restarts.
+
+The state is readable by key. `state_get` returns the value and a `version`
+equal to the offset of the commit that wrote it, so a reader can tell which
+event a value belongs to. Event sourcing by hand leaves you to build and
+maintain a projection, and a read of current state waits for it to catch up.
+
+The event and the state change are held back together. On a `Quorum` stream both
+wait for the committed mark, and the status table records failover and promotion
+for commits as model-checked in TLA+ (`FelixAtomicCommit`) and checked under
+faults. A subscriber, a consumer group and the Kafka listener all see the event
+at the same offset the state carries.
+
+`commit_if` lets a single writer refuse to overwrite a decision made since it
+last looked, with no lock service and no separate version column.
+
 ## How it works on Felix
 
 A commit puts the event and the state change in the same record. `commit` takes
@@ -140,22 +162,34 @@ felixctl does not read keyed state yet, so `state_get` is a client call today.
 
 ## Compared with an outbox, Kafka transactions and event sourcing
 
-Against a Postgres outbox, Felix gives up SQL. State here is keyed values on a
-stream shard, read by key, not rows you can join or filter. If the order data
-needs ad-hoc queries, keep it in Postgres and keep the outbox; Felix removes the
-relay, not the database. If the state is a small record per entity that
-services read by key, one commit replaces the table, the outbox, the relay and
-the deduplication.
+Against a Postgres outbox, Felix removes the relay, its lag and the duplicate
+handling: one commit replaces the outbox row, the relay and the deduplication
+when the state is a small record per entity that services read by key. Postgres
+does more than that. State here is keyed values on a stream shard, not rows you
+can join or filter, so pick the outbox when the order data needs ad-hoc queries.
 
-Against Kafka transactions, the two cover different ground. Kafka's
-transactions span partitions and topics, and consume-and-produce is
-exactly-once. A Felix commit stays inside one shard of
-one stream. What Felix adds is the state read: the value is available by key
-at the commit's offset, without a consumer building a table.
+Against Kafka transactions, Felix covers the part Kafka leaves out, the service's
+own state: the value is available by key at the commit's offset, without a
+consumer building a table. Kafka's transactions span partitions and topics and
+make consume-and-produce exactly-once, and a Felix commit stays inside one shard
+of one stream. Pick Kafka transactions for exactly-once between topics.
 
-Against event sourcing by hand, a commit is event sourcing where the
-projection for the entity is maintained by the broker, in the same step as the
-append. You still have the full event history in the log.
+Against event sourcing by hand, a commit keeps the full event history in the log
+and has the broker maintain the entity's current state in the same step as the
+append, so no service builds a projection and no read waits on one. Pick the
+hand-built version only when you need a read model that Felix's keyed state
+cannot express.
+
+## Try it
+
+`felixctl` has no commit command, so the atomic write is shown by the Rust
+snippet in the example above: the `cluster.commit` call that enqueues the event,
+puts the state and deletes the cart as one record, and the `state_get` that reads
+it back. Run it against the local cluster from the
+[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command), started with
+`--nodes 3` for the replicated stream. To see the event half alone on the
+one-command stack, run `docker compose run --rm felixctl sub orders` in one terminal and
+`docker compose run --rm felixctl pub orders 'order placed'` in another.
 
 ## Where it stops
 

@@ -106,16 +106,19 @@ What it runs:
 | Service | What it does | Host ports |
 |---------|--------------|------------|
 | `felix-controlplane` | The control plane, with its store in memory | `8443` (REST), `8081` (metrics, `/ready`) |
-| `felix-dev-auth` | Runs once: initializes tenant `dev`, creates namespace `default` and stream `orders`, and mints the tokens | none |
-| `felix-broker` | One broker, not durable | `5000-5003/udp` (QUIC), `8080` (metrics, `/ready`) |
+| `felix-dev-auth` | Runs once: initializes tenant `dev`, creates namespace `default`, the durable stream `orders` and the caches `config` and `stats`, and mints the tokens | none |
+| `felix-broker` | One broker, with durable storage in the `felix-dev` volume | `5000-5003/udp` (QUIC), `8080` (metrics, `/ready`) |
 | `felix-dev-ready` | Prints the connection settings once the broker is ready | none |
 | `felixctl` | Only for `docker compose run` | none |
 
 Every host port is bound to `127.0.0.1`, so nothing in the stack is reachable
-from another machine. The control plane and broker keep their state in
-memory, and the tokens and certificate sit in the `felix-dev` volume.
+from another machine. The control plane keeps its state in memory. The
+broker sets `FELIX_DURABLE_STORAGE_DIR` to a directory in the `felix-dev`
+volume, so streams, consumer groups and caches are on disk and cache watches
+work, and the tokens and certificate sit in the same volume.
 `docker compose down -v` discards all of it, and the next `up` starts clean.
-Without `-v` the volume survives, but the next `up` overwrites what is in it.
+Without `-v` the volume survives, but the control plane forgets its streams and
+the next `up` overwrites the tokens, so run `down -v` before starting again.
 
 ### The development credentials
 

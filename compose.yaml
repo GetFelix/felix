@@ -17,8 +17,10 @@
 # nothing here is reachable from another machine. Never deploy this file; see
 # https://docs.getfelix.dev/deployment/docker-compose/ for a real setup.
 #
-# Everything but the felix-dev volume is in memory: `docker compose down -v`
-# throws it all away, and the next `up` mints fresh credentials.
+# The control plane's metadata is in memory, and the broker's streams and caches
+# are on disk in the felix-dev volume. `docker compose down -v` throws it all
+# away, and the next `up` mints fresh credentials. Run it before `up` again:
+# without -v the broker keeps data the new control plane has never heard of.
 
 name: felix-dev
 
@@ -47,8 +49,9 @@ services:
       timeout: 2s
       retries: 30
 
-  # Initializes tenant `dev`, creates namespace `default` and stream `orders`,
-  # and writes the broker's and felixctl's tokens to the felix-dev volume.
+  # Initializes tenant `dev`, creates namespace `default`, stream `orders` and
+  # caches `config` and `stats`, and writes the broker's and felixctl's tokens
+  # to the felix-dev volume.
   felix-dev-auth:
     image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.6.0-preview.9}
     network_mode: "service:felix-controlplane"
@@ -65,6 +68,8 @@ services:
         BOOT=http://127.0.0.1:9095/internal/bootstrap/tenants/dev
         CP=http://127.0.0.1:8443/v1/tenants/dev
         OUT=/var/lib/felix
+        # The broker opens its storage dir but does not create it.
+        mkdir -p $$OUT/data
 
         # POST $$2 to $$1 with header $$3. Sets $$status; the body is in /tmp/body.
         post() {
@@ -99,10 +104,11 @@ services:
         field felix_token > "$$OUT/node.jwt"
         field refresh_token > "$$OUT/node-refresh.jwt"
         umask 022
-        mint '{"principal":"p:dev","audience":"felix-controlplane","requested":["ns.manage","stream.manage"]}'
+        mint '{"principal":"p:dev","audience":"felix-controlplane","requested":["ns.manage","stream.manage","cache.manage"]}'
         field felix_token > "$$OUT/controlplane.jwt"
         # A broker refuses a token carrying actions it does not know.
-        mint '{"principal":"p:dev","audience":"felix-broker","requested":["stream.publish","stream.subscribe"]}'
+        # stream.manage is what lets felixctl create and seek consumer groups.
+        mint '{"principal":"p:dev","audience":"felix-broker","requested":["stream.publish","stream.subscribe","stream.manage","cache.read","cache.write"]}'
         field felix_token > "$$OUT/client.jwt"
 
         admin="Authorization: Bearer $$(cat "$$OUT/controlplane.jwt")"
@@ -110,9 +116,13 @@ services:
         case "$$status" in 2??|409) ;; *) fail "creating namespace default failed" ;; esac
         post "$$CP/namespaces/default/streams" '{"stream":"orders","kind":"Stream","shards":1,
           "replication_factor":1,"retention":{"max_age_seconds":null,"max_size_bytes":null},
-          "consistency":"Leader","delivery":"AtLeastOnce","durable":false}' "$$admin"
+          "consistency":"Leader","delivery":"AtLeastOnce","durable":true}' "$$admin"
         case "$$status" in 2??|409) ;; *) fail "creating stream orders failed" ;; esac
-        echo "felix-dev-auth: tenant dev, namespace default, stream orders; tokens written"
+        for cache in config stats; do
+          post "$$CP/namespaces/default/caches" "{\"cache\":\"$$cache\",\"display_name\":\"$$cache\"}" "$$admin"
+          case "$$status" in 2??|409) ;; *) fail "creating cache $$cache failed" ;; esac
+        done
+        echo "felix-dev-auth: tenant dev, namespace default, stream orders, caches config and stats; tokens written"
 
   felix-broker:
     image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION:-0.6.0-preview.9}
@@ -126,6 +136,8 @@ services:
       # No certificate given, so the broker makes a self-signed one for
       # `localhost` and writes it here for felixctl to trust.
       FELIX_TLS_CERT_EXPORT: /var/lib/felix/broker-cert.pem
+      # Durable streams, consumer groups and cache watches need a log on disk.
+      FELIX_DURABLE_STORAGE_DIR: /var/lib/felix/data
       RUST_LOG: info
     ports:
       - "127.0.0.1:5000-5003:5000-5003/udp"  # client QUIC, one port per listener
@@ -149,7 +161,7 @@ services:
       - |
         cat <<'EOF'
         Felix is up (development credentials only).
-          tenant dev, namespace default, stream orders
+          tenant dev, namespace default, stream orders, caches config and stats
           brokers 127.0.0.1:5000 (QUIC), control plane http://127.0.0.1:8443
 
         From this directory:
