@@ -34,6 +34,31 @@ no latency, but with twelve instances each enforcing 1,000 a minute the real
 limit is twelve times that, and a load balancer that sends one key's traffic
 unevenly makes it unpredictable.
 
+## Why Felix fits
+
+`counter_add` appends a signed delta and answers with the sum including that
+delta, in one round trip. There is no read-modify-write to race, and no
+`INCR` followed by a separate `EXPIRE` that has to be made atomic with a
+script.
+
+The sum is durable. It survives a restart, compaction and leader failover, and
+on a `Quorum` cache an add is acknowledged once a majority of the shard's
+replicas hold it. That closes the lost-increments window of an asynchronously
+persisted Redis, which is the difference between a few extra requests and an
+under-billed customer.
+
+The limit is shared. Twelve gateway instances all add to the same counter, so
+the limit is 1,000 and not twelve times that, which a per-process bucket
+cannot do.
+
+An add is an append to a log, so a hot key does not take a row lock the way
+`UPDATE ... RETURNING` does. A negative delta gives a quota that can be handed
+back, such as a seat that an invite declines.
+
+Counters share the tenant scope and permissions of the cache and streams the
+rest of the request touches, so a quota check needs no extra service to deploy
+or grant access to.
+
 ## How it works on Felix
 
 `counter_add(tenant, namespace, cache, key, delta)` appends a signed delta
@@ -135,23 +160,37 @@ carry counter changes.
 
 ## Compared with Redis, SQL and local buckets
 
-Redis `INCR` is lower friction and, in a single instance, very fast. Felix's
-counter costs a network round trip to the key's owner and, on a `Quorum`
-cache, a wait for a majority, so for a limiter on a hot path in front of a
-cheap backend, Redis or a local bucket will respond sooner. What Felix adds
-is a sum that survives restart and failover without a persistence mode to get
-right, and that sits in the same system, with the same tenant scoping and
-permissions, as the rest of your state. If you already run Felix, that is one
-fewer thing to operate. If you do not, the argument is weaker.
+Redis `INCR` costs one round trip on a single instance and will answer sooner
+than a Felix counter, which goes to the key's owner and, on a `Quorum` cache,
+waits for a majority. Felix gives a sum that survives restart and failover
+without a persistence mode to get right, under the same tenant scoping and
+permissions as the rest of your state. Pick Redis for a limiter on a hot path
+in front of a cheap backend, where losing a second of counts is acceptable.
 
-Against `UPDATE ... RETURNING`, a Felix counter gives up joins and
-transactions across rows in exchange for no row lock and no query planning:
-an add is an append to a log. Use the database when the count must change in
-the same transaction as other data.
+Against `UPDATE ... RETURNING`, a Felix counter has no row lock: an add is an
+append. It gives up joins and transactions across rows. Pick the database when
+the count must change in the same transaction as other data.
 
-A local token bucket is the right answer when a per-instance limit is
-acceptable, and it has no network cost at all. It is not a way to enforce a
-single limit across a fleet, which is what a shared counter is for.
+A local token bucket has no network cost at all and suits a per-instance limit.
+It cannot enforce one limit across a fleet, which is what a shared counter is
+for.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+The stack has a `stats` cache for counters:
+
+```bash
+docker compose run --rm felixctl counter add stats page-views 1
+docker compose run --rm felixctl counter add stats page-views 1
+docker compose run --rm felixctl counter get stats page-views
+```
+
+The first `add` prints `1`, the second prints `2`, and `get` prints `2`. Each
+`add` returns the sum including itself, and the broker applies it once.
 
 ## Where it stops
 

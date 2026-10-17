@@ -30,6 +30,11 @@ docker compose run --rm felixctl sub orders
 docker compose run --rm felixctl pub orders 'hello'
 ```
 
+The broker keeps its data on disk in the stack's volume, so `orders` is a
+durable stream and the `config` and `stats` caches can be watched, counted in
+and read back. The [use cases](/use-cases/overview/) each end with a short "Try
+it" that runs against this stack.
+
 The credentials are for your machine only, and the printed settings show how
 to use an installed `felixctl` instead. See
 [Docker Compose](/deployment/docker-compose/#try-it-in-one-command) for what

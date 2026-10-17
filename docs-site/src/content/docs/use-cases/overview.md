@@ -3,16 +3,23 @@ title: "Use Cases"
 description: "The ways Felix is used, what each one is built from, and how it compares with the systems usually used for it."
 ---
 
-Felix serves streams, caches, queues and counters from one replicated log. Most
-of the scenarios below would normally take two or three systems: a database or
+Most of the scenarios below usually take two or three systems: a database or
 coordination store for the current value, a broker for the changes, and a
-fanout tier to reach the consumers. Each page shows how the scenario is usually
-built, how to build it on Felix with working code, how that compares with the
-systems people reach for first, and where Felix stops.
+fanout tier to reach the consumers. Each one has its own failure modes, and the
+gaps between them (the update published before the write committed, the change
+that landed between a read and a subscribe) are where bugs live.
 
-Every page uses the status markers from
-[What Felix Is For](/getting-started/what-felix-is-for/). Where a scenario
-depends on a capability that is still partial, the page says what is missing.
+Felix serves streams, caches, queues and counters from one replicated log, so
+the current value and the changes to it share one order and one set of
+offsets. A consumer reads the state and follows every change after it without
+a gap. A slow consumer never holds up a publisher or anyone else. Every
+operation is scoped to a tenant, and every connection is QUIC with TLS 1.3.
+
+Each page shows how the scenario is usually built, why Felix fits it, working
+code, a few commands to try on your machine, a comparison with the
+systems people reach for first, and where Felix stops. Where a scenario depends
+on a capability that is still partial, the page says what is missing, using the
+status markers from [What Felix Is For](/getting-started/what-felix-is-for/).
 
 ## Keeping many consumers in sync
 
@@ -47,6 +54,12 @@ that each need an accurate local copy of state that keeps changing.
 |---|---|---|
 | [Multi-tenant SaaS](/use-cases/multi-tenant-saas/) | Tenant scoping on every operation, tenant-scoped tokens, per-tenant publish limits | Kafka ACLs and topic prefixes, NATS accounts |
 | [Data residency](/use-cases/data-residency/) | Streams whose leader and replicas stay in one region | Separate clusters per region |
+
+## Try it
+
+The [Quickstart](/getting-started/quickstart/) runs a broker, a control plane
+and `felixctl` with one `docker compose up`. Every page below has a short "Try
+it" section that runs against that stack.
 
 ## When to use something else
 

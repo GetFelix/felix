@@ -30,6 +30,18 @@ Fanout is where it hurts. Each consumer group reads the log independently, so
 grows with the number of groups. Teams then add a relay tier that consumes from Kafka once
 and pushes to clients over WebSockets, which is another system to run and size.
 
+## Why Felix fits
+
+A publish is encoded once and every subscriber of the stream shares the encoded frame. Adding a subscriber adds one write to its connection and no encoding, which is the cost that dominates when 2,000 sessions want the same tick.
+
+Each subscription has its own bounded queue and its own QUIC stream with its own flow-control window. With the default `drop_new`, a phone on a bad connection loses its own records and nobody else waits. The policy is a broker setting, so a subscriber cannot choose `block` and stall every publisher by reading slowly.
+
+On a durable stream the subscriber can tell. Every event carries its log offset, and a queue overflow ends the subscription with `subscription_lagged` and the offset where the drop began. `ClusterClient` resubscribes there and replays the gap from the log. NATS core and Redis pub/sub close the connection and leave the page to refetch everything.
+
+The push path reaches many readers of the same data without a per-reader fetch. On a real Azure cluster Felix delivered 1.0 million messages a second to 500 subscribers from one broker with zero loss, with the publisher's ack latency flat at about 206 microseconds (256 B payloads, one stream on one shard, paced publisher, batch 1, per-message ack; [conditions](/features/real-network-performance/#fanout)). That is delivered throughput, not the publish rate.
+
+Kafka's answer to the same load is a relay tier that reads the log once and pushes to clients. Here the broker is that tier for QUIC clients, and [the gateway](/use-cases/browser-realtime/) is the WebSocket edge for browsers.
+
 ## How it works on Felix
 
 A publish is encoded once and the encoded frame is shared by every subscriber of
@@ -147,38 +159,35 @@ single-process loopback run at fanout 3, in
 
 ## Compared with NATS core, Kafka and Redis pub/sub
 
-NATS core has the lowest overhead of the three and a subject model with
-wildcards that Felix does not have. A slow consumer is disconnected, which
-protects everyone else, and it is well understood. If your feed is fire-and-forget
-and a reconnect with a full refetch is cheap, NATS core is simpler and more
-mature than Felix. Felix differs in what a lagging subscriber gets: its
-connection stays up, its queue is bounded per subscription, and on a durable
-stream it learns exactly where it fell behind and can read the gap from the log.
-JetStream adds durability to NATS with pull and push consumers; Felix's
-durable stream with resumable subscriptions is the comparable piece.
+NATS core has the lowest overhead of the three and a subject model with wildcards that Felix does not have. If your feed is fire-and-forget and a reconnect with a full refetch is cheap, NATS core is simpler and more mature. Felix differs in what a lagging subscriber gets: its connection stays up, its queue is bounded per subscription, and on a durable stream it learns exactly where it fell behind and reads the gap from the log. JetStream adds durability to NATS with pull and push consumers; a Felix durable stream with resumable subscriptions is the comparable piece.
 
-Kafka is the better system whenever consumers may be minutes or hours behind,
-when you need replay of a long retained history, or when the work is stream
-processing. Felix's advantage is the push path for many readers of the same
-data. Each Felix subscriber receives a frame the broker has already encoded
-once, and each Kafka consumer group re-reads the log. On a real Azure cluster,
-Felix delivered 1.0 million messages a second to 500 subscribers from a single
-broker with zero loss. That is delivered throughput, not the publish rate: one
-stream on one shard, 256 B payloads, a paced publisher with batch 1 and a
-per-message ack. The publisher's ack latency stayed flat at about 206
-microseconds ([conditions](/features/real-network-performance/#fanout)). Redpanda
-served about 912,000 messages a second to 8 consumer groups in the same rig, but
-the Kafka-protocol client machines saturated first, so that figure is a floor
-for Redpanda and the comparison does not settle which scales further.
+Kafka is the better system when consumers may be minutes or hours behind, when you need replay of a long retained history, or when the work is stream processing. For pushing the same data to many readers, each Felix subscriber receives a frame the broker has already encoded once, while each Kafka consumer group re-reads the log, so broker work grows with the number of groups. In the same Azure rig Redpanda served about 912,000 messages a second to 8 consumer groups, but the Kafka-protocol client machines saturated first, so that figure is a floor for Redpanda and the comparison does not settle which scales further.
 
-Redis pub/sub is the simplest to adopt and shares NATS core's trade: the output
-buffer limit protects the server by disconnecting the client, and the message is
-gone. If you also run Redis for caching, pub/sub costs nothing extra. Redis
-Streams add offsets and consumer groups when you need them.
+Redis pub/sub is the simplest to adopt and shares NATS core's trade: the output buffer limit protects the server by disconnecting the client, and the message is gone. If you already run Redis for caching it costs nothing extra. Felix keeps the subscriber connected and, on a durable stream, gives it the offset to resume from. Redis Streams add offsets and consumer groups.
 
-Latency in Felix at fanout 10 on an M4 Max over loopback is 237 microseconds
-p50 and 327 microseconds p99 for a 256 B payload with a per-message ack
-([benchmarks](/features/benchmarks/)). Those numbers are for a single host.
+At fanout 10 on an M4 Max over loopback, Felix measured 237 microseconds p50 and 327 microseconds p99 for a 256 B payload with a per-message ack ([benchmarks](/features/benchmarks/)). Those numbers are for a single host.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+Start a subscriber in each of two terminals:
+
+```bash
+docker compose run --rm felixctl sub orders
+```
+
+Then publish from a third:
+
+```bash
+docker compose run --rm felixctl pub orders --count 3 'tick'
+```
+
+Both subscribers print all three records. To see a subscriber that falls behind
+while the others carry on, run the
+[slow-consumer demo](/demos/slow-consumer-isolation/).
 
 ## Where it stops
 

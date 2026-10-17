@@ -23,6 +23,32 @@ pattern, and its strength is that the audit row commits with the change. Its
 weakness is that it shares the database's load, retention and access controls
 with everything else.
 
+## Why Felix fits
+
+A durable stream keeps the audit log and the live feed in one place. The same
+records you replay from an offset are the ones subscribers received live, with
+the same offsets, so a consumer that follows the stream and one that replays it
+use one position and cannot disagree about what happened.
+
+Gaps are visible. Every event on a durable stream carries its log offset, and a
+jump between consecutive offsets, less any `skipped_before`, tells a reader its
+queue dropped events. A reader never has to guess whether it missed a record.
+
+Replay by time is built in. Records carry the broker's append time, and
+`offset_for_time` returns the first offset at or after a time on a shard, so
+"what happened at 14:02" is a lookup followed by a range read, without an
+index you maintain.
+
+Who wrote a record can be stored with it, and an idempotent producer makes a
+retried write appear once. Together they answer "who changed it" and keep a
+retry from doubling an entry. Both need the options described below, and the
+idempotent producer is Rust only.
+
+Integrity is checked in the storage layer. Each record has a CRC, a torn tail
+is repaired, and interior corruption stops the broker from starting instead of
+dropping acknowledged records. With `Quorum` and `on_commit`, an acknowledged
+entry is on a majority of replicas and flushed.
+
 ## How it works on Felix
 
 A stream created with `durable: true` writes every publish to a segmented log
@@ -131,22 +157,55 @@ Rebuilding a projection is the same loop with `apply(record)` in place of
 
 ## Compared with Kafka, JetStream and an audit table
 
-Kafka has broader retention and compaction
-options, offload that can be read back, exactly-once semantics between topics,
-and the ecosystem. Felix gives one place for the log and the live fanout, the
-cache and the queues, the same offsets for all of them, and a Kafka listener if
-you still want kcat or a partition-assigning client to read it (see
-[Coming from Kafka](/use-cases/kafka-migration/)).
+Kafka has broader retention and compaction options, offload that can be read
+back, exactly-once semantics between topics, and the ecosystem. Felix puts the
+log, the live fanout, the cache and the queues on the same offsets, and has a
+Kafka listener so kcat or a partition-assigning client can still read the log
+(see [Coming from Kafka](/use-cases/kafka-migration/)). Pick Kafka when you need
+history that outlives one machine, or its connectors and stream processing.
 
-JetStream offers replay by time too, and its consumers track position on the
-server. In Felix a plain subscriber keeps its own offset, and server-side
-tracking is a consumer group, which is a separate read path (see
-[Queues](/features/queues/)).
+JetStream also replays by sequence or time. Felix adds offsets that mean the
+same thing on the cache, queue and Kafka views of a stream, and a log whose
+records cannot be rewritten. In Felix a plain subscriber keeps its own offset,
+and server-side tracking is a consumer group, a separate read path (see
+[Queues](/features/queues/)). Pick JetStream if you want every consumer's
+position tracked on the server.
 
-An audit table commits with the business change, which a separate log cannot
-match unless you write both through [one commit](/use-cases/event-and-state/).
-The log is append-only on its own storage, with record checksums, and no
-UPDATE statement can reach a record in it.
+An audit table commits with the business change, which a separate log matches
+only when you write both through [one commit](/use-cases/event-and-state/). What
+Felix gives you is a log on its own storage, with record checksums, that no
+UPDATE statement can reach and that does not share the database's load, retention
+or access controls. Pick the table when the audit row must commit atomically with
+data that has to stay in your database.
+
+## Try it
+
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+`orders` is durable and may already hold records, such as the quickstart's
+`hello`. Publish three, and note the offset the first one prints:
+
+```bash
+docker compose run --rm felixctl pub orders 'account opened'
+docker compose run --rm felixctl pub orders 'limit raised'
+docker compose run --rm felixctl pub orders 'account closed'
+```
+
+The first prints `published 1 to orders at offset N`. Read from there, and
+again from the next offset:
+
+```bash
+docker compose run --rm felixctl sub orders --from N --count 3 --format offsets
+docker compose run --rm felixctl sub orders --from N+1 --count 2 --format offsets
+```
+
+Write the offsets as numbers, for example `--from 7` and `--from 8`. Each output
+line starts with the shard and the log offset. `--from earliest` replays
+everything the stream holds, including older records. Nothing is removed when
+a record is read, so a consumer that rebuilds a projection can resume from the
+last offset it saw.
 
 ## Where it stops
 
