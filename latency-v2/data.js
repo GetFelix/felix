@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792204926332,
+  "lastUpdate": 1792206627754,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40524,6 +40524,72 @@ window.BENCHMARK_DATA = {
             "range": "190.72",
             "unit": "us",
             "extra": "trials: 5\nmedian: 433.00\nmean: 500.80\nstdev: 190.72\ncv: 38.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de88f3b3d0c73bb767998ada2eb614ef801b8f6d",
+          "message": "fix(storage): keep the storage id across a process crash; rotate only after a new boot (#1371)\n\n* fix(storage): keep the storage id across a process crash; rotate only after a new boot\n\nUnder periodic or none fsync, run-state now records the machine's boot id\n(Linux /proc/sys/kernel/random/boot_id, macOS kern.bootsessionuuid via\nsysctlbyname). An unclean stop in the same boot keeps the storage id: the\npage cache outlived the process and every acknowledged record had already\nbeen write()n. A different or unknown boot rotates, as before. The first\npoisoned log in the process, or a stop whose flush failed, forgets the boot\nso a later crash still rotates.\n\nThe boot is written only in a relaxed run's \"running\" record (version 2,\n44 bytes). A clean stop and every other record keep the version 1 layout,\nso a downgrade after a clean stop keeps the id, and an older build reads a\nversion 2 record as the relaxed crash it would have recorded itself.\n\nTLA+: Crash tells a process crash (keeps the log) from a machine crash\n(may lose the suffix). FelixShardProcessCrashKeepsId and\nFelixShardLeaderProcessCrash pass; FelixShardMachineCrashKeepsId, where\nthe boot check takes a machine crash for a process crash, violates\nAckedSurvive.\n\nCloses #1367.\n\n* fix(storage): sync the filesystem before keeping the id after a process crash\n\nA kept-id restart could later record a clean stop over pages only the\nkernel held: a retired segment the crashed run never sealed is opened as\nsealed and never synced, so a power loss after the clean stop would lose\nacknowledged records under the same id. run_state::begin now syncs the\ndata directory's filesystem (syncfs on Linux, sync plus one F_FULLFSYNC on\nmacOS) before it keeps the id, and rotates if that fails or the platform\nhas no such sync. The sync also surfaces writeback errors the crashed\nprocess never saw.\n\nA segment writer's failed sync or seal now forgets the boot at once rather\nthan at the log's next flush.\n\nTLA+: CleanStop, after a kept process crash, stops cleanly and may lose\npower while down. FelixShardProcessCrashKeepsId runs it with SyncOnKeep;\nFelixShardCleanStopUnsynced, without it, violates AckedSurvive.\nFelixShardLeaderProcessCrash now runs the clock to 3.\n\nDocs: the sync, and the memory-snapshot restore a boot id cannot see.\n\n* fix(storage): keep the id only on Linux, syncing every filesystem under the root\n\nXNU's sync() only queues writes, so on macOS nothing can show the crashed\nrun's page cache reached the device before the kept id is announced.\nsync_filesystems is now Linux only and returns Unsupported elsewhere, so a\nrelaxed crash on macOS rotates as before #1367.\n\nOn Linux it calls syncfs once per device among the data root and every\ndirectory below it, so a shard on another mount is covered. It has no\ntimeout.\n\nEvery log's poison now forgets the boot, not only the first in the\nprocess: a second log could otherwise return before the first one's\nrewrite landed.\n\n* fix(storage): skip unreadable subdirectories when finding filesystems to sync\n\nA root-owned lost+found under a mount-point data root would otherwise fail\nthe sync and rotate the id after every crash. Its device is already\nrecorded from the stat.",
+          "timestamp": "2026-10-17T03:06:08Z",
+          "tree_id": "1fa1dc3b719af521f34b45422e126820b363df2e",
+          "url": "https://github.com/GetFelix/felix/commit/de88f3b3d0c73bb767998ada2eb614ef801b8f6d"
+        },
+        "date": 1792206623539,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "3.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 182.60\nstdev: 3.78\ncv: 2.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 246,
+            "range": "3.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 246.00\nmean: 244.20\nstdev: 3.96\ncv: 1.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 317,
+            "range": "87.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 317.00\nmean: 353.60\nstdev: 87.63\ncv: 24.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 223,
+            "range": "10.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 226.80\nstdev: 10.21\ncv: 4.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 461,
+            "range": "278.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 461.00\nmean: 587.80\nstdev: 278.87\ncv: 47.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1022.9999999999999,
+            "range": "781.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1023.00\nmean: 1264.80\nstdev: 781.96\ncv: 61.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
