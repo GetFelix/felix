@@ -686,6 +686,203 @@ async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
     cluster.shutdown().await;
 }
 
+/// **Under `Periodic`, the default, the same promotion waits for an
+/// operator.** As above, but the holder's SIGKILL is an unclean stop under
+/// `Periodic`, so it comes back under a new storage identity: a copy that may
+/// have lost the record it acknowledged with the dead leader. The promoted
+/// follower does not count it, so the shard stays closed though a holder is
+/// back (#1335). The operator's way out is to stop the promoted broker and
+/// abandon the shard's log. That places it afresh on the brokers still up,
+/// which keep the copies they hold, so the holder serves with the record its
+/// page cache kept.
+#[serial]
+#[tokio::test]
+async fn under_periodic_a_promotion_waits_for_an_operator_after_its_holders_crash() {
+    let mut cluster = start(Duration::from_secs(2)).await;
+    let assignment = assignment(&cluster).await;
+    let old = assignment.leader.clone();
+    let report = level_report(&cluster, &old, &assignment.replicas).await;
+    let (holder, lagging) = (
+        assignment.replicas[0].clone(),
+        assignment.replicas[1].clone(),
+    );
+
+    cut_from_control_plane(&cluster, &holder).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cut_from_control_plane(&cluster, &old).await;
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![lagging.clone()],
+        })
+        .await
+        .expect("cut the lagging follower off");
+    cluster
+        .publish_via(&old, STREAM, b"on-two-of-three".to_vec())
+        .await
+        .expect("held by the old leader and one follower");
+    let acknowledged = vec!["before".to_string(), "on-two-of-three".to_string()];
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster.kill_node(&holder).expect("kill the other holder");
+    felix_cluster::wait::until(Duration::from_secs(20), "both holders down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&old) && !live.contains(&holder))
+    })
+    .await
+    .expect("both holders are marked down");
+
+    restamp(&cluster, report, &old).await;
+    let new = promote_away_from(&cluster, &old).await;
+    assert_eq!(new, lagging, "the only live follower is promoted");
+
+    for fault in Fault::partition(Endpoint::node(&holder), Endpoint::ControlPlane) {
+        cluster.heal(&fault).await.expect("heal the holder's link");
+    }
+    cluster
+        .restart_node(&holder)
+        .await
+        .expect("bring a holder back");
+    // The holder answers under its new identity, which the failover's report
+    // never named, so the fence has nobody to count beside the new leader.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&new, STREAM, b"too-early".to_vec())
+            .await
+            .expect_err("the new leader counted a holder that may have lost the record");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The operator's way out: stop the promoted broker, so placement finds
+    // the shard stranded, and give its log up.
+    cluster.kill_node(&new).expect("stop the promoted broker");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the shard to be abandoned",
+        || async { cluster.abandon_log(STREAM, 0).await.is_ok() },
+    )
+    .await
+    .expect("the operator abandons the stranded shard");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the holder to serve the abandoned shard",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .publish_via(&holder, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the holder serves");
+    assert_holds(&cluster, &holder, &acknowledged).await;
+    cluster.shutdown().await;
+}
+
+/// **A wiped follower's promise still refuses the deposed leader (#1267).**
+/// The old leader is cut off from the control plane and from both followers,
+/// and one of them is promoted; its fence counts the other, under the
+/// identity the report named. That follower is then wiped, losing the promise
+/// it gave, and comes back reachable from the deposed leader, which still
+/// serves without its lease under `majority_ack`. Answering only what its
+/// routing view backs, it refuses the deposed leader's batches, so nothing
+/// the deposed leader writes is acknowledged on the two of them.
+#[serial]
+#[tokio::test]
+async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
+    let mut cluster = start(Duration::from_secs(2)).await;
+    let assignment = assignment(&cluster).await;
+    let old = assignment.leader.clone();
+    let report = level_report(&cluster, &old, &assignment.replicas).await;
+    cut_from_control_plane(&cluster, &old).await;
+    let isolated = Fault::Refuse {
+        node: old.clone(),
+        peers: assignment.replicas.clone(),
+    };
+    cluster
+        .inject(&isolated)
+        .await
+        .expect("cut the old leader off from its followers");
+    felix_cluster::wait::until(Duration::from_secs(20), "the old leader down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&old))
+    })
+    .await
+    .expect("the old leader is marked down");
+
+    restamp(&cluster, report, &old).await;
+    let new = promote_away_from(&cluster, &old).await;
+    let other = assignment
+        .replicas
+        .iter()
+        .find(|id| **id != new)
+        .expect("the other follower")
+        .clone();
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve on its fence",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after-the-fence".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the new leader fences the other follower and serves");
+
+    cluster
+        .stop_node(&other)
+        .await
+        .expect("kill the other follower");
+    let storage = cluster.node(&other).expect("other").storage_dir();
+    std::fs::remove_dir_all(&storage).expect("wipe its storage");
+    cluster
+        .restart_node(&other)
+        .await
+        .expect("restart it empty");
+    // Its routing view names the new leader before the deposed one reaches it.
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the wiped follower back",
+        || async {
+            cluster
+                .placeable_nodes()
+                .await
+                .is_ok_and(|live| live.contains(&other))
+        },
+    )
+    .await
+    .expect("the wiped follower registers");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    cluster.heal(&isolated).await.expect("heal");
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![new.clone()],
+        })
+        .await
+        .expect("keep the old leader off the new one");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    let mut i = 0;
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&old, STREAM, format!("deposed-{i}").into_bytes())
+            .await
+            .expect_err("the deposed leader acknowledged on the wiped follower");
+        i += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_holds(&cluster, &new, &["after-the-fence".to_string()]).await;
+    cluster.shutdown().await;
+}
+
 /// **A partition with the control plane on the minority of the replica set
 /// does not give the shard two leaders.** Four brokers, RF 3, split
 /// {old, holder} | {promoted, spare, control plane}. The old leader goes on
