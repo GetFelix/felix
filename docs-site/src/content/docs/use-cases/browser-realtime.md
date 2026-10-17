@@ -209,7 +209,7 @@ that yet. Events carry no publisher, so sender identity needs `stamp_sender`.
 ## Related
 
 - [Browsers (felix-gateway)](/clients/browsers/) for every setting and message
-- [felix-canvas](/built-on-felix/canvas/) and [felix-arena](/built-on-felix/arena/)
+- [felix-canvas](/built-on-felix/canvas/), [felix-arena](/built-on-felix/arena/) and [felix-metro](/built-on-felix/metro/)
 - [Security](/features/security/) for token exchange and narrowing
 - [QUIC transport](/features/quic-transport/)
 - [Config and feature flags](/use-cases/config-and-feature-flags/) and [Live updates at high fanout](/use-cases/live-fanout/)
