@@ -14,7 +14,7 @@ repository.
 |---|---|---|
 | [felix-canvas](/built-on-felix/canvas/) | A multiplayer whiteboard | Durable and in-memory streams, offsets to detect drops, a snapshot cache, a TTL presence cache, a consumer group, felix-gateway |
 | [felix-webhook-relay](/built-on-felix/webhook-relay/) | A webhook relay with retries, dead letters and replay | Durable streams, the idempotent producer, one consumer group per endpoint, watched config caches, counters, replay by offset |
-| [felix-arena](/built-on-felix/arena/) | A browser arena game, designed but not yet built | Atomic commits, replay from an offset for a kill cam, quorum replication, per-arena token narrowing |
+| [felix-arena](/built-on-felix/arena/) | A browser team deathmatch, playable through Felix, with the kill cam still to come | Atomic commits, replay from an offset for a kill cam, quorum replication, per-arena token narrowing |
 
 The browser apps reach Felix through
 [felix-gateway](/clients/browsers/), which is documented with the clients.
