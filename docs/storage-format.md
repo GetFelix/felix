@@ -54,6 +54,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
 <root>/
   storage-id                                 ← this data directory's identity
   run-state                                  ← whether the last run stopped cleanly
+  registration                               ← the node incarnation of the last registration
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -894,6 +895,26 @@ file and an id loaded, finds a shard startup would repair.
 The first log poisoned in a process, or a stop whose flush failed, rewrites a
 version 2 record as version 1 with the same id, through `run-state.tmp` but
 not synced: only a process crash has to find it. See
+`docs/durable-storage.md`, "Storage identity".
+
+## `registration`: the node's last registration
+
+One file at the durable root, beside `run-state`, holding the node
+incarnation the control plane answered at the broker's last registration:
+
+```text
+ 0   4  magic        u32  "FLRG"
+ 4   2  version      u16
+ 6   8  incarnation  u64
+14   4  crc          u32  crc32 over bytes 0..14
+```
+
+Rewritten after every registration through `registration.tmp`, synced, renamed
+and the directory synced, like `run-state`. A cluster member's start rotates
+`storage-id` when the control plane's current incarnation for the node is
+ahead of this one. No file means no evidence either way. A file that does not
+decode reads as older than any registration. An older release neither reads
+nor writes it, so a downgrade leaves it as it was. See
 `docs/durable-storage.md`, "Storage identity".
 
 ## Consumer-group cursor values

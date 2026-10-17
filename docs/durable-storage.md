@@ -1097,8 +1097,8 @@ the bottleneck?* If sync dominates append, the fsync policy is the cost.
 ## Storage identity
 
 A broker with durable storage keeps a random 16-byte id in `<root>/storage-id`
-(format in `docs/storage-format.md`). It is read at startup, after the stores
-open and before the broker registers, and sent with the registration as
+(format in `docs/storage-format.md`). It is read at startup, before any store
+opens and before the broker registers, and sent with the registration as
 `storage_id`, 32 lowercase hex digits. A broker without durable storage
 makes up a new id each time it starts and never writes it down, since a
 restart of such a broker has kept nothing.
@@ -1230,6 +1230,47 @@ run: a downgrade after a crash rotates, as it did before. A record written by
 the release before boot ids (#1284) names no boot, so the first crash after
 moving up rotates. A crash under a release older than #1284, before moving up
 again, is not detected.
+
+**A directory older than the node's last registration also gets a new id**
+([#1334](https://github.com/GetFelix/felix/issues/1334)). A data directory put
+back from a volume snapshot or a copy keeps its id and can hold less than peers
+counted, under any fsync mode, `OnCommit` included. Nothing in the directory
+shows that, but the node's registrations can. `<root>/registration` (format in
+`docs/storage-format.md`) holds the node incarnation the control plane gave at
+the broker's last registration, rewritten at every registration, including a
+second one in the same run. At startup a cluster member with durable storage
+asks the control plane for its node's current incarnation (`GET
+/v1/nodes/{node_id}`, which needs `node.view:cluster:*`, the permission its
+catalog feeds already need) before any store opens. If the control plane is
+ahead of the record, the node registered at least once that this directory
+never saw, and the start writes a new id before the `running` record.
+
+- **Unreachable control plane:** the broker opens nothing and announces no id
+  until it answers, asking again with backoff up to 5 seconds. A stop while
+  it waits leaves the directory as it was. A refusal fails the start; a 401 is
+  waited out, since a refreshed credential may still arrive. The metrics
+  listener is bound before the wait: `/live` answers `200` and `/ready`
+  answers `503` with the reason, so a liveness probe does not restart a
+  broker that is waiting. The full server takes over the same socket once
+  the broker is built.
+- **No evidence keeps the id:** no record (a new directory, or the first start
+  on a release that writes one), a node the control plane has never
+  registered, or a control plane behind the record, which was itself restored
+  or forgot the node. A record that does not decode reads as older than any
+  registration.
+- **A crash between a registration and its record** makes the next start
+  rotate. That costs a copy and loses nothing.
+
+A rotation for this reason is treated like one after a crash: the broker
+leads nothing from the copy it led before. It does not catch a snapshot
+taken during the node's current registration. That snapshot recorded the
+incarnation the control plane still holds, which is what the live directory
+would show after an `OnCommit` crash, so the id is kept. Nor does it catch a
+snapshot from before the node was deleted (`DELETE /v1/nodes/{node_id}`): the control
+plane registers it again at incarnation 0, so the check stays quiet until the
+control plane passes the old incarnation again. Restoring such a snapshot
+still needs `storage-id` deleted by hand; see
+`docs-site/src/content/docs/deployment/backup-and-restore.md`.
 
 **A start that rotated the id leads nothing from a copy that may be short
 of what it acknowledged** ([#1295](https://github.com/GetFelix/felix/issues/1295)):

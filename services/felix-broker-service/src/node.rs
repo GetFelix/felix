@@ -175,7 +175,50 @@ where
         "sub egress lanes ENABLED"
     );
 
-    let (broker, durable_storage, storage_id, unclean) = storage::open(&config)?;
+    // Bound before the wait below so a taken port fails startup at once, and
+    // so `/live` answers while the broker waits on the control plane or on
+    // recovery: a liveness probe would otherwise restart it in a loop. The
+    // full server takes this socket over once the broker is built.
+    let metrics_listener = std::net::TcpListener::bind(config.metrics_bind)
+        .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+        .with_context(|| format!("bind metrics listener on {}", config.metrics_bind))?;
+    let starting_probes =
+        crate::observability::serve_starting(&metrics_listener, metrics_handle.clone())
+            .context("answer probes on the metrics listener")?;
+    // One holder, shared by every control-plane caller: the startup lookup
+    // and the metadata sync here, and membership below. A refresh swaps what
+    // is inside it, so a caller handed it at startup keeps presenting a
+    // current token for the life of the process rather than the one token it
+    // was given.
+    let credential = (!config.controlplane_token.is_empty())
+        .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
+    let membership_client = crate::cluster::controlplane_client::build()?;
+    let credential_refresh = membership::keep_credential_current(
+        &config,
+        &membership_client,
+        &credential,
+        &sync_shutdown,
+    );
+    // Before any store opens: a data directory restored from a snapshot is
+    // older than the node's last registration and must not keep its id
+    // (#1334). Nothing is open yet, so a stop while waiting leaves the
+    // directory as it was.
+    let mut shutdown = Box::pin(shutdown);
+    let registered = tokio::select! {
+        registered = membership::registered_incarnation(
+            &config,
+            durable_storage_configured,
+            &membership_client,
+            &credential,
+        ) => registered?,
+        () = shutdown.as_mut() => {
+            tracing::info!("stopped before the control plane answered; nothing was opened");
+            sync_shutdown.cancel();
+            peer_shutdown.cancel();
+            return Ok(());
+        }
+    };
+    let (broker, durable_storage, storage_id, unclean) = storage::open(&config, registered)?;
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
@@ -265,12 +308,9 @@ where
             crate::config::quorum_reads_by_lease()?,
         );
     }
-    // Bound before the spawn so a taken port fails startup. Inside the task
-    // the error waits in a handle nobody reads until shutdown, and the broker
-    // runs on with no `/ready` for anything to see.
-    let metrics_listener = tokio::net::TcpListener::bind(config.metrics_bind)
-        .await
-        .with_context(|| format!("bind metrics listener on {}", config.metrics_bind))?;
+    starting_probes.stop().await;
+    let metrics_listener = tokio::net::TcpListener::from_std(metrics_listener)
+        .context("serve the metrics listener")?;
     let metrics_task = {
         let metrics_shutdown = metrics_shutdown.clone();
         tokio::spawn(crate::observability::serve_metrics(
@@ -349,12 +389,6 @@ where
         ));
     }
 
-    // One holder, shared by every control-plane caller: the metadata sync
-    // here, and membership below. A refresh swaps what is inside it, so a
-    // caller handed it at startup keeps presenting a current token for the
-    // life of the process rather than the one token it was given.
-    let credential = (!config.controlplane_token.is_empty())
-        .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
     tokio::spawn(cache_expiry::run(
         Arc::clone(&broker),
         ingress_router.clone(),
@@ -380,13 +414,6 @@ where
         seeded_rx,
     );
 
-    let membership_client = crate::cluster::controlplane_client::build()?;
-    let credential_refresh = membership::keep_credential_current(
-        &config,
-        &membership_client,
-        &credential,
-        &sync_shutdown,
-    );
     // Filled by the shard tasks, carried by the heartbeat.
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     // Set at each registration, read by the replica reports.
@@ -406,6 +433,7 @@ where
         &incarnation,
         registered,
         storage_id,
+        durable_storage.as_ref().map(|storage| storage.root()),
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes

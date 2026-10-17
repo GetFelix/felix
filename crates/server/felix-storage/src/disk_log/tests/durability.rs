@@ -217,7 +217,7 @@ async fn a_failed_flush_poisons_the_log_and_never_advances_the_durable_bound() {
     let run = tempdir().expect("run dir");
     let boot = Some(crate::run_state::BootId::from_bytes([1; 16]));
     let begun =
-        crate::run_state::begin(run.path(), true, boot, || false, || [1; 16]).expect("begin");
+        crate::run_state::begin(run.path(), true, None, boot, || false, || [1; 16]).expect("begin");
     crate::run_state::watch_poison(run.path());
     let log = open(&dir, FsyncMode::None);
     log.append(&records(&["a", "b"])).await.expect("append");

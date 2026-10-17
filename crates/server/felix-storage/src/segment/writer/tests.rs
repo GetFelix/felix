@@ -337,7 +337,7 @@ fn a_failed_sync_poisons_the_writer() {
     let run = tempdir().expect("run dir");
     let boot = Some(crate::run_state::BootId::from_bytes([1; 16]));
     let begun =
-        crate::run_state::begin(run.path(), true, boot, || false, || [1; 16]).expect("begin");
+        crate::run_state::begin(run.path(), true, None, boot, || false, || [1; 16]).expect("begin");
     crate::run_state::watch_poison(run.path());
     let mut writer = new_writer(&dir, 0);
     writer.append(&[record("a")]).expect("append");

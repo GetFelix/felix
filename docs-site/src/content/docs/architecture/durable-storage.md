@@ -148,6 +148,16 @@ crash under `on_commit`, which acknowledged nothing it had not synced. The first
 release with this record has none to read, and rotates only if startup would
 repair a torn tail, so an orderly roll keeps every id.
 
+A volume restored from a snapshot keeps its id under any policy, `on_commit`
+included, and can hold less than peers counted. So a broker also records, in
+`<root>/registration`, the node incarnation each registration gave it. A
+cluster member asks the control plane for its current incarnation before any
+store opens, and waits for the answer. When the control plane is ahead, the
+node has registered since this directory last saw it, and the start writes a
+new storage id. A snapshot taken during the node's current registration
+looks like the live directory and is not caught; see
+[Backup and restore](/deployment/backup-and-restore/).
+
 A **leader** whose machine crashes the same way and restarts before its shard fails
 over may have acknowledged records from the tail it lost. It does not reopen
 its old generation with the shorter log: it gives up each replicated shard it

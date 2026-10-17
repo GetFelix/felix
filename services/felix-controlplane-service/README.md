@@ -10,7 +10,6 @@ Responsibilities:
 Local dev:
 - `cargo run -p felix-controlplane-service`
 - OpenAPI spec: `http://localhost:8443/v1/openapi.json`
-- Swagger UI: `http://localhost:8443/docs`
 
 ## Storage backends
 

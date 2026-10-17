@@ -200,6 +200,65 @@ fn health_router(
         )
 }
 
+/// The probes a broker answers before it is built: `/live` says ok, `/ready`
+/// says why not, and `/metrics` renders. Startup can wait a long time there,
+/// on the control plane or on recovery, and a liveness probe that finds no
+/// listener restarts a broker that is working as intended.
+pub(crate) struct StartingProbes {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// Serve [`StartingProbes`] on a duplicate of `listener`'s socket. The caller
+/// keeps `listener` for the full server, so the port stays bound throughout
+/// and a connection arriving between the two waits in its backlog.
+pub(crate) fn serve_starting(
+    listener: &std::net::TcpListener,
+    handle: PrometheusHandle,
+) -> std::io::Result<StartingProbes> {
+    let duplicate = listener.try_clone()?;
+    duplicate.set_nonblocking(true)?;
+    let duplicate = tokio::net::TcpListener::from_std(duplicate)?;
+    let router = axum::Router::new()
+        .route(
+            "/metrics",
+            axum::routing::get(move || async move { handle.render() }),
+        )
+        .route("/live", axum::routing::get(|| async { "ok" }))
+        .route(
+            "/ready",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "starting: waiting for the control plane or opening storage",
+                )
+            }),
+        );
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(duplicate, router)
+            .with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            })
+            .await;
+    });
+    Ok(StartingProbes { stop, task })
+}
+
+impl StartingProbes {
+    /// Stop answering, so the full server is the only one accepting.
+    pub(crate) async fn stop(self) {
+        let _ = self.stop.send(());
+        let mut task = self.task;
+        if tokio::time::timeout(std::time::Duration::from_secs(1), &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
+    }
+}
+
 /// Installs the Prometheus metrics recorder globally.
 ///
 /// In tests, reuses a cached recorder handle to avoid conflicts with multiple installs.

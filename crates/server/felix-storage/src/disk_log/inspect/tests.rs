@@ -261,7 +261,8 @@ async fn a_torn_tail_in_any_store_is_a_pending_repair() {
     let data = tempdir().expect("dir");
     write_shard(data.path(), Store::Stream, "orders", 3).await;
     let groups = write_shard(data.path(), Store::Groups, "orders", 3).await;
-    crate::run_state::begin(data.path(), true, None, || false, || [1; 16]).expect("run state");
+    crate::run_state::begin(data.path(), true, None, None, || false, || [1; 16])
+        .expect("run state");
     assert!(!any_repair_pending(data.path(), &config()));
 
     let active = *segment_ids(&groups).last().expect("id");

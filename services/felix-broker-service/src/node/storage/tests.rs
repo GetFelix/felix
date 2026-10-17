@@ -82,17 +82,19 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
             fsync_mode,
             ..Default::default()
         };
-        let first = begin_run(root.path(), &log).expect("first run").id;
+        let first = begin_run(root.path(), &log, None).expect("first run").id;
         mark_clean_stop(root.path(), first).expect("clean stop");
-        let second = begin_run(root.path(), &log).expect("after a clean stop").id;
+        let second = begin_run(root.path(), &log, None)
+            .expect("after a clean stop")
+            .id;
         assert_eq!(second, first, "{fsync_mode:?}: a clean stop kept the id");
         // No clean stop: the process died, the machine did not.
-        let killed = begin_run(root.path(), &log).expect("after a process crash");
+        let killed = begin_run(root.path(), &log, None).expect("after a process crash");
         assert_eq!(killed.rotated, relaxed && !known_boot, "{fsync_mode:?}");
         // A failed fsync, or a boot that cannot be compared, leaves the
         // boot unknown, as a machine crash does.
         forget_boot(root.path()).expect("forget the boot");
-        let third = begin_run(root.path(), &log).expect("after a crash");
+        let third = begin_run(root.path(), &log, None).expect("after a crash");
         assert_eq!(third.rotated, relaxed, "{fsync_mode:?}");
         let third = third.id;
         assert_eq!(third != killed.id, relaxed, "{fsync_mode:?}");
@@ -102,4 +104,27 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
             "the id announced is the one on disk"
         );
     }
+}
+
+/// **A volume restored from a snapshot starts under a new id even under
+/// `OnCommit` (#1334)**, once the control plane has registered the node since
+/// the snapshot. A clean restart at the incarnation it recorded keeps it.
+#[test]
+fn a_directory_older_than_the_last_registration_rotates_the_storage_id() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        ..Default::default()
+    };
+    let first = begin_run(root.path(), &log, None).expect("first run").id;
+    felix_storage::run_state::record_registration(root.path(), 2).expect("record");
+    mark_clean_stop(root.path(), first).expect("clean stop");
+    let kept = begin_run(root.path(), &log, Some(2)).expect("same incarnation");
+    assert!(!kept.rotated);
+    assert_eq!(kept.id, first);
+    mark_clean_stop(root.path(), kept.id).expect("clean stop");
+    let restored = begin_run(root.path(), &log, Some(5)).expect("control plane ahead");
+    assert!(restored.rotated);
+    assert_ne!(restored.id, first);
+    assert_eq!(storage_id(Some(root.path())).expect("load"), restored.id);
 }

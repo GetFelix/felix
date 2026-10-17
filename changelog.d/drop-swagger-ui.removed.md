@@ -1,0 +1,1 @@
+- The control plane no longer serves a Swagger UI at `/docs`. `/v1/openapi.json` is unchanged; point any OpenAPI viewer at it (docs: Viewing the API document). This removes the `zip` build dependency behind RUSTSEC-2026-0367 and RUSTSEC-2026-0368 and the Swagger UI download at build time.

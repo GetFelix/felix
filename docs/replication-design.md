@@ -1637,10 +1637,13 @@ outlives the process, and the broker acknowledges nothing it has not handed
 to the kernel. Where the boot cannot be compared, the crash counts as the
 machine's ([#1367](https://github.com/GetFelix/felix/issues/1367)). The rotation is
 on disk before the broker registers or answers a handshake, so no peer or
-control plane ever sees the old id from the new process. Two losses still
-keep the id: an older copy put back by rsync or a volume snapshot, and a
-directory copied to another node. A restore or copy made by hand must delete
-`storage-id` so the broker creates a new one. The peer handshake carries it
+control plane ever sees the old id from the new process. A cluster member
+also rotates it when the control plane's incarnation for the node is ahead of
+the one `<data dir>/registration` recorded, so a snapshot or copy older than
+the node's last registration is caught (#1334). A copy taken during the
+node's current registration, or moved to another node, can keep the id,
+so a restore or copy made by hand must delete `storage-id` so the broker
+creates a new one. The peer handshake carries it
 (`STORAGE_IDENTITY`, see `docs/internal-protocol.md`), and the pool keeps it
 with the connection.
 
