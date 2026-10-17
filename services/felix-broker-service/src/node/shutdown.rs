@@ -367,10 +367,19 @@ impl Running {
                     tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
                 }
             } else {
+                // A step cut short is a process crash, which the boot vouches
+                // for. A failed flush or a poisoned log may have lost pages.
+                if (!flushed || felix_storage::disk_log::any_log_poisoned())
+                    && let Err(err) = super::storage::forget_boot(root)
+                {
+                    tracing::error!(error = %err, "could not record that the stop may have lost acknowledged records");
+                }
                 tracing::warn!(
                     unfinished = ?budget.unfinished(),
+                    flushed,
                     "stopping without recording a clean stop; under a relaxed fsync mode \
-                     the next start takes a new storage id"
+                     the next start takes a new storage id unless only this process stopped \
+                     and nothing failed to flush"
                 );
             }
         }

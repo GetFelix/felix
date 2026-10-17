@@ -856,26 +856,46 @@ may have lost data, which is the safe reading of damage. See
 
 ## `run-state`: whether the last run stopped cleanly
 
-One file at the durable root, beside `storage-id`:
+One file at the durable root, beside `storage-id`, in one of two layouts told
+apart by length and version:
 
 ```text
+Version 1, 28 bytes:
  0   4  magic    u32  "FLRN"
- 4   2  version  u16
+ 4   2  version  u16  1
  6   1  state    u8   1 = running, 2 = stopped cleanly
  7   1  flags    u8   bit 0: the run acknowledges records before syncing them
                       (FsyncMode::Periodic or None); other bits must be zero
  8  16  id       the storage id the run started under
 24   4  crc      u32  crc32 over bytes 0..24
+
+Version 2, 44 bytes, only for a run under way with bit 0 set:
+ 0   4  magic    u32  "FLRN"
+ 4   2  version  u16  2
+ 6   1  state    u8   1 = running
+ 7   1  flags    u8   1
+ 8  16  id       the storage id the run started under
+24  16  boot     the machine's boot id when the run started
+40   4  crc      u32  crc32 over bytes 0..40
 ```
 
 A broker writes `running` before any store opens and `stopped cleanly` as the
 last step of a drain that flushed everything. Both go through `run-state.tmp`,
-synced, renamed and the directory synced, like `storage-id`. No file means no
-release that writes it has run here. A file that does not decode, or names
-another id than `storage-id` holds, reads as a crash under a relaxed mode. A
-start that finds `running` with bit 0 set, or that, with no file and an id
-loaded, finds a shard startup would repair, writes a new `storage-id` first.
-See `docs/durable-storage.md`, "Storage identity".
+synced, renamed and the directory synced, like `storage-id`. A relaxed run
+with a boot id to name is written at version 2; every other record, a clean
+stop included, at version 1, so a release that reads only version 1 still
+finds a clean stop. No file means no release that writes it has run here. A
+file that does not decode, or names another id than `storage-id` holds, reads
+as a crash under a relaxed mode in an unknown boot. A start that finds
+`running` with bit 0 set writes a new `storage-id` first, unless the record
+is version 2, its boot is the one running now, and, on Linux only, a
+`syncfs` of every filesystem under the data directory succeeds; so does one that, with no
+file and an id loaded, finds a shard startup would repair.
+
+The first log poisoned in a process, or a stop whose flush failed, rewrites a
+version 2 record as version 1 with the same id, through `run-state.tmp` but
+not synced: only a process crash has to find it. See
+`docs/durable-storage.md`, "Storage identity".
 
 ## `registration`: the node's last registration
 

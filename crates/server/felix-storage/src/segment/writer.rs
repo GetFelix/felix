@@ -463,7 +463,7 @@ impl SegmentWriter {
         if let Err(err) = result {
             // Poisoned rather than merely reported: the pages may be gone, and
             // a later sync would return success having flushed nothing.
-            self.poisoned = true;
+            self.poison_after_failed_sync();
             return Err(StorageError::SyncFailed(err.to_string()));
         }
         // The index is rebuildable, so it gets a flush but not a device sync.
@@ -504,10 +504,18 @@ impl SegmentWriter {
         self.reservation.close();
         self.file.set_len(self.size_bytes)?;
         if let Err(err) = sync_data(&self.file) {
-            self.poisoned = true;
+            self.poison_after_failed_sync();
             return Err(StorageError::SyncFailed(err.to_string()));
         }
         Ok(self.descriptor())
+    }
+
+    /// The kernel may have dropped the pages it could not write. The log is
+    /// poisoned only at its next flush, and a process crash before then must
+    /// not keep the storage id, so the boot is forgotten here.
+    fn poison_after_failed_sync(&mut self) {
+        self.poisoned = true;
+        crate::run_state::forget_watched();
     }
 
     /// Restore the file to the last byte this writer accounts for.

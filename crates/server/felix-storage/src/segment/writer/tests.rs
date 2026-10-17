@@ -334,6 +334,11 @@ fn a_poisoned_writer_refuses_further_appends() {
 #[test]
 fn a_failed_sync_poisons_the_writer() {
     let dir = tempdir().expect("dir");
+    let run = tempdir().expect("run dir");
+    let boot = Some(crate::run_state::BootId::from_bytes([1; 16]));
+    let begun =
+        crate::run_state::begin(run.path(), true, None, boot, || false, || [1; 16]).expect("begin");
+    crate::run_state::watch_poison(run.path());
     let mut writer = new_writer(&dir, 0);
     writer.append(&[record("a")]).expect("append");
 
@@ -343,6 +348,14 @@ fn a_failed_sync_poisons_the_writer() {
         StorageError::SyncFailed(_)
     ));
     assert!(writer.poisoned, "a failed sync left the writer usable");
+    // Before any flush poisons the log, a process crash must not keep the id.
+    assert_eq!(
+        crate::run_state::read(run.path(), begun.id).expect("read"),
+        crate::run_state::LastRun::Crashed {
+            relaxed: true,
+            boot: None
+        }
+    );
 
     // The second sync would have succeeded on its own — that is the whole
     // danger — so it has to be refused rather than believed.

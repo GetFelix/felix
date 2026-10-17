@@ -288,6 +288,75 @@ pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Flush everything the kernel holds for every filesystem under `root`, and
+/// report a writeback error it has not reported yet: one `syncfs` per device
+/// among `root` and the directories below it, so a shard on another mount is
+/// covered. No timeout: a dead disk blocks here as recovery would.
+///
+/// Linux only. macOS's `sync` only queues the writes, so nothing there can
+/// say the page cache reached the device; elsewhere there is no such call.
+pub(crate) fn sync_filesystems(root: &std::path::Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        for dir in devices_under(root)?.into_values() {
+            let dir = File::open(dir)?;
+            // SAFETY: `dir` is a live descriptor for the duration of the call.
+            if unsafe { libc::syncfs(dir.as_raw_fd()) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = root;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no way to know the page cache reached the device on this platform",
+        ))
+    }
+}
+
+/// One directory per device among `root` and every directory below it.
+/// Symlinked directories count by their target's device and are not walked.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub(crate) fn devices_under(
+    root: &std::path::Path,
+) -> io::Result<std::collections::BTreeMap<u64, std::path::PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    let mut devices = std::collections::BTreeMap::new();
+    devices.insert(std::fs::metadata(root)?.dev(), root.to_path_buf());
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        // A subdirectory the broker cannot read (a root-owned `lost+found`
+        // under a mount point) holds nothing of its; its device is already
+        // recorded from the stat.
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if dir != root => {
+                tracing::warn!(dir = %dir.display(), error = %err, "skipping an unreadable directory");
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            devices.entry(meta.dev()).or_insert_with(|| path.clone());
+            if !std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(devices)
+}
+
 /// Flush file data *and* metadata. For the small files written whole and
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.

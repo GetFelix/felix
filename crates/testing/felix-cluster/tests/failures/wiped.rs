@@ -1,8 +1,10 @@
-//! A follower that lost its data directory, or crashed under the default
-//! `Periodic` fsync and so may have lost its unsynced tail, is never promoted
-//! on a report about the copy it had. One that stopped cleanly and restarted
-//! still is. A leader that crashed that way does not lead from its copy again.
-//! A wiped follower still votes in the next leader's fence.
+//! A follower that lost its data directory, or whose machine crashed under the
+//! default `Periodic` fsync and so may have lost its unsynced tail, is never
+//! promoted on a report about the copy it had. One that stopped cleanly, or
+//! whose process alone was killed, and restarted still is. A leader whose
+//! machine crashed does not lead from its copy again; one whose process was
+//! killed keeps its identity and loses nothing. A wiped follower still votes
+//! in the next leader's fence.
 //!
 //! The leader here cannot reach the follower after it comes back (its peer
 //! requests to it are refused), so its reports keep naming the follower
@@ -81,8 +83,12 @@ async fn registered_storage(cluster: &Cluster, node: &str) -> String {
 enum Stop {
     /// SIGTERM and the drain: a clean stop, which keeps the storage id.
     Clean,
-    /// SIGKILL under `Periodic`: the unsynced tail may be gone.
-    Crash,
+    /// SIGKILL alone under `Periodic`: the page cache keeps the unsynced
+    /// tail, so the storage id is kept.
+    Kill,
+    /// SIGKILL and a restart of the machine under `Periodic`: the unsynced
+    /// tail may be gone.
+    MachineCrash,
     /// SIGKILL and the data directory removed.
     Wipe,
 }
@@ -125,7 +131,11 @@ async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, stop: S
     let before = registered_storage(cluster, c).await;
     match stop {
         Stop::Clean => stop_cleanly(cluster, c).await,
-        Stop::Crash => cluster.stop_node(c).await.expect("kill c"),
+        Stop::Kill => cluster.stop_node(c).await.expect("kill c"),
+        Stop::MachineCrash => {
+            cluster.stop_node(c).await.expect("kill c");
+            cluster.reboot_node(c).expect("reboot c's machine");
+        }
         Stop::Wipe => {
             cluster.stop_node(c).await.expect("kill c");
             let storage = cluster.node(c).expect("c").storage_dir();
@@ -136,8 +146,9 @@ async fn restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, stop: S
     let after = registered_storage(cluster, c).await;
     assert_eq!(
         before != after,
-        stop != Stop::Clean,
-        "{stop:?}: a crash or a wipe changes the storage identity and a clean stop keeps it"
+        matches!(stop, Stop::MachineCrash | Stop::Wipe),
+        "{stop:?}: a machine crash or a wipe changes the storage identity; a clean stop \
+         or a killed process keeps it"
     );
     let since = cluster.control_plane_now_millis().await.expect("clock");
     felix_cluster::wait::until(
@@ -314,13 +325,13 @@ async fn a_wiped_follower_votes_in_the_next_fence() {
     cluster.shutdown().await;
 }
 
-/// **A follower that crashed under `Periodic` fsync is not promoted
+/// **A follower whose machine crashed under `Periodic` fsync is not promoted
 /// (#1284).** It kept its data directory, but not necessarily the records it
 /// acknowledged since the last sync, so it starts under a new storage id.
 #[tokio::test]
 #[serial]
 async fn a_crashed_follower_is_not_promoted() {
-    not_promoted_after(Stop::Crash).await;
+    not_promoted_after(Stop::MachineCrash).await;
 }
 
 /// **A follower that stopped cleanly and restarted is promoted past the
@@ -331,9 +342,22 @@ async fn a_crashed_follower_is_not_promoted() {
 #[tokio::test]
 #[serial]
 async fn a_restarted_follower_is_promoted_past_the_ttl() {
+    promoted_past_the_ttl_after(Stop::Clean).await;
+}
+
+/// **A follower whose process was killed under `Periodic` is promoted the
+/// same way (#1367).** The page cache kept everything it wrote, so it keeps
+/// its identity and the report still describes its log.
+#[tokio::test]
+#[serial]
+async fn a_killed_follower_is_promoted_past_the_ttl() {
+    promoted_past_the_ttl_after(Stop::Kill).await;
+}
+
+async fn promoted_past_the_ttl_after(stop: Stop) {
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, b, c) = written(&cluster).await;
-    restart_unreached(&mut cluster, &leader, &c, Stop::Clean).await;
+    restart_unreached(&mut cluster, &leader, &c, stop).await;
     lose_leader_and_b(&mut cluster, &leader, &b).await;
 
     // No placement pass until the report is older than its TTL, so only the
@@ -359,15 +383,61 @@ async fn a_restarted_follower_is_promoted_past_the_ttl() {
     .expect("the clock moves");
 
     let promoted = promoted_away_from(&cluster, &leader).await;
-    assert_eq!(promoted, c);
+    assert_eq!(promoted, c, "{stop:?}");
     // The fence needs a majority: c and b.
     cluster.restart_node(&b).await.expect("restart b");
     assert_eq!(replay(&cluster, &c).await, all_records());
     cluster.shutdown().await;
 }
 
-/// **A leader that crashed under `Periodic` fsync is replaced, though it came
-/// back, and nothing it acknowledged is lost (#1295).** It may have
+/// **A leader whose process was killed under `Periodic` keeps its identity
+/// and loses nothing (#1367).** The page cache kept its unsynced tail, so it
+/// comes back under the same storage id, nothing makes it give its copy up,
+/// and the shard serves every record it acknowledged and takes new ones.
+#[tokio::test]
+#[serial]
+async fn a_killed_leader_keeps_its_identity_and_serves_again() {
+    let mut cluster = Cluster::start(config()).await.expect("start");
+    let (leader, _b, _c) = written(&cluster).await;
+    let before = registered_storage(&cluster, &leader).await;
+    cluster.run_placement(Duration::from_millis(200));
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    cluster
+        .restart_node(&leader)
+        .await
+        .expect("restart the leader");
+    assert_eq!(
+        registered_storage(&cluster, &leader).await,
+        before,
+        "a killed process keeps the storage id"
+    );
+    // Placement may move the shard while the leader is down, so the owner is
+    // read again for each attempt.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let owner = loop {
+        let owner = cluster.owner(STREAM).await.expect("owner");
+        if cluster
+            .publish_keyed_via_settled(
+                &owner,
+                STREAM,
+                b"k",
+                b"after-the-kill".to_vec(),
+                Duration::from_secs(5),
+            )
+            .await
+            .is_ok()
+        {
+            break owner;
+        }
+        assert!(Instant::now() < deadline, "the shard never served again");
+    };
+    assert_eq!(replay(&cluster, &owner).await, all_records());
+    cluster.shutdown().await;
+}
+
+/// **A leader whose machine crashed under `Periodic` fsync is replaced, though
+/// it came back, and nothing it acknowledged is lost (#1295).** It may have
 /// acknowledged records from the tail the crash cost it, so it starts under a
 /// new storage id and leads nothing from its copy. Placement promotes a
 /// follower its last report names caught up: on the new id if it registers
@@ -402,13 +472,16 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
 
     cluster.kill_node(&leader).expect("kill the leader");
     cluster
+        .reboot_node(&leader)
+        .expect("reboot the leader's machine");
+    cluster
         .restart_node(&leader)
         .await
         .expect("restart the leader");
     let after = registered_storage(&cluster, &leader).await;
     assert_ne!(
         before, after,
-        "a crash under Periodic rotates the storage id"
+        "a machine crash under Periodic rotates the storage id"
     );
 
     let promoted = promoted_away_from(&cluster, &leader).await;
@@ -434,7 +507,7 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
     cluster.shutdown().await;
 }
 
-/// **A crashed `Leader` leader every follower is behind is named again
+/// **A `Leader` leader whose machine crashed, and every follower is behind, is named again
 /// (#1295).** Its followers lag, so none is caught up, nobody holds
 /// anything it might have lost, and none can take over without losing what
 /// it kept. It gives its copy up on restart, probes both
@@ -496,6 +569,9 @@ async fn a_crashed_leader_no_follower_is_ahead_of_is_reclaimed() {
     cluster.run_placement(Duration::from_millis(200));
 
     cluster.kill_node(&leader).expect("kill the leader");
+    cluster
+        .reboot_node(&leader)
+        .expect("reboot the leader's machine");
     cluster.heal(&cut).await.expect("heal");
     cluster
         .restart_node(&leader)
@@ -504,7 +580,7 @@ async fn a_crashed_leader_no_follower_is_ahead_of_is_reclaimed() {
     assert_ne!(
         registered_storage(&cluster, &leader).await,
         before,
-        "a crash under Periodic rotates the storage id"
+        "a machine crash under Periodic rotates the storage id"
     );
 
     felix_cluster::wait::until(
