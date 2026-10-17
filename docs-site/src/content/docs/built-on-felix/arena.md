@@ -1,6 +1,6 @@
 ---
 title: "felix-arena"
-description: "A browser team-deathmatch game built on Felix: a simulator commits every tick to a durable stream, and a kill cam will replay the match's log."
+description: "A browser team-deathmatch game built on Felix: a simulator commits every tick to a durable stream, and a kill cam replays the match's log."
 ---
 
 [felix-arena](https://github.com/GetFelix/felix-arena) is a team deathmatch
@@ -10,8 +10,9 @@ the match's Felix log, and spectators can join a match in progress.
 
 It is playable. A match runs through Felix from warmup to results: the
 simulator commits every tick, writes the `keyframe` key, and applies inputs
-from the input stream, and browsers reach it through felix-gateway. The kill
-cam, joining mid-match, the member and lobby caches, the epoch counter,
+from the input stream, and browsers reach it through felix-gateway. Players
+and spectators join a match in progress from the `keyframe` key, and the kill
+cam replays kills from the log. The member and lobby caches, the epoch counter,
 three-replica `Quorum` streams and per-arena token narrowing are designed but
 not built yet; the development stack runs one broker with a stand-in identity
 provider. The sections below describe the full design and say which parts run
@@ -44,21 +45,22 @@ in the log, so the subscription continues into live ticks without a gap.
 
 The kill cam is the same stream read from an earlier offset. A kill event names
 `replay_from`, the offset of the tick three seconds before it, which the
-simulator knows from its commit answers. The victim's client subscribes from
-there on a second subscription and plays the ticks back through the same
-renderer with a different camera. Recent records come from the broker's
-in-memory replay ring, so a kill cam does not read from disk.
-The design holds that subscription open for a few seconds because it predates
-Felix's [range reads](/features/pubsub/#reading-a-range-without-subscribing),
-added in 0.6.0-preview.3, which return a fixed slice of a stream without one.
+simulator knows from its commit answers. The victim's client fetches that
+slice of the stream with a
+[range read](/features/pubsub/#reading-a-range-without-subscribing) and plays
+the ticks back through the same renderer with a different camera, while its
+live subscription keeps running. Recent records come from the broker's
+in-memory replay ring, so a kill cam does not read from disk. Any kill in the
+feed can be replayed the same way, from this match or an earlier one, until
+retention trims the records.
 
 Inputs go on an in-memory stream because an input 40 ms old is worthless and
 the next one replaces it. Each input repeats the previous two, so a dropped
 record is almost always covered by the next.
 
-Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.5.0 or
-later, using three opt-in features: binary event frames, separate `live` and
-`replay` subscriptions on one stream, and `state_get` for the `keyframe` key.
+Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.6.0 or
+later, using three opt-in features: binary event frames, `state_get` for the
+`keyframe` key, and `read` for the kill cam's range reads.
 The gateway stamps each input with the session's principal, and the simulator
 accepts an input only when that stamp matches the publisher the broker
 recorded on the event. In the design, each session's token is narrowed to one
@@ -70,7 +72,7 @@ flowchart LR
   G -- "inputs" --> IN[("arena.input<br/>in-memory")]
   IN --> SIM["Simulator, 30 Hz"]
   SIM -- "atomic commit per tick" --> T[("arena.ticks<br/>durable, Quorum")]
-  T -- "live, and replay from an offset" --> G
+  T -- "live, and range reads for the kill cam" --> G
 ```
 
 ## Quick start
