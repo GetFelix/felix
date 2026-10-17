@@ -4,6 +4,9 @@
   machine crash rotates it: `run-state` now records the machine's boot id
   (`/proc/sys/kernel/random/boot_id` on Linux, `kern.bootsessionuuid` on
   macOS), and a start in a different boot, or where either boot is unknown,
-  takes a new id as before. A failed fsync forgets the boot, so a crash after
-  one still rotates. A clean stop is written in the layout older releases
+  takes a new id as before. Keeping the id first syncs the data directory's
+  filesystem (`syncfs`, or `sync` plus `F_FULLFSYNC` on macOS) and rotates if
+  that fails. A failed fsync forgets the boot, so a crash after one still
+  rotates. A VM or container memory-snapshot restore keeps the boot id; use
+  `on_commit` or delete `storage-id` for those workflows. A clean stop is written in the layout older releases
   read, so a downgrade after one keeps the id.

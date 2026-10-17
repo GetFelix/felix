@@ -1129,6 +1129,14 @@ still written back. So the id stays. `<root>/run-state` (format in
   record. If the last run was under `Periodic` or `None` and did not record a
   clean stop, it writes a new id unless the record names the boot of the
   machine still running ([#1367](https://github.com/GetFelix/felix/issues/1367)).
+  Keeping the id that way first syncs the data directory's whole filesystem
+  (`syncfs` on Linux; `sync` and one `F_FULLFSYNC` on macOS), so what the
+  crashed process left to the page cache is on the device before the id is
+  announced, and a later clean stop vouches only for what is there. Without
+  it, a retired segment the crashed run never sealed would stay dirty, and
+  a power loss after the next clean stop would lose it under the same id.
+  The sync also reports a writeback error the crashed process never saw. If
+  it fails, or the platform has none, the id rotates.
   Then it records that a run is under way, under which mode, and in which
   boot, and syncs that with the directory before any store opens. Recovery is
   this run's first write, and only the id this returns is sent to peers or the
@@ -1148,8 +1156,9 @@ still written back. So the id stays. `<root>/run-state` (format in
   names another id.
 - **A failed fsync forgets the boot.** The kernel may drop the pages it could
   not write, so from then on the page cache no longer vouches for what the run
-  acknowledged. The first log poisoned in the process rewrites the record
-  without its boot, and so does a stop whose flush failed. A crash after that
+  acknowledged. The first failed sync of a segment, and the first log
+  poisoned in the process, rewrite the record without its boot, and so does
+  a stop whose flush failed. A crash after that
   rotates the id in any boot. That rewrite is not synced: only a process crash
   has to find it, and a machine crash rotates anyway.
 
@@ -1161,6 +1170,15 @@ machine meets a different boot id and rotates, as it should. Where there is
 no boot id, on another platform or when it cannot be read, a crash rotates as
 if the machine had gone down, and so does a record an older release wrote,
 which names no boot. Silence never keeps the id.
+
+One rollback the boot id cannot see: restoring a VM or container from a
+memory snapshot, or a disk snapshot taken with the machine running, puts
+the broker back in a boot whose id has not changed, with the page cache and
+the disk both older than what peers last saw. A run that crashes after such
+a restore keeps its id. Where snapshot restores are part of operations, run
+`on_commit`, or delete `storage-id` from the restored data directory before
+the broker starts, as for any restored copy (see "Restoring to a backup
+point" and [#1334](https://github.com/GetFelix/felix/issues/1334)).
 
 A crash under `OnCommit` keeps the id, since every record it acknowledged was
 synced first. The record names the mode of the run that crashed, so changing

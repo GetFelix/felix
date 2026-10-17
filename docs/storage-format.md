@@ -887,7 +887,8 @@ finds a clean stop. No file means no release that writes it has run here. A
 file that does not decode, or names another id than `storage-id` holds, reads
 as a crash under a relaxed mode in an unknown boot. A start that finds
 `running` with bit 0 set writes a new `storage-id` first, unless the record
-is version 2 and its boot is the one running now; so does one that, with no
+is version 2, its boot is the one running now, and a sync of the data
+directory's filesystem succeeds; so does one that, with no
 file and an id loaded, finds a shard startup would repair.
 
 The first log poisoned in a process, or a stop whose flush failed, rewrites a

@@ -288,6 +288,39 @@ pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Flush everything the kernel holds for the filesystem `dir` is on, and
+/// report a writeback error it has not reported yet. `file` is any file in
+/// `dir`: on macOS `sync` only schedules the writes, and one `F_FULLFSYNC`
+/// then pushes the drive's cache. Unsupported elsewhere.
+pub(crate) fn sync_filesystem(dir: &std::path::Path, file: &std::path::Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let _ = file;
+        let dir = File::open(dir)?;
+        // SAFETY: `dir` is a live descriptor for the duration of the call.
+        if unsafe { libc::syncfs(dir.as_raw_fd()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = dir;
+        // SAFETY: `sync` takes no arguments and cannot fail.
+        unsafe { libc::sync() };
+        sync_data(&File::open(file)?)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (dir, file);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no filesystem-wide sync on this platform",
+        ))
+    }
+}
+
 /// Flush file data *and* metadata. For the small files written whole and
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.

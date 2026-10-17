@@ -1753,7 +1753,9 @@ directory and the identity and loses the record.
 `FelixShardProcessCrashKeepsId.cfg` tells the two crashes apart: a process
 crash keeps the whole log and the identity, a machine crash may lose the
 suffix and rotates, and it passes; `FelixShardMachineCrashKeepsId.cfg` lets a
-machine crash keep the identity and loses the record.
+machine crash keep the identity and loses the record, and
+`FelixShardCleanStopUnsynced.cfg` loses it when a kept identity is not
+synced before a later clean stop vouches for it.
 `FelixShardLeaderProcessCrash.cfg` does the same for the leader. The passing
 case with a partial suffix loss is too large for the CI job and is not
 model-checked (see `docs/formal/README.md`). A leader's crash has a pair of

@@ -14,6 +14,17 @@ fn counter(start: u8) -> impl FnMut() -> [u8; 16] {
 const PERIODIC: bool = true;
 const ON_COMMIT: bool = false;
 
+thread_local! {
+    /// Filesystem syncs `begin` asked for on this thread.
+    pub(super) static SYNCS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Make those syncs fail.
+    pub(super) static SYNC_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn syncs() -> u32 {
+    SYNCS.with(std::cell::Cell::get)
+}
+
 const BOOT: Option<BootId> = Some(BootId::from_bytes([1; 16]));
 const REBOOTED: Option<BootId> = Some(BootId::from_bytes([2; 16]));
 
@@ -87,6 +98,51 @@ fn a_crash_in_the_same_boot_keeps_the_id() {
     assert_eq!(second.last_run, relaxed_crash(BOOT));
     assert!(!second.rotated);
     assert_eq!(second.id, first.id);
+}
+
+/// **A kept id is synced first.** The crashed run's dirty pages, a retired
+/// segment it never sealed among them, are on the device before the id is
+/// announced, so a later clean stop vouches only for what is there. Nothing
+/// else syncs.
+#[test]
+fn keeping_the_id_after_a_crash_syncs_the_filesystem_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    let before = syncs();
+    let kept = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    assert_eq!(kept.id, first.id);
+    assert_eq!(syncs(), before + 1, "the keep path syncs once");
+    mark_clean(dir.path(), kept.id).expect("mark clean");
+    begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    assert_eq!(syncs(), before + 1, "a clean stop or a rotation does not");
+}
+
+/// **A failed sync rotates.** It may be a writeback error the crashed run
+/// never saw, so the page cache no longer vouches for it.
+#[test]
+fn a_failed_sync_after_a_crash_rotates_the_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    SYNC_FAILS.with(|fails| fails.set(true));
+    let second = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    SYNC_FAILS.with(|fails| fails.set(false));
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+}
+
+/// The real sync works where the platform has one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn the_filesystem_sync_runs_on_this_platform() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    // Creates the storage id the macOS path syncs through.
+    begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    crate::io::sync_filesystem(dir.path(), &dir.path().join(storage_identity::FILE_NAME))
+        .expect("sync");
 }
 
 /// **An unknown boot on either side rotates.** Silence never vouches for a

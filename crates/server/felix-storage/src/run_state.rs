@@ -100,13 +100,15 @@ pub fn begin(
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
     let last_run = read(root, loaded)?;
     // A new id already tells peers to start over.
+    // `||` order matters: the filesystem is synced only when the boot alone
+    // would keep the id.
     let rotate = origin == Origin::Loaded
         && match last_run {
             LastRun::Clean | LastRun::Crashed { relaxed: false, .. } => false,
             LastRun::Crashed {
                 relaxed: true,
                 boot: recorded,
-            } => recorded.is_none() || recorded != boot,
+            } => recorded.is_none() || recorded != boot || !synced_after_crash(root),
             LastRun::Unrecorded => repair_pending(),
         };
     let id = if rotate {
@@ -143,6 +145,35 @@ pub fn begin(
         last_run,
         rotated: rotate,
     })
+}
+
+/// Push everything the crashed run left in the page cache to the device,
+/// before the kept id is announced or a clean stop could be recorded under
+/// it. Without this a later clean stop would vouch for pages only the kernel
+/// held, such as a retired segment whose seal never ran, and a power loss
+/// after it would lose them under the same id. A failure, which includes a
+/// writeback error the crashed run never saw, or a platform that cannot do
+/// it, means the id cannot be kept.
+fn synced_after_crash(root: &Path) -> bool {
+    #[cfg(test)]
+    {
+        tests::SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
+        if tests::SYNC_FAILS.with(std::cell::Cell::get) {
+            return false;
+        }
+    }
+    match crate::io::sync_filesystem(root, &root.join(storage_identity::FILE_NAME)) {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!(
+                root = %root.display(),
+                error = %err,
+                "could not sync the data directory's filesystem after a process crash; \
+                 taking a new storage id"
+            );
+            false
+        }
+    }
 }
 
 /// Record that the run under `id` stopped with everything it acknowledged

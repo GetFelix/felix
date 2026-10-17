@@ -134,7 +134,11 @@ placement no longer counts it on reports from before the crash.
 A crash of the process alone, such as `SIGKILL` or an OOM kill, keeps the id.
 Every record the broker acknowledged had already been handed to the kernel,
 and the page cache that holds it outlives the process, so nothing it answered
-for is gone. A failed fsync takes that away: the kernel may have dropped the
+for is gone. Before keeping it, the broker syncs the data directory's
+filesystem, so a later clean stop vouches only for what is on the device; if
+that sync fails, the id rotates. A VM or container restored from a memory
+snapshot keeps its boot id, so for snapshot-restore workflows run `on_commit`
+or delete `storage-id` before starting the broker. A failed fsync takes that away: the kernel may have dropped the
 pages, so after one the broker forgets the boot, and a crash rotates the id
 whatever the boot. A boot id that cannot be read, or a record from an older
 release, counts as a machine crash. A clean stop keeps the id, and so does a

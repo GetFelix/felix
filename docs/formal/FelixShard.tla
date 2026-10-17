@@ -272,7 +272,11 @@
 (* (FelixShardProcessCrashKeepsId.cfg, FelixShardLeaderProcessCrash.cfg).  *)
 (* With `BootCheckBlind` a machine crash is taken for a process crash and  *)
 (* keeps its identity too, and TLC finds a record lost (AckedSurvive,      *)
-(* FelixShardMachineCrashKeepsId.cfg).                                     *)
+(* FelixShardMachineCrashKeepsId.cfg). With `CleanStops` a follower back  *)
+(* from a kept process crash later stops cleanly and the power goes while *)
+(* it is down; without `SyncOnKeep` its clean stop vouched for pages only  *)
+(* the kernel held and TLC finds a record lost (AckedSurvive,              *)
+(* FelixShardCleanStopUnsynced.cfg).                                       *)
 (*                                                                         *)
 (* `CrashLeader` makes the crash the leader's instead (#1295). Keeping its *)
 (* lease and its generation, it serves on without what it lost, and TLC    *)
@@ -432,6 +436,10 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* (`run_state::begin` compares the boot id it recorded with this boot's).
 \* `BootCheckBlind`: the boot check takes a machine crash for a process
 \* crash.
+\* `CleanStops`: a follower back from a process crash later stops cleanly,
+\* and the power may go while it is down (`CleanStop`).
+\* `SyncOnKeep`: the start that kept the identity after the process crash
+\* synced the filesystem first (`run_state::begin`, `synced_after_crash`).
 \* `CrashLeader`: the crash is a leader's, not a follower's.
 \* `GiveUpOnCrash`: a leader back from such a crash leads nothing from the
 \* copy it led (`may_lead` in services/felix-broker-service/src/shards/
@@ -452,6 +460,8 @@ RotateOnCrash == FALSE
 ProcessCrashes == FALSE
 KeepIdOnSameBoot == FALSE
 BootCheckBlind == FALSE
+CleanStops == FALSE
+SyncOnKeep == FALSE
 CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
@@ -527,7 +537,8 @@ VARIABLES
     checked,    \* per leader, the followers that answered this pass from the copy it knows
     registered, \* the identity each broker last registered: its sid + 1, or 0 for none
     inc,        \* how many times each broker has registered: its incarnation
-    restarting  \* brokers wiped and not yet registered again
+    restarting, \* brokers wiped and not yet registered again
+    leftDirty   \* how much of its log a crashed process left to the page cache, until a clean stop
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -539,7 +550,7 @@ setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
 \* learning one, and a registration change them.
-idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting >>
+idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, leftDirty >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -727,6 +738,7 @@ IdInit ==
     /\ registered = [m \in Brokers |-> 1]
     /\ inc = [m \in Brokers |-> 0]
     /\ restarting = {}
+    /\ leftDirty = [b \in Brokers |-> 0]
 
 Init ==
     /\ now = 0
@@ -2029,7 +2041,7 @@ Wipe(f) ==
             /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, leftDirty >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -2065,6 +2077,9 @@ Crash(f) ==
           THEN /\ sid' = [sid EXCEPT ![f] = @ + 1]
                /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
           ELSE UNCHANGED << sid, registered >>
+       /\ leftDirty' = IF CleanStops /\ ~machine /\ ~CrashLeader
+                       THEN [leftDirty EXCEPT ![f] = Len(log[f])]
+                       ELSE leftDirty
        /\ IF CrashLeader
           THEN LET givesUp == GiveUpOnCrash /\ (rotates \/ ~KeepIdOnSameBoot)
                IN
@@ -2084,6 +2099,27 @@ Crash(f) ==
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
                     seen, seenInc >>
 
+\* `f`, back from a process crash that kept its identity, stops cleanly and
+\* starts again in the same boot. The stop syncs what this run wrote and
+\* records a clean stop, so the next start keeps the identity whatever
+\* happened in between, and here the power goes while it is down. Under
+\* `SyncOnKeep` the start after the crash synced what the crashed process
+\* had left to the page cache, so nothing is lost. Without it the clean
+\* stop vouched for pages only the kernel held, and any suffix may go.
+CleanStop(f) ==
+    /\ CleanStops
+    /\ leftDirty[f] > 0
+    /\ bgen[f] = 0
+    /\ \E k \in (IF SyncOnKeep THEN {Len(log[f])} ELSE 0..Len(log[f])) :
+          /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
+          /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+    /\ leftDirty' = [leftDirty EXCEPT ![f] = 0]
+    /\ inc' = [inc EXCEPT ![f] = @ + 1]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, checked, registered,
+                    restarting >>
+
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
 \* registration against the leader's passes: a leader still on a crashed
@@ -2097,7 +2133,7 @@ Register(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
-    /\ UNCHANGED << sid, seen, seenInc, wipes, checked >>
+    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, leftDirty >>
 
 \* `f` loses its data directory, and with it the generation and ballot it
 \* promised. Under `PromiseFromRoutes` it answers what its routing view
@@ -2120,7 +2156,7 @@ Forget(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting >>
+    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, leftDirty >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
@@ -2145,7 +2181,7 @@ Probe(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, wipes, registered, inc, restarting >>
+    /\ UNCHANGED << sid, wipes, registered, inc, restarting, leftDirty >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
@@ -2161,7 +2197,8 @@ Answer(b, f) ==
     /\ checked' = [checked EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting >>
+    /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting,
+                    leftDirty >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -2195,7 +2232,8 @@ Next ==
         \/ Commit(b) /\ UNCHANGED quietVars
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
-           /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting >>
+           /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
+                           leftDirty >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -2211,6 +2249,7 @@ Next ==
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard >>
         \/ Forget(b) /\ UNCHANGED << counterVars, heard >>
         \/ Crash(b) /\ UNCHANGED counterVars
+        \/ CleanStop(b) /\ UNCHANGED << counterVars, heard >>
         \/ Register(b) /\ UNCHANGED << counterVars, heard >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED loudVars
@@ -2403,6 +2442,7 @@ TypeOK ==
     /\ seenInc \in [Brokers -> [Brokers -> Nat]]
     /\ checked \in [Brokers -> SUBSET Brokers]
     /\ registered \in [Brokers -> Nat] /\ inc \in [Brokers -> Nat] /\ restarting \subseteq Brokers
+    /\ leftDirty \in [Brokers -> Nat]
     /\ wipes \in 0..(IF LosePromises THEN 1 ELSE Wipes)
 
 =============================================================================
