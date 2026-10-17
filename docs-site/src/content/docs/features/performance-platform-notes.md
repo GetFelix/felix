@@ -31,7 +31,7 @@ don't need any environment tuning to get sustained throughput:
   their MTU, at 16,336 on macOS and 4,096 elsewhere. Linux UDP GSO caps a
   `sendmsg` batch at one 65,535-byte IP datagram, so a larger guarantee stalls
   delivery outright (`FELIX_INITIAL_MTU`). For the same reason, on Linux
-  `FELIX_INITIAL_MTU` and `FELIX_MTU_UPPER_BOUND` are clamped to 6,553, with
+  `FELIX_INITIAL_MTU` and `FELIX_MTU_UPPER_BOUND` are clamped to 6,550, with
   a warning.
 
 Together these raised sustained macOS loopback throughput ~7.5×: driver

@@ -1341,9 +1341,9 @@ Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). S
 
 **Description**: Upper bound for QUIC path-MTU discovery. Discovery converges to the real path MTU at or below it, so on a 1500-byte network the bound never binds.
 
-Raising it above 6,553 on Linux will stall delivery. Linux UDP GSO packs a whole `sendmsg` batch into one IP datagram, so `MTU × segments` must stay under 65,535, and quinn batches up to 10. Above that the kernel rejects every batch with `EMSGSIZE`, which quinn does not recognise as a GSO failure (it falls back only on `EIO`/`EINVAL`). So the transmit is dropped after quinn has counted it as sent, and the stall is permanent rather than degrading. Treat 6,553 as a hard limit, not a tuning choice.
+Raising it above 6,550 on Linux will stall delivery. Linux UDP GSO packs a whole `sendmsg` batch into one IP datagram, so `MTU × segments` must stay under 65,535, and quinn batches up to 10. Above that the kernel rejects every batch with `EMSGSIZE`, which quinn does not recognise as a GSO failure (it falls back only on `EIO`/`EINVAL`). So the transmit is dropped after quinn has counted it as sent, and the stall is permanent rather than degrading. Treat 6,550 as a hard limit, not a tuning choice.
 
-The default is `4096` rather than 6,553 because quinn's batch size is private to it, and 6,553 breaks the moment it rises. 4,096 also measured fastest on Linux. macOS has no GSO and no such limit.
+The default is `4096` rather than 6,550 because quinn's batch size is private to it, and 6,550 breaks the moment it rises. 4,096 also measured fastest on Linux. macOS has no GSO and no such limit.
 
 **Type**: Positive integer (bytes, clamped to 1200–65527)
 
@@ -1358,7 +1358,7 @@ export FELIX_MTU_UPPER_BOUND="16384"  # macOS, or any path with no GSO
 
 **Description**: Starting datagram size before path-MTU discovery completes. The RFC-safe default works everywhere. Raising it on known-good paths (jumbo-frame LAN) skips the discovery ramp. Connections to a loopback peer automatically start at the loopback MTU and guarantee it, which makes the path immune to spurious black-hole collapse (see `FELIX_MTU_BLACK_HOLE_COOLDOWN_MS`) and, because the guarantee also freezes the discovery bound, removes probe traffic entirely.
 
-The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/features/performance-case-study/).
+The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,550 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/features/performance-case-study/).
 
 The loopback path also requires the socket's granted UDP buffers to reach ~1 MiB. That threshold is a proxy for "this host has been tuned", not a burst-headroom calculation. Hosts where Linux silently clamps `SO_RCVBUF` to a stock `net.core.rmem_max` (~208 KB) keep the RFC-safe default. Raise `rmem_max`/`wmem_max` to enable it. Setting `FELIX_INITIAL_MTU` explicitly disables the loopback special case and applies to every path.
 
