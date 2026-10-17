@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792201313119,
+  "lastUpdate": 1792203623764,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31824,6 +31824,58 @@ window.BENCHMARK_DATA = {
             "range": "5525.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 823243.02\nmean: 824171.80\nstdev: 5525.40\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6909b85d00d4280c8aeb704a315a4df311a3a07c",
+          "message": "fix(storage): rotate the storage id of a directory restored from before the node's last registration (#1343)\n\n* fix(storage): rotate the storage id of a directory older than the node's last registration\n\nA data directory put back from a volume snapshot kept its storage id under\nany fsync mode, so peers and placement could count it on positions it no\nlonger held (#1334). Each registration's node incarnation is now recorded in\n`<root>/registration`, and a cluster member with durable storage asks the\ncontrol plane for its current incarnation before any store opens. When the\ncontrol plane is ahead, the directory missed a registration and the start\nwrites a new id, which also makes it lead nothing from its old copy.\n\nThe broker waits for that answer rather than announce an id it might have\nto take back. No record, no registered node, or a control plane behind the\nrecord keep the id.\n\nSpec-Unaffected: no new protocol step; a restore now takes the existing rotate-on-restart path the shard model's Crash/RotateOnCrash already covers, decided before any id is announced\n\n* fix(storage): keep /live answering while startup waits on the control plane\n\nThe metrics socket is bound before the startup lookup and answers /live\n(200), /ready (503 with the reason) and /metrics until the broker is built,\nthen the full server takes over the same socket. Without it a broker\nrestarted during a control-plane outage had no /live and a liveness probe\nrestarted it in a loop.\n\nAlso documents that a node deleted from the control plane registers again\nfrom incarnation 0, which the check cannot see past.\n\nSpec-Unaffected: startup probe serving and docs only",
+          "timestamp": "2026-10-17T02:13:32Z",
+          "tree_id": "02e8f392f33591f5589812e15ccac903b36043a8",
+          "url": "https://github.com/GetFelix/felix/commit/6909b85d00d4280c8aeb704a315a4df311a3a07c"
+        },
+        "date": 1792203623034,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340971.09,
+            "range": "3834.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340971.09\nmean: 340733.40\nstdev: 3834.17\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340971.09,
+            "range": "3834.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340971.09\nmean: 340733.40\nstdev: 3834.17\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80536.75,
+            "range": "261.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80536.75\nmean: 80512.14\nstdev: 261.56\ncv: 0.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805367.48,
+            "range": "2615.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805367.48\nmean: 805121.45\nstdev: 2615.64\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
