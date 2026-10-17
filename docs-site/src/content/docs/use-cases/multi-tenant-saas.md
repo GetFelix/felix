@@ -202,8 +202,8 @@ docker compose run --rm felixctl pub orders 'hello'
 docker compose run --rm felixctl --tenant acme pub orders 'hello'
 ```
 
-The first publish succeeds. The second is refused, because the token was minted
-for `dev`. The [cross-tenant demo](/demos/overview/) goes further, with two
+The first publish succeeds. The second fails with `auth rejected`, because the
+token was minted for `dev` and the broker will not accept it for `acme`. The [cross-tenant demo](/demos/overview/) goes further, with two
 tenants of its own and RBAC changes taking effect while it runs.
 
 ## Where it stops

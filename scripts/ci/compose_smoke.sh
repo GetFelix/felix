@@ -145,7 +145,7 @@ if timeout 60 "$ENGINE" compose run --rm -T felixctl --tenant acme pub orders 'h
   fail "a dev token published as tenant acme"
 fi
 cat "$work/tenant.out"
-grep -Eqi 'tenant mismatch|unknown tenant|forbidden|unauthenticated|unauthori[sz]ed' "$work/tenant.out" \
+grep -Eqi 'auth rejected' "$work/tenant.out" \
   || fail "the cross-tenant publish failed, but not with a refusal"
 
 # A key written with a TTL is gone once it lapses.
