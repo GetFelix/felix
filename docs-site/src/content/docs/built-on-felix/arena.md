@@ -1,6 +1,6 @@
 ---
 title: "felix-arena"
-description: "A browser team-deathmatch game designed around Felix, with a kill cam replayed from the match's log. Design stage: no game code yet."
+description: "A browser team-deathmatch game built on Felix: a simulator commits every tick to a durable stream, and a kill cam will replay the match's log."
 ---
 
 [felix-arena](https://github.com/GetFelix/felix-arena) is a team deathmatch
@@ -8,11 +8,16 @@ for up to eight players flying hover-craft in a walled arena, played in the
 browser and self-hosted. When a player dies, the last few seconds replay from
 the match's Felix log, and spectators can join a match in progress.
 
-It is at the design stage. The repository holds a design, an art direction and
-a static Three.js style frame. There is no game code and nothing touches Felix
-yet, so everything below describes the design, not a running system.
+It is playable. A match runs through Felix from warmup to results: the
+simulator commits every tick, writes the `keyframe` key, and applies inputs
+from the input stream, and browsers reach it through felix-gateway. The kill
+cam, joining mid-match, the member and lobby caches, the epoch counter,
+three-replica `Quorum` streams and per-arena token narrowing are designed but
+not built yet; the development stack runs one broker with a stand-in identity
+provider. The sections below describe the full design and say which parts run
+today.
 
-## How it is designed to use Felix
+## How it uses Felix
 
 An arena is a persistent room that runs match after match. Its resources are
 created once, at deployment:
@@ -51,18 +56,17 @@ Inputs go on an in-memory stream because an input 40 ms old is worthless and
 the next one replaces it. Each input repeats the previous two, so a dropped
 record is almost always covered by the next.
 
-Browsers reach Felix through a gateway in the style of
-[felix-gateway](/clients/browsers/), with a token narrowed to one arena and
-RBAC roles for who may play and who may only watch. The design changes three
-things in its own gateway (binary frames, separate live and replay
-subscriptions, and sender stamping on the input stream), so it is not the stock
-felix-gateway. Stamping the sender in the gateway is a trust decision the
-design lists as a gap in Felix, since a Felix event does not carry its
-publisher.
+Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.5.0 or
+later, using three opt-in features: binary event frames, separate `live` and
+`replay` subscriptions on one stream, and `state_get` for the `keyframe` key.
+The gateway stamps each input with the session's principal, and the simulator
+accepts an input only when that stamp matches the publisher the broker
+recorded on the event. In the design, each session's token is narrowed to one
+arena, with RBAC roles for who may play and who may only watch.
 
 ```mermaid
 flowchart LR
-  B["Browser"] -- "WebSocket" --> G["Arena gateway"]
+  B["Browser"] -- "WebSocket" --> G["felix-gateway"]
   G -- "inputs" --> IN[("arena.input<br/>in-memory")]
   IN --> SIM["Simulator, 30 Hz"]
   SIM -- "atomic commit per tick" --> T[("arena.ticks<br/>durable, Quorum")]
@@ -71,13 +75,19 @@ flowchart LR
 
 ## Quick start
 
-The only runnable part is the style frame, a static page:
+Each release carries the built web client. Serve it and play against bots in
+the page, with no servers:
 
 ```bash
-git clone https://github.com/GetFelix/felix-arena
-cd felix-arena/prototype && python3 -m http.server 8000
-# open http://localhost:8000/style-frame.html
+gh release download -R GetFelix/felix-arena -p 'felix-arena-web-*'
+tar -xzf felix-arena-web-*.tar.gz && cd felix-arena-web-*/
+python3 -m http.server 5173
+# open http://localhost:5173/play.html?offline
 ```
+
+To play through Felix, start the development stack from a clone with
+`dev/up.sh` (Docker or Podman), then open
+`play.html?arena=alpha&as=ana` and, in a second window, `as=ben`.
 
 ## More
 
