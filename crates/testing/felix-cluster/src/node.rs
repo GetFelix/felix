@@ -89,6 +89,26 @@ pub(crate) fn storage_fault_file(data_dir: impl AsRef<Path>) -> PathBuf {
     data_dir.as_ref().join("storage-fault")
 }
 
+/// Where a broker's test-only boot id lives. Without the file the broker reads
+/// its machine's; [`new_boot`] writes one, as a machine restart would give.
+pub(crate) fn boot_id_file(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("boot-id")
+}
+
+/// Give the broker in `data_dir` a boot id no start before had, so its next
+/// start judges an unclean stop as a machine crash, not a process crash.
+pub(crate) fn new_boot(data_dir: impl AsRef<Path>) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BOOTS: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or_default();
+    let path = boot_id_file(data_dir);
+    let id = format!("{nanos:016x}{:016x}", BOOTS.fetch_add(1, Ordering::Relaxed));
+    std::fs::write(&path, id).map_err(|err| anyhow::anyhow!("write {}: {err}", path.display()))
+}
+
 /// Where a broker's test-only partition list lives.
 ///
 /// Under the data directory, so it is cleaned up with the cluster and a broker

@@ -264,6 +264,16 @@
 (* when it finds no clean stop recorded. No configuration in CI checks     *)
 (* that case: with a partial suffix lost it is too large for the job.      *)
 (*                                                                         *)
+(* With `ProcessCrashes` a crash may be the process's alone, which keeps   *)
+(* the page cache and so the whole log; only a machine crash loses a       *)
+(* suffix. With `KeepIdOnSameBoot` the identity rotates only after a       *)
+(* machine crash, as the broker does by comparing boot ids (#1367): a      *)
+(* process crash keeps it and passes                                       *)
+(* (FelixShardProcessCrashKeepsId.cfg, FelixShardLeaderProcessCrash.cfg).  *)
+(* With `BootCheckBlind` a machine crash is taken for a process crash and  *)
+(* keeps its identity too, and TLC finds a record lost (AckedSurvive,      *)
+(* FelixShardMachineCrashKeepsId.cfg).                                     *)
+(*                                                                         *)
 (* `CrashLeader` makes the crash the leader's instead (#1295). Keeping its *)
 (* lease and its generation, it serves on without what it lost, and TLC    *)
 (* finds an acknowledged record gone (AckedSurvive,                        *)
@@ -415,6 +425,13 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~AckByFollowers /\ ~FenceOnPromote /
 \* rather than by a wipe.
 \* `RotateOnCrash`: after such a crash it starts under a new storage
 \* identity: `felix_storage::run_state::begin`.
+\* `ProcessCrashes`: a crash may be the process's alone, which keeps the
+\* page cache and loses nothing; otherwise every crash is the machine's.
+\* `KeepIdOnSameBoot`: under `RotateOnCrash`, only a machine crash rotates
+\* the identity, and a leader gives its copy up only when it rotated
+\* (`run_state::begin` compares the boot id it recorded with this boot's).
+\* `BootCheckBlind`: the boot check takes a machine crash for a process
+\* crash.
 \* `CrashLeader`: the crash is a leader's, not a follower's.
 \* `GiveUpOnCrash`: a leader back from such a crash leads nothing from the
 \* copy it led (`may_lead` in services/felix-broker-service/src/shards/
@@ -432,6 +449,9 @@ StampIncarnations == TRUE
 StampOnArrival == FALSE
 CrashLoses == FALSE
 RotateOnCrash == FALSE
+ProcessCrashes == FALSE
+KeepIdOnSameBoot == FALSE
+BootCheckBlind == FALSE
 CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
@@ -2013,7 +2033,8 @@ Wipe(f) ==
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
-\* for. The suffix may be empty: a SIGKILL keeps the page cache, and the
+\* for. The suffix may be empty, and with `ProcessCrashes` the crash may be
+\* the process's alone, which keeps the page cache and so the whole log; the
 \* restart is unclean all the same. Its directory, and so its identity, is
 \* the one it had, unless `RotateOnCrash` gives it a new one before it
 \* registers again. It shares the wipes' budget.
@@ -2023,30 +2044,41 @@ Wipe(f) ==
 \* pending writes, its cursors and what it heard of its reports. Without
 \* `GiveUpOnCrash` it comes back still leading at its generation, on its
 \* lease; with it, it leads nothing until placement names it again.
+\* Whether a crash gives the directory a new identity. Without
+\* `KeepIdOnSameBoot` every crash under `RotateOnCrash` does; with it only a
+\* `machine` crash, unless `BootCheckBlind` takes that for the process's.
+CrashRotates(machine) ==
+    RotateOnCrash /\ (~KeepIdOnSameBoot \/ (machine /\ ~BootCheckBlind))
+
 Crash(f) ==
     /\ CrashLoses
     /\ wipes < Wipes
     /\ IF CrashLeader THEN bgen[f] > 0 ELSE bgen[f] = 0
     /\ Len(log[f]) > 0
-    /\ \E k \in 0..Len(log[f]) :
-          /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
-          /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+    /\ \E machine \in (IF ProcessCrashes THEN BOOLEAN ELSE {TRUE}) :
+       LET rotates == CrashRotates(machine)
+       IN
+       /\ \E k \in (IF machine THEN 0..Len(log[f]) ELSE {Len(log[f])}) :
+             /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
+             /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+       /\ IF rotates
+          THEN /\ sid' = [sid EXCEPT ![f] = @ + 1]
+               /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
+          ELSE UNCHANGED << sid, registered >>
+       /\ IF CrashLeader
+          THEN LET givesUp == GiveUpOnCrash /\ (rotates \/ ~KeepIdOnSameBoot)
+               IN
+               /\ queued' = [queued EXCEPT ![f] = 0]
+               /\ pending' = [pending EXCEPT ![f] = 0]
+               /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+               /\ checked' = [checked EXCEPT ![f] = {}]
+               /\ heard' = [heard EXCEPT ![f] = NoReport]
+               /\ bgen' = IF givesUp THEN [bgen EXCEPT ![f] = 0] ELSE bgen
+               /\ fencing' = IF givesUp THEN [fencing EXCEPT ![f] = FALSE] ELSE fencing
+          ELSE UNCHANGED << queued, pending, confirmed, checked, heard, bgen, fencing >>
     /\ wipes' = wipes + 1
-    /\ IF RotateOnCrash
-       THEN /\ sid' = [sid EXCEPT ![f] = @ + 1]
-            /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
-       ELSE UNCHANGED << sid, registered >>
     /\ inc' = [inc EXCEPT ![f] = @ + 1]
     /\ UNCHANGED restarting
-    /\ IF CrashLeader
-       THEN /\ queued' = [queued EXCEPT ![f] = 0]
-            /\ pending' = [pending EXCEPT ![f] = 0]
-            /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
-            /\ checked' = [checked EXCEPT ![f] = {}]
-            /\ heard' = [heard EXCEPT ![f] = NoReport]
-            /\ bgen' = IF GiveUpOnCrash THEN [bgen EXCEPT ![f] = 0] ELSE bgen
-            /\ fencing' = IF GiveUpOnCrash THEN [fencing EXCEPT ![f] = FALSE] ELSE fencing
-       ELSE UNCHANGED << queued, pending, confirmed, checked, heard, bgen, fencing >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,

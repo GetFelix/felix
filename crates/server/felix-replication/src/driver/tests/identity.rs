@@ -187,6 +187,8 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
         felix_storage::run_state::begin(
             data.path(),
             true,
+            // No boot to vouch for the crash, as after a machine restart.
+            None,
             || false,
             || {
                 next += 1;

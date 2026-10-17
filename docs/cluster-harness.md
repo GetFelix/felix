@@ -438,6 +438,15 @@ swaps each image in for its storage and leaves the brokers down until
 directory inside its data directory (`BrokerNode::storage_dir`), so the fault
 files, logs and certificates beside it are not part of the image.
 
+A killed broker keeps its page cache, so under `Periodic` it restarts under
+the same storage id; only a machine crash rotates it (see
+`docs/durable-storage.md`, "Storage identity"). The harness starts every
+broker with `FELIX_STORAGE_BOOT_ID_FILE` naming `boot-id` in its data
+directory. A debug broker takes its boot id from that file when it exists,
+and from the machine otherwise. `Cluster::reboot_node` writes a new one for a
+stopped broker, so a kill followed by it is a machine crash, and
+`Cluster::power_off` writes one for every broker it powers off.
+
 Only debug builds and builds with the storage crate's `fault-injection`
 feature compile the hooks in. The fsync and write tests run under
 `FELIX_DURABLE_FSYNC_MODE=on_commit` and `FELIX_ACK_ON_COMMIT=true`, since by

@@ -47,6 +47,7 @@ NOT_OPERATIONAL = {
     # deliberately not advertised as a production setting.
     "FELIX_CLOCK_FAULT_FILE",
     "FELIX_PEER_PARTITION_FILE",
+    "FELIX_STORAGE_BOOT_ID_FILE",
     "FELIX_STORAGE_FAULT_FILE",
     "FELIX_STORAGE_POWER_LOSS_ROOT",
     "FELIX_TEST_BROKER_OUTPUT",

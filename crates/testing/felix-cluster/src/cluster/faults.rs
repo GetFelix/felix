@@ -292,6 +292,22 @@ impl Cluster {
         self.control_plane.is_some()
     }
 
+    /// Start `node_id` next as if its machine had restarted while it was down:
+    /// in a new boot, whose page cache never held what the last run wrote. A
+    /// kill followed by this is a machine crash; a kill alone keeps the page
+    /// cache, and under `Periodic` the broker keeps its storage id.
+    pub fn reboot_node(&mut self, node_id: &str) -> Result<()> {
+        let node = self
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if node.is_running() {
+            bail!("{node_id} is still running; stop or kill it first");
+        }
+        crate::node::new_boot(&node.data_dir)
+    }
+
     /// Stop one broker, and wait until the control plane agrees it is gone.
     ///
     /// The wait is the useful half: a test that kills a broker and immediately

@@ -28,16 +28,21 @@ pub fn sidecar_state(bytes: &[u8]) {
 }
 
 fn run_state(bytes: &[u8]) {
-    use crate::run_state::{ENCODED_LEN, decode, encode};
+    use crate::run_state::{ENCODED_LEN, ENCODED_LEN_BOOT, decode, encode, encode_boot};
 
     let mut fixed = bytes.to_vec();
-    if fixed.len() == ENCODED_LEN {
-        let crc = crc32fast::hash(&fixed[..ENCODED_LEN - 4]);
-        fixed[ENCODED_LEN - 4..].copy_from_slice(&crc.to_be_bytes());
+    if fixed.len() == ENCODED_LEN || fixed.len() == ENCODED_LEN_BOOT {
+        let body = fixed.len() - 4;
+        let crc = crc32fast::hash(&fixed[..body]);
+        fixed[body..].copy_from_slice(&crc.to_be_bytes());
     }
     for bytes in [bytes, fixed.as_slice()] {
-        if let Some((state, flags, id)) = decode(bytes) {
-            assert_eq!(encode(state, flags, id).as_slice(), bytes);
+        if let Some(record) = decode(bytes) {
+            let encoded = match record.boot {
+                Some(boot) => encode_boot(record.id, boot).to_vec(),
+                None => encode(record.state, record.flags, record.id).to_vec(),
+            };
+            assert_eq!(encoded.as_slice(), bytes);
         }
     }
 }

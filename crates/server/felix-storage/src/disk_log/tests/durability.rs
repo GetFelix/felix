@@ -214,6 +214,11 @@ fn a_saturated_blocking_pool_does_not_hold_up_a_durable_append() {
 #[tokio::test]
 async fn a_failed_flush_poisons_the_log_and_never_advances_the_durable_bound() {
     let dir = tempdir().expect("dir");
+    let run = tempdir().expect("run dir");
+    let boot = Some(crate::run_state::BootId::from_bytes([1; 16]));
+    let begun =
+        crate::run_state::begin(run.path(), true, boot, || false, || [1; 16]).expect("begin");
+    crate::run_state::watch_poison(run.path());
     let log = open(&dir, FsyncMode::None);
     log.append(&records(&["a", "b"])).await.expect("append");
 
@@ -238,6 +243,14 @@ async fn a_failed_flush_poisons_the_log_and_never_advances_the_durable_bound() {
     assert!(log.shutdown().await.is_err());
     // Closed or not, the process may not record a clean stop.
     assert!(crate::disk_log::any_log_poisoned());
+    // Nor may a process crash now keep the storage id.
+    assert_eq!(
+        crate::run_state::read(run.path(), begun.id).expect("read"),
+        crate::run_state::LastRun::Crashed {
+            relaxed: true,
+            boot: None
+        }
+    );
 }
 
 #[tokio::test]

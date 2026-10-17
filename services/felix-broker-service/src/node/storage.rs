@@ -181,8 +181,9 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 }
 
 /// Start a run on the data directory at `root` and return the id to announce.
-/// A crash under `Periodic` or `None` may have lost records peers counted, so
-/// it comes back with a new id. See `felix_storage::run_state`.
+/// A machine crash under `Periodic` or `None` may have lost records peers
+/// counted, so it comes back with a new id. A process crash in the same boot
+/// keeps it. See `felix_storage::run_state`.
 fn begin_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
@@ -191,10 +192,13 @@ fn begin_run(
     let begun = felix_storage::run_state::begin(
         root,
         relaxed,
+        this_boot(),
         || felix_storage::inspect::any_repair_pending(root, log),
         fresh_storage_id,
     )
     .with_context(|| format!("start a run on {}", root.display()))?;
+    // A failed fsync may drop acknowledged pages with the machine still up.
+    felix_storage::run_state::watch_poison(root);
     if begun.rotated {
         tracing::warn!(
             root = %root.display(),
@@ -203,6 +207,26 @@ fn begin_run(
         );
     }
     Ok(begun)
+}
+
+/// The machine's boot id. Debug builds take it from the file
+/// `FELIX_STORAGE_BOOT_ID_FILE` names when it exists, which is how the
+/// cluster harness restarts a broker as if its machine had rebooted.
+fn this_boot() -> Option<felix_storage::run_state::BootId> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("FELIX_STORAGE_BOOT_ID_FILE")
+        && let Ok(text) = std::fs::read_to_string(path)
+    {
+        return felix_storage::run_state::BootId::parse(&text);
+    }
+    felix_storage::run_state::this_boot()
+}
+
+/// Record that this run on `root` may have lost records it acknowledged with
+/// the machine still up, so a crash before the next start rotates the id.
+pub(crate) fn forget_boot(root: &Path) -> Result<()> {
+    felix_storage::run_state::forget_boot(root)
+        .with_context(|| format!("record an unsafe stop under {}", root.display()))
 }
 
 /// Record that this run on `root` stopped with everything it acknowledged
