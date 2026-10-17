@@ -196,5 +196,6 @@ per capability and it is the page to trust when another disagrees with it.
 ## Next
 
 - [What Felix Is For](/getting-started/what-felix-is-for/): the status table and where Felix fits
+- [Use Cases](/use-cases/overview/): concrete scenarios, with code and how each compares with other brokers
 - [Quickstart](/getting-started/quickstart/): run a broker and publish something
 - [Projections](/architecture/projections/): the precise version of how one log is read three ways

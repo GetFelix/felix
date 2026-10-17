@@ -614,10 +614,11 @@ if let Err(err) = producer.publish("acme", "prod", "orders", payload).await
 }
 ```
 
-The producer's state is the **leader's and in memory**. It survives everything
-but the leader itself: a new leader answers `UnknownProducer`, and the producer
-starts again under a new id rather than being told a batch landed that nobody
-can vouch for.
+On a durable stream the producer's sequences are stored in the log and
+replicated, so they survive a failover, a planned move and a restart. On an
+in-memory stream they are the leader's alone: a new leader answers
+`UnknownProducer`, and the producer starts again under a new id rather than
+being told a batch landed that nobody can vouch for.
 
 :::note[Dropping a publish does not cancel it]
 The producer sends from a task of its own, in the order calls were made, and a

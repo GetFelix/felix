@@ -64,6 +64,24 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Use Cases',
+          collapsed: true,
+          items: [
+            { label: 'Overview', slug: 'use-cases/overview' },
+            { label: 'Config and Feature Flags', slug: 'use-cases/config-and-feature-flags' },
+            { label: 'Live Updates at High Fanout', slug: 'use-cases/live-fanout' },
+            { label: 'Browsers and Mobile Clients', slug: 'use-cases/browser-realtime' },
+            { label: 'Leases, Locks and Idempotency', slug: 'use-cases/leases-and-locks' },
+            { label: 'Rate Limits and Counters', slug: 'use-cases/rate-limits-and-counters' },
+            { label: 'Work Queues', slug: 'use-cases/work-queues' },
+            { label: 'Events and State Together', slug: 'use-cases/event-and-state' },
+            { label: 'Audit Logs and Replay', slug: 'use-cases/event-log-and-replay' },
+            { label: 'Coming from Kafka', slug: 'use-cases/kafka-migration' },
+            { label: 'Multi-tenant SaaS', slug: 'use-cases/multi-tenant-saas' },
+            { label: 'Data Residency', slug: 'use-cases/data-residency' },
+          ],
+        },
+        {
           label: 'Demos',
           collapsed: true,
           items: [

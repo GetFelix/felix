@@ -73,8 +73,9 @@ Signing in goes like this:
 
 The broker enforces the narrowing. A token for one scope cannot reach another
 scope's resources, even for someone allowed in both, so a bug in the gateway
-cannot leak across scopes. Felix grants a cache as a whole, never one key of
-it, which is why each scope gets its own caches.
+cannot leak across scopes. The gateway narrows by cache name, which is why each
+scope gets its own caches; Felix itself can also grant one key or key prefix of
+a cache (see [Security](/features/security/)).
 
 The gateway never creates resources or grants. The tenant, its trust in the
 identity provider (with the gateway's client ID as audience), every scope's
