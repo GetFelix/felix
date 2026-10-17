@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792206627754,
+  "lastUpdate": 1792213669608,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40590,6 +40590,72 @@ window.BENCHMARK_DATA = {
             "range": "781.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1023.00\nmean: 1264.80\nstdev: 781.96\ncv: 61.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "da56a37169afccf0028d5fcd8b9b740dadc7174a",
+          "message": "fix(replication): count a fence answer only from the copy the failover's report named (#1356)\n\n* fix(replication): count a fence answer only from the copy the failover's report named\n\nA follower that crashed under Periodic or None fsync, or lost its disk,\ncomes back under a new storage identity without records it may already\nhave answered for. The promotion fence counted it toward its catch-up\nmajority, so with the old leader gone a record acknowledged on the two of\nthem was lost (#1335).\n\nA failover's assignment now carries the storage identity the report it\nwas decided on named for each replica (fence_storage_ids: Postgres\nmigration 0034, Raft metadata level 16). The promoted leader counts an\nanswer, and takes a tail, only when the handshake identity of the\nconnection it came over matches; any other answer keeps its promise but\ncounts for nothing, and the fence waits.\n\nThe TLA+ model now checks wipes, follower crashes and leader crashes on\nthe fenced, follower-acked path (#1333): the Wipes ASSUME no longer\nrequires the report-gated mode, Promote hands the report's identities to\nthe new leader (expect), and AnswerFence counts only those\n(FenceCounts). Three passing configurations, each with a violating twin.\n\nCloses #1333\nCloses #1335\n\n* fix(replication): count an unnamed replica only when it gives no identity, and test the group round\n\nReview round 1 on #1356: a replica the failover's report did not name\ncounts in the fence only when its handshake gives no storage identity, as\na build from before identities does; one that gives an identity waits, and\nFelixShardFencedCrashCountsUnnamed.cfg finds the record lost when it counts.\nThe group logs' identity check gets a test. The model sets expect only on\nthe fenced path, a fenced leader knows no follower's identity until it has\nasked, and the leader crash gets a twin without the identity check. The\ndocs say how the shard waits and the operator's way out.\n\n* docs(replication): say what abandon keeps, and pin naming by registration as unsound\n\nNaming a replica the report left unnamed by its registered identity at the\nreport's incarnation is not taken: for a follower its leader had not asked\nyet, that incarnation is stamped as the report arrives, which can follow a\ncrash the report predates. FelixShardFencedCrashNamesByRegistration.cfg\npins the trace. The docs now say that abandon deletes no copy: it places the\nshard afresh, each broker keeps its copy, and the unidentified fence takes\nthe furthest.\n\n* fix(replication): count replicas outside the old set in a failover's fence\n\nA Leader failover can bring in a copy outside the old set. The report\nnever named it, so the fence never counted it, and a shard of two waited\nfor good (shutdown_handoff). Placement now names every member of the old\nset it can: by the report, or with an empty identity, which nothing\nmatches, for a member the report could not vouch for but that is\nregistered with one. The broker counts a replica the assignment does not\nname as it always has.\n\nTwo cluster tests expected a copy that came back under a new identity to\nvote, which is #1335's case. a_promotion_waits_while_a_majority_of_the_old_set_is_down\nnow fsyncs on commit so the restarted holder keeps its identity, and the\nwiped-follower test checks that the successor waits for the old leader\ninstead.\n\n* test(cluster): pin the Periodic wait and the wiped follower's refusal\n\nA Periodic twin of the majority-of-the-old-set test asserts that the shard\nwaits while the restarted holder is under a new identity, and serves after\nthe operator stops the promoted broker and abandons the log. A new test\nkeeps #1267's refusal in view: a follower wiped after it took the\nsuccessor's fence refuses the deposed leader's batches. The failure model,\nthe status row and the changelog say what Periodic now costs.\n\n* fix(formal): keep the fenced configurations to the machine crash\n\nThe process crash and the unprobed start multiplied the fenced\nconfigurations' interleavings past the PR job. Each now enables only the\nmachine crash, which loses a suffix and rotates. The unprobed start moves\nbehind UnprobedStart, on only in FelixShardFencedCrashUnprobed.cfg (new,\nweight 20) and the two twins it pairs with.",
+          "timestamp": "2026-10-17T05:03:57Z",
+          "tree_id": "4e8145122df1627a12a496100dda07e82226317d",
+          "url": "https://github.com/GetFelix/felix/commit/da56a37169afccf0028d5fcd8b9b740dadc7174a"
+        },
+        "date": 1792213664550,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.80\nstdev: 0.45\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 144,
+            "range": "4.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 145.00\nstdev: 4.06\ncv: 2.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 192,
+            "range": "45.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 212.40\nstdev: 45.77\ncv: 21.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 141,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 141.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 278,
+            "range": "7.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 282.80\nstdev: 7.53\ncv: 2.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 426,
+            "range": "206.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 426.00\nmean: 499.60\nstdev: 206.26\ncv: 41.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
