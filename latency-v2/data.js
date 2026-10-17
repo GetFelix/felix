@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792247607221,
+  "lastUpdate": 1792256516067,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40788,6 +40788,72 @@ window.BENCHMARK_DATA = {
             "range": "250.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 382.00\nmean: 492.80\nstdev: 250.67\ncv: 50.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db231618b3fa0874e33728ff9812a69d820afe2f",
+          "message": "ci: treat docs-site changes as docs in the code-changed filter (#1391)\n\n* ci: treat docs-site changes as docs in the code-changed filter\n\nThe code filter ignored docs/ and *.md but not docs-site/, so a docs-site\npage in .mdx or the sidebar config in astro.config.mjs counted as code and\nran the full Rust, cluster and fuzz suite. The docs job already keeps\ndocs-site/, so a docs-only change still gets docs:evidence.\n\n* ci: run the docs-relevant checks and a site build on docs-only changes\n\nA docs-only change skips checks and test, which also held the release\nversion pin scan, the changelog fragment check and the deployment YAML\ntest that parses snippets in docs-site pages. Run those in the\nDocumentation evidence job. Add a Docs site build job on any docs change,\nsince the Pages workflow builds only after a merge to main.",
+          "timestamp": "2026-10-17T16:58:09Z",
+          "tree_id": "e41de201f9460445f4c37c274323dce31b1c322c",
+          "url": "https://github.com/GetFelix/felix/commit/db231618b3fa0874e33728ff9812a69d820afe2f"
+        },
+        "date": 1792256512250,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 113,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 113.00\nmean: 112.80\nstdev: 0.84\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 152,
+            "range": "8.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 154.00\nstdev: 8.09\ncv: 5.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 205,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 205.60\nstdev: 4.98\ncv: 2.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 146,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 145.60\nstdev: 1.52\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 285,
+            "range": "10.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 286.60\nstdev: 10.83\ncv: 3.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 381,
+            "range": "367.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 381.00\nmean: 525.60\nstdev: 367.98\ncv: 70.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
