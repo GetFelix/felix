@@ -277,9 +277,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/tenants/{tenant_id}/signing-keys/{kid}/activate",
             axum::routing::post(auth::signing_keys::activate_signing_key),
         )
-        .merge(
-            utoipa_swagger_ui::SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()),
-        )
+        .route("/v1/openapi.json", axum::routing::get(openapi_json))
         .layer(trace_layer)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -312,4 +310,10 @@ fn bootstrap_routes() -> Router<AppState> {
         "/internal/bootstrap/tenants/{tenant_id}/initialize",
         axum::routing::post(api::bootstrap::initialize),
     )
+}
+
+/// The OpenAPI document. Felix serves no UI for it; any OpenAPI viewer can be
+/// pointed at this URL.
+async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(ApiDoc::openapi())
 }

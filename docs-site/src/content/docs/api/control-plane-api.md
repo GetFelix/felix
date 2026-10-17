@@ -8,7 +8,7 @@ publishes the assignment feed brokers follow. It is never on the data path.
 This page documents its endpoints and how brokers and operators use them.
 
 Every route is plain HTTP and JSON under `/v1`. The control plane also serves
-its OpenAPI document at `/v1/openapi.json` and a Swagger UI at `/docs`.
+its OpenAPI document at `/v1/openapi.json`. It serves no UI for it; see [Viewing the API document](#viewing-the-api-document).
 
 ## Authentication and Token Exchange (HTTP)
 
@@ -658,7 +658,7 @@ The endpoints not covered above:
 | `GET /v1/system/info` | region, API version and feature flags | none |
 | `GET /v1/system/live` | 200 while the process runs | none |
 | `GET /v1/system/ready`, `GET /v1/system/health` | 200 when the instance can serve metadata, 503 `not_ready` otherwise | none |
-| `GET /v1/openapi.json`, `/docs` | the OpenAPI document and a Swagger UI for it | none |
+| `GET /v1/openapi.json` | the OpenAPI document | none |
 
 Errors share one body: `{"code": "...", "message": "...", "request_id": ...}`.
 
@@ -761,3 +761,20 @@ two or more instances and make the database itself highly available. The
 workload is metadata only and light. Disruption budgets, failover drills and
 the Postgres-to-Raft migration are in
 [Control-plane HA](/deployment/control-plane-ha/).
+
+## Viewing the API document
+
+The control plane serves the OpenAPI document but no viewer, which keeps a
+browser UI and its build-time download out of the service. Any OpenAPI viewer
+can read the document. The control plane sends no CORS headers, so give the
+viewer the file rather than the URL:
+
+```bash
+curl -s http://localhost:8443/v1/openapi.json -o openapi.json
+docker run --rm -p 8081:8080 -e SWAGGER_JSON=/spec/openapi.json \
+  -v "$PWD/openapi.json:/spec/openapi.json:ro" swaggerapi/swagger-ui
+```
+
+Then open `http://localhost:8081`. Podman works the same with `podman` in place
+of `docker`.
+
