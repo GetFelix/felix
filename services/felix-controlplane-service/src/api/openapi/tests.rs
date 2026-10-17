@@ -142,3 +142,41 @@ fn every_placement_route_is_described() {
         );
     }
 }
+
+/// The document stays at `/v1/openapi.json` for anyone running their own
+/// viewer; the bundled Swagger UI is gone, so `/docs` is not found.
+#[tokio::test]
+async fn the_openapi_document_is_served_without_a_ui() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let (store, _keys) = crate::test_support::one_shard_cluster().await;
+    let state = crate::test_support::app_state_ready(store as _);
+    let router = crate::api::build_router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::get("/v1/openapi.json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let doc: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        doc,
+        serde_json::to_value(ApiDoc::openapi()).expect("serialize")
+    );
+
+    let response = router
+        .oneshot(Request::get("/docs").body(Body::empty()).expect("request"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
