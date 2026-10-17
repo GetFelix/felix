@@ -51,7 +51,7 @@ jobs:
       - id: code
         uses: ./.github/actions/code-changed
         with:
-          ignore: '^docs/|\.md$'
+          ignore: '^docs/|^docs-site/|\.md$'
           keep: '^docs/formal/'
       # TLC reads only the spec, so only a change to it (or to how it is
       # checked) can change the model check's result.

@@ -21,7 +21,7 @@ jobs:
       - id: code
         uses: ./.github/actions/code-changed
         with:
-          ignore: '^docs/|\.md$|(^|/)coverage\.svg$'
+          ignore: '^docs/|^docs-site/|\.md$|(^|/)coverage\.svg$'
 
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
