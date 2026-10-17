@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792256516067,
+  "lastUpdate": 1792258442712,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40854,6 +40854,72 @@ window.BENCHMARK_DATA = {
             "range": "367.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 381.00\nmean: 525.60\nstdev: 367.98\ncv: 70.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9fd2930ac43eada3e7ede6d43425a7e6ae343197",
+          "message": "docs: make the case for Felix on each use-case page, with a try-it path (#1392)\n\n* docs: make the case for Felix on each use-case page, with a try-it path\n\nEach scenario page gets a Why Felix fits section with mechanism-backed\nreasons, comparisons that say what Felix does better as well as what the\nother system does, and a Try it section that runs against the compose\nstack. The overview leads with what Felix changes.\n\nThe compose dev stack now runs the broker with durable storage, so caches\nare log-backed and watchable, makes orders durable for consumer groups,\ncreates config and stats caches, and widens the dev tokens to manage and\nuse them. The compose smoke test runs the try-it commands: retained and\nprefix watches with a delete, counters, replay by offset, a nacked group\nclaim coming back, a cross-tenant refusal and TTL expiry.\n\n* compose: create the broker's storage dir before it starts\n\n* compose smoke: match the refusal felixctl actually prints for a foreign tenant",
+          "timestamp": "2026-10-17T17:29:39Z",
+          "tree_id": "ab4c1532046839aa65e84eb5358fe364e8528985",
+          "url": "https://github.com/GetFelix/felix/commit/9fd2930ac43eada3e7ede6d43425a7e6ae343197"
+        },
+        "date": 1792258438392,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.80\nstdev: 1.30\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 278,
+            "range": "20.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 268.80\nstdev: 20.38\ncv: 7.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 502,
+            "range": "1131.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 502.00\nmean: 1193.40\nstdev: 1131.68\ncv: 94.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 221.40\nstdev: 1.82\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 508,
+            "range": "50.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 508.00\nmean: 497.40\nstdev: 50.72\ncv: 10.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1527,
+            "range": "762.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1527.00\nmean: 1448.40\nstdev: 762.51\ncv: 52.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
