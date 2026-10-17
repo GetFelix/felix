@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792191461393,
+  "lastUpdate": 1792201310884,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40326,6 +40326,72 @@ window.BENCHMARK_DATA = {
             "range": "103.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 705.00\nmean: 720.40\nstdev: 103.21\ncv: 14.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d75a421b58f6711dc0189116e5d37e71581989ae",
+          "message": "fix(controlplane): drop the bundled Swagger UI (#1360)\n\nutoipa-swagger-ui pulls zip 8 as a build dependency (RUSTSEC-2026-0367,\nRUSTSEC-2026-0368 and a third zip advisory, fixed only in zip 9, which no\nutoipa-swagger-ui release accepts) and downloads the UI archive at build\ntime. Serve /v1/openapi.json directly and leave the viewer to the operator.\n\nSpec-Unaffected: an HTTP docs endpoint only",
+          "timestamp": "2026-10-17T01:33:44Z",
+          "tree_id": "5f59621cb21924f1cd3986acc5af25f1cd6ebaa2",
+          "url": "https://github.com/GetFelix/felix/commit/d75a421b58f6711dc0189116e5d37e71581989ae"
+        },
+        "date": 1792201306754,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "2.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 178.80\nstdev: 2.95\ncv: 1.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "10.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 244.80\nstdev: 10.06\ncv: 4.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 304,
+            "range": "1286.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 304.00\nmean: 883.40\nstdev: 1286.17\ncv: 145.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 217.80\nstdev: 0.84\ncv: 0.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 435,
+            "range": "18.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 435.00\nmean: 443.40\nstdev: 18.15\ncv: 4.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 622,
+            "range": "1104.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 622.00\nmean: 1100.60\nstdev: 1104.85\ncv: 100.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
