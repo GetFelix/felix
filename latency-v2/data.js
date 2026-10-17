@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792203621148,
+  "lastUpdate": 1792204926332,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40458,6 +40458,72 @@ window.BENCHMARK_DATA = {
             "range": "587.35",
             "unit": "us",
             "extra": "trials: 5\nmedian: 660.00\nmean: 958.80\nstdev: 587.35\ncv: 61.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b518c63125af21b254bb3a32978ec55a600841a9",
+          "message": "feat: one-command local stack with docker compose up (#1349)\n\n* feat: run a control plane, a broker and dev auth with one docker compose up\n\ncompose.yaml at the repository root starts the released 0.6.0-preview.8\nimages: an in-memory control plane, a one-shot container that initializes\ntenant dev through the bootstrap API and mints development tokens, a\nbroker, and a felixctl service for docker compose run. Every host port is\nbound to loopback, and the bootstrap listener is loopback-only and never\npublished.\n\nCI brings the stack up and does one publish/subscribe round trip.\n\nCloses #1345\n\n* fix(compose): run CI from built images, bump the pin at release, document Podman\n\ncompose.yaml takes FELIX_VERSION with the release as default, and the\ncompose CI job loads the images the images job built, so a PR tests its\nown code and a release PR can bump the default before images exist.\ncheck_release_version.py now checks that default.\n\nHost instructions copy credentials with exec -T cat instead of cp, the\ndocs say down -v resets the stack, and Podman users are told to use the\ndocker-compose provider.",
+          "timestamp": "2026-10-17T02:39:01Z",
+          "tree_id": "36894bf603c5e7b39a2bb98b6ea5d90ba86a4dad",
+          "url": "https://github.com/GetFelix/felix/commit/b518c63125af21b254bb3a32978ec55a600841a9"
+        },
+        "date": 1792204922871,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.00\nstdev: 0.71\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 91,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 90.80\nstdev: 1.48\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 112,
+            "range": "36.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 127.80\nstdev: 36.10\ncv: 28.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 86.80\nstdev: 0.45\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "6.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 211.60\nstdev: 6.66\ncv: 3.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 433,
+            "range": "190.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 433.00\nmean: 500.80\nstdev: 190.72\ncv: 38.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
