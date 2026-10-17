@@ -230,7 +230,7 @@ it were `tag`, so the rehearsal can run before the tag exists:
 
 ```bash
 gh workflow run release.yml --ref main \
-  -f tag=v0.6.0-preview.8 -f ref=main -f dry_run=true
+  -f tag=v0.6.0-preview.9 -f ref=main -f dry_run=true
 ```
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a

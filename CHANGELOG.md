@@ -11,6 +11,99 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.9] - 2026-10-17
+
+The ninth preview of 0.6.0, mostly about what a crash does to a broker's
+storage identity. A process crash keeps the storage id and only a machine crash
+rotates it, a volume restored from before the node's last registration rotates
+it, a wiped node can no longer vote for a deposed leader, and a fence counts an
+answer only from the copy the failover's report named. `docker compose up` now
+starts a local stack, and the control plane no longer serves a Swagger UI.
+
+**Upgrade notes.**
+
+- A Raft control plane writes a fence answer's storage identity only once every
+  member is at metadata level 16. Upgrade every member first.
+- A Postgres control plane runs migration `0034` on start.
+- A broker now writes `<data dir>/registration` and, after a start under a
+  relaxed fsync mode, `run-state` version 2. A downgrade after a crash rotates
+  the storage id.
+- `/docs` (Swagger UI) on the control plane is gone; use `/v1/openapi.json`.
+
+### Added
+- `compose.yaml` at the repository root runs a control plane, a broker and
+  development credentials from the released images, so `docker compose up` (or
+  `podman compose up`) is enough to publish and subscribe with `felixctl`
+  (#1345). The credentials are dev-only and every port is bound to loopback. CI
+  does a round trip through the stack on every change.
+
+### Changed
+- On Linux, under `periodic` or `none` fsync, a broker whose process crashed (`SIGKILL`,
+  an OOM kill, a panic) keeps its storage id, so its followers' copies and
+  its own leadership survive the restart without a re-copy (#1367). Only a
+  machine crash rotates it: `run-state` now records the machine's boot id
+  (`/proc/sys/kernel/random/boot_id`), and a start in a different boot, or where either boot is unknown,
+  takes a new id as before. Keeping the id first calls `syncfs` on every
+  filesystem under the data directory and rotates if that fails. macOS and
+  other platforms still rotate after every relaxed crash. A failed fsync forgets the boot, so a crash after one still
+  rotates. A VM or container memory-snapshot restore keeps the boot id; use
+  `on_commit` or delete `storage-id` for those workflows. A clean stop is written in the layout older releases
+  read, so a downgrade after one keeps the id.
+- A release now asks getfelix.dev to show it as soon as it is published, through a
+  `release-published` dispatch that needs the new `SITE_DISPATCH_TOKEN` secret.
+
+### Removed
+- The control plane no longer serves a Swagger UI at `/docs`. `/v1/openapi.json` is unchanged; point any OpenAPI viewer at it (docs: Viewing the API document). This removes the `zip` build dependency behind RUSTSEC-2026-0367 and RUSTSEC-2026-0368 and the Swagger UI download at build time.
+
+### Fixed
+- A replica holding no fence promise on disk, such as one on a wiped data
+  directory, no longer answers a fence for a shard its routing view does not have
+  yet, or a leader other than the one the view names at that generation (#1267).
+  A wipe took the promises it had given, so a deposed leader could count it toward
+  a majority its successor had already fenced, and acknowledge a write the
+  successor never held. A new shard's first fence may now wait for a follower's
+  assignment watch.
+- A broker whose data directory was restored from a volume snapshot or copied in
+  no longer keeps its storage id when the node has registered since the copy
+  was taken, under any fsync mode (#1334). The broker records each
+  registration's node incarnation in `<data dir>/registration`, and a cluster
+  member asks the control plane for its current incarnation before any store
+  opens: when the control plane is ahead, it writes a new storage id, so peers
+  and placement stop counting the copy on positions it no longer holds. A
+  cluster member with durable storage now waits for the control plane to
+  answer before it opens storage. A copy taken during the node's current
+  registration is not detected, so the backup runbook still deletes
+  `storage-id` for one.
+- A promoted leader's fence no longer counts a replica that came back under a
+  new storage identity (#1335). Under `Periodic` or `None` fsync, a follower that
+  crashed lost records it had already answered for. If the leader was then
+  replaced, the fence could count that short copy toward its majority, and a
+  record acknowledged on the old leader and that follower was lost. A failover's
+  assignment now carries the storage identity the replica report named for each
+  replica (`fence_storage_ids`). The fence counts an answer only when it comes
+  over a connection whose handshake gave that identity. Any other answer still
+  takes the promise, but counts for nothing, and the fence waits for a copy that
+  can vouch for what it holds. Under Raft the field waits for metadata level 16.
+  A member of the old set the report could not vouch for is named with an empty
+  identity and does not count. A replica outside the old set, or one from a
+  build that predates identities, counts as before. With the old leader
+  gone for good and no majority that counts, the shard waits. The way out is
+  to stop the promoted broker and run `felixctl placement abandon`. That keeps
+  every copy in the new replica set and takes the furthest of them.
+  Under `Periodic`, the default, this includes a leader and a follower whose
+  machines go down together. The follower comes back under a new identity even
+  when nothing was lost, so the shard no longer serves when it returns. It
+  waits for the operator instead. A process killed on Linux keeps its identity
+  in the same boot (#1367), so its answer still counts.
+
+### Documentation
+- The TLA+ model now checks wipes, follower crashes and leader crashes on the
+  fenced, follower-acked path the broker ships, not only on the report-gated
+  one (#1333). Three new configurations pass (`FelixShardFencedWipe`,
+  `FelixShardFencedCrash`, `FelixShardFencedLeaderCrash`), and each has a twin
+  that drops one fix and finds the lost record. `FelixShardFencedCrash` is the
+  first passing check of a follower crash with a rotated storage identity.
+
 ## [0.6.0-preview.8] - 2026-10-16
 
 The eighth preview of 0.6.0. A broker now has a storage identity that its node
