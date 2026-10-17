@@ -733,15 +733,15 @@ async fn ask_fence<R: PeerRequester>(
 /// `identity`, may count toward the fence's majority. Every answer may when
 /// the assignment names no identities.
 ///
-/// A replica the report named counts only under that identity: under another
-/// one, or with none, it cannot show it still holds what it answered for.
-/// One the report did not name and that gives no identity, a build from
-/// before identities, counts as it always has: there is no evidence either
-/// way. One the report did not name that does give an identity does not
-/// count: its leader had not learned it when it reported, so every answer it
-/// gave that leader came after the report, and nothing says it kept them.
-/// The fence's majority both refuses the old leader and holds what it
-/// acknowledged, so a promise alone cannot stand in for that answer.
+/// A replica the assignment names counts only from that identity: under
+/// another, or with none, it cannot show it still holds what it answered
+/// for. Placement names every member of the old set it can: by the report,
+/// or with an empty identity, which nothing matches, for one the report could
+/// not vouch for (a member its leader had not asked yet). A replica it does
+/// not name gave the old leader nothing to count, or predates identities,
+/// and counts as it always has. The fence's majority both refuses the old
+/// leader and holds what it acknowledged, so a promise alone cannot stand in
+/// for an answer.
 fn reported_copy(
     expected: Option<&BTreeMap<String, String>>,
     node_id: &str,
@@ -751,9 +751,11 @@ fn reported_copy(
         return true;
     };
     match (expected.get(node_id), identity) {
-        (Some(named), Some(identity)) => named.eq_ignore_ascii_case(&identity.to_hex()),
-        (None, None) => true,
-        _ => false,
+        (None, _) => true,
+        (Some(named), Some(identity)) => {
+            !named.is_empty() && named.eq_ignore_ascii_case(&identity.to_hex())
+        }
+        (Some(_), None) => false,
     }
 }
 

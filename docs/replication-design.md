@@ -428,13 +428,16 @@ report named, still takes the promise and so still refuses the old leader
 there, but it counts toward no majority and its log is not taken. The
 promise cannot count on its own: the majority that took the fence is the
 same one the catch-up trusts to hold every acknowledged record, so a
-replica that may have lost some cannot be part of it. A replica the report
-named no identity for counts only when its handshake gives none either, a
-build from before identities, where there is no evidence either way and it
-counts as it always has. One that does give an identity was not yet known to
-its leader when the report was made, so everything it answered that leader
-came later, and it does not count (`FelixShardFencedCrashCountsUnnamed.cfg`
-finds the record lost when it does). The fence waits for replicas that can
+replica that may have lost some cannot be part of it. A member of the old
+set the report named no identity for, but that is registered with one, was
+not yet known to its leader when the report was made, so everything it
+answered that leader came later: the assignment names it with an empty
+identity, which nothing matches (`FelixShardFencedCrashCountsUnnamed.cfg`
+finds the record lost when it counts). A replica the assignment does not
+name counts as it always has: one outside the old set, which gave the old
+leader nothing to count, such as a new copy a `Leader` failover brings in,
+and one registered without an identity, a build from before them, where
+there is no evidence either way. The fence waits for replicas that can
 vouch for what they answered, which is the old leader itself when the other
 follower is the one that lost the tail. The group logs' round follows the
 same rule. Every other assignment carries no identities, and a fence on one
@@ -759,9 +762,10 @@ Evidence: `a_copy_with_no_promise_takes_no_fence_its_routes_do_not_have`,
 peer transport, after the wipe and after a second restart),
 `a_copy_with_no_promise_answers_only_the_routed_leader_at_the_routed_generation`
 and `a_copy_with_a_promise_answers_by_its_ballot` (replica);
-`a_wiped_follower_votes_in_the_next_fence` (cluster, liveness only: the
-wiped copy still makes the successor's majority once its view has the
-shard).
+`a_wiped_follower_takes_the_fence_but_does_not_count` (cluster: the wiped
+copy answers once its view has the shard, but under its new identity it
+does not make the successor's majority, which waits for the old leader; see
+[Fencing a promotion](#fencing-a-promotion)).
 
 ### Every change of leader
 

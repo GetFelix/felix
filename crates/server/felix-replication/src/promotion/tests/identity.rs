@@ -87,11 +87,33 @@ async fn a_fence_answer_without_a_storage_id_does_not_count() {
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }
 
-/// **Nor does a replica the report did not name that gives an identity**:
-/// its leader had not learned it at the report, so whatever it answered
-/// since is not vouched for.
+/// **Nor does a member the report could not vouch for**, which placement
+/// names with an empty identity: its leader had not asked it yet when it
+/// reported, so whatever it answered since is not vouched for.
 #[tokio::test]
-async fn a_replica_the_report_did_not_name_does_not_count() {
+async fn a_replica_named_without_an_identity_does_not_count() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = route();
+    route.fence_storage_ids = Some(Arc::new(
+        [
+            ("broker-b".to_string(), String::new()),
+            ("broker-c".to_string(), storage_of("broker-c").to_hex()),
+        ]
+        .into(),
+    ));
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// **A replica the assignment does not name counts**: one outside the old
+/// set gave the old leader nothing to count, as a failover that replaces the
+/// dead leader with a new copy brings in.
+#[tokio::test]
+async fn a_replica_outside_the_old_set_counts() {
     let mut replicas = Replicas::new();
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
@@ -102,13 +124,12 @@ async fn a_replica_the_report_did_not_name_does_not_count() {
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
 
-    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
 
-/// **A replica the report did not name and that gives no identity counts as
-/// it always has**, a build from before identities: nothing says either way,
-/// and holding it out would keep a promotion closed for good while it is
-/// rolled.
+/// **An unnamed replica that gives no identity counts as it always has**, a
+/// build from before identities: nothing says either way, and holding it out
+/// would keep a promotion closed for good while it is rolled.
 #[tokio::test]
 async fn an_unnamed_replica_without_a_storage_id_counts() {
     let mut replicas = Replicas::new();

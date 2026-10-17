@@ -630,3 +630,41 @@ fn only_a_mismatched_identity_excludes_a_fresh_report() {
         assert!(!view.is_caught_up(&key("orders"), "broker-b"), "{report:?}");
     }
 }
+
+/// A report that names broker-a's identity and not broker-c's.
+fn c_unnamed() -> ReplicaReport {
+    ReplicaReport {
+        follower_storage: [("broker-a".to_string(), "a".repeat(32))].into(),
+        ..report("orders", &["broker-b"], 1_000)
+    }
+}
+
+/// **A member of the old set the report names no identity for is named with
+/// an empty one**, which no fence answer matches: its leader had not asked
+/// it yet, so the report vouches for nothing it answered.
+#[test]
+fn an_unvouched_member_of_the_old_set_is_named_with_no_identity() {
+    let nodes = [node_at("broker-c", Some(&"c".repeat(32)), false, 1_000)];
+    let view = at(vec![c_unnamed()], 1_000).with_nodes(&nodes, &[led_by_a(4)]);
+
+    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-c"]);
+
+    assert_eq!(ids.get("broker-a"), Some(&"a".repeat(32)));
+    assert_eq!(ids.get("broker-c"), Some(&String::new()));
+}
+
+/// **A replica outside the old set, or one registered without an identity,
+/// is left unnamed**, and its fence answer counts as it always has.
+#[test]
+fn a_replica_outside_the_old_set_or_without_an_identity_is_left_unnamed() {
+    let nodes = [
+        node_at("broker-c", Some(&"c".repeat(32)), false, 1_000),
+        node_at("broker-d", None, false, 1_000),
+    ];
+    let view = at(vec![c_unnamed()], 1_000).with_nodes(&nodes, &[led_by_a(4)]);
+
+    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-d"]);
+
+    assert_eq!(ids.get("broker-c"), None);
+    assert_eq!(ids.get("broker-d"), None);
+}

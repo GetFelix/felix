@@ -314,7 +314,13 @@ pub(super) async fn plan_pass(
                 .get(key)
                 .is_some_and(|previous| previous.leader != *leader)
         })
-        .map(|(key, _, _)| (key.clone(), positions.report_storage_ids(key)))
+        .map(|(key, _, _)| {
+            let old_set: Vec<&str> = previous
+                .get(key)
+                .map(|previous| previous.nodes().map(String::as_str).collect())
+                .unwrap_or_default();
+            (key.clone(), positions.report_storage_ids(key, &old_set))
+        })
         .filter(|(_, ids)| !ids.is_empty())
         .collect();
     Some(PlannedPass {

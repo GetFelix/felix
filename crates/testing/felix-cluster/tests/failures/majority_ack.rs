@@ -31,14 +31,26 @@ async fn start_nodes(nodes: usize, quorum_timeout: Duration) -> Cluster {
 }
 
 async fn start_with(nodes: usize, streams: Vec<StreamSpec>, quorum_timeout: Duration) -> Cluster {
+    start_with_env(nodes, streams, quorum_timeout, &[]).await
+}
+
+/// [`start_with`], with more broker environment.
+async fn start_with_env(
+    nodes: usize,
+    streams: Vec<StreamSpec>,
+    quorum_timeout: Duration,
+    env: &[(&str, &str)],
+) -> Cluster {
+    let mut broker_env = vec![(
+        "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+        quorum_timeout.as_millis().to_string(),
+    )];
+    broker_env.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let cluster = Cluster::start(ClusterConfig {
         nodes,
         streams,
         proxy_links: true,
-        broker_env: vec![(
-            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
-            quorum_timeout.as_millis().to_string(),
-        )],
+        broker_env,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
     })
@@ -579,10 +591,21 @@ async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
 /// named it level, and there is nobody live to put beside it. It must not
 /// serve until one of the two holders is back, and then it serves with the
 /// record.
+///
+/// Fsync on every commit, so the holder's SIGKILL loses nothing and it comes
+/// back under the identity the report named. Under `Periodic` it would come
+/// back under a new one, as a copy that may have lost the record, and the
+/// fence rightly would not count it (#1335; `FelixShardFencedCrash.cfg`).
 #[serial]
 #[tokio::test]
 async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
-    let mut cluster = start(Duration::from_secs(2)).await;
+    let mut cluster = start_with_env(
+        3,
+        vec![StreamSpec::quorum(STREAM, 1, 3)],
+        Duration::from_secs(2),
+        &[("FELIX_DURABLE_FSYNC_MODE", "on_commit")],
+    )
+    .await;
     let assignment = assignment(&cluster).await;
     let old = assignment.leader.clone();
     let report = level_report(&cluster, &old, &assignment.replicas).await;

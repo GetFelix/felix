@@ -1448,9 +1448,10 @@ Promote(v, f, views) ==
 \* the old leader, but cannot count alone: the majority that took the fence
 \* is also what the catch-up trusts to hold every acknowledged record. A
 \* replica the report named no identity for (`Unnamed`) gave its leader
-\* every answer after that report, so it does not count either; the code
-\* counts one only when its handshake gives no identity, which the model's
-\* never do. `UnnamedCounts` counts it, and TLC finds the record lost
+\* every answer after that report, so it does not count either: the code
+\* names it with an empty identity, which nothing matches. (It leaves one
+\* registered without an identity unnamed, and counts it, which the model's
+\* never are.) `UnnamedCounts` counts it, and TLC finds the record lost
 \* (FelixShardFencedCrashCountsUnnamed.cfg), as it does naming it by its
 \* registration (`NameByRegistration`,
 \* FelixShardFencedCrashNamesByRegistration.cfg). The code compares the identity
