@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792203623764,
+  "lastUpdate": 1792204928606,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -31876,6 +31876,58 @@ window.BENCHMARK_DATA = {
             "range": "2615.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805367.48\nmean: 805121.45\nstdev: 2615.64\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b518c63125af21b254bb3a32978ec55a600841a9",
+          "message": "feat: one-command local stack with docker compose up (#1349)\n\n* feat: run a control plane, a broker and dev auth with one docker compose up\n\ncompose.yaml at the repository root starts the released 0.6.0-preview.8\nimages: an in-memory control plane, a one-shot container that initializes\ntenant dev through the bootstrap API and mints development tokens, a\nbroker, and a felixctl service for docker compose run. Every host port is\nbound to loopback, and the bootstrap listener is loopback-only and never\npublished.\n\nCI brings the stack up and does one publish/subscribe round trip.\n\nCloses #1345\n\n* fix(compose): run CI from built images, bump the pin at release, document Podman\n\ncompose.yaml takes FELIX_VERSION with the release as default, and the\ncompose CI job loads the images the images job built, so a PR tests its\nown code and a release PR can bump the default before images exist.\ncheck_release_version.py now checks that default.\n\nHost instructions copy credentials with exec -T cat instead of cp, the\ndocs say down -v resets the stack, and Podman users are told to use the\ndocker-compose provider.",
+          "timestamp": "2026-10-17T02:39:01Z",
+          "tree_id": "36894bf603c5e7b39a2bb98b6ea5d90ba86a4dad",
+          "url": "https://github.com/GetFelix/felix/commit/b518c63125af21b254bb3a32978ec55a600841a9"
+        },
+        "date": 1792204927984,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 669712.61,
+            "range": "84270.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669712.61\nmean: 695561.88\nstdev: 84270.11\ncv: 12.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 669712.61,
+            "range": "84270.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669712.61\nmean: 695561.88\nstdev: 84270.11\ncv: 12.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 173345.35,
+            "range": "2180.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 173345.35\nmean: 173330.62\nstdev: 2180.53\ncv: 1.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1733453.48,
+            "range": "21805.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1733453.48\nmean: 1733306.21\nstdev: 21805.25\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
