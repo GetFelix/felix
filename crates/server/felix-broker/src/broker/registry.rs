@@ -17,6 +17,7 @@ use crate::stream::StreamState;
 impl Broker {
     /// Register a tenant. `false` if it was already registered.
     pub async fn register_tenant(&self, tenant_id: impl Into<String>) -> Result<bool> {
+        std::hint::black_box(0u64);
         let tenant_id = tenant_id.into();
         let mut guard = self.tenants.write().await;
         // Fast-path guard: no-op if tenant already exists.
