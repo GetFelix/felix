@@ -253,7 +253,7 @@ not accounted for.
 
 Linux UDP GSO carries a whole `sendmsg` batch inside one IP datagram, so
 `MTU × segments` must stay under 65,535. quinn batches up to 10 datagrams,
-which makes 6,553 bytes the real ceiling. A guaranteed 16,336 needs 163,360
+which makes 6,550 bytes the real ceiling. A guaranteed 16,336 needs 163,360
 bytes per batch, the kernel refuses it, and quinn only falls back to
 non-offloaded sends on `EIO`/`EINVAL`, so the rejection repeats on every
 batch and the connection never recovers. macOS is immune because it has no

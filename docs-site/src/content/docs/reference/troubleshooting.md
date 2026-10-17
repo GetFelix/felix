@@ -98,7 +98,7 @@ balancers pass UDP on the client port. TCP tools such as `nc -z` tell you
 nothing about it.
 
 A handshake that times out on some networks and not others is often path MTU.
-On Linux, keep `FELIX_MTU_UPPER_BOUND` at or below 6,553. Above it, the kernel
+On Linux, keep `FELIX_MTU_UPPER_BOUND` at or below 6,550. Above it, the kernel
 rejects UDP GSO batches and delivery stalls for good (see
 [`FELIX_MTU_UPPER_BOUND`](/reference/environment-variables/#felix_mtu_upper_bound)).
 
