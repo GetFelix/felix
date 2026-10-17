@@ -76,6 +76,7 @@ pub(super) fn spawn(
     incarnation: &Arc<std::sync::atomic::AtomicU64>,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: felix_storage::StorageId,
+    data_dir: Option<&std::path::Path>,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
     match (&config.membership, &config.controlplane_url) {
@@ -110,6 +111,7 @@ pub(super) fn spawn(
                 Arc::clone(incarnation),
                 registered,
                 Some(storage_id),
+                data_dir.map(std::path::Path::to_path_buf),
             ))
         }
         _ => {
@@ -117,6 +119,30 @@ pub(super) fn spawn(
             None
         }
     }
+}
+
+/// The incarnation the control plane holds for this node, for
+/// `storage::open` to judge whether the data directory is older than the
+/// node's last registration. Asked only of a cluster member with durable
+/// storage, and asked until it answers, before any store opens: nothing this
+/// broker announces may carry the directory's id until then. `None` from a
+/// broker that is not asked or a node never registered.
+pub(super) async fn registered_incarnation(
+    config: &BrokerConfig,
+    durable: bool,
+    client: &reqwest::Client,
+    credential: &Option<NodeCredential>,
+) -> anyhow::Result<Option<u64>> {
+    let (true, Some(membership), Some(base_url), Some(credential)) = (
+        durable,
+        &config.membership,
+        &config.controlplane_url,
+        credential,
+    ) else {
+        return Ok(None);
+    };
+    membership::await_registered_incarnation(client, base_url, &membership.node_id, credential)
+        .await
 }
 
 /// The initial lease: conservative, and invalid until the first heartbeat.

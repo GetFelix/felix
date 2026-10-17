@@ -233,3 +233,59 @@ async fn the_listener_admits_while_unready_during_the_hold_off() -> Result<()> {
     );
     Ok(())
 }
+
+/// **A broker waiting on the control plane at startup stays live (#1334).**
+/// It opens no storage until the control plane answers, and a liveness probe
+/// that found no listener meanwhile would restart it in a loop.
+#[tokio::test]
+#[serial_test::serial]
+async fn live_answers_while_startup_waits_for_the_control_plane() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let metrics = free_tcp();
+    let _g1 = EnvGuard::set("FELIX_BROKER_METRICS_BIND", &metrics.to_string());
+    let _g2 = EnvGuard::set("FELIX_QUIC_BIND", "127.0.0.1:0");
+    let _g3 = EnvGuard::unset("FELIX_CP_URL");
+    // Nothing listens here, so the startup lookup keeps retrying.
+    let _g4 = EnvGuard::set("FELIX_CONTROLPLANE_URL", "http://127.0.0.1:1");
+    let _g5 = EnvGuard::set("FELIX_NODE_ID", "broker-a");
+    let _g6 = EnvGuard::set("FELIX_NODE_ADVERTISE_ADDR", &free_udp().to_string());
+    let _g7 = EnvGuard::set("FELIX_NODE_TOKEN", "a-node-token");
+    let _g8 = EnvGuard::set(
+        "FELIX_DURABLE_STORAGE_DIR",
+        data.path().to_str().expect("utf-8"),
+    );
+    let _g9 = EnvGuard::set("FELIX_INTERNAL_ALLOW_UNAUTHENTICATED", "true");
+    let _g10 = EnvGuard::set("FELIX_INTERNAL_BIND", &free_udp().to_string());
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(run_with_shutdown(async {
+        let _ = shutdown_rx.await;
+    }));
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let live = http.get(format!("http://{metrics}/live")).send().await;
+        if matches!(&live, Ok(r) if r.status() == 200) {
+            break;
+        }
+        assert!(!handle.is_finished(), "startup ended: {:?}", handle.await);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "/live never answered while startup waited"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let ready = http.get(format!("http://{metrics}/ready")).send().await?;
+    assert_eq!(ready.status(), 503);
+    assert!(
+        !data.path().join("storage-id").exists(),
+        "storage was opened before the control plane answered"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), handle).await???;
+    Ok(())
+}

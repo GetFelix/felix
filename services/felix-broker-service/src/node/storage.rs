@@ -20,10 +20,13 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 ///
 /// Also returns the data directory's storage id, read before the broker
 /// registers so the control plane and peers only ever see the id of the data
-/// it serves, and whether this start rotated it after a crash that may have
-/// lost records the broker acknowledged.
+/// it serves, and whether this start rotated it: after a crash that may have
+/// lost records the broker acknowledged, or because `registered`, the
+/// control plane's incarnation for this node, is ahead of the one the
+/// directory recorded.
 pub(crate) fn open(
     config: &BrokerConfig,
+    registered: Option<u64>,
 ) -> Result<(Broker, Option<DurableStorage>, StorageId, bool)> {
     let durable_config = DurableStorageConfig::from_env()?;
     // Test-only: the cluster harness's power loss. Armed before any store
@@ -34,7 +37,7 @@ pub(crate) fn open(
     // run, and the record that a run is under way must already be on disk.
     let (storage_id, unclean) = match &durable_config {
         Some(durable) => {
-            let begun = begin_run(&durable.root, &durable.log)?;
+            let begun = begin_run(&durable.root, &durable.log, registered)?;
             (begun.id, begun.rotated)
         }
         None => (storage_id(None)?, false),
@@ -181,16 +184,20 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 }
 
 /// Start a run on the data directory at `root` and return the id to announce.
-/// A crash under `Periodic` or `None` may have lost records peers counted, so
-/// it comes back with a new id. See `felix_storage::run_state`.
+/// A crash under `Periodic` or `None` may have lost records peers counted, and
+/// a directory older than the node's last registration may hold fewer than
+/// they counted, so either comes back with a new id. See
+/// `felix_storage::run_state`.
 fn begin_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
+    registered: Option<u64>,
 ) -> Result<felix_storage::run_state::Begun> {
     let relaxed = !matches!(log.fsync_mode, FsyncMode::OnCommit);
     let begun = felix_storage::run_state::begin(
         root,
         relaxed,
+        registered,
         || felix_storage::inspect::any_repair_pending(root, log),
         fresh_storage_id,
     )
@@ -198,8 +205,7 @@ fn begin_run(
     if begun.rotated {
         tracing::warn!(
             root = %root.display(),
-            "the last run stopped without syncing everything it acknowledged; starting under a \
-             new storage id, and leading no shard from the copy it led before"
+            "starting under a new storage id, and leading no shard from the copy it led before"
         );
     }
     Ok(begun)
