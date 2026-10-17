@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792247609858,
+  "lastUpdate": 1792256518166,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32136,6 +32136,58 @@ window.BENCHMARK_DATA = {
             "range": "21879.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1233924.20\nmean: 1236842.39\nstdev: 21879.20\ncv: 1.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db231618b3fa0874e33728ff9812a69d820afe2f",
+          "message": "ci: treat docs-site changes as docs in the code-changed filter (#1391)\n\n* ci: treat docs-site changes as docs in the code-changed filter\n\nThe code filter ignored docs/ and *.md but not docs-site/, so a docs-site\npage in .mdx or the sidebar config in astro.config.mjs counted as code and\nran the full Rust, cluster and fuzz suite. The docs job already keeps\ndocs-site/, so a docs-only change still gets docs:evidence.\n\n* ci: run the docs-relevant checks and a site build on docs-only changes\n\nA docs-only change skips checks and test, which also held the release\nversion pin scan, the changelog fragment check and the deployment YAML\ntest that parses snippets in docs-site pages. Run those in the\nDocumentation evidence job. Add a Docs site build job on any docs change,\nsince the Pages workflow builds only after a merge to main.",
+          "timestamp": "2026-10-17T16:58:09Z",
+          "tree_id": "e41de201f9460445f4c37c274323dce31b1c322c",
+          "url": "https://github.com/GetFelix/felix/commit/db231618b3fa0874e33728ff9812a69d820afe2f"
+        },
+        "date": 1792256517699,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 487717.31,
+            "range": "28218.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487717.31\nmean: 488901.70\nstdev: 28218.90\ncv: 5.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 487717.31,
+            "range": "28218.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487717.31\nmean: 488901.70\nstdev: 28218.90\ncv: 5.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121217.93,
+            "range": "674.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121217.93\nmean: 121023.52\nstdev: 674.35\ncv: 0.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212179.28,
+            "range": "6743.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212179.28\nmean: 1210235.20\nstdev: 6743.52\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
