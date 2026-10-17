@@ -16,6 +16,7 @@ repository.
 | [felix-webhook-relay](/built-on-felix/webhook-relay/) | A webhook relay with retries, dead letters and replay | Durable streams, the idempotent producer, one consumer group per endpoint, watched config caches, counters, replay by offset |
 | [felix-arena](/built-on-felix/arena/) | A browser team deathmatch, played through Felix, with a kill cam replayed from the log | Atomic commits, replay from an offset for a kill cam, quorum replication, per-arena token narrowing |
 | [felix-metro](/built-on-felix/metro/) | A 3D city simulator, in design, whose timeline goes back to any moment | A shard per district, atomic commits with keyframe state, range reads to seek, subscribe from an offset into live, expected-offset fencing |
+| [felix-blocks](/built-on-felix/blocks/) | A voxel building game, in design, where friends edit one world together | A log-backed cache with one key per chunk, conditional writes, a retained cache watch, compaction, a TTL presence cache, RBAC for builders and visitors |
 
 The browser apps reach Felix through
 [felix-gateway](/clients/browsers/), which is documented with the clients.
