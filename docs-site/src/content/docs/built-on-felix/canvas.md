@@ -73,9 +73,11 @@ The compose install runs Felix, the gateway with the page, the snapshotter and
 a development sign-in. You need Docker or Podman with Compose 2.20 or later:
 
 ```bash
-curl -fsSL https://github.com/GetFelix/felix-canvas/releases/download/v0.2.0/felix-canvas-compose-0.2.0.tar.gz | tar xz
-cd felix-canvas-compose-0.2.0
-# change FELIX_BOOTSTRAP_TOKEN and FELIX_RAFT_PEER_TOKEN in .env first
+curl -fsSL https://github.com/GetFelix/felix-canvas/releases/download/v0.3.2/felix-canvas-compose-0.3.2.tar.gz | tar xz
+cd felix-canvas-compose-0.3.2
+sed -i.bak \
+  -e "s|^FELIX_BOOTSTRAP_TOKEN=.*|FELIX_BOOTSTRAP_TOKEN=$(openssl rand -base64 32)|" \
+  -e "s|^FELIX_RAFT_PEER_TOKEN=.*|FELIX_RAFT_PEER_TOKEN=$(openssl rand -base64 32)|" .env
 docker compose up -d        # or: podman compose up -d
 ```
 
