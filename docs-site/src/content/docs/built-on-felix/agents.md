@@ -14,9 +14,11 @@ The viewer in the browser is a live picture of the swarm: workers claiming
 tasks, sending and receiving work, and results coming back. Any run can be
 replayed by scrubbing back to any moment of it.
 
-It is in design. Nothing runs yet. The sections below describe the design.
+It is in design. Nothing runs yet. The [style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
+fixes the look of the viewer, driven by a hand-written run rather than a
+working swarm. The sections below describe the design.
 
-<img src="/built-on-felix/agents-mark.webp?v=1" alt="The felix-agents mark: the Felix cat inside a cyan ring, above a row of five small robot agents joined to one log, one of them highlighted in yellow" width="240" />
+![felix-agents style frame: fifty workers in a ring around the planner and its task queue, tasks flowing out and results flowing back, with the board, the run log and a timeline of every worker's claims](/built-on-felix/agents-burst.webp?v=1)
 
 ## How it uses Felix
 
@@ -44,6 +46,8 @@ result is written with a [conditional write](/features/cache/#9-conditional-writ
 that only succeeds if the task has no result yet, so a redelivered task is
 recorded once. A task that keeps failing is dead-lettered.
 
+![Style frame of recovery: two workers' claims lapsed, their tasks went back to the queue and two other workers picked them up as attempt 2](/built-on-felix/agents-recovery.webp?v=1)
+
 The board and the leases are conditional writes too. An agent writes a board
 entry at the version it read, and if someone changed it first the write is
 refused and the agent sees the new value. A lease is a key taken only if absent,
@@ -60,6 +64,8 @@ cache access down to a key prefix. A worker can write its own board entries and
 nothing of the planner's, and has no grant on the spend counters at all. If a
 prompt injection makes the model try, Felix refuses the write and the refusal
 is on the run log under that agent's identity.
+
+![Style frame of a refused write: worker w3 tried to write the planner's board entry and post tasks, and both refusals show on the board, the feed and the timeline](/built-on-felix/agents-injection.webp?v=1)
 
 ```mermaid
 flowchart LR
