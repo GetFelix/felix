@@ -1,14 +1,18 @@
 ---
 title: "felix-agents"
-description: "Coordination for a team of AI agents built on Felix: tasks through a consumer group, shared findings and locks as conditional cache writes, budgets as counters, and one log you can replay."
+description: "A swarm of workers with Felix as its data backend: tasks flow out through a consumer group, results flow back through conditional cache writes, and one log records the whole run for live viewing and replay."
 ---
 
-[felix-agents](https://github.com/GetFelix/felix-agents) coordinates a team of
-AI agents with Felix as its only backend. A planner splits a job into tasks,
-workers claim them, share what they find, lock what they change and spend from
-a budget. Felix hands out the work, holds the shared state, enforces who may
-write what and keeps every step in one durable log. A viewer in the browser
-follows a run live and scrubs back to any moment of it.
+[felix-agents](https://github.com/GetFelix/felix-agents) models a swarm of
+workers, here AI agents, with Felix as their data backend. A planner splits a
+job into tasks, the tasks flow out to many workers, and the results flow back.
+Workers claim tasks, share what they find, lock what they change and spend
+from a budget. Felix hands out the work, holds the shared state, enforces who
+may write what and keeps every step in one durable log.
+
+The viewer in the browser is a live picture of the swarm: workers claiming
+tasks, sending and receiving work, and results coming back. Any run can be
+replayed by scrubbing back to any moment of it.
 
 It is in design. Nothing runs yet. The sections below describe the design.
 

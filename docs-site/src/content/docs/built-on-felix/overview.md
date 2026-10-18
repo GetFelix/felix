@@ -17,7 +17,7 @@ repository.
 | [felix-arena](/built-on-felix/arena/) | A browser team deathmatch, played through Felix, with a kill cam replayed from the log | Atomic commits, replay from an offset for a kill cam, quorum replication, per-arena token narrowing |
 | [felix-metro](/built-on-felix/metro/) | A 3D city simulator, in design, whose timeline goes back to any moment | A shard per district, atomic commits with keyframe state, range reads to seek, subscribe from an offset into live, expected-offset fencing |
 | [felix-blocks](/built-on-felix/blocks/) | A voxel building game, in design, where friends edit one world together | A log-backed cache with one key per chunk, conditional writes, a retained cache watch, compaction, a TTL presence cache, RBAC for builders and visitors |
-| [felix-agents](/built-on-felix/agents/) | Coordination for a team of AI agents, in design, with a run you can replay | A consumer group with claim extension and dead letters, conditional cache writes for shared findings and locks, TTL caches, counters for budgets, RBAC down to a key prefix, range reads and subscribe from an offset |
+| [felix-agents](/built-on-felix/agents/) | A swarm of AI workers, in design: tasks flow out, results flow back, and every run can be watched live and replayed | A consumer group with claim extension and dead letters, conditional cache writes for shared findings and locks, TTL caches, counters for budgets, RBAC down to a key prefix, range reads and subscribe from an offset |
 
 The browser apps reach Felix through
 [felix-gateway](/clients/browsers/), which is documented with the clients.
