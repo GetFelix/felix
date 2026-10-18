@@ -264,3 +264,4 @@ single group.
 - [Rust consumer groups](/clients/rust/#consumer-groups)
 - [Idempotent producers](/clients/rust/#idempotent-producers)
 - [Atomic commits](/features/atomic-commits/), for writing a job and the state it belongs to as one record
+- [felix-agents](/built-on-felix/agents/), which hands tasks out to a swarm of AI workers through a consumer group
