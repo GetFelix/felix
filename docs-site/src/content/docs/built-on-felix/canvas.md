@@ -8,6 +8,8 @@ multiplayer whiteboard. People draw shapes, pen strokes and rich text, see each
 other's cursors, and can scrub back through a room's history. All of a room's
 state lives in Felix.
 
+![A felix-canvas room: a diagram of how a publish travels, with coloured rich text, a cat doodle and the named cursors of the people drawing it](/built-on-felix/canvas-room.webp?v=1)
+
 ## How it uses Felix
 
 Each room is a [felix-gateway](/clients/browsers/) scope, so a browser's token
@@ -31,6 +33,8 @@ edit must never be lost, and a cursor position from 40 ms ago is worthless.
 Keeping cursors in memory also means a backed-up cursor feed never takes queue
 space an edit needs.
 
+![Several people editing at once: each shape and text box being edited carries that person's name, and their cursors move over the board](/built-on-felix/canvas-text.webp?v=1)
+
 Felix lets a slow subscriber [drop records](/features/pubsub/#isolation-and-backpressure)
 rather than slow the publisher, so the browser checks every edit's offset. A
 jump past the next expected offset (less any `skipped_before`) means records
@@ -44,6 +48,8 @@ stream from live, then read `snap/latest`, then subscribe again from the
 snapshot's offset plus one to fill the gap. Reading the snapshot first would
 lose edits published in between. History is the same stream read on a second
 connection from offset 0 or from a snapshot's offset.
+
+![The history scrubber at change 137 of 157: the board as it was at that change, with Back to live to return](/built-on-felix/canvas-history.webp?v=1)
 
 The member list is a cache watch. Each session writes its entry every third of
 the TTL from a Web Worker, so a closed tab drops out within 30 seconds, and a
