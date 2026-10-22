@@ -182,11 +182,13 @@ it on every broker; `--activate` switches to it, `--fp` builds with frame
 pointers. Switching between installed builds is `broker-env.sh activate <label>`.
 
 **Profiles.** `PROFILE=1` (every cell) or `PROFILE_CELLS=<regex>` records
-`perf record -F 199 -g` and `pidstat -t` on each broker during the cell, and
+`perf record -F 99 --call-graph fp` and `pidstat -t` on each broker during the cell, and
 brings home a per-thread CPU table, the heads of the perf report and the
 collapsed stacks (`<broker>.folded.gz`, flamegraph.pl input). Stacks resolve
 on a `<ref>-fp` build (`FP_REFS=main` at provision, or `deploy-ref.sh --fp`);
 the Rust standard library itself is still built without frame pointers.
+Report and fold run with `--no-inline` (resolving inlined frames took over 20
+minutes on a broker capture); a 40 s capture reports and folds in seconds.
 
 **What a cell records** (`cells/<name>/`): the broker's running binary (sha256
 and git SHA) and full `FELIX_*` environment; counters before and after
@@ -208,6 +210,42 @@ figure an enqueue rate. Durable cells start from a wiped
 `/data/felix` and dropped page cache (`WIPE_DURABLE=1`; off in session C, where
 a whole-cluster wipe under live replicas is its own experiment). `fio-baseline.sh`
 takes the device baseline; the drivers run it first.
+
+### The final campaign driver
+
+`campaign-final.sh` runs the whole final v0.6.0 campaign on one session and
+deallocates the VMs when it ends, whatever the outcome:
+
+```bash
+SESSION=<name> BUILD_SHA=<40-char main sha> ./campaign-final.sh --dry-run   # cells, hours, cost
+SESSION=<name> BUILD_SHA=<sha> nohup ./campaign-final.sh &                  # re-run to resume
+```
+
+It starts and repairs the deallocated session, runs the preflight, records
+the system facts, then runs a gate (the pinned build against preview.9 on the
+headline cells, fail below -3%), the matrix, latency, the NATS pairings and
+the sweeps, in that priority order. The dry run trims the plan to fit
+`MAX_HOURS` and names what it dropped. Progress is one line per cell in
+`sessions/logs/final-campaign.log`; results land in
+`sessions/<name>-final-results/`. Brokers and clients run at product defaults
+apart from the overrides listed at the top of the script.
+
+**Exact conditions.** Every main-campaign Felix cell runs the durability
+profile, set explicitly on the broker: `FELIX_ACK_ON_COMMIT=1` (acked
+publishes are answered after the write, broker-wide, whatever the client
+offered) and `FELIX_PUB_INGRESS_WAIT=1` (fire-and-forget waits for ingress room
+instead of shedding). Also `FELIX_QUIC_LISTENERS=4` (the derived default on 8
+cores), `FELIX_DURABLE_FSYNC_MODE=on_commit` (`periodic` in the periodic latency
+cells), and from `lib.sh` `FELIX_STORAGE_IO_URING=1`, `FELIX_IO_RUNTIME_THREADS=0`,
+24 MiB UDP buffers and `FELIX_MTU_UPPER_BOUND=3872`. Differing from the product
+default: `ACK_ON_COMMIT`, `PUB_INGRESS_WAIT`, `STORAGE_IO_URING`. The client
+sets only the UDP buffers and the MTU bound. The `defaults-*` cells (stage
+`df`) run with ack-on-commit off, ingress wait unset and io_uring off. Each
+cell's `ack-proof.txt` records the broker process's applied
+`ACK_ON_COMMIT`/`INGRESS_WAIT`/`IO_URING`, the storage sync count during the
+cell and `felix_broker_ingress_dropped_total` (the shed count, which needs a
+telemetry build); the full environment is in the cell's `before.txt` and the
+system facts are in `final/config.txt` and `system/*.facts.txt`.
 
 ### What is committed, and what is not
 
