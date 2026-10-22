@@ -187,6 +187,10 @@ pub(crate) async fn run_publisher_writer_counted(
     let mut declared: Option<Bytes> = None;
 
     let mut finish_response: Option<oneshot::Sender<AckOutcome>> = None;
+    // The request taken off the queue that is not yet staged: it may be
+    // waiting on a window slot when the stream breaks.
+    let mut held: Option<PublishRequest> = None;
+    let mut header_scratch = BytesMut::with_capacity(1024);
 
     // On a broken stream: fail everything already written and everything
     // still queued, with the same message.
@@ -207,7 +211,20 @@ pub(crate) async fn run_publisher_writer_counted(
                 }
                 let _ = stale.response.send(Err(anyhow::anyhow!(message.clone())));
             }
-            // A finish already taken off the queue is failed with the rest.
+            // Whatever was taken off the queue but never written gets the
+            // error too, not a dropped channel.
+            for entry in staged.drain(..) {
+                let _ = entry.response.send(Err(anyhow::anyhow!(message.clone())));
+            }
+            if let Some(request) = held.take() {
+                match request {
+                    PublishRequest::Message { response, .. }
+                    | PublishRequest::BinaryBytes { response, .. }
+                    | PublishRequest::Finish { response } => {
+                        let _ = response.send(Err(anyhow::anyhow!(message.clone())));
+                    }
+                }
+            }
             if let Some(response) = finish_response.take() {
                 let _ = response.send(Err(anyhow::anyhow!(message.clone())));
             }
@@ -436,6 +453,7 @@ pub(crate) async fn run_publisher_writer_counted(
                 }
                 PublishRequest::Finish { .. } => false,
             };
+            held = Some(request);
             let window_permit = match window.as_ref().filter(|_| needs_ack) {
                 None => None,
                 Some(window) => loop {
@@ -447,6 +465,7 @@ pub(crate) async fn run_publisher_writer_counted(
                     }
                 },
             };
+            let request = held.take().expect("request is held");
             match request {
                 PublishRequest::Message {
                     message,
@@ -466,7 +485,9 @@ pub(crate) async fn run_publisher_writer_counted(
                     } => {
                         #[cfg(feature = "telemetry")]
                         let sample = crate::telemetry::t_should_sample();
-                        let json_len = felix_wire::text::publish_batch_json_len(
+                        // Encoding a whole burst here delays the first write; the
+                        // JSON path is the compatibility path, not the fast one.
+                        let json_len = match felix_wire::text::publish_batch_json_len(
                             &tenant_id,
                             &namespace,
                             &stream,
@@ -474,13 +495,20 @@ pub(crate) async fn run_publisher_writer_counted(
                             key.as_deref(),
                             msg_request_id,
                             msg_ack,
-                        )?;
+                        ) {
+                            Ok(len) => len,
+                            Err(err) => {
+                                let message = err.to_string();
+                                let _ = response.send(Err(anyhow::anyhow!(message.clone())));
+                                fail_worker!(message);
+                            }
+                        };
                         json_scratch.clear();
                         json_scratch.reserve(FrameHeader::LEN + json_len);
                         json_scratch.resize(FrameHeader::LEN, 0);
                         #[cfg(feature = "telemetry")]
                         let encode_start = crate::telemetry::t_now_if(sample);
-                        let stats = felix_wire::text::write_publish_batch_json(
+                        let stats = match felix_wire::text::write_publish_batch_json(
                             &mut json_scratch,
                             &tenant_id,
                             &namespace,
@@ -489,7 +517,14 @@ pub(crate) async fn run_publisher_writer_counted(
                             key.as_deref(),
                             msg_request_id,
                             msg_ack,
-                        )?;
+                        ) {
+                            Ok(stats) => stats,
+                            Err(err) => {
+                                let message = err.to_string();
+                                let _ = response.send(Err(anyhow::anyhow!(message.clone())));
+                                fail_worker!(message);
+                            }
+                        };
                         #[cfg(not(feature = "telemetry"))]
                         let _ = stats;
                         #[cfg(feature = "telemetry")]
@@ -556,7 +591,9 @@ pub(crate) async fn run_publisher_writer_counted(
                                 item_count,
                                 frame_bytes: frame_bytes as u64,
                             });
-                            chunks.push(Bytes::copy_from_slice(&header_bytes));
+                            // One shared allocation for every header in the burst.
+                            header_scratch.extend_from_slice(&header_bytes);
+                            chunks.push(header_scratch.split().freeze());
                             chunks.push(frame.payload);
                         }
                         Err(err) => {

@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 use felix_wire::{AckMode, Message};
 use quinn::{RecvStream, SendStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use super::test_publish_permit;
 use crate::config::DEFAULT_MAX_FRAME_BYTES;
@@ -225,6 +225,241 @@ async fn the_writer_keeps_taking_publishes_while_an_ack_is_outstanding() -> Resu
         tokio::time::timeout(Duration::from_secs(10), response)
             .await
             .context("the writer stalled behind an ack barrier")??
+            .context("publish failed")?;
+    }
+    server.abort();
+    writer.abort();
+    Ok(())
+}
+
+fn spawn_writer(
+    send: SendStream,
+    recv: RecvStream,
+    rx: mpsc::Receiver<PublishRequest>,
+    window: Option<Arc<Semaphore>>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(run_publisher_writer_counted(
+        send,
+        recv,
+        rx,
+        16 * 1024,
+        DEFAULT_MAX_FRAME_BYTES,
+        window,
+        Arc::default(),
+    ))
+}
+
+/// What a caller sees: the writer's own error, not a dropped channel.
+async fn expect_write_error(response: oneshot::Receiver<AckOutcome>) -> Result<()> {
+    let answer = tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .context("no answer")?
+        .context("the response channel was dropped instead of answered")?;
+    answer.expect_err("the publish should have failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_write_answers_every_publish_in_the_burst() -> Result<()> {
+    let (mut send, recv, _halves) = connect().await?;
+    send.finish()?;
+    let (tx, rx) = mpsc::channel(8);
+    let mut responses = Vec::new();
+    for _ in 0..4 {
+        let (request, response) = unacked_frame();
+        tx.send(request).await.ok().context("queue")?;
+        responses.push(response);
+    }
+    let writer = spawn_writer(send, recv, rx, None);
+    for response in responses {
+        expect_write_error(response).await?;
+    }
+    // The failed writer drains its queue until the senders are gone.
+    drop(tx);
+    assert!(writer.await?.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_publish_waiting_for_a_window_slot_gets_the_write_error() -> Result<()> {
+    let (mut send, recv, _halves) = connect().await?;
+    send.finish()?;
+    let (tx, rx) = mpsc::channel(8);
+    let (first, first_response) = acked_batch(1);
+    let (second, second_response) = acked_batch(2);
+    tx.send(first).await.ok().context("queue")?;
+    tx.send(second).await.ok().context("queue")?;
+    // One slot: the second publish waits for it with the first still staged,
+    // so the writer flushes, and that write fails.
+    let writer = spawn_writer(send, recv, rx, Some(Arc::new(Semaphore::new(1))));
+    expect_write_error(first_response).await?;
+    expect_write_error(second_response).await?;
+    // The failed writer drains its queue until the senders are gone.
+    drop(tx);
+    assert!(writer.await?.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finish_taken_into_a_failing_burst_is_answered() -> Result<()> {
+    let (mut send, recv, _halves) = connect().await?;
+    send.finish()?;
+    let (tx, rx) = mpsc::channel(8);
+    let (request, response) = unacked_frame();
+    let (finish, finish_response) = oneshot::channel();
+    tx.send(request).await.ok().context("queue")?;
+    tx.send(PublishRequest::Finish { response: finish })
+        .await
+        .ok()
+        .context("queue")?;
+    let writer = spawn_writer(send, recv, rx, None);
+    expect_write_error(response).await?;
+    expect_write_error(finish_response).await?;
+    // The failed writer drains its queue until the senders are gone.
+    drop(tx);
+    assert!(writer.await?.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finish_in_a_burst_settles_the_publishes_before_it() -> Result<()> {
+    let (send, recv, halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let (request, response) = acked_batch(1);
+    let (finish, finish_response) = oneshot::channel();
+    tx.send(request).await.ok().context("queue")?;
+    tx.send(PublishRequest::Finish { response: finish })
+        .await
+        .ok()
+        .context("queue")?;
+    let writer = spawn_writer(send, recv, rx, None);
+    let server = tokio::spawn(async move {
+        let (mut send, mut recv) = halves.await?;
+        read_hello(&mut recv).await?;
+        let mut scratch = BytesMut::with_capacity(4096);
+        crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+            .await?
+            .context("stream closed")?;
+        let ok = Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        };
+        send.write_all(&ok.encode()?.encode()).await?;
+        send.finish()?;
+        let _ = recv.read_to_end(1024).await;
+        anyhow::Ok(())
+    });
+    tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .context("no answer")??
+        .context("publish failed")?;
+    tokio::time::timeout(Duration::from_secs(10), finish_response)
+        .await
+        .context("no finish answer")??
+        .context("finish failed")?;
+    writer.await??;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn out_of_order_acks_in_one_burst_reach_their_own_callers() -> Result<()> {
+    let (send, recv, halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let mut responses = Vec::new();
+    for id in 1..=3u64 {
+        let (request, response) = acked_batch(id);
+        tx.send(request).await.ok().context("queue")?;
+        responses.push(response);
+    }
+    let writer = spawn_writer(send, recv, rx, None);
+    let server = tokio::spawn(async move {
+        let (mut send, mut recv) = halves.await?;
+        read_hello(&mut recv).await?;
+        let mut scratch = BytesMut::with_capacity(4096);
+        for _ in 0..3 {
+            crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+                .await?
+                .context("stream closed")?;
+        }
+        for answer in [
+            Message::PublishOk {
+                request_id: 3,
+                offset: None,
+            },
+            Message::publish_error(1, "refused"),
+            Message::PublishOk {
+                request_id: 2,
+                offset: None,
+            },
+        ] {
+            send.write_all(&answer.encode()?.encode()).await?;
+        }
+        std::future::pending::<()>().await;
+        anyhow::Ok(())
+    });
+    let mut answers = Vec::new();
+    for response in responses {
+        answers.push(
+            tokio::time::timeout(Duration::from_secs(10), response)
+                .await
+                .context("no answer")??,
+        );
+    }
+    assert!(answers[0].is_err(), "request 1 was refused");
+    assert!(answers[1].is_ok());
+    assert!(answers[2].is_ok());
+    server.abort();
+    writer.abort();
+    Ok(())
+}
+
+/// An ack arrives in two pieces with a new publish queued between them. The
+/// writer takes the publish and still finishes reading the ack.
+#[tokio::test]
+async fn an_ack_half_read_when_a_publish_arrives_is_not_lost() -> Result<()> {
+    let (send, recv, halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let writer = spawn_writer(send, recv, rx, None);
+    let (half_written_tx, half_written) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut send, mut recv) = halves.await?;
+        read_hello(&mut recv).await?;
+        let mut scratch = BytesMut::with_capacity(4096);
+        crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+            .await?
+            .context("stream closed")?;
+        let first = Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        }
+        .encode()?
+        .encode();
+        send.write_all(&first[..4]).await?;
+        let _ = half_written_tx.send(());
+        crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+            .await?
+            .context("stream closed")?;
+        send.write_all(&first[4..]).await?;
+        let second = Message::PublishOk {
+            request_id: 2,
+            offset: None,
+        };
+        send.write_all(&second.encode()?.encode()).await?;
+        std::future::pending::<()>().await;
+        anyhow::Ok(())
+    });
+    let (first, first_response) = acked_batch(1);
+    tx.send(first).await.ok().context("queue")?;
+    half_written.await?;
+    // The writer is now inside the ack read.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (second, second_response) = acked_batch(2);
+    tx.send(second).await.ok().context("queue")?;
+    for response in [first_response, second_response] {
+        tokio::time::timeout(Duration::from_secs(10), response)
+            .await
+            .context("no answer")??
             .context("publish failed")?;
     }
     server.abort();
