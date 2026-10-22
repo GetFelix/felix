@@ -94,8 +94,11 @@ stuck behind a stalled shard do not hold up the other streams on the same
 connection. The Rust client also gives each shard a stream of its own, so a
 stalled shard holds up only its own publishes, not the stream's other shards,
 and one busy stream's shards spread over the client's connections and the
-broker's listeners. It keeps up to 16 such streams per broker
-(`publish_shard_streams`); shards past that share the pooled streams.
+broker's listeners. It keeps up to 4 such streams per broker
+(`publish_shard_streams`); the first four shards the client publishes to
+get one each, first come first served, and later shards share the pooled
+streams, so a stalled pooled shard can hold up the other pooled shards. See
+[the Rust client page](/clients/rust/) for the trade-off and how to raise it.
 
 Spreading never reorders a shard. Every publish one client makes to one shard
 goes through one writer on one QUIC stream, so the shard's log holds them in
