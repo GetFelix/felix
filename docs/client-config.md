@@ -56,6 +56,11 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - An acked publish holds its budget until the broker's ack arrives (acked
     publishes are pipelined on the stream), so the budget also caps acked
     data in flight as well as data queued for writing.
+  - A stream's writer sends every publish already queued (up to 64 KiB or 256
+    publishes) as one write, and reads acks while it keeps writing, so a stream
+    never pauses for answers between bursts. A lone publish on an idle stream is
+    written at once. Each stream keeps its own writer, so a stalled stream
+    holds up no other.
 - `publish_sharding` (env: `FELIX_PUB_SHARDING`)
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
