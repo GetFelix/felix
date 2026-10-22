@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792710674945,
+  "lastUpdate": 1792711596410,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32656,6 +32656,58 @@ window.BENCHMARK_DATA = {
             "range": "8868.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818225.43\nmean: 821416.61\nstdev: 8868.32\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac1e8b5bd2a5b46f8578938a3f028e3ff8f037c7",
+          "message": "ci(deps): bump sigstore/cosign-installer from 3.9.1 to 4.1.2 (#1401)\n\nBumps [sigstore/cosign-installer](https://github.com/sigstore/cosign-installer) from 3.9.1 to 4.1.2.\n- [Release notes](https://github.com/sigstore/cosign-installer/releases)\n- [Commits](https://github.com/sigstore/cosign-installer/compare/398d4b0eeef1380460a10c8013a76f728fb906ac...6f9f17788090df1f26f669e9d70d6ae9567deba6)\n\n---\nupdated-dependencies:\n- dependency-name: sigstore/cosign-installer\n  dependency-version: 4.1.2\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-22T16:21:56-07:00",
+          "tree_id": "5d846ca70d3715405b7c952fd293b9b52f9ffaa4",
+          "url": "https://github.com/GetFelix/felix/commit/ac1e8b5bd2a5b46f8578938a3f028e3ff8f037c7"
+        },
+        "date": 1792711595554,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341643.4,
+            "range": "22247.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341643.40\nmean: 338819.24\nstdev: 22247.26\ncv: 6.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341643.4,
+            "range": "22247.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341643.40\nmean: 338819.24\nstdev: 22247.26\ncv: 6.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80836.84,
+            "range": "417.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80836.84\nmean: 80899.39\nstdev: 417.86\ncv: 0.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808368.42,
+            "range": "4178.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808368.42\nmean: 808993.87\nstdev: 4178.62\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
