@@ -735,3 +735,70 @@ impl CounterFn for Slot {
             .insert(self.key.clone(), value);
     }
 }
+
+#[test]
+fn depth_gauge_is_set_on_big_moves_and_when_emptied() {
+    let gauge = DepthGauge::new();
+    let depth = AtomicUsize::new(0);
+    let sets = StdMutex::new(Vec::new());
+    let change = |delta: isize| {
+        if delta > 0 {
+            depth.fetch_add(delta as usize, Ordering::Relaxed);
+        } else {
+            depth.fetch_sub(delta.unsigned_abs(), Ordering::Relaxed);
+        }
+        gauge.report(
+            || depth.load(Ordering::Relaxed),
+            |d| sets.lock().unwrap().push(d),
+        );
+    };
+    for _ in 0..DEPTH_STEP - 1 {
+        change(1);
+    }
+    assert!(sets.lock().unwrap().is_empty(), "small drift is not set");
+    change(1);
+    assert_eq!(*sets.lock().unwrap(), [DEPTH_STEP]);
+    for _ in 0..DEPTH_STEP - 1 {
+        change(-1);
+    }
+    assert_eq!(sets.lock().unwrap().len(), 1, "one short of a step");
+    change(-1);
+    assert_eq!(*sets.lock().unwrap(), [DEPTH_STEP, 0], "emptied reads zero");
+    // A lone job after empty is within the allowed drift.
+    change(1);
+    change(-1);
+    assert_eq!(sets.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn depth_gauge_ends_at_zero_after_concurrent_traffic() {
+    let gauge = Arc::new(DepthGauge::new());
+    let depth = Arc::new(AtomicUsize::new(0));
+    let last = Arc::new(AtomicUsize::new(usize::MAX));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let (gauge, depth, last) = (Arc::clone(&gauge), Arc::clone(&depth), Arc::clone(&last));
+            std::thread::spawn(move || {
+                for _ in 0..5_000 {
+                    for up in [true, false] {
+                        if up {
+                            depth.fetch_add(3, Ordering::Relaxed);
+                        } else {
+                            depth.fetch_sub(3, Ordering::Relaxed);
+                        }
+                        gauge.report(
+                            || depth.load(Ordering::Relaxed),
+                            |d| last.store(d, Ordering::Relaxed),
+                        );
+                    }
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(depth.load(Ordering::Relaxed), 0);
+    let last = last.load(Ordering::Relaxed);
+    assert!(last == 0 || last == usize::MAX, "gauge left at {last}");
+}

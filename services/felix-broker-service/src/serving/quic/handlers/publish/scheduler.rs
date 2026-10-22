@@ -32,9 +32,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -52,6 +50,8 @@ const QUANTUM_BYTES: usize = 64 * 1024;
 /// Added to every job's byte cost, so a tenant sending empty or tiny batches
 /// still pays something for each turn it takes.
 const JOB_COST_BYTES: usize = 256;
+/// How far the queue depth may drift from the gauge before it is set again.
+const DEPTH_STEP: usize = 16;
 
 /// The process-wide publish queue and its executors.
 ///
@@ -356,8 +356,8 @@ impl Partition {
     /// Bookkeeping for `jobs` newly queued: depth gauge and an executor for
     /// each, since a single `notify_one` would leave the rest asleep.
     fn queued(&self, jobs: usize) {
-        let global = GLOBAL_INGRESS_DEPTH.fetch_add(jobs, Ordering::Relaxed) + jobs;
-        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
+        GLOBAL_INGRESS_DEPTH.fetch_add(jobs, Ordering::Relaxed);
+        report_ingress_depth();
         for _ in 0..jobs {
             self.work.notify_one();
         }
@@ -366,13 +366,10 @@ impl Partition {
     /// `jobs` left the queue: hand each freed slot to the oldest parked job
     /// whose tenant may take it, and wake just those submitters.
     fn popped(&self, mut state: parking_lot::MutexGuard<'_, State>, jobs: usize) {
-        let global = GLOBAL_INGRESS_DEPTH
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                Some(depth.saturating_sub(jobs))
-            })
-            .unwrap_or(0)
-            .saturating_sub(jobs);
-        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
+        let _ = GLOBAL_INGRESS_DEPTH.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+            Some(depth.saturating_sub(jobs))
+        });
+        report_ingress_depth();
         if state.heads.is_empty() {
             return;
         }
@@ -623,6 +620,54 @@ impl Drop for TestReceiver {
     fn drop(&mut self) {
         self.0.close();
     }
+}
+
+fn report_ingress_depth() {
+    GLOBAL_INGRESS_GAUGE.report(
+        || GLOBAL_INGRESS_DEPTH.load(Ordering::Relaxed),
+        |depth| t_gauge!("felix_broker_ingress_queue_depth").set(depth as f64),
+    );
+}
+
+static GLOBAL_INGRESS_GAUGE: DepthGauge = DepthGauge::new();
+
+/// The queue depth gauge, set when the depth has moved a long way or emptied.
+///
+/// Setting it on every push and pop costs a registry lookup per job, which
+/// shows up when jobs are small. Between sets it can be off by up to
+/// `DEPTH_STEP`. Writers serialize on a lock, taken only when a set is due,
+/// and re-read the depth inside it: the last writer to run therefore leaves
+/// the gauge at a depth it saw after every earlier change, and a queue that
+/// has emptied reads zero once its last push or pop returns.
+struct DepthGauge {
+    reported: AtomicUsize,
+    write: Mutex<()>,
+}
+
+impl DepthGauge {
+    const fn new() -> Self {
+        Self {
+            reported: AtomicUsize::new(0),
+            write: Mutex::new(()),
+        }
+    }
+
+    /// Call after every change to the depth.
+    fn report(&self, depth: impl Fn() -> usize, set: impl Fn(usize)) {
+        if !depth_gauge_due(self.reported.load(Ordering::Acquire), depth()) {
+            return;
+        }
+        let _write = self.write.lock();
+        let depth = depth();
+        if depth_gauge_due(self.reported.load(Ordering::Acquire), depth) {
+            set(depth);
+            self.reported.store(depth, Ordering::Release);
+        }
+    }
+}
+
+fn depth_gauge_due(last: usize, depth: usize) -> bool {
+    depth.abs_diff(last) >= DEPTH_STEP || (depth == 0 && last != 0)
 }
 
 fn name_hash(tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> u64 {

@@ -291,6 +291,23 @@ pub enum SubQueuePolicy {
     DropOld,
 }
 
+/// Subscriber-queue metrics, resolved once instead of per enqueue and dequeue.
+/// Resolved on first use, which is after the broker installs its recorder.
+pub(super) struct QueueMetrics {
+    pub(super) len: metrics::Gauge,
+    pub(super) enqueued: metrics::Counter,
+    dequeued: metrics::Counter,
+}
+
+pub(super) fn queue_metrics() -> &'static QueueMetrics {
+    static METRICS: std::sync::OnceLock<QueueMetrics> = std::sync::OnceLock::new();
+    METRICS.get_or_init(|| QueueMetrics {
+        len: metrics::gauge!("felix_sub_queue_len"),
+        enqueued: metrics::counter!("felix_sub_queue_enqueued_total"),
+        dequeued: metrics::counter!("felix_sub_queue_dequeued_total"),
+    })
+}
+
 fn decrement_queue_depth(queued_items: &AtomicUsize, count: usize) {
     if queued_items
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -298,8 +315,9 @@ fn decrement_queue_depth(queued_items: &AtomicUsize, count: usize) {
         })
         .is_ok()
     {
-        metrics::gauge!("felix_sub_queue_len").decrement(count as f64);
-        metrics::counter!("felix_sub_queue_dequeued_total").increment(count as u64);
+        let metrics = queue_metrics();
+        metrics.len.decrement(count as f64);
+        metrics.dequeued.increment(count as u64);
     }
 }
 

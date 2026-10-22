@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use super::budget::{QueueBytes, SubscriberBytes};
 use super::committed::{CommitHold, ReadBound};
-use super::delivery::{QueuedDelivery, SubQueuePolicy};
+use super::delivery::{QueuedDelivery, SubQueuePolicy, queue_metrics};
 use super::producers::ProducerTable;
 use super::ring::{LogEntry, Ring, RingBytes};
 use super::subscription::SubscriptionReceiver;
@@ -669,8 +669,9 @@ impl StreamState {
 
     pub(crate) fn increment_queue_depth(&self, count: usize) {
         self.queued_items.fetch_add(count, Ordering::Relaxed);
-        metrics::gauge!("felix_sub_queue_len").increment(count as f64);
-        metrics::counter!("felix_sub_queue_enqueued_total").increment(count as u64);
+        let metrics = queue_metrics();
+        metrics.len.increment(count as f64);
+        metrics.enqueued.increment(count as u64);
     }
 
     fn rebuild_subscriber_snapshot(&self, state: &SubscriberRegistry) {
