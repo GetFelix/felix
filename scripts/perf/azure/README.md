@@ -211,6 +211,25 @@ figure an enqueue rate. Durable cells start from a wiped
 a whole-cluster wipe under live replicas is its own experiment). `fio-baseline.sh`
 takes the device baseline; the drivers run it first.
 
+### The final campaign driver
+
+`campaign-final.sh` runs the whole final v0.6.0 campaign on one session and
+deallocates the VMs when it ends, whatever the outcome:
+
+```bash
+SESSION=<name> BUILD_SHA=<40-char main sha> ./campaign-final.sh --dry-run   # cells, hours, cost
+SESSION=<name> BUILD_SHA=<sha> nohup ./campaign-final.sh &                  # re-run to resume
+```
+
+It starts and repairs the deallocated session, runs the preflight, records
+the system facts, then runs a gate (the pinned build against preview.9 on the
+headline cells, fail below -3%), the matrix, latency, the NATS pairings and
+the sweeps, in that priority order. The dry run trims the plan to fit
+`MAX_HOURS` and names what it dropped. Progress is one line per cell in
+`sessions/logs/final-campaign.log`; results land in
+`sessions/<name>-final-results/`. Brokers and clients run at product defaults
+apart from the overrides listed at the top of the script.
+
 ### What is committed, and what is not
 
 `sessions/<name>-results/` and `sessions/*-findings.md` **are tracked**. They
