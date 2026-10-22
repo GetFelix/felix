@@ -69,7 +69,9 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
     /// Queue `item` at the back of `lane`, charging `tenant` for it.
     ///
     /// `Err` hands the item back when the queue has no room for this tenant.
-    pub(crate) fn push(&mut self, tenant: &str, lane: K, item: T, cost: usize) -> Result<(), T> {
+    /// `Ok(true)` means the lane just became ready: it was empty and not
+    /// running, so no executor has been told about it yet.
+    pub(crate) fn push(&mut self, tenant: &str, lane: K, item: T, cost: usize) -> Result<bool, T> {
         let held = self.tenants.get(tenant).map_or(0, |tenant| tenant.queued);
         if !self.admits(held) {
             return Err(item);
@@ -97,7 +99,7 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
         if becomes_ready {
             self.make_ready(tenant, lane);
         }
-        Ok(())
+        Ok(becomes_ready)
     }
 
     /// The next job to run, and its lane, which is busy until
@@ -190,17 +192,19 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
     }
 
     /// The job popped from `lane` has finished its ordered part; the lane's
-    /// next job may run.
-    pub(crate) fn complete(&mut self, lane: &K) {
+    /// next job may run. Returns whether the lane is ready again.
+    pub(crate) fn complete(&mut self, lane: &K) -> bool {
         let Some(entry) = self.lanes.get_mut(lane) else {
-            return;
+            return false;
         };
         entry.busy = false;
         if entry.jobs.is_empty() {
             self.lanes.remove(lane);
+            false
         } else {
             let tenant = Arc::clone(&entry.tenant);
             self.make_ready(tenant, lane.clone());
+            true
         }
     }
 

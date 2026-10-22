@@ -59,6 +59,59 @@ pub(crate) fn record_published(tenant: &str, messages: u64, bytes: u64) {
     metrics::counter!(PUBLISHED_BYTES_TOTAL, "tenant" => label).increment(bytes);
 }
 
+/// Publish counters for one tenant, resolved once so the per-publish path is
+/// two atomic adds instead of two registry lookups.
+#[derive(Clone)]
+pub(crate) struct TenantPublished {
+    messages: Counter,
+    bytes: Counter,
+    /// Resolved to the overflow label, which counts every recording in
+    /// `felix_tenant_metrics_overflow_total`. Such a handle is not reused.
+    overflow: bool,
+}
+
+impl TenantPublished {
+    pub(crate) fn for_tenant(tenant: &str) -> Self {
+        let label = labels().label(tenant, MAX_TENANTS.load(Ordering::Relaxed));
+        let overflow = &*label == OVERFLOW_LABEL;
+        Self {
+            messages: metrics::counter!(PUBLISHED_MESSAGES_TOTAL, "tenant" => label.clone()),
+            bytes: metrics::counter!(PUBLISHED_BYTES_TOTAL, "tenant" => label),
+            overflow,
+        }
+    }
+
+    pub(crate) fn record(&self, messages: u64, bytes: u64) {
+        self.messages.increment(messages);
+        self.bytes.increment(bytes);
+    }
+}
+
+/// The publish counters of the tenant an identity last published as. An
+/// identity is nearly always one tenant, so a single slot serves every
+/// publish after the first.
+#[derive(Default)]
+pub(crate) struct PublishedCache {
+    slot: RwLock<Option<(Arc<str>, TenantPublished)>>,
+}
+
+impl PublishedCache {
+    /// Count a publish `tenant` made.
+    pub(crate) fn record(&self, tenant: &str, messages: u64, bytes: u64) {
+        if let Some((cached, counters)) = &*self.slot.read()
+            && &**cached == tenant
+        {
+            counters.record(messages, bytes);
+            return;
+        }
+        let counters = TenantPublished::for_tenant(tenant);
+        counters.record(messages, bytes);
+        if !counters.overflow {
+            *self.slot.write() = Some((Arc::from(tenant), counters));
+        }
+    }
+}
+
 /// Count a publish held back by `tenant`'s quota.
 pub(crate) fn record_throttled(tenant: &str, action: &'static str) {
     let label = labels().label(tenant, MAX_TENANTS.load(Ordering::Relaxed));

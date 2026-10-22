@@ -47,6 +47,25 @@ fn publishes_and_deliveries_are_counted_by_tenant() {
     assert_eq!(recorder.get(THROTTLED_TOTAL, "acme"), 1);
 }
 
+#[test]
+fn cached_publish_counters_count_like_uncached_ones() {
+    let recorder = Counting::default();
+    with_local_recorder(&recorder, || {
+        let cache = PublishedCache::default();
+        cache.record("cache-a", 3, 300);
+        // These two use the handle resolved by the first.
+        cache.record("cache-a", 1, 50);
+        cache.record("cache-a", 2, 7);
+        // A different tenant replaces the slot and counts under its own label.
+        cache.record("cache-b", 5, 9);
+        cache.record("cache-a", 1, 1);
+    });
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-a"), 7);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-a"), 358);
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-b"), 5);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-b"), 9);
+}
+
 /// Sums counters by name and `tenant` label.
 #[derive(Default)]
 struct Counting {

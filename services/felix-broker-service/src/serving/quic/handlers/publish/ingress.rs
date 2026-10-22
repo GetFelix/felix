@@ -277,7 +277,10 @@ pub(crate) async fn enqueue_tenant_publish(
     }
     let enqueued = enqueue_publish(publish_ctx, tenant, job, policy, cancel).await?;
     if enqueued {
-        tenants::record_published(tenant, messages, bytes);
+        publish_ctx
+            .identity
+            .published
+            .record(tenant, messages, bytes);
     }
     Ok(enqueued)
 }
@@ -324,7 +327,10 @@ pub(crate) async fn admit_unqueued(
     let deadline = tokio::time::Instant::now() + publish_ctx.wait_timeout;
     match tokio::time::timeout_at(deadline, acquire_permits(publish_ctx, bytes)).await {
         Ok(Ok(permit)) => {
-            tenants::record_published(tenant, messages, bytes as u64);
+            publish_ctx
+                .identity
+                .published
+                .record(tenant, messages, bytes as u64);
             Ok(permit)
         }
         Ok(Err(_)) => Err(ClientError::overloaded("publish admission closed")),

@@ -45,6 +45,8 @@ const QUANTUM_BYTES: usize = 64 * 1024;
 /// Added to every job's byte cost, so a tenant sending empty or tiny batches
 /// still pays something for each turn it takes.
 const JOB_COST_BYTES: usize = 256;
+/// How far the queue depth may drift from the gauge before it is set again.
+const DEPTH_STEP: usize = 16;
 
 /// The process-wide publish queue and its executors.
 ///
@@ -152,7 +154,19 @@ pub(crate) enum Rejected {
 pub(crate) struct Partition {
     queue: Mutex<FairQueue<LaneKey, PublishJob>>,
     /// Wakes executors: a lane became ready, or the queue closed.
+    ///
+    /// A lane that was already ready, or is running a job, is never announced:
+    /// the first is already known to a woken or running executor, and the
+    /// second is announced by `complete`.
     work: Notify,
+    /// Executors inside [`Self::next`], from before they look at the queue
+    /// until they hold a job. Running executors are not counted; they look at
+    /// the queue again when their job ends. A push or `complete` only wakes
+    /// one when this is above zero.
+    idle: AtomicUsize,
+    /// `notify_one` calls made, for tests.
+    #[cfg(test)]
+    wakes: AtomicUsize,
     /// Wakes submitters waiting for room.
     space: Notify,
     /// Submitters waiting on `space`, so a pop only pays for a wake-up when
@@ -166,6 +180,9 @@ impl Partition {
         Self {
             queue: Mutex::new(FairQueue::new(capacity, share, QUANTUM_BYTES)),
             work: Notify::new(),
+            idle: AtomicUsize::new(0),
+            #[cfg(test)]
+            wakes: AtomicUsize::new(0),
             space: Notify::new(),
             waiting: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
@@ -175,6 +192,13 @@ impl Partition {
     /// The next job to run and the guard that holds its lane, or `None` once
     /// the queue is closed and empty.
     pub(crate) async fn next(self: &Arc<Self>) -> Option<(PublishJob, LaneGuard)> {
+        // Counted before the first look at the queue and kept until this call
+        // returns. A producer that pushes after our look took the queue lock
+        // after we released it, so it reads the count after our increment and
+        // wakes us; one that pushed before is seen by our look. A producer
+        // that reads zero therefore has no executor that could miss the job:
+        // each one is running and checks the queue when it finishes.
+        let _idle = Counted::new(&self.idle);
         loop {
             let work = self.work.notified();
             tokio::pin!(work);
@@ -209,13 +233,15 @@ impl Partition {
         if self.closed.load(Ordering::Acquire) {
             return Err(Rejected::Closed);
         }
-        self.queue
+        let ready = self
+            .queue
             .lock()
             .push(tenant, lane, job, cost)
             .map_err(|job| Rejected::Full(Box::new(job)))?;
-        let global = GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-        self.work.notify_one();
+        report_depth(GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1);
+        if ready {
+            self.wake_one();
+        }
         Ok(())
     }
 
@@ -226,19 +252,28 @@ impl Partition {
             })
             .unwrap_or(0)
             .saturating_sub(jobs);
-        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
+        report_depth(global);
         if self.waiting.load(Ordering::SeqCst) > 0 {
             self.space.notify_waiters();
         }
     }
 
     fn complete(&self, lane: &LaneKey) {
-        self.queue.lock().complete(lane);
-        // The lane may be ready again; and a closing queue may now be empty,
-        // which every idle executor needs to hear to exit.
+        let ready = self.queue.lock().complete(lane);
+        // A closing queue may now be empty, which every idle executor needs to
+        // hear to exit. Otherwise only a lane that is ready again needs a wake.
         if self.closed.load(Ordering::Acquire) {
             self.work.notify_waiters();
-        } else {
+        } else if ready {
+            self.wake_one();
+        }
+    }
+
+    /// Wake an executor for a lane that just became ready, if any is waiting.
+    fn wake_one(&self) {
+        if self.idle.load(Ordering::SeqCst) > 0 {
+            #[cfg(test)]
+            self.wakes.fetch_add(1, Ordering::Relaxed);
             self.work.notify_one();
         }
     }
@@ -340,6 +375,40 @@ impl LaneKey {
             Self::Local(id) | Self::Remote(id) => (id % partitions.max(1) as u64) as usize,
         }
     }
+}
+
+/// Counts an executor as idle for as long as it is held.
+struct Counted<'a>(&'a AtomicUsize);
+
+impl<'a> Counted<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Publish the queue depth gauge when it has moved a long way, or emptied.
+///
+/// Setting it on every push and pop costs a registry lookup per job, which
+/// shows up when jobs are small. The gauge reads within `DEPTH_STEP` of the
+/// true depth and is exact whenever the queue is empty.
+fn report_depth(depth: usize) {
+    static REPORTED: AtomicUsize = AtomicUsize::new(0);
+    let last = REPORTED.load(Ordering::Relaxed);
+    if depth_gauge_due(last, depth) {
+        REPORTED.store(depth, Ordering::Relaxed);
+        t_gauge!("felix_broker_ingress_queue_depth").set(depth as f64);
+    }
+}
+
+fn depth_gauge_due(last: usize, depth: usize) -> bool {
+    depth.abs_diff(last) >= DEPTH_STEP || (depth == 0 && last != 0)
 }
 
 /// Counts a submitter as waiting for room for as long as it is held.

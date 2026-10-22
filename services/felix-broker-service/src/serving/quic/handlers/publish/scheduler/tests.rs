@@ -330,3 +330,5 @@ impl CounterFn for Slot {
             .insert(self.key.clone(), value);
     }
 }
+
+mod wakeups;
