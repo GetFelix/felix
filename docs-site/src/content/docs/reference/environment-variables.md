@@ -1090,7 +1090,9 @@ stream.
 
 **Type**: Non-negative integer (count)
 
-**Default**: `16`
+**Default**: `4`. Shards share the four streams, so a stalled shard holds up
+the shards on its stream. Set it to the stream's shard count for full
+per-shard isolation, at some throughput cost when keys spread over many shards.
 
 **Example**:
 ```bash

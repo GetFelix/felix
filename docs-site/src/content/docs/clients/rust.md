@@ -120,7 +120,7 @@ let config = ClientConfig {
     publish_sharding: PublishSharding::HashStream,
     // ClusterClient only: streams of their own for up to this many shards
     // per broker (0 turns them off)
-    publish_shard_streams: 16,
+    publish_shard_streams: 4,
 
     ..ClientConfig::optimized_defaults(quinn)
 };
@@ -409,8 +409,18 @@ is placed on the least-loaded connection, so a busy multi-shard stream
 spreads over the client's connections and the broker's listeners instead of
 riding one. The stream opens on the shard's first publish, which pays one
 extra round trip to authenticate it, and stays open. A client keeps at most
-`publish_shard_streams` of them per broker (16 by default,
+`publish_shard_streams` of them per broker (4 by default,
 `FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
+
+With the default of 4, a stream with more than four shards puts several
+shards on one dedicated stream, so a shard stalled on a quorum holds up the
+shards that share its stream, not the stream's other shards. Full per-shard
+isolation needs a cap at least as large as the shard count of the streams you
+publish to (`FELIX_PUB_SHARD_STREAMS=16`, say). The default is low because
+dedicated streams cost throughput when keys spread evenly over many shards:
+on an 8 vCPU broker with 48 shards and 256 B acked publishes, 4 streams
+measured about 125 MB/s against about 97 MB/s for 16, and 0 (everything on
+the pool) 161.6 MB/s.
 
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,

@@ -25,13 +25,13 @@ pub(crate) const DEFAULT_PUB_CONN_POOL: usize = 4;
 pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
 /// Publish streams a `ClusterClient` opens per broker for one shard each.
 ///
-/// Sixteen covers every shard of a 16-shard stream, or of a few smaller ones,
-/// which is the shape a stall would otherwise spread across. Each costs a
-/// writer task, parked while the shard is quiet, and one of the 1024 streams
-/// the transport allows a connection by default. Shards past it share the
-/// pool as before, so a client publishing to many streams keeps a bounded
-/// number of streams open.
-pub(crate) const DEFAULT_PUB_SHARD_STREAMS: usize = 16;
+/// Four keeps shard streams cheap: with keys spread over many shards, more
+/// dedicated streams measured slower (Azure, 256 B acked, 48 shards: none
+/// 161.6 MB/s, 4 about 125, 16 about 97). Shards share the four streams, so
+/// a stalled shard holds up only the shards on its stream, not the whole
+/// stream's. Raise it for full per-shard isolation. Each stream costs a writer
+/// task and one of the 1024 transport streams a connection allows.
+pub(crate) const DEFAULT_PUB_SHARD_STREAMS: usize = 4;
 pub(crate) const DEFAULT_EVENT_CONN_POOL: usize = 8;
 pub(crate) const DEFAULT_CACHE_CONN_POOL: usize = 8;
 /// A cluster client's ceiling per broker. It starts at one connection; this
