@@ -47,7 +47,7 @@ event_batch_max_bytes: 65536
 event_batch_max_delay_us: 250
 fanout_batch_size: 64
 pub_workers_per_conn: 4
-pub_queue_depth: 64
+pub_queue_depth: 512
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
 pub_conn_total_inflight_bytes: 67108864
@@ -126,7 +126,7 @@ event_batch_max_bytes: 1048576
 event_batch_max_delay_us: 2000
 fanout_batch_size: 256
 pub_workers_per_conn: 8
-pub_queue_depth: 256
+pub_queue_depth: 2048
 pub_inflight_bytes: 268435456
 pub_ingress_wait: true
 subscriber_queue_capacity: 4096
@@ -194,8 +194,8 @@ publish shards do nothing but contend. Waits outside the broker -- a device
 flush, a forward to another broker, a quorum -- do not hold an executor, so one
 slow shard or peer holds up only its own lane.
 
-The queue holds `pub_queue_depth × pub_workers_per_conn` jobs and is shared
-fairly between tenants by deficit round robin. Every tenant is guaranteed
+The queue holds `pub_queue_depth × pub_workers_per_conn` jobs (512 × 4 = 2048 by
+default) and is shared fairly between tenants by deficit round robin. Every tenant is guaranteed
 `pub_queue_depth` slots; past that it may borrow idle room but never the last
 `pub_queue_depth` slots. An acked publish that finds no room is answered
 `overloaded` with `detail.reason = "publish_queue_full"` (retryable, nothing
@@ -281,6 +281,8 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 
 - All byte values are raw bytes; use powers of two for MiB values (e.g., 1048576 = 1 MiB).
 - Tune `pub_workers_per_conn` and `pub_queue_depth` together; deep queues trade latency for throughput.
+  The queue has to cover the publishes in flight from all pipelining publishers: when it fills, a
+  connection stops reading its stream and every stream on it stalls.
 - Increasing `pub_workers_per_conn` only helps if publish load is spread across multiple stream
   shards. Oversubscribing executors relative to shards can degrade performance.
 - `pub_inflight_bytes` bounds actual queued-or-processing publish *bytes*, independent of

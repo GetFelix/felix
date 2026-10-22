@@ -69,10 +69,8 @@ async fn concurrent_publishers_over_quic_share_a_flush() {
     // The brokers inherit this. Without it the default is `Periodic`, which
     // acknowledges before the flush and so asks no question about group commit.
     unsafe { std::env::set_var("FELIX_DURABLE_FSYNC_MODE", "on_commit") };
-    // The harness's default ingress queue is sized for correctness tests, not
-    // for 16 publishers in flight, and sheds with "publish queue full" well
-    // before the commit path is the constraint. Wait for capacity instead of
-    // shedding, and give the queue room: the question here is what the flush
+    // Wait for capacity instead of shedding "publish queue full", and give the
+    // queue more room than the default: the question here is what the flush
     // path does under concurrency, so admission must not be the thing measured.
     unsafe {
         std::env::set_var("FELIX_PUB_INGRESS_WAIT", "1");

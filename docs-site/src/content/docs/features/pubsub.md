@@ -394,7 +394,8 @@ Start with the defaults and change things only off a measurement. The
 defaults are what [Benchmarks](/features/benchmarks/) measures. The
 knobs pull in two directions:
 
-Toward latency, use smaller batches, shorter delays and shallower queues:
+Toward latency, use smaller batches, shorter delays and shallower queues. A queue
+below the 512 default sheds or stalls sooner when many publishers pipeline:
 
 ```yaml
 event_batch_max_events: 8
@@ -411,7 +412,7 @@ Toward throughput, use bigger batches, deeper queues and more connections:
 event_batch_max_events: 256
 event_batch_max_delay_us: 2000
 fanout_batch_size: 256
-pub_queue_depth: 512
+pub_queue_depth: 2048
 subscriber_queue_capacity: 4096
 subscriber_writer_lanes: 8
 ```

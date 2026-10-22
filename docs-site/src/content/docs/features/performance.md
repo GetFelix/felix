@@ -94,8 +94,8 @@ event_batch_max_bytes: 65536
 event_batch_max_delay_us: 250
 fanout_batch_size: 64
 
-# Queue depths (defaults favor bounded latency + visible overload over deep buffering)
-pub_queue_depth: 64
+# Queue depths (bounded, so overload shows up in counters rather than an unbounded backlog)
+pub_queue_depth: 512
 pub_inflight_bytes: 67108864           # 64 MiB shared in-flight publish byte budget
 subscriber_queue_capacity: 512
 subscriber_writer_lanes: 4
@@ -199,7 +199,7 @@ ack_on_commit: false
 # Deep queues, lossless end-to-end backpressure (paces the publisher to the
 # pipeline's sustainable rate instead of shedding), thread-per-core stream
 # ownership for multi-stream workloads
-pub_queue_depth: 256
+pub_queue_depth: 2048
 pub_inflight_bytes: 268435456          # 256 MiB
 pub_ingress_wait: true
 subscriber_queue_capacity: 4096
@@ -331,21 +331,22 @@ event_batch_max_delay_us: 1000
 #### Queue Depths and Byte Budgets
 
 ```yaml
-pub_queue_depth: 64                    # Publish pipeline queue (items)
+pub_queue_depth: 512                   # Publish queue slots per executor (items)
 pub_inflight_bytes: 67108864           # Shared in-flight publish byte budget (bytes, not items)
 subscriber_queue_capacity: 512         # Per-subscriber broker-core queue
 subscriber_lane_queue_depth: 64        # Per-lane outbound writer queue
 pub_workers_per_conn: 4                # Publish workers per connection (ignored when core_shards > 0)
 ```
 
-**Design intent**: defaults are deliberately shallow. `pub_queue_depth` and
-the lane queues bound how much can queue *before* backpressure or shedding
-kicks in. The goal is throughput that plateaus with bounded latency, and
-overload that shows up in drops and counters. A deep buffer hides the backlog
-until the process runs out of memory or tail latency grows without bound. `pub_inflight_bytes`
-is a second, independent budget on *bytes* rather than item count, so a few
-large batches can't blow past the ingress memory budget even with a small
-`pub_queue_depth`.
+**Design intent**: defaults are bounded, not deep. `pub_queue_depth` and the
+lane queues bound how much can queue *before* backpressure or shedding kicks
+in, so overload shows up in drops and counters instead of an unbounded
+backlog. The publish queue (`pub_queue_depth` × `pub_workers_per_conn`, 2048
+jobs by default) is sized to cover the publishes in flight from many
+pipelining publishers: when it fills, the publishing connection stops being
+read and all its streams stall. `pub_inflight_bytes` is a second, independent
+budget on *bytes* rather than item count, so a few large batches can't blow
+past the ingress memory budget even with a small `pub_queue_depth`.
 
 - **Shallower** (production default direction): lower memory, backpressure/drops surface sooner, bounded tail latency.
 - **Deeper** (opt-in, throughput profile): higher burst tolerance and memory, and only safe paired with `subscriber_queue_policy: block` + `pub_ingress_wait: true` (lossless pacing). Without those, deep queues only delay the drops.
@@ -527,10 +528,13 @@ pub_conn_pool: 2
 event_conn_pool: 4
 cache_conn_pool: 4
 event_batch_max_events: 32
-pub_queue_depth: 32
+pub_queue_depth: 128
 subscriber_queue_capacity: 64
 subscriber_writer_lanes: 2
 ```
+
+The publish queue should cover the publishes in flight from your publishers, so
+it grows with the number of pipelining connections.
 
 **Expected resources**: 2 CPU cores, 2-4 GB RAM
 
@@ -541,7 +545,7 @@ pub_conn_pool: 4
 event_conn_pool: 8
 cache_conn_pool: 8
 event_batch_max_events: 64
-pub_queue_depth: 64
+pub_queue_depth: 512
 subscriber_queue_capacity: 512
 subscriber_writer_lanes: 4
 ```
@@ -555,7 +559,7 @@ pub_conn_pool: 8
 event_conn_pool: 16
 cache_conn_pool: 16
 event_batch_max_events: 128
-pub_queue_depth: 256
+pub_queue_depth: 2048
 pub_inflight_bytes: 268435456
 subscriber_queue_capacity: 4096
 subscriber_writer_lanes: 8

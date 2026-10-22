@@ -734,3 +734,51 @@ mod lane_claim {
         assert_eq!(leader.tail(DURABLE).await, 3);
     }
 }
+
+/// Queue a single tenant's one-byte jobs without letting the executors run, until the queue
+/// refuses. Returns how many were queued and the refusal.
+async fn fill_until_refused(config: &BrokerConfig) -> (usize, String) {
+    use crate::serving::quic::handlers::publish::ack::EnqueuePolicy;
+    use crate::serving::quic::handlers::publish::ingress::enqueue_publish;
+
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let publish_ctx = build_publish_context(broker, config, ClusterContext::default());
+    // Nothing here yields, so the executors never drain the queue.
+    tokio::task::unconstrained(async {
+        let mut queued = 0;
+        loop {
+            let mut job = named_job("demo", None);
+            job.payloads = vec![Bytes::from_static(b"x")];
+            match enqueue_publish(&publish_ctx, "t1", job, EnqueuePolicy::Fail, None).await {
+                Ok(true) => queued += 1,
+                Ok(false) => unreachable!("Fail never drops"),
+                Err(err) => return (queued, err.to_string()),
+            }
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_default_queue_holds_2048_jobs() {
+    let config = BrokerConfig::default();
+    assert_eq!(config.pub_queue_depth, 512);
+    assert_eq!(config.pub_workers_per_conn, 4);
+    let (queued, refused) = fill_until_refused(&config).await;
+    // A lone tenant is kept off the last `pub_queue_depth` slots of the 2048.
+    assert_eq!(queued, 2048 - 512);
+    assert!(refused.contains("queue full"), "refused by: {refused}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_explicit_queue_depth_still_caps_the_queue() {
+    let config = BrokerConfig {
+        pub_workers_per_conn: 2,
+        pub_queue_depth: 3,
+        ..BrokerConfig::default()
+    };
+    let (queued, refused) = fill_until_refused(&config).await;
+    // Capacity 6, minus the 3 slots a lone tenant cannot take.
+    assert_eq!(queued, 3);
+    assert!(refused.contains("queue full"), "refused by: {refused}");
+}

@@ -49,7 +49,7 @@ event_batch_max_bytes: 65536
 event_batch_max_delay_us: 250
 fanout_batch_size: 64
 pub_workers_per_conn: 4
-pub_queue_depth: 64
+pub_queue_depth: 512
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
 pub_conn_total_inflight_bytes: 67108864
@@ -809,13 +809,13 @@ publish queue. The queue holds `pub_queue_depth × pub_workers_per_conn` jobs.
 
 **Type**: `usize` (count)
 
-**Default**: `64`
+**Default**: `512`
 
 **Environment**: `FELIX_BROKER_PUB_QUEUE_DEPTH`
 
 **Example**:
 ```yaml
-pub_queue_depth: 64
+pub_queue_depth: 512
 ```
 
 **Tuning**:
