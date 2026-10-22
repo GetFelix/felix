@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792657704068,
+  "lastUpdate": 1792680259052,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32292,6 +32292,58 @@ window.BENCHMARK_DATA = {
             "range": "12475.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1573911.32\nmean: 1578348.73\nstdev: 12475.86\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56843fec7bf6abfe1ed130391299ae298a3b3b9b",
+          "message": "build(deps): bump the cargo-minor-and-patch group with 6 updates (#1400)\n\nBumps the cargo-minor-and-patch group with 6 updates:\n\n| Package | From | To |\n| --- | --- | --- |\n| [serde_json](https://github.com/serde-rs/json) | `1.0.151` | `1.0.154` |\n| [opentelemetry](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [opentelemetry-otlp](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [opentelemetry_sdk](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [tokio-util](https://github.com/tokio-rs/tokio) | `0.7.19` | `0.7.20` |\n| [zstd](https://github.com/gyscos/zstd-rs) | `0.14.0` | `0.14.2` |\n\n\nUpdates `serde_json` from 1.0.151 to 1.0.154\n- [Release notes](https://github.com/serde-rs/json/releases)\n- [Commits](https://github.com/serde-rs/json/compare/v1.0.151...v1.0.154)\n\nUpdates `opentelemetry` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-0.33.0...opentelemetry-0.33.1)\n\nUpdates `opentelemetry-otlp` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-otlp-0.33.0...opentelemetry-otlp-0.33.1)\n\nUpdates `opentelemetry_sdk` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry_sdk-0.33.0...opentelemetry_sdk-0.33.1)\n\nUpdates `tokio-util` from 0.7.19 to 0.7.20\n- [Release notes](https://github.com/tokio-rs/tokio/releases)\n- [Commits](https://github.com/tokio-rs/tokio/compare/tokio-util-0.7.19...tokio-util-0.7.20)\n\nUpdates `zstd` from 0.14.0 to 0.14.2\n- [Release notes](https://github.com/gyscos/zstd-rs/releases)\n- [Commits](https://github.com/gyscos/zstd-rs/compare/v0.14.0...v0.14.2)\n\n---\nupdated-dependencies:\n- dependency-name: serde_json\n  dependency-version: 1.0.154\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry-otlp\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry_sdk\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: tokio-util\n  dependency-version: 0.7.20\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: zstd\n  dependency-version: 0.14.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-22T07:37:26-07:00",
+          "tree_id": "3d9423dc13d0912e618e4148b60bcfd09433c23b",
+          "url": "https://github.com/GetFelix/felix/commit/56843fec7bf6abfe1ed130391299ae298a3b3b9b"
+        },
+        "date": 1792680258156,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347244.85,
+            "range": "11243.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347244.85\nmean: 346865.16\nstdev: 11243.49\ncv: 3.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347244.85,
+            "range": "11243.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347244.85\nmean: 346865.16\nstdev: 11243.49\ncv: 3.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81035.92,
+            "range": "623.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81035.92\nmean: 81010.54\nstdev: 623.30\ncv: 0.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810359.17,
+            "range": "6232.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810359.17\nmean: 810105.43\nstdev: 6232.97\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
