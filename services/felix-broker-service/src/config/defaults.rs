@@ -79,7 +79,11 @@ pub(super) const DEFAULT_PUB_WORKERS_PER_CONN: usize = 4;
 // unbounded concurrent callers into shared broker state. `sync_batch_appends`
 // is the number to watch: the budget in docs/storage-performance.md is >= 8.
 pub(super) const DEFAULT_PUB_FLUSH_CONCURRENCY: usize = 32;
-pub(super) const DEFAULT_PUB_QUEUE_DEPTH: usize = 64;
+// The queue (this x executors) must cover the publishes in flight from many pipelining
+// publishers. When it fills, a connection's control loop stops reading its stream, which
+// stalls every stream on it. 1024 is what doubled throughput with 64 pipelining publishers
+// in the #1406 measurements; 64 stalled connections long before the byte budgets did.
+pub(super) const DEFAULT_PUB_QUEUE_DEPTH: usize = 1024;
 pub(super) const DEFAULT_PUB_INFLIGHT_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_PUB_CONN_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const DEFAULT_PUBLISH_WINDOW: u32 = 256;

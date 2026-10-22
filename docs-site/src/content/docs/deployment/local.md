@@ -146,7 +146,7 @@ event_batch_max_delay_us: 250
 
 fanout_batch_size: 64
 pub_workers_per_conn: 4
-pub_queue_depth: 64
+pub_queue_depth: 1024
 subscriber_queue_capacity: 512
 subscriber_writer_lanes: 4
 subscriber_lane_queue_depth: 64

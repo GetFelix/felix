@@ -1197,13 +1197,15 @@ it is counted in `felix_tenant_publish_queue_full_total{tenant,action}`.
 
 **Type**: Positive integer (count)
 
-**Default**: `64`
+**Default**: `1024` (4096 jobs with the default executors). Raised from 64: with
+many pipelining publishers a 256-job queue filled first, and a full queue
+stops the publishing connection from being read.
 
 **Example**:
 ```bash
-export FELIX_BROKER_PUB_QUEUE_DEPTH="64"
-export FELIX_BROKER_PUB_QUEUE_DEPTH="256"  # More buffering
-export FELIX_BROKER_PUB_QUEUE_DEPTH="32"   # Less memory
+export FELIX_BROKER_PUB_QUEUE_DEPTH="1024"
+export FELIX_BROKER_PUB_QUEUE_DEPTH="4096"  # More buffering
+export FELIX_BROKER_PUB_QUEUE_DEPTH="64"    # Less memory
 ```
 
 ### `FELIX_BROKER_PUBLISH_INFLIGHT_BYTES`
