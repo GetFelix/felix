@@ -1090,9 +1090,11 @@ stream.
 
 **Type**: Non-negative integer (count)
 
-**Default**: `4`. Shards share the four streams, so a stalled shard holds up
-the shards on its stream. Set it to the stream's shard count for full
-per-shard isolation, at some throughput cost when keys spread over many shards.
+**Default**: `4`. The first four shards the client publishes to on a broker
+(first come, across all streams) get their own stream; later shards use the
+pool, where a stalled shard can hold up the other pooled shards. To isolate
+every shard, set it to the total number of shards the client publishes to on a
+broker, at some throughput cost when keys spread over many shards.
 
 **Example**:
 ```bash

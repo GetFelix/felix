@@ -25,12 +25,14 @@ pub(crate) const DEFAULT_PUB_CONN_POOL: usize = 4;
 pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
 /// Publish streams a `ClusterClient` opens per broker for one shard each.
 ///
-/// Four keeps shard streams cheap: with keys spread over many shards, more
-/// dedicated streams measured slower (Azure, 256 B acked, 48 shards: none
-/// 161.6 MB/s, 4 about 125, 16 about 97). Shards share the four streams, so
-/// a stalled shard holds up only the shards on its stream, not the whole
-/// stream's. Raise it for full per-shard isolation. Each stream costs a writer
-/// task and one of the 1024 transport streams a connection allows.
+/// Four dedicated streams per broker, first come first served across every
+/// stream the client publishes to: the first four shards seen each get their
+/// own stream, every later shard uses the shared pool for good. Isolation
+/// matters when a shard can stall on its own (quorum waits, a dead follower),
+/// but on wide streams any cap protects only the first N shards seen, and
+/// each extra stream costs throughput when keys spread over many shards
+/// (Azure, 48 shards, 256 B acked: 16 about 97 MB/s, 4 about 125, 0 about
+/// 162). Four fully isolates streams of up to four shards.
 pub(crate) const DEFAULT_PUB_SHARD_STREAMS: usize = 4;
 pub(crate) const DEFAULT_EVENT_CONN_POOL: usize = 8;
 pub(crate) const DEFAULT_CACHE_CONN_POOL: usize = 8;

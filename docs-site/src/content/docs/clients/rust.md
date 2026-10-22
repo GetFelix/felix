@@ -412,15 +412,22 @@ extra round trip to authenticate it, and stays open. A client keeps at most
 `publish_shard_streams` of them per broker (4 by default,
 `FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
 
-With the default of 4, a stream with more than four shards puts several
-shards on one dedicated stream, so a shard stalled on a quorum holds up the
-shards that share its stream, not the stream's other shards. Full per-shard
-isolation needs a cap at least as large as the shard count of the streams you
-publish to (`FELIX_PUB_SHARD_STREAMS=16`, say). The default is low because
-dedicated streams cost throughput when keys spread evenly over many shards:
-on an 8 vCPU broker with 48 shards and 256 B acked publishes, 4 streams
-measured about 125 MB/s against about 97 MB/s for 16, and 0 (everything on
-the pool) 161.6 MB/s.
+The cap is per broker and first come, first served across every stream the
+client publishes to: the first four shards (tenant, namespace, stream, shard)
+it publishes to each get a dedicated stream, and every later shard uses the
+shared pool permanently. A stalled dedicated shard holds up only itself; a
+stalled pooled shard can hold up every other pooled shard, including other
+streams' shards.
+
+Four fully isolates streams of up to four shards. Isolation matters when a
+shard can stall on its own, as with quorum waits or a dead follower on a
+replicated stream. On a wide stream any cap protects only the first N shards
+seen, so a high cap buys arbitrary partial protection at a throughput cost: on
+an 8 vCPU broker with a 48-shard stream and 256 B acked publishes, 16 streams
+measured about 97 MB/s, 4 about 125 MB/s and 0 (everything on the pool) about
+162 MB/s. For wide replicated streams that need isolation, raise
+`FELIX_PUB_SHARD_STREAMS` to the total number of shards the client publishes
+to on a broker. Adaptive dedicated streams are tracked in #1417.
 
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,

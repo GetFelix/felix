@@ -61,9 +61,11 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - Values: `rr` or `hash_stream`.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
   - Most publish streams a client opens per broker for one shard each,
-    beside the pool. Default: `4`. `0` turns them off. With more shards
-    than streams, shards share a stream and a stalled shard holds up the
-    others on it; raise the value to the shard count for full isolation.
+    beside the pool. Default: `4`. `0` turns them off. The first
+    four shards seen per broker (across all streams) get a stream each; later
+    shards use the pool, where a stalled shard can hold up other pooled shards.
+    To isolate every shard, raise it to the total number of shards published
+    to on a broker.
   - Each publish goes on its shard's own stream, so a shard stalled on the
     broker holds up only itself, and one stream's shards spread over the
     client's connections and listeners. Opened on the shard's first publish,
