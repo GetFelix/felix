@@ -489,16 +489,19 @@ print("fio.%s.sync_lat_p99_us=%.1f" % (label, pct.get("99.000000", 0) / 1e3))
 PY
 }
 
-# profile-start <tag> <seconds>: `perf record -g` on the broker plus
-# per-thread CPU from pidstat, both in the background, both stopping on their
-# own. Useful stacks need the frame-pointer build (<ref>-fp); on a plain
-# release build most of the tree collapses into [unknown].
+# profile-start <tag> <seconds> [hz]: `perf record` with frame-pointer call
+# graphs on the broker plus per-thread CPU from pidstat, both in the
+# background, both stopping on their own. Useful stacks need the frame-pointer
+# build (<ref>-fp); on a plain release build most of the tree collapses into
+# [unknown]. 99 Hz keeps a 40 s capture small enough to report in seconds;
+# --no-buildid skips the end-of-run pass that reads every mapped binary.
 cmd_profile_start() {
-  tag="$1"; secs="$2"
+  tag="$1"; secs="$2"; hz="${3:-99}"
   mkdir -p "$PERFDIR"
   pid=$(pidof -s felix-broker)
   if command -v perf >/dev/null; then
-    nohup perf record -F 199 -g -p "$pid" -o "$PERFDIR/$tag.data" -- sleep "$secs" >/dev/null 2>&1 &
+    nohup perf record -F "$hz" --call-graph fp --no-buildid --no-buildid-cache \
+      -p "$pid" -o "$PERFDIR/$tag.data" -- sleep "$secs" >/dev/null 2>&1 &
     echo "perf=$tag"
   else
     echo "perf=unavailable"
@@ -531,21 +534,25 @@ cmd_profile_report() {
   fi
   [ -s "$f" ] || { echo "perf.$tag=missing"; return 0; }
   echo "-- perf by thread --"
-  perf report -i "$f" --stdio --no-children --sort comm --percent-limit 1 2>/dev/null \
+  # --no-inline: resolving inlined frames walks the binary's DWARF per sample
+  # and took over 20 minutes on a broker capture. -g none: flat tables only.
+  timeout 120 perf report -i "$f" --stdio --no-inline -g none --no-children --sort comm --percent-limit 1 2>/dev/null \
     | grep -E '^ +[0-9.]+%' | head -12 | cut -c1-90
   echo "-- perf by symbol --"
-  perf report -i "$f" --stdio --no-children --sort sym --percent-limit 0.5 2>/dev/null \
+  timeout 120 perf report -i "$f" --stdio --no-inline -g none --no-children --sort sym --percent-limit 0.5 2>/dev/null \
     | grep -E '^ +[0-9.]+%' | head -25 | cut -c1-110
 }
 
 # profile-collapse <tag>: fold the perf samples into `comm;root;...;leaf count`
 # lines (flamegraph.pl input), gzip and base64 them, and print the size so the
-# operator can pull the file home in chunks.
+# operator can pull the file home in chunks. --no-inline for the same reason as
+# in profile-report; timeout so a bad capture cannot hold the run-command.
 cmd_profile_collapse() {
   tag="$1"
   f="$PERFDIR/$tag.data"
   [ -s "$f" ] || { echo "folded.bytes=0"; return 0; }
-  perf script -i "$f" 2>/dev/null | awk '
+  t0=$(date +%s)
+  timeout 240 perf script -i "$f" --no-inline 2>/dev/null | awk '
     function flush(   s, i) {
       if (have) { s = comm; for (i = n; i >= 1; i--) s = s ";" fr[i]; cnt[s]++ }
       have = 0; n = 0
@@ -558,8 +565,8 @@ cmd_profile_collapse() {
       fr[++n] = line; next
     }
     /^$/ { flush() }
-    END { flush(); for (s in cnt) print s, cnt[s] }' | gzip -9 | base64 -w0 > "$PERFDIR/$tag.folded.gz.b64"
-  echo "folded.bytes=$(wc -c < "$PERFDIR/$tag.folded.gz.b64")"
+    END { flush(); for (s in cnt) print s, cnt[s] }' | gzip -6 | base64 -w0 > "$PERFDIR/$tag.folded.gz.b64"
+  echo "folded.bytes=$(wc -c < "$PERFDIR/$tag.folded.gz.b64") folded.secs=$(( $(date +%s) - t0 ))"
 }
 
 # chunk <path> <offset> <length>: a slice of a file, for pulling a small

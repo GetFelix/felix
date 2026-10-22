@@ -182,11 +182,13 @@ it on every broker; `--activate` switches to it, `--fp` builds with frame
 pointers. Switching between installed builds is `broker-env.sh activate <label>`.
 
 **Profiles.** `PROFILE=1` (every cell) or `PROFILE_CELLS=<regex>` records
-`perf record -F 199 -g` and `pidstat -t` on each broker during the cell, and
+`perf record -F 99 --call-graph fp` and `pidstat -t` on each broker during the cell, and
 brings home a per-thread CPU table, the heads of the perf report and the
 collapsed stacks (`<broker>.folded.gz`, flamegraph.pl input). Stacks resolve
 on a `<ref>-fp` build (`FP_REFS=main` at provision, or `deploy-ref.sh --fp`);
 the Rust standard library itself is still built without frame pointers.
+Report and fold run with `--no-inline` (resolving inlined frames took over 20
+minutes on a broker capture); a 40 s capture reports and folds in seconds.
 
 **What a cell records** (`cells/<name>/`): the broker's running binary (sha256
 and git SHA) and full `FELIX_*` environment; counters before and after
