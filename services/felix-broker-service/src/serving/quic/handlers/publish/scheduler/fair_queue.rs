@@ -60,6 +60,10 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
         self.queued == 0
     }
 
+    pub(crate) fn is_full(&self) -> bool {
+        self.queued >= self.capacity
+    }
+
     /// Jobs `tenant` has queued.
     #[cfg(test)]
     pub(crate) fn queued_for(&self, tenant: &str) -> usize {

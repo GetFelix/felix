@@ -17,21 +17,28 @@
 //! retryable `overloaded` when it has an ack, and counted against its tenant
 //! either way: see `ingress::enqueue_publish`.
 //!
+//! A submitter allowed to wait for room parks its job in the partition, and a
+//! freed slot is handed straight to the oldest parked job its tenant may queue.
+//! One slot wakes one submitter, however many are waiting.
+//!
 //! With core shards on there is one partition per core, each with its own
 //! queue and executors on that core, so a stream's claims stay on the core
 //! that owns it.
 
 mod fair_queue;
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 
 use super::{PublishJob, PublishTarget};
 use crate::serving::quic::GLOBAL_INGRESS_DEPTH;
@@ -90,27 +97,40 @@ impl PublishScheduler {
             .map(Bytes::len)
             .sum::<usize>()
             .saturating_add(JOB_COST_BYTES);
-        let mut job = match partition.try_push(tenant, lane, job, cost) {
+        let job = match partition.try_push(tenant, lane, job, cost) {
             Err(Rejected::Full(job)) => *job,
             done => return done,
         };
         tokio::pin!(give_up);
-        loop {
-            // Registered before the retry, so a pop between the two still
-            // wakes this waiter.
-            let _waiting = partition.register_waiter();
-            let space = partition.space.notified();
-            tokio::pin!(space);
-            space.as_mut().enable();
-            job = match partition.try_push(tenant, lane, job, cost) {
-                Err(Rejected::Full(job)) => *job,
-                done => return done,
-            };
-            tokio::select! {
-                biased;
-                _ = &mut space => {}
-                _ = &mut give_up => return Err(Rejected::Full(Box::new(job))),
+        // A caller that may not wait is refused without touching the waiters.
+        if futures::FutureExt::now_or_never(&mut give_up).is_some() {
+            return Err(Rejected::Full(Box::new(job)));
+        }
+        let (id, admitted) = match partition.park(tenant, lane, job, cost) {
+            Park::Done(done) => return done,
+            Park::Waiting(id, admitted) => (id, admitted),
+        };
+        // Dropping the future unparks the job; a job already admitted is
+        // simply queued, as if the push had landed just before the drop.
+        let mut parked = Unparker { partition, id };
+        tokio::select! {
+            biased;
+            admitted = admitted => {
+                parked.id = NOT_PARKED;
+                // A dropped sender means the queue closed under the waiter.
+                admitted.map_err(|_| Rejected::Closed)
             }
+            _ = &mut give_up => match partition.unpark(id) {
+                Some(job) => {
+                    parked.id = NOT_PARKED;
+                    Err(Rejected::Full(Box::new(job)))
+                }
+                // Admitted in the instant before giving up: it is queued.
+                None => {
+                    parked.id = NOT_PARKED;
+                    Ok(())
+                }
+            },
         }
     }
 
@@ -119,6 +139,18 @@ impl PublishScheduler {
     pub(crate) async fn send(&self, job: PublishJob) {
         if self
             .submit("test", job, std::future::pending())
+            .await
+            .is_err()
+        {
+            panic!("the publish queue is closed");
+        }
+    }
+
+    /// Queue `job` as `tenant`, waiting for room however long it takes.
+    #[cfg(test)]
+    pub(crate) async fn send_as(&self, tenant: &str, job: PublishJob) {
+        if self
+            .submit(tenant, job, std::future::pending())
             .await
             .is_err()
         {
@@ -150,25 +182,67 @@ pub(crate) enum Rejected {
 
 /// One queue and the executors that drain it.
 pub(crate) struct Partition {
-    queue: Mutex<FairQueue<LaneKey, PublishJob>>,
+    state: Mutex<State>,
     /// Wakes executors: a lane became ready, or the queue closed.
     work: Notify,
-    /// Wakes submitters waiting for room.
-    space: Notify,
-    /// Submitters waiting on `space`, so a pop only pays for a wake-up when
-    /// someone is listening.
-    waiting: AtomicUsize,
     closed: AtomicBool,
+    /// Submitters woken to be admitted, for tests that pin down the wake count.
+    #[cfg(test)]
+    admit_wakes: AtomicUsize,
+}
+
+/// The queue and the submitters waiting for room in it, under one lock so a
+/// job is either queued or parked, never both and never neither.
+struct State {
+    queue: FairQueue<LaneKey, PublishJob>,
+    /// Parked jobs by arrival number, oldest first.
+    waiters: BTreeMap<u64, Waiter>,
+    next_id: u64,
+}
+
+/// A job that found the queue full and waits for a slot.
+struct Waiter {
+    tenant: String,
+    lane: LaneKey,
+    cost: usize,
+    job: PublishJob,
+    admitted: oneshot::Sender<()>,
+}
+
+enum Park {
+    Done(Result<(), Rejected>),
+    Waiting(u64, oneshot::Receiver<()>),
+}
+
+/// Stands for a parked job while its submitter waits; removes it if the
+/// submitter is dropped first.
+struct Unparker<'a> {
+    partition: &'a Partition,
+    id: u64,
+}
+
+const NOT_PARKED: u64 = u64::MAX;
+
+impl Drop for Unparker<'_> {
+    fn drop(&mut self) {
+        if self.id != NOT_PARKED {
+            self.partition.unpark(self.id);
+        }
+    }
 }
 
 impl Partition {
     fn new(capacity: usize, share: usize) -> Self {
         Self {
-            queue: Mutex::new(FairQueue::new(capacity, share, QUANTUM_BYTES)),
+            state: Mutex::new(State {
+                queue: FairQueue::new(capacity, share, QUANTUM_BYTES),
+                waiters: BTreeMap::new(),
+                next_id: 0,
+            }),
             work: Notify::new(),
-            space: Notify::new(),
-            waiting: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
+            #[cfg(test)]
+            admit_wakes: AtomicUsize::new(0),
         }
     }
 
@@ -180,10 +254,9 @@ impl Partition {
             tokio::pin!(work);
             work.as_mut().enable();
             {
-                let mut queue = self.queue.lock();
-                if let Some((lane, job)) = queue.pop() {
-                    drop(queue);
-                    self.popped(1);
+                let mut state = self.state.lock();
+                if let Some((lane, job)) = state.queue.pop() {
+                    self.popped(state, 1);
                     let guard = LaneGuard {
                         partition: Arc::clone(self),
                         lane,
@@ -191,7 +264,7 @@ impl Partition {
                     return Some((job, guard));
                 }
                 // Jobs behind a busy lane still count, so this waits for them.
-                if self.closed.load(Ordering::Acquire) && queue.is_empty() {
+                if self.closed.load(Ordering::Acquire) && state.queue.is_empty() {
                     return None;
                 }
             }
@@ -209,17 +282,63 @@ impl Partition {
         if self.closed.load(Ordering::Acquire) {
             return Err(Rejected::Closed);
         }
-        self.queue
+        self.state
             .lock()
+            .queue
             .push(tenant, lane, job, cost)
             .map_err(|job| Rejected::Full(Box::new(job)))?;
-        let global = GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-        self.work.notify_one();
+        self.queued(1);
         Ok(())
     }
 
-    fn popped(&self, jobs: usize) {
+    /// Queue the job, or park it until a freed slot is handed to it. The retry
+    /// and the parking happen under one lock, so a slot freed in between is
+    /// not missed.
+    fn park(&self, tenant: &str, lane: LaneKey, job: PublishJob, cost: usize) -> Park {
+        let mut state = self.state.lock();
+        if self.closed.load(Ordering::Acquire) {
+            return Park::Done(Err(Rejected::Closed));
+        }
+        let job = match state.queue.push(tenant, lane, job, cost) {
+            Ok(()) => {
+                drop(state);
+                self.queued(1);
+                return Park::Done(Ok(()));
+            }
+            Err(job) => job,
+        };
+        let id = state.next_id;
+        state.next_id += 1;
+        let (admitted, wake) = oneshot::channel();
+        state.waiters.insert(
+            id,
+            Waiter {
+                tenant: tenant.to_owned(),
+                lane,
+                cost,
+                job,
+                admitted,
+            },
+        );
+        Park::Waiting(id, wake)
+    }
+
+    /// Take a parked job back. `None` when it was admitted, or the queue
+    /// closed, first.
+    fn unpark(&self, id: u64) -> Option<PublishJob> {
+        self.state.lock().waiters.remove(&id).map(|w| w.job)
+    }
+
+    /// Bookkeeping for `jobs` newly queued: depth gauge and an executor.
+    fn queued(&self, jobs: usize) {
+        let global = GLOBAL_INGRESS_DEPTH.fetch_add(jobs, Ordering::Relaxed) + jobs;
+        t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
+        self.work.notify_one();
+    }
+
+    /// `jobs` left the queue: hand each freed slot to the oldest parked job
+    /// whose tenant may take it, and wake just those submitters.
+    fn popped(&self, mut state: parking_lot::MutexGuard<'_, State>, jobs: usize) {
         let global = GLOBAL_INGRESS_DEPTH
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
                 Some(depth.saturating_sub(jobs))
@@ -227,13 +346,26 @@ impl Partition {
             .unwrap_or(0)
             .saturating_sub(jobs);
         t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-        if self.waiting.load(Ordering::SeqCst) > 0 {
-            self.space.notify_waiters();
+        if state.waiters.is_empty() {
+            return;
+        }
+        let admitted = state.admit_waiters();
+        drop(state);
+        if admitted.is_empty() {
+            return;
+        }
+        self.queued(admitted.len());
+        #[cfg(test)]
+        self.admit_wakes
+            .fetch_add(admitted.len(), Ordering::Relaxed);
+        for wake in admitted {
+            // A submitter that went away took its job back first.
+            let _ = wake.send(());
         }
     }
 
     fn complete(&self, lane: &LaneKey) {
-        self.queue.lock().complete(lane);
+        self.state.lock().queue.complete(lane);
         // The lane may be ready again; and a closing queue may now be empty,
         // which every idle executor needs to hear to exit.
         if self.closed.load(Ordering::Acquire) {
@@ -244,24 +376,59 @@ impl Partition {
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        let parked = {
+            let mut state = self.state.lock();
+            self.closed.store(true, Ordering::Release);
+            std::mem::take(&mut state.waiters)
+        };
+        // Dropping each sender tells its submitter the queue is closed.
+        drop(parked);
         self.work.notify_waiters();
-        self.space.notify_waiters();
-    }
-
-    fn register_waiter(&self) -> Waiting<'_> {
-        self.waiting.fetch_add(1, Ordering::SeqCst);
-        Waiting(&self.waiting)
     }
 
     /// Pop a job and finish its lane at once, for tests that stand in for
     /// the executors.
     #[cfg(test)]
     pub(crate) fn try_take(self: &Arc<Self>) -> Option<PublishJob> {
-        let (lane, job) = self.queue.lock().pop()?;
-        self.popped(1);
+        let mut state = self.state.lock();
+        let (lane, job) = state.queue.pop()?;
+        self.popped(state, 1);
         self.complete(&lane);
         Some(job)
+    }
+}
+
+impl State {
+    /// Queue parked jobs, oldest first, while there is room. A tenant refused
+    /// once is skipped for the rest of the pass, since its answer cannot
+    /// change until something else leaves. Returns the submitters to wake.
+    fn admit_waiters(&mut self) -> Vec<oneshot::Sender<()>> {
+        let mut woken = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        let mut from = 0;
+        while !self.queue.is_full() {
+            let Some(id) = self
+                .waiters
+                .range(from..)
+                .find(|(_, w)| !refused.contains(&w.tenant))
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            from = id + 1;
+            let waiter = self.waiters.remove(&id).expect("found above");
+            match self
+                .queue
+                .push(&waiter.tenant, waiter.lane, waiter.job, waiter.cost)
+            {
+                Ok(()) => woken.push(waiter.admitted),
+                Err(job) => {
+                    refused.push(waiter.tenant.clone());
+                    self.waiters.insert(id, Waiter { job, ..waiter });
+                }
+            }
+        }
+        woken
     }
 }
 
@@ -288,10 +455,12 @@ impl LaneGuard {
         if max == 0 {
             return Vec::new();
         }
-        let taken = self.partition.queue.lock().take_more(&self.lane, max, take);
-        if !taken.is_empty() {
-            self.partition.popped(taken.len());
+        let mut state = self.partition.state.lock();
+        let taken = state.queue.take_more(&self.lane, max, take);
+        if taken.is_empty() {
+            return taken;
         }
+        self.partition.popped(state, taken.len());
         taken
     }
 }
@@ -339,15 +508,6 @@ impl LaneKey {
         match self {
             Self::Local(id) | Self::Remote(id) => (id % partitions.max(1) as u64) as usize,
         }
-    }
-}
-
-/// Counts a submitter as waiting for room for as long as it is held.
-struct Waiting<'a>(&'a AtomicUsize);
-
-impl Drop for Waiting<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

@@ -8,6 +8,7 @@ use metrics::{
     Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
     with_local_recorder,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::oneshot;
 
 use super::*;
@@ -259,6 +260,237 @@ async fn a_closed_queue_refuses_new_work_and_drains_old() {
     ));
     assert!(rx.recv().await.is_some(), "a queued job was lost on close");
     assert!(rx.recv().await.is_none());
+}
+
+fn tenant_of(job: &PublishJob) -> String {
+    match &job.target {
+        PublishTarget::Named { tenant_id, .. } => tenant_id.clone(),
+        _ => unreachable!("tests queue named jobs"),
+    }
+}
+
+/// A submitter parked on `scheduler` as `tenant`, and how often it was polled.
+/// A woken task is polled again, so the count is the number of wake-ups.
+fn parked_submitter(
+    scheduler: &Arc<PublishScheduler>,
+    tenant: &str,
+) -> (
+    tokio::task::JoinHandle<Result<(), Rejected>>,
+    Arc<AtomicUsize>,
+) {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(scheduler);
+        let polls = Arc::clone(&polls);
+        let tenant = tenant.to_owned();
+        async move {
+            let submit = scheduler.submit(&tenant, named_job(&tenant), std::future::pending());
+            tokio::pin!(submit);
+            futures::future::poll_fn(|cx| {
+                polls.fetch_add(1, Ordering::SeqCst);
+                std::future::Future::poll(submit.as_mut(), cx)
+            })
+            .await
+        }
+    });
+    (handle, polls)
+}
+
+async fn settle() {
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+}
+
+fn admit_wakes(scheduler: &PublishScheduler) -> usize {
+    scheduler.partitions()[0]
+        .admit_wakes
+        .load(Ordering::Relaxed)
+}
+
+/// Freeing one slot wakes one submitter, however many are waiting.
+#[tokio::test]
+async fn a_freed_slot_wakes_exactly_one_waiting_submitter() {
+    const WAITING: usize = 16;
+    let (scheduler, tx, mut rx) = test_channel(2);
+    tx.try_send(named_job("filler")).expect("room");
+    tx.try_send(named_job("filler")).expect("room");
+    let waiters: Vec<_> = (0..WAITING)
+        .map(|n| parked_submitter(&scheduler, &format!("w{n}")))
+        .collect();
+    settle().await;
+    let before: Vec<usize> = waiters
+        .iter()
+        .map(|(_, polls)| polls.load(Ordering::SeqCst))
+        .collect();
+
+    rx.try_recv().expect("a queued job");
+    settle().await;
+
+    let woken = waiters
+        .iter()
+        .zip(&before)
+        .filter(|((_, polls), before)| polls.load(Ordering::SeqCst) != **before)
+        .count();
+    assert_eq!(woken, 1, "one freed slot woke {woken} submitters");
+    assert_eq!(admit_wakes(&scheduler), 1);
+    assert_eq!(waiters.iter().filter(|(h, _)| h.is_finished()).count(), 1);
+}
+
+/// Waiting submitters get in in the order they arrived.
+#[tokio::test]
+async fn waiting_submitters_are_admitted_in_arrival_order() {
+    const WAITING: usize = 8;
+    let (scheduler, tx, mut rx) = test_channel(2);
+    tx.try_send(named_job("filler")).expect("room");
+    tx.try_send(named_job("filler")).expect("room");
+    let mut waiters = Vec::new();
+    for n in 0..WAITING {
+        waiters.push(parked_submitter(&scheduler, &format!("w{n}")));
+        settle().await;
+    }
+    // The fair queue decides how fillers and waiters interleave on the way
+    // out; the waiters among them must come out in the order they arrived.
+    let mut order = Vec::new();
+    for _ in 0..WAITING + 2 {
+        order.push(tenant_of(&rx.try_recv().expect("queued")));
+        settle().await;
+    }
+    order.retain(|tenant| tenant != "filler");
+    let expected: Vec<_> = (0..WAITING).map(|n| format!("w{n}")).collect();
+    assert_eq!(order, expected);
+}
+
+/// A waiter that goes away, by being dropped or by giving up, does not hold
+/// a slot or swallow the wake meant for the next one.
+#[tokio::test]
+async fn a_departed_waiter_does_not_strand_the_next() {
+    let (scheduler, tx, mut rx) = test_channel(1);
+    tx.try_send(named_job("filler")).expect("room");
+    let (first, _) = parked_submitter(&scheduler, "w0");
+    settle().await;
+    let (second, _) = parked_submitter(&scheduler, "w1");
+    settle().await;
+    let (give_up, stop) = oneshot::channel::<()>();
+    let leaving = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        async move {
+            scheduler
+                .submit("w2", named_job("w2"), async {
+                    let _ = stop.await;
+                })
+                .await
+        }
+    });
+    settle().await;
+    let (third, _) = parked_submitter(&scheduler, "w3");
+    settle().await;
+
+    first.abort();
+    let _ = first.await;
+    give_up.send(()).expect("still waiting");
+    match leaving.await.expect("task") {
+        Err(Rejected::Full(job)) => assert_eq!(tenant_of(&job), "w2"),
+        _ => panic!("a submitter that gave up gets its job back"),
+    }
+
+    rx.try_recv().expect("the filler");
+    settle().await;
+    assert!(second.is_finished(), "the next waiter was not admitted");
+    assert!(!third.is_finished());
+    assert_eq!(tenant_of(&rx.try_recv().expect("w1")), "w1");
+    settle().await;
+    assert!(third.is_finished());
+    assert_eq!(tenant_of(&rx.try_recv().expect("w3")), "w3");
+    assert!(rx.try_recv().is_err(), "the aborted waiter's job leaked in");
+}
+
+/// Closing the queue wakes every waiter with `Closed`.
+#[tokio::test]
+async fn closing_wakes_every_waiting_submitter() {
+    let (scheduler, tx, _rx) = test_channel(1);
+    tx.try_send(named_job("filler")).expect("room");
+    let waiters: Vec<_> = (0..5)
+        .map(|n| parked_submitter(&scheduler, &format!("w{n}")))
+        .collect();
+    settle().await;
+    scheduler.close();
+    for (waiter, _) in waiters {
+        assert!(matches!(waiter.await.expect("task"), Err(Rejected::Closed)));
+    }
+}
+
+/// A slot goes to a tenant that may take it, not to an older waiter of a
+/// tenant already at its share.
+#[tokio::test]
+async fn a_slot_skips_a_waiter_whose_tenant_is_at_its_share() {
+    let scheduler = Arc::new(PublishScheduler::new(1, 4, 2));
+    let ready = || std::future::ready(());
+    for tenant in ["a", "a", "b", "b"] {
+        assert!(
+            scheduler
+                .submit(tenant, named_job(tenant), ready())
+                .await
+                .is_ok()
+        );
+    }
+    let (a_waiter, _) = parked_submitter(&scheduler, "a");
+    settle().await;
+    let (b_waiter, _) = parked_submitter(&scheduler, "b");
+    settle().await;
+
+    // Whichever tenant frees a slot, only a waiter of that tenant may take
+    // it: the other is at its share with nothing left over to borrow.
+    let freed = tenant_of(&scheduler.partitions()[0].try_take().expect("queued"));
+    settle().await;
+    let (took, left) = if freed == "a" {
+        (&a_waiter, &b_waiter)
+    } else {
+        (&b_waiter, &a_waiter)
+    };
+    assert!(
+        took.is_finished(),
+        "the freed tenant's waiter should get in"
+    );
+    assert!(!left.is_finished());
+}
+
+/// Many submitters and a slow drain: every job gets through, none is lost
+/// to a wake-up that went to the wrong place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_submitter_is_lost_under_contention() {
+    const SUBMITTERS: usize = 64;
+    const EACH: usize = 100;
+    let (scheduler, _tx, mut rx) = test_channel(4);
+    let mut tasks = Vec::new();
+    for n in 0..SUBMITTERS {
+        let scheduler = Arc::clone(&scheduler);
+        tasks.push(tokio::spawn(async move {
+            let tenant = format!("t{}", n % 5);
+            for _ in 0..EACH {
+                scheduler.send_as(&tenant, named_job(&tenant)).await;
+            }
+        }));
+    }
+    let drain = tokio::spawn(async move {
+        let mut got = 0;
+        while got < SUBMITTERS * EACH {
+            rx.recv().await.expect("open");
+            got += 1;
+            if got % 7 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+        got
+    });
+    let total = tokio::time::timeout(Duration::from_secs(60), drain)
+        .await
+        .expect("a submitter was never woken")
+        .expect("drain");
+    assert_eq!(total, SUBMITTERS * EACH);
+    for task in tasks {
+        task.await.expect("submitter");
+    }
 }
 
 /// Counter values by name, `tenant` and `action`.
