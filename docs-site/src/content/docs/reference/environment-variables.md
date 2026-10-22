@@ -1079,6 +1079,36 @@ export FELIX_PUB_STREAMS_PER_CONN="2"
 export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 ```
 
+### `FELIX_PUB_LINGER_US`
+
+**Description**: Microseconds a busy publish stream waits for more publishes
+before it writes (client). A stream is busy while it has unanswered publishes;
+an idle stream writes at once. Acks are still read during the wait. Under a
+millisecond the wait yields in a loop instead of using the runtime timer.
+
+**Type**: Non-negative integer (microseconds)
+
+**Default**: `0` (off)
+
+**Example**:
+```bash
+export FELIX_PUB_LINGER_US="200"
+```
+
+### `FELIX_PUB_LINGER_BYTES`
+
+**Description**: Staged bytes at which a lingering publish stream stops waiting
+and writes (client). Only matters with `FELIX_PUB_LINGER_US` above zero.
+
+**Type**: Positive integer (bytes)
+
+**Default**: `16384`
+
+**Example**:
+```bash
+export FELIX_PUB_LINGER_BYTES="4096"
+```
+
 ### `FELIX_PUB_SHARD_STREAMS`
 
 **Description**: Most publish streams a client opens per broker for one shard

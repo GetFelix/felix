@@ -19,8 +19,8 @@ use crate::config::{
 };
 use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
 use crate::publish::{
-    LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
-    run_publisher_writer_with_limit,
+    LearnWidth, OpenWorker, PublishAdmission, PublishLinger, PublishWorker, ShardStreams,
+    StreamWidths, run_publisher_writer_with_limit,
 };
 
 impl Client {
@@ -574,6 +574,10 @@ pub(super) fn spawn_publish_worker(
     } = opened;
     let (tx, rx) = mpsc::channel(publish_queue_depth);
     let max_frame_bytes = runtime_config.max_frame_bytes;
+    let linger = PublishLinger {
+        window: std::time::Duration::from_micros(runtime_config.publish_linger_us),
+        bytes: runtime_config.publish_linger_bytes,
+    };
     let window = lease.publish_window(&negotiated);
     // Not colocated with the transport drivers (unlike the subscription read
     // pump): publisher writers block in `write_all` against a full send
@@ -588,6 +592,7 @@ pub(super) fn spawn_publish_worker(
             publish_chunk_bytes,
             max_frame_bytes,
             window,
+            linger,
         )
         .await
     });

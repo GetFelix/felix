@@ -26,7 +26,7 @@ pub(crate) use shard_streams::{OpenWorker, ShardStreams};
 #[cfg(test)]
 pub(crate) use widths::REVALIDATE_TIMEOUT;
 pub(crate) use widths::{LearnWidth, StreamWidths, Width};
-pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
+pub(crate) use writer::{PublishLinger, PublishWorker, run_publisher_writer_with_limit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

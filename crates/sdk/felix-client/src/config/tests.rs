@@ -405,3 +405,24 @@ fn zero_shard_streams_from_env_is_honoured() {
     }
     assert_eq!(config.publish_shard_streams, 0);
 }
+
+#[allow(deprecated)]
+#[test]
+#[serial_test::serial]
+fn publish_linger_defaults_off_and_reads_the_environment() {
+    let quinn = quinn::ClientConfig::with_platform_verifier();
+    let config = ClientConfig::from_env_or_yaml(quinn.clone(), None).expect("config");
+    assert_eq!(config.publish_linger_us, 0);
+    assert_eq!(config.publish_linger_bytes, DEFAULT_PUB_LINGER_BYTES);
+    unsafe {
+        std::env::set_var("FELIX_PUB_LINGER_US", "200");
+        std::env::set_var("FELIX_PUB_LINGER_BYTES", "4096");
+    }
+    let config = ClientConfig::from_env_or_yaml(quinn, None).expect("config");
+    unsafe {
+        std::env::remove_var("FELIX_PUB_LINGER_US");
+        std::env::remove_var("FELIX_PUB_LINGER_BYTES");
+    }
+    assert_eq!(config.publish_linger_us, 200);
+    assert_eq!(config.publish_linger_bytes, 4096);
+}

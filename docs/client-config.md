@@ -64,6 +64,19 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 - `publish_sharding` (env: `FELIX_PUB_SHARDING`)
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
+- `publish_linger_us` (env: `FELIX_PUB_LINGER_US`)
+  - Microseconds a busy publish stream waits for more publishes before it
+    writes. Default: `0` (off).
+  - A stream is busy while it has unanswered publishes. An idle stream writes
+    at once, so a lone publish never waits. During the wait the stream still
+    reads acks, and a finish or a closed queue ends it. The wait is one write's
+    worth of gathering: fewer, fuller datagrams for the broker, at the price of
+    up to this much added latency under load.
+  - Waits under a millisecond cannot use the runtime timer, which ticks at 1
+    ms. The last millisecond of a wait yields in a loop, which keeps one
+    runtime worker busy for that long.
+- `publish_linger_bytes` (env: `FELIX_PUB_LINGER_BYTES`)
+  - Staged bytes at which a lingering stream stops waiting. Default: `16384`.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
   - Most publish streams a client opens per broker for one shard each,
     beside the pool. Default: `16`. `0` turns them off.

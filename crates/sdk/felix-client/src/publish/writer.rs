@@ -111,6 +111,39 @@ struct Staged {
     frame_bytes: u64,
 }
 
+/// How long a busy stream waits for more publishes before writing, and how
+/// much it gathers before it stops waiting.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PublishLinger {
+    pub(crate) window: std::time::Duration,
+    pub(crate) bytes: usize,
+}
+
+impl PublishLinger {
+    /// Write as soon as the queue is drained.
+    #[cfg(test)]
+    pub(crate) const OFF: Self = Self {
+        window: std::time::Duration::ZERO,
+        bytes: 0,
+    };
+}
+
+/// Wait until `deadline`. Tokio's timer ticks at 1 ms, which is the whole
+/// window for a sub-millisecond linger, so only the coarse part sleeps and
+/// the last millisecond yields in a loop. The loop keeps one runtime worker
+/// busy for at most that millisecond per wait.
+async fn linger_until(deadline: std::time::Instant) {
+    let coarse = deadline.checked_sub(std::time::Duration::from_millis(1));
+    if let Some(coarse) = coarse
+        && coarse > std::time::Instant::now()
+    {
+        tokio::time::sleep_until(coarse.into()).await;
+    }
+    while std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+}
+
 /// How many writes a publish stream has made and how many publishes they
 /// carried. Their ratio says how well queued publishes coalesce.
 #[derive(Debug, Default)]
@@ -129,17 +162,18 @@ pub(crate) async fn run_publisher_writer_with_limit(
     send: SendStream,
     recv: RecvStream,
     rx: mpsc::Receiver<PublishRequest>,
-    chunk_bytes: usize,
+    _chunk_bytes: usize,
     max_frame_bytes: usize,
     window: Option<Arc<Semaphore>>,
+    linger: PublishLinger,
 ) -> Result<()> {
     run_publisher_writer_counted(
         send,
         recv,
         rx,
-        chunk_bytes,
         max_frame_bytes,
         window,
+        linger,
         Arc::default(),
     )
     .await
@@ -149,9 +183,9 @@ pub(crate) async fn run_publisher_writer_counted(
     mut send: SendStream,
     recv: RecvStream,
     mut rx: mpsc::Receiver<PublishRequest>,
-    _chunk_bytes: usize,
     max_frame_bytes: usize,
     window: Option<Arc<Semaphore>>,
+    linger: PublishLinger,
     stats: Arc<WriteStats>,
 ) -> Result<()> {
     // Single writer: serialize publish requests over one bi-directional
@@ -442,6 +476,7 @@ pub(crate) async fn run_publisher_writer_counted(
         };
         let mut next = Some(first);
         let mut queue_closed = false;
+        let mut linger_deadline: Option<std::time::Instant> = None;
         while let Some(request) = next.take() {
             // A slot in the publish window before an acked publish goes out.
             // While none is free, write what is staged and settle this
@@ -649,7 +684,34 @@ pub(crate) async fn run_publisher_writer_counted(
             }
             match rx.try_recv() {
                 Ok(request) => next = Some(request),
-                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // A busy stream (acks outstanding) waits briefly for the
+                    // burst to fill; an idle one writes at once. Acks are still
+                    // read meanwhile, and a Finish or a closed queue ends the wait.
+                    if !linger.window.is_zero() {
+                        let deadline = *linger_deadline
+                            .get_or_insert_with(|| std::time::Instant::now() + linger.window);
+                        while next.is_none()
+                            && !queue_closed
+                            && !pending.is_empty()
+                            && staged_bytes < linger.bytes
+                            && staged.len() < BURST_FRAMES
+                            && std::time::Instant::now() < deadline
+                        {
+                            tokio::select! {
+                                biased;
+                                done = start_ack_read!() => {
+                                    apply_ack!(finish_ack_read!(done));
+                                }
+                                request = rx.recv() => match request {
+                                    Some(request) => next = Some(request),
+                                    None => queue_closed = true,
+                                },
+                                () = linger_until(deadline) => break,
+                            }
+                        }
+                    }
+                }
                 Err(mpsc::error::TryRecvError::Disconnected) => queue_closed = true,
             }
         }
@@ -704,6 +766,7 @@ pub(crate) async fn run_publisher_writer(
         _chunk_bytes,
         crate::config::DEFAULT_MAX_FRAME_BYTES,
         None,
+        PublishLinger::OFF,
     )
     .await
 }

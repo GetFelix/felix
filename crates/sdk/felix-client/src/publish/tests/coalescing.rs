@@ -15,7 +15,9 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use super::test_publish_permit;
 use crate::config::DEFAULT_MAX_FRAME_BYTES;
 use crate::publish::AckOutcome;
-use crate::publish::writer::{PublishRequest, WriteStats, run_publisher_writer_counted};
+use crate::publish::writer::{
+    PublishLinger, PublishRequest, WriteStats, run_publisher_writer_counted,
+};
 use crate::test_support::{build_server_config, quinn_client_config};
 
 const FRAME_LEN: usize = 10;
@@ -110,9 +112,9 @@ async fn queued_publishes_go_out_in_fewer_writes_than_publishes() -> Result<()> 
         send,
         recv,
         rx,
-        16 * 1024,
         DEFAULT_MAX_FRAME_BYTES,
         None,
+        PublishLinger::OFF,
         Arc::clone(&stats),
     ));
     for response in responses {
@@ -147,9 +149,9 @@ async fn a_lone_publish_is_written_without_waiting_for_company() -> Result<()> {
         send,
         recv,
         rx,
-        16 * 1024,
         DEFAULT_MAX_FRAME_BYTES,
         None,
+        PublishLinger::OFF,
         Arc::clone(&stats),
     ));
     let (request, response) = unacked_frame();
@@ -180,9 +182,9 @@ async fn the_writer_keeps_taking_publishes_while_an_ack_is_outstanding() -> Resu
         send,
         recv,
         rx,
-        16 * 1024,
         DEFAULT_MAX_FRAME_BYTES,
         None,
+        PublishLinger::OFF,
         Arc::default(),
     ));
     let server = tokio::spawn(async move {
@@ -242,9 +244,9 @@ fn spawn_writer(
         send,
         recv,
         rx,
-        16 * 1024,
         DEFAULT_MAX_FRAME_BYTES,
         window,
+        PublishLinger::OFF,
         Arc::default(),
     ))
 }
@@ -464,5 +466,173 @@ async fn an_ack_half_read_when_a_publish_arrives_is_not_lost() -> Result<()> {
     }
     server.abort();
     writer.abort();
+    Ok(())
+}
+
+fn lingering_writer(
+    send: SendStream,
+    recv: RecvStream,
+    rx: mpsc::Receiver<PublishRequest>,
+    window: Duration,
+    stats: Arc<WriteStats>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(run_publisher_writer_counted(
+        send,
+        recv,
+        rx,
+        DEFAULT_MAX_FRAME_BYTES,
+        None,
+        PublishLinger {
+            window,
+            bytes: 16 * 1024,
+        },
+        stats,
+    ))
+}
+
+/// Acknowledge request 1 a moment after its frame arrives, then hold the
+/// stream open.
+fn ack_first_publish(
+    halves: oneshot::Receiver<(SendStream, RecvStream)>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let (mut send, mut recv) = halves.await?;
+        read_hello(&mut recv).await?;
+        let mut scratch = BytesMut::with_capacity(4096);
+        crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+            .await?
+            .context("stream closed")?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ok = Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        };
+        send.write_all(&ok.encode()?.encode()).await?;
+        std::future::pending::<()>().await;
+        anyhow::Ok(())
+    })
+}
+
+/// A busy stream (an ack outstanding) waits for company: frames that trickle
+/// in inside the window go out as one write. Without the linger each is its
+/// own write.
+#[tokio::test]
+async fn a_busy_stream_gathers_frames_that_arrive_inside_the_linger() -> Result<()> {
+    let (send, recv, _halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let stats = Arc::new(WriteStats::default());
+    let writer = lingering_writer(
+        send,
+        recv,
+        rx,
+        Duration::from_millis(300),
+        Arc::clone(&stats),
+    );
+    // Nothing is outstanding yet, so this one is written at once and its ack
+    // (never sent) keeps the stream busy.
+    let (busy, _busy_response) = acked_batch(1);
+    tx.send(busy).await.ok().context("queue")?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responses = Vec::new();
+    for _ in 0..3 {
+        let (request, response) = unacked_frame();
+        tx.send(request).await.ok().context("queue")?;
+        responses.push(response);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for response in responses {
+        tokio::time::timeout(Duration::from_secs(10), response)
+            .await
+            .context("no answer")??
+            .context("publish failed")?;
+    }
+    assert_eq!(stats.frames.load(Ordering::Relaxed), 4);
+    assert_eq!(stats.writes.load(Ordering::Relaxed), 2);
+    writer.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_lone_publish_does_not_linger_when_nothing_is_outstanding() -> Result<()> {
+    let (send, recv, _halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let stats = Arc::new(WriteStats::default());
+    let writer = lingering_writer(send, recv, rx, Duration::from_secs(5), Arc::clone(&stats));
+    let (request, response) = unacked_frame();
+    tx.send(request).await.ok().context("queue")?;
+    tokio::time::timeout(Duration::from_secs(1), response)
+        .await
+        .context("an idle stream lingered")??
+        .context("publish failed")?;
+    assert_eq!(stats.writes.load(Ordering::Relaxed), 1);
+    writer.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn acks_resolve_while_the_writer_lingers() -> Result<()> {
+    let (send, recv, halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let writer = lingering_writer(send, recv, rx, Duration::from_secs(5), Arc::default());
+    let server = ack_first_publish(halves);
+    let (first, first_response) = acked_batch(1);
+    tx.send(first).await.ok().context("queue")?;
+    // The first is written alone; the second then lingers for company.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (second, _second_response) = acked_batch(2);
+    tx.send(second).await.ok().context("queue")?;
+    tokio::time::timeout(Duration::from_secs(2), first_response)
+        .await
+        .context("the ack waited out the linger")??
+        .context("publish failed")?;
+    server.abort();
+    writer.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finish_ends_the_linger() -> Result<()> {
+    let (send, recv, halves) = connect().await?;
+    let (tx, rx) = mpsc::channel(8);
+    let writer = lingering_writer(send, recv, rx, Duration::from_secs(5), Arc::default());
+    let server = tokio::spawn(async move {
+        let (mut send, mut recv) = halves.await?;
+        read_hello(&mut recv).await?;
+        let mut scratch = BytesMut::with_capacity(4096);
+        crate::frame_io::read_frame_into_with_limit(&mut recv, &mut scratch, false, 1 << 20)
+            .await?
+            .context("stream closed")?;
+        let mut frame = [0u8; FRAME_LEN];
+        recv.read_exact(&mut frame).await?;
+        let ok = Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        };
+        send.write_all(&ok.encode()?.encode()).await?;
+        send.finish()?;
+        let _ = recv.read_to_end(1024).await;
+        anyhow::Ok(())
+    });
+    let (busy, _busy_response) = acked_batch(1);
+    tx.send(busy).await.ok().context("queue")?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (request, response) = unacked_frame();
+    tx.send(request).await.ok().context("queue")?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (finish, finish_response) = oneshot::channel();
+    tx.send(PublishRequest::Finish { response: finish })
+        .await
+        .ok()
+        .context("queue")?;
+    tokio::time::timeout(Duration::from_secs(2), response)
+        .await
+        .context("the finish did not end the linger")??
+        .context("publish failed")?;
+    tokio::time::timeout(Duration::from_secs(5), finish_response)
+        .await
+        .context("no finish answer")??
+        .context("finish failed")?;
+    writer.await??;
+    server.await??;
     Ok(())
 }

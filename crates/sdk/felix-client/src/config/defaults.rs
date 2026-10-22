@@ -32,6 +32,10 @@ pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
 /// pool as before, so a client publishing to many streams keeps a bounded
 /// number of streams open.
 pub(crate) const DEFAULT_PUB_SHARD_STREAMS: usize = 16;
+/// No linger until the sweep picks a value: a writer sends what it has queued.
+pub(crate) const DEFAULT_PUB_LINGER_US: u64 = 0;
+/// A lingering stream stops waiting at this many staged bytes.
+pub(crate) const DEFAULT_PUB_LINGER_BYTES: usize = 16 * 1024;
 pub(crate) const DEFAULT_EVENT_CONN_POOL: usize = 8;
 pub(crate) const DEFAULT_CACHE_CONN_POOL: usize = 8;
 /// A cluster client's ceiling per broker. It starts at one connection; this

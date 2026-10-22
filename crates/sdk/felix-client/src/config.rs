@@ -51,6 +51,12 @@ pub struct ClientConfig {
     /// plain [`crate::Client`] does not use these: it does not know a stream's
     /// width, so it keeps each stream on one pooled writer.
     pub publish_shard_streams: usize,
+    /// Microseconds a busy publish stream waits for more publishes before it
+    /// writes. A stream with no unanswered publishes writes at once. `0`
+    /// turns the wait off.
+    pub publish_linger_us: u64,
+    /// Bytes a lingering stream gathers before it stops waiting.
+    pub publish_linger_bytes: usize,
     /// The tenant every stream authenticates as. Required to connect.
     pub auth_tenant_id: Option<String>,
     /// A fixed token for every stream. Clients that run longer than the
@@ -144,6 +150,8 @@ impl ClientConfig {
             // it never applied the override at all (#553).
             publish_sharding: PublishSharding::HashStream,
             publish_shard_streams: DEFAULT_PUB_SHARD_STREAMS,
+            publish_linger_us: DEFAULT_PUB_LINGER_US,
+            publish_linger_bytes: DEFAULT_PUB_LINGER_BYTES,
             auth_tenant_id: None,
             auth_token: None,
             token_provider: None,
@@ -216,6 +224,8 @@ impl ClientConfig {
             client_sub_queue_policy: self.client_sub_queue_policy,
             broker_sub_queue_capacity: self.broker_sub_queue_capacity,
             bench_embed_ts: self.bench_embed_ts,
+            publish_linger_us: self.publish_linger_us,
+            publish_linger_bytes: self.publish_linger_bytes,
         }
     }
 }
@@ -253,6 +263,8 @@ pub(crate) struct ClientRuntimeConfig {
     pub(crate) client_sub_queue_policy: ClientSubQueuePolicy,
     pub(crate) broker_sub_queue_capacity: Option<u32>,
     pub(crate) bench_embed_ts: bool,
+    pub(crate) publish_linger_us: u64,
+    pub(crate) publish_linger_bytes: usize,
 }
 
 pub(crate) fn event_transport_config(

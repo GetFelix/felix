@@ -19,6 +19,16 @@ impl ClientConfig {
         {
             config.publish_shard_streams = value;
         }
+        // `0` is meaningful here: it turns the linger off.
+        if let Some(value) = std::env::var("FELIX_PUB_LINGER_US")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            config.publish_linger_us = value;
+        }
+        if let Some(value) = read_usize_env("FELIX_PUB_LINGER_BYTES") {
+            config.publish_linger_bytes = value;
+        }
         if let Some(value) = read_usize_env("FELIX_PUBLISH_CHUNK_BYTES") {
             config.publish_chunk_bytes = value;
         }
