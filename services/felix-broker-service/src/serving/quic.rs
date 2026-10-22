@@ -38,9 +38,10 @@
 //!
 //! - Wire-level ack mode is per-message/per-batch/none; server policy `ack_on_commit` optionally delays
 //!   acks until the publish is written.
-//! - When ack_on_commit=true, the enqueue policy is Wait for acked publishes so we preserve the
+//! - When a publish is commit-acked (`ack_on_commit`, or `ack_durable_on_commit` for a durable
+//!   stream, the default), the enqueue policy is Wait for acked publishes so we preserve the
 //!   semantic that an ack implies the broker accepted work and (eventually) committed.
-//! - When ack_on_commit=false, we can respond immediately after enqueue.
+//! - Otherwise we can respond immediately after enqueue.
 //!
 //! ## Potential issues / edge cases to be aware of
 //!

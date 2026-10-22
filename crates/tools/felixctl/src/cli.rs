@@ -143,7 +143,7 @@ pub(crate) enum Command {
                       stdin. Stdin is read one message per line unless --whole is given. \
                       By default each publish waits for the broker's acknowledgement and \
                       reports the record's offset when the ack carries one. A broker that \
-                      owns the shard and acks on enqueue (FELIX_ACK_ON_COMMIT off) answers \
+                      owns the shard and acks on enqueue (FELIX_ACK_ON_COMMIT=0, or an in-memory stream) answers \
                       before the record has an offset. An --idempotent publish is always answered \
                       after the write.",
         after_long_help = "Examples:

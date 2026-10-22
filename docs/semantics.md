@@ -56,7 +56,7 @@ reached the disk.
 
 | Level | An ack means | Loss window |
 | --- | --- | --- |
-| `Leader` | With `ack_on_commit` on, the shard's leader has it durably. Off, the default, the leader has queued it | Everything the leader had not yet shipped, at **any** failover (see below); with `ack_on_commit` off, also a record still queued when the leader crashes or its lease runs out |
+| `Leader` | A durable stream, by default: the shard's leader has written it to its log under the fsync policy. With `FELIX_ACK_ON_COMMIT=0`, or on an in-memory stream, the leader has queued it | Everything the leader had not yet shipped, at **any** failover (see below); with ack on accept (`FELIX_ACK_ON_COMMIT=0`), also a record still queued when the leader crashes or its lease runs out |
 | `Quorum` | A majority of the replica set, leader included, has it durably | None within the replica set |
 
 `Quorum` waits. A publish is not acknowledged until the leader can show a
@@ -87,8 +87,16 @@ shard's report on its own merits rather than success for the whole batch, so a
 report it discarded (not leader, stale generation) no longer reads as landed;
 see "A `Quorum` ack rests on a report the control plane stored" below.
 
-**With `ack_on_commit` off, a `Leader` ack is sent when the publish is queued,
-before it is written.** The record is lost if the leader crashes before the
+**A durable stream acknowledges after the commit unless the operator opts out.**
+Committed means written to the stream's log and covered by its fsync policy.
+Under the default, `periodic` at 250 ms, the bytes are in the log file when the
+ack is sent, so they survive a broker crash; a machine crash or power loss can
+lose the last interval, and `FELIX_DURABLE_FSYNC_MODE=on_commit` flushes to the
+device first. An in-memory stream acknowledges when the publish is queued, and
+has nothing to commit.
+
+**With `FELIX_ACK_ON_COMMIT=0` (or `ack_on_commit: false`), a `Leader` ack is
+sent when the publish is queued, before it is written.** The record is lost if the leader crashes before the
 write, or if its lease lapses while the record waits in the queue. The worker
 refuses that write, and has to: another broker may lead the shard by then, and
 writing it late is the split brain the lease exists to prevent. To narrow the
@@ -98,18 +106,18 @@ being acknowledged on enqueue, so a lapse reaches the client as
 `shard_unavailable`. A process pause that starts after the ack and outlasts the
 lease still loses the record; each such loss is counted in
 `felix_broker_acked_publishes_dropped_total` and logged. For an ack that means
-the record is on disk, turn `ack_on_commit` on or declare the stream `Quorum`.
+the record is written, leave the default or declare the stream `Quorum`.
 
 > `a_publish_admitted_near_lease_expiry_waits_for_the_write`,
 > `a_batch_admitted_near_lease_expiry_waits_for_the_write`,
 > `an_acked_publish_the_lease_strands_is_counted`.
 
-The same ack does not make the record readable yet. A history read, a
+An ack on accept does not make the record readable yet. A history read, a
 subscriber's replay or a consumer-group poll sent right after it can come back
 without the record, because nothing reads a record before it is written. A
-client that needs to read what it was told is acknowledged can ask for commit
-acks on its own connections (`ClientConfig::ack_on_commit`) without changing the
-broker's default.
+durable stream's default ack is sent after the write and has no such gap. A
+client of a broker that opted out can ask for commit acks on its own
+connections (`ClientConfig::ack_on_commit`).
 
 **The `Leader` loss window is bounded by replication lag**, exported as
 `felix_broker_replication_lag_records`. An operator choosing `Leader` is

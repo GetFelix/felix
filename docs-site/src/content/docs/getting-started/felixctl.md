@@ -214,9 +214,9 @@ felixctl pub orders 'tick' --count 100            # the same message 100 times
 
 Each publish waits for the broker's acknowledgement and reports the offset it
 carries. Not every acknowledgement carries one. A broker that owns the shard
-and runs with `FELIX_ACK_ON_COMMIT` off (the default) answers a `Leader`
-stream's publish as soon as it is queued, before the record has an offset, so
-`--json` shows `null` for it. A publish that reached another broker first is
+and runs with `FELIX_ACK_ON_COMMIT=0`, or an in-memory stream, answers a
+`Leader` stream's publish as soon as it is queued, before the record has an
+offset, so `--json` shows `null` for it. A publish that reached another broker first is
 forwarded to the owner and answered after the write, so it does carry one.
 Which broker the client reached decides which you get. `--idempotent` and
 `Quorum` streams are always answered after the write.

@@ -113,8 +113,13 @@ pub struct BrokerConfig {
     /// Broker-internal transport, present only when this broker joins a cluster.
     /// A broker with no peers has nothing to listen for.
     pub peer_transport: Option<felix_replication::peer::PeerTransportConfig>,
-    /// If true, publish acks are sent after commit.
+    /// If true, every acknowledged publish is answered after commit, whatever
+    /// the stream's storage. `FELIX_ACK_ON_COMMIT=1`.
     pub ack_on_commit: bool,
+    /// If true, an acknowledged publish to a durable stream is answered after
+    /// commit; an in-memory stream still answers on enqueue. On by default,
+    /// and off only when `FELIX_ACK_ON_COMMIT` is set to anything but true.
+    pub ack_durable_on_commit: bool,
     /// Store the publishing principal with each durable record, on a broker
     /// outside a cluster. In a cluster the fleet decides: see
     /// `felix_common::fleet::PUBLISHER_PRINCIPAL`.
@@ -463,6 +468,7 @@ impl Default for BrokerConfig {
             membership: None,
             peer_transport: None,
             ack_on_commit: false,
+            ack_durable_on_commit: true,
             record_publishers: false,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             preauth_max_frame_bytes: DEFAULT_PREAUTH_MAX_FRAME_BYTES,

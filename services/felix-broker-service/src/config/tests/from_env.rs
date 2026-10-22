@@ -12,6 +12,10 @@ fn from_env_uses_defaults() {
     assert!(config.controlplane_url.is_none());
     assert_eq!(config.controlplane_sync_interval_ms, 2000);
     assert!(!config.ack_on_commit);
+    assert!(
+        config.ack_durable_on_commit,
+        "durable streams ack after commit unless the operator opts out"
+    );
     assert_eq!(config.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
     assert_eq!(
         config.publish_queue_wait_timeout_ms,
@@ -186,6 +190,7 @@ fn from_env_ack_on_commit_variations() {
         }
         let config = BrokerConfig::from_env().expect("from_env");
         assert!(config.ack_on_commit, "expected true for {}", val);
+        assert!(config.ack_durable_on_commit, "expected true for {}", val);
     }
     for val in &["0", "false", "no", "anything"] {
         unsafe {
@@ -193,6 +198,10 @@ fn from_env_ack_on_commit_variations() {
         }
         let config = BrokerConfig::from_env().expect("from_env");
         assert!(!config.ack_on_commit, "expected false for {}", val);
+        assert!(
+            !config.ack_durable_on_commit,
+            "{val} must opt durable streams out"
+        );
     }
     clear_felix_env();
 }

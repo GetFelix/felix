@@ -29,9 +29,9 @@ brokers keep running, are cut back to the point on restore.
   is asked about again a few times, and then the command fails naming it. A
   partial point is not a point.
 
-"Acknowledged" means what the ack promised. A `Leader` publish is acknowledged
-when it is queued unless the broker runs with `FELIX_ACK_ON_COMMIT=true`, so
-with that off, a record acknowledged just before the barrier may not yet be in
+"Acknowledged" means what the ack promised. A durable `Leader` publish is acknowledged
+after the write unless the broker runs with `FELIX_ACK_ON_COMMIT=0`, so with
+that set, a record acknowledged just before the barrier may not yet be in
 any log. See
 [delivery semantics](https://github.com/GetFelix/felix/blob/main/docs/semantics.md).
 

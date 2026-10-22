@@ -59,10 +59,11 @@ refuse to start rather than drop acknowledged records. Records are never
 rewritten.
 
 When a publish is acknowledged depends on the stream and on `ack_on_commit`. A
-`Quorum` stream, or any stream when the broker (`FELIX_ACK_ON_COMMIT`) or the
-client (`ack_on_commit`) sets it, acknowledges after the write reaches disk
-under the fsync policy. A `Leader` stream without `ack_on_commit` acknowledges
-when the publish is queued.
+durable stream acknowledges after the write under the fsync policy, as does a
+`Quorum` stream. Under the default fsync policy (`periodic`, 250 ms) the bytes
+are in the log file, so they survive a broker crash; `FELIX_DURABLE_FSYNC_MODE=on_commit`
+flushes to the device first. A broker run with `FELIX_ACK_ON_COMMIT=0` acknowledges
+a `Leader` stream's publish when it is queued instead.
 
 How hard each write is pushed to disk is the fsync policy. Under `on_commit` a
 write is flushed before it counts as committed, so a publish acknowledged after

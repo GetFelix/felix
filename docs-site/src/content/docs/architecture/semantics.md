@@ -108,20 +108,28 @@ record before the publisher is told it is safe.**
 durably, and answers. Replication still happens; the acknowledgement simply
 does not wait for it. One round trip.
 
-With the broker's default `ack_on_commit: false`, that answer goes out when the
-publish is queued, before the write. A record acknowledged that way is lost if
+A durable stream's answer goes out after the write by default. It is committed
+when it is in the log and covered by the fsync policy: under the default,
+`periodic` at 250 ms, the bytes are in the log file, so they survive a broker
+crash, and a machine crash or power loss can lose the last interval.
+`FELIX_DURABLE_FSYNC_MODE=on_commit` flushes to the device before the ack. An
+in-memory stream has nothing to commit and answers when the publish is queued.
+
+A broker started with `FELIX_ACK_ON_COMMIT=0` (`ack_on_commit: false`) answers
+on accept instead, when the publish is queued, before the write. It is faster,
+and a record acknowledged that way is lost if
 the leader crashes before writing it, or if a pause outlasts the leader's lease:
 the write is then refused, because another broker may lead the shard by then.
 Near the end of the lease the broker waits for the write anyway, so a lapse
 comes back as `shard_unavailable`, and a loss after an ack is counted in
 `felix_broker_acked_publishes_dropped_total`. For an acknowledgement that
-means the record is on disk, set `ack_on_commit: true` or use `Quorum`.
+means the record is written, keep the default or use `Quorum`.
 
 An ack sent on enqueue does not make the record readable yet either. A history
 read, a replay or a consumer-group poll sent right after it can miss the record
-until it is written. A client that has to read what it was told is acknowledged
-can ask for commit acks on its own connections (`ack_on_commit: true` in its
-`ClientConfig`) without changing the broker's default.
+until it is written. A durable stream's default ack has no such gap. A client of
+a broker that opted out can ask for commit acks on its own connections
+(`ack_on_commit: true` in its `ClientConfig`).
 
 Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
@@ -201,8 +209,8 @@ record and no reader could tell. The shard is left unavailable until the old
 leader returns with its disk.
 
 So the trade is mostly about timing, not safety. Both refuse to lose a
-record acknowledged after it was written (for `Leader`, with `ack_on_commit`
-on); they differ in **when you learn there is a problem**:
+record acknowledged after it was written (for `Leader`, the default on a
+durable stream); they differ in **when you learn there is a problem**:
 `Quorum` at publish time, while you still hold the record, or `Leader` at
 failover time, when the only copy is on a broker that is gone.
 

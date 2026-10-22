@@ -352,3 +352,14 @@ fn yaml_1_1_spellings_and_merge_keys_are_refused() {
     config.apply(parse("# nothing\n")).expect("apply");
     assert!(config.ack_on_commit);
 }
+
+#[test]
+fn ack_on_commit_false_in_the_file_opts_durable_streams_out() {
+    let mut config = BrokerConfig::default();
+    assert!(config.ack_durable_on_commit, "durable acks wait by default");
+    config
+        .apply(parse("ack_on_commit: false\n"))
+        .expect("apply");
+    assert!(!config.ack_on_commit);
+    assert!(!config.ack_durable_on_commit);
+}

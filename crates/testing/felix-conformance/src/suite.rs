@@ -81,7 +81,10 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
         TransportConfig::default(),
     )?);
     let addr = server.local_addr()?;
-    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    // The suite checks the enqueue ack too, which a durable stream gets only
+    // when the broker is told to answer on enqueue.
+    config.ack_durable_on_commit = config.ack_on_commit;
     let ack_on_commit = config.ack_on_commit;
     let server_task = tokio::spawn(quic::serve(
         Arc::clone(&server),

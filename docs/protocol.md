@@ -1729,12 +1729,13 @@ A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
 An ack carries an offset only if the broker sent it after the batch was
 written. The broker leaves the bit off when it has no offset to give: the stream
 has no log, or the broker acknowledged the batch when it was queued. It does
-that only for a `Leader` stream whose shard it owns, with `ack_on_commit` off
-(the default), and not when the publish was admitted too close to the end of
+that only for a `Leader` stream whose shard it owns when the stream is in
+memory, or the broker runs with `FELIX_ACK_ON_COMMIT` off, and not when the publish was admitted too close to the end of
 the shard's lease (see `docs/semantics.md`). Every other acked publish is
 answered after the write and carries its offset:
 
-- with `ack_on_commit` on;
+- on a durable stream, unless the broker runs with `FELIX_ACK_ON_COMMIT` off;
+- with `FELIX_ACK_ON_COMMIT` on, on any stream;
 - on a `Quorum` stream, once a majority holds the batch, at the offset it was
   committed at;
 - an idempotent batch; a duplicate is answered with the offset of the batch
@@ -1744,10 +1745,10 @@ answered after the write and carries its offset:
   (see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
 
 So whether an ack has an offset depends on the ack, not on the stream. With
-`ack_on_commit` off, the same publish to the same stream comes back without an
-offset from the shard's owner and with one through a broker that forwards it.
-A client that needs the offset of every record publishes idempotently, or needs
-brokers that run with `ack_on_commit` on.
+`FELIX_ACK_ON_COMMIT` off, the same publish to the same stream comes back
+without an offset from the shard's owner and with one through a broker that
+forwards it. A client that needs the offset of every record publishes
+idempotently, or needs brokers that do not run with it off.
 
 The broker never makes up an offset for a batch it has only queued. A queued
 batch has no offset yet: offsets are taken when the batch is appended. And
@@ -1850,7 +1851,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
-| `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
+| `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as a broker with `FELIX_ACK_ON_COMMIT=true` does for every client, and a durable stream does by default. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, scoped to the principal, and on a connection's first `reclaim` hands that member's claims from older connections back to it first. See [GroupPoll](#grouppoll) |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |

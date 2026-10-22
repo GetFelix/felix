@@ -12,6 +12,7 @@ fn client_transport_config_overrides_windows() {
         membership: None,
         peer_transport: None,
         ack_on_commit: false,
+        ack_durable_on_commit: false,
         max_frame_bytes: 16 * 1024 * 1024,
         publish_queue_wait_timeout_ms: 2000,
         ack_wait_timeout_ms: 2000,

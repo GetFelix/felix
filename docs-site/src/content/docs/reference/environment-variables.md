@@ -304,29 +304,38 @@ export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="10000" # Slow polling
 
 ### `FELIX_ACK_ON_COMMIT`
 
-**Description**: Enable publish acknowledgements after commit.
+**Description**: When an acknowledged publish is answered. Unset, a durable
+stream's publish is answered after it commits and an in-memory stream's when
+it is queued.
 
-**Type**: Boolean
+**Type**: Boolean, or unset
 
-**Default**: `false`
+**Default**: unset
 
-**Accepted values**: `1`, `true`, `yes` (case-insensitive) = enabled
+**Accepted values**:
+- unset: durable streams ack after commit, in-memory streams on enqueue
+- `1`, `true`, `yes` (case-insensitive): every stream acks after commit
+- anything else, such as `0` or `false`: ack on accept for every stream. This
+  is faster, but an acknowledged record can be lost if the broker crashes, or
+  its cluster lease lapses, before the record is written
 
 **Example**:
 ```bash
-export FELIX_ACK_ON_COMMIT="true"
-export FELIX_ACK_ON_COMMIT="1"
-export FELIX_ACK_ON_COMMIT="yes"
+export FELIX_ACK_ON_COMMIT="0"      # opt out: ack on accept
+export FELIX_ACK_ON_COMMIT="true"   # in-memory streams wait too
 ```
 
-**Trade-off**:
-- `false`: Fire-and-forget, lower latency
-- `true`: Explicit acks, higher latency guarantee
+Committed means written to the stream's log and covered by its fsync policy
+(`FELIX_DURABLE_FSYNC_MODE`). Under the default, `periodic` at 250 ms, the bytes
+are in the log file when the ack is sent, so they survive a broker crash; a
+machine crash or power loss can still lose the last interval. `on_commit`
+flushes to the device before the ack.
 
-A client can ask for the `true` behaviour on its own connections without
-changing it for everyone: `ClientConfig::ack_on_commit` in felix-client offers
+A client can ask for commit acks on its own connections whatever the broker
+default: `ClientConfig::ack_on_commit` in felix-client offers
 `FEATURE_ACK_ON_COMMIT`, and its acknowledged publishes are then answered after
-the write, with their offsets.
+the write, with their offsets. A client that predates the flag is unaffected on
+the wire: it sends the same frames and gets the same acks, only later.
 
 ### `FELIX_RECORD_PUBLISHERS`
 

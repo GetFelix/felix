@@ -23,7 +23,7 @@ use crate::serving::quic::handlers::publish::ack::{
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
-    internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard,
+    internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard, targets_durable,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
@@ -204,6 +204,7 @@ pub(crate) async fn handle_publish_message(
     // Last because it reads the clock: an ack on enqueue promises a write the
     // lease may not live to allow.
     let commit_ack = ack_on_commit
+        || (publish_ctx.ack_durable_on_commit && targets_durable(&target))
         || forwarding
         || quorum
         || (ack_mode != felix_wire::AckMode::None && publish_ctx.must_wait_for_write());

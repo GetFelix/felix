@@ -123,9 +123,9 @@ Configured per stream:
   This is the low-latency mode, and the right one when stale data is worthless
   anyway.
 - **Durable streams** persist every record and replay from any retained
-  offset. By default a `Leader` stream acknowledges a publish when it is
-  queued, before the write, so a crash can still lose an acknowledged record.
-  Set `ack_on_commit` to acknowledge only after the write. With
+  offset. By default a publish is acknowledged after the write, under the
+  fsync policy. `FELIX_ACK_ON_COMMIT=0` acknowledges when it is queued
+  instead, which is faster but can lose an acknowledged record in a crash. With
   `consistency: quorum`, the acknowledgement additionally waits until a
   majority of the replica set holds the record, so a failover cannot lose an
   acknowledged write.

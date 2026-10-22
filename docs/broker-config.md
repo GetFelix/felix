@@ -29,7 +29,7 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 controlplane_url: null
 controlplane_sync_interval_ms: 2000
-ack_on_commit: false
+# ack_on_commit is unset: durable streams ack after commit, in-memory on enqueue
 max_frame_bytes: 16777216
 preauth_max_frame_bytes: 65536
 preauth_max_streams_per_conn: 16

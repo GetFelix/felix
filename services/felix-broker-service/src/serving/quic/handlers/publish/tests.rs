@@ -9,6 +9,7 @@ mod control_batch;
 mod control_binary;
 mod control_message;
 mod declared_width;
+mod durable_default_ack;
 mod group_commit;
 mod idempotent_acks;
 mod ingress;
@@ -86,6 +87,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
         publish_window: 0,
+        ack_durable_on_commit: false,
     }
 }
 

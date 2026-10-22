@@ -637,14 +637,17 @@ reduces serialization from one encode per subscriber to one per publish batch
 
 The important distinction is broker configuration:
 
-- With `ack_on_commit = false`, an acknowledgement means the broker accepted
+- Unset, a durable stream acknowledges after commit and an in-memory stream on
+  enqueue. `PublishContext::ack_durable_on_commit` carries the durable half,
+  and the handler adds it to `commit_ack` when the resolved target is durable.
+- With `ack_on_commit = false` (`FELIX_ACK_ON_COMMIT=0`), an acknowledgement means the broker accepted
   the job into its ingress queue. It is sent before the write, so the record is
   lost if the broker crashes first, or if its lease lapses while the job is
   queued: the claim refuses a write once the lease is gone. A publish admitted
   with little lease left (less than the queue wait plus the ack wait, capped at
   half the lease) waits for its write instead. A job that was acknowledged and
   then not written is counted in `felix_broker_acked_publishes_dropped_total`.
-- With `ack_on_commit = true`, the broker waits until the publish has been
+- With `ack_on_commit = true`, every stream waits until the publish has been
   written and fanned out.
 
 What "commit" means depends on how the stream was registered. For an ephemeral

@@ -183,30 +183,36 @@ cannot open.
 
 ### `ack_on_commit`
 
-**Description**: Send acknowledgements after message commit.
+**Description**: When an acknowledged publish is answered. Unset, a durable
+stream's publish is answered after it commits and an in-memory stream's when it
+is queued.
 
-**Type**: `bool`
+**Type**: `bool`, or unset
 
-**Default**: `false`
+**Default**: unset
 
-**Environment**: `FELIX_ACK_ON_COMMIT` (`1`, `true`, `yes` = enabled)
+**Environment**: `FELIX_ACK_ON_COMMIT` (`1`, `true`, `yes` = enabled; any other
+value = disabled)
 
 **Example**:
 ```yaml
-ack_on_commit: true
+ack_on_commit: false
 ```
 
-**Trade-offs**:
-- **`false`**: Lower latency. The ack is sent when the publish is queued, before
-  it is written, so an acknowledged record can still be lost: if the broker
-  crashes before the write, or if a pause outlasts the broker's cluster lease
-  (the write is then refused, since another broker may lead the shard). Near
-  the end of the lease a publish waits for its write anyway, so a lapse is
-  reported rather than lost. Losses after an ack are counted in
-  `felix_broker_acked_publishes_dropped_total`.
-- **`true`**: Higher latency. The ack means the write happened, under the
-  stream's fsync policy. `Quorum` streams and forwarded or idempotent publishes
-  always wait for the write, whatever this says.
+**Values**:
+- **unset**: durable streams ack after commit, in-memory streams on enqueue.
+- **`true`**: every stream acks after commit.
+- **`false`**: ack on accept for every stream: faster, but an acknowledged
+  record can be lost. The ack is sent when the publish is queued, before it is
+  written, so the record is lost if the broker crashes before the write, or if a
+  pause outlasts the broker's cluster lease (the write is then refused, since
+  another broker may lead the shard). Near the end of the lease a publish waits
+  for its write anyway, so a lapse is reported rather than lost. Losses after
+  an ack are counted in `felix_broker_acked_publishes_dropped_total`.
+
+Committed means written to the stream's log and covered by its fsync policy (`FELIX_DURABLE_FSYNC_MODE`). Under the default, `periodic` at 250 ms, the bytes are in the log file when the ack is sent, so they survive a broker crash; a machine crash or power loss can still lose the last interval. `on_commit` flushes to the device before the ack.
+`Quorum` streams and forwarded or idempotent publishes wait for the write
+whatever this says.
 
 ### `max_frame_bytes`
 
