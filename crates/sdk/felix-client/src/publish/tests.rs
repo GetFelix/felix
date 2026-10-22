@@ -6,6 +6,7 @@ mod ack;
 mod admission;
 mod api;
 mod coalescing;
+mod egress;
 mod encoding;
 mod routing;
 mod shard_streams;

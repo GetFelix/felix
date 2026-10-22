@@ -14,8 +14,8 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use super::test_publish_permit;
 use crate::config::DEFAULT_MAX_FRAME_BYTES;
-use crate::publish::AckOutcome;
 use crate::publish::writer::{PublishRequest, WriteStats, run_publisher_writer_counted};
+use crate::publish::{AckOutcome, Egress};
 use crate::test_support::{build_server_config, quinn_client_config};
 
 const FRAME_LEN: usize = 10;
@@ -51,7 +51,7 @@ async fn connect() -> Result<(
     Ok((send, recv, halves_rx))
 }
 
-fn unacked_frame() -> (PublishRequest, oneshot::Receiver<AckOutcome>) {
+pub(super) fn unacked_frame() -> (PublishRequest, oneshot::Receiver<AckOutcome>) {
     let (response, receiver) = oneshot::channel();
     let request = PublishRequest::BinaryBytes {
         bytes: Bytes::from_static(&[7u8; FRAME_LEN]),
@@ -66,7 +66,7 @@ fn unacked_frame() -> (PublishRequest, oneshot::Receiver<AckOutcome>) {
     (request, receiver)
 }
 
-fn acked_batch(request_id: u64) -> (PublishRequest, oneshot::Receiver<AckOutcome>) {
+pub(super) fn acked_batch(request_id: u64) -> (PublishRequest, oneshot::Receiver<AckOutcome>) {
     let (response, receiver) = oneshot::channel();
     let request = PublishRequest::Message {
         message: Message::PublishBatch {
@@ -107,7 +107,7 @@ async fn queued_publishes_go_out_in_fewer_writes_than_publishes() -> Result<()> 
     }
     let stats = Arc::new(WriteStats::default());
     let writer = tokio::spawn(run_publisher_writer_counted(
-        send,
+        Egress::spawn().attach(send),
         recv,
         rx,
         16 * 1024,
@@ -144,7 +144,7 @@ async fn a_lone_publish_is_written_without_waiting_for_company() -> Result<()> {
     let (tx, rx) = mpsc::channel(8);
     let stats = Arc::new(WriteStats::default());
     let writer = tokio::spawn(run_publisher_writer_counted(
-        send,
+        Egress::spawn().attach(send),
         recv,
         rx,
         16 * 1024,
@@ -177,7 +177,7 @@ async fn the_writer_keeps_taking_publishes_while_an_ack_is_outstanding() -> Resu
     let (send, recv, halves) = connect().await?;
     let (tx, rx) = mpsc::channel(8);
     let writer = tokio::spawn(run_publisher_writer_counted(
-        send,
+        Egress::spawn().attach(send),
         recv,
         rx,
         16 * 1024,
@@ -239,7 +239,7 @@ fn spawn_writer(
     window: Option<Arc<Semaphore>>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(run_publisher_writer_counted(
-        send,
+        Egress::spawn().attach(send),
         recv,
         rx,
         16 * 1024,

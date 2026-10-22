@@ -10,6 +10,7 @@
 
 mod ack;
 mod admission;
+mod egress;
 mod idempotent;
 mod routing;
 mod send;
@@ -21,6 +22,7 @@ pub use idempotent::IdempotentProducer;
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
+pub(crate) use egress::Egress;
 pub(crate) use routing::width_went_stale;
 pub(crate) use shard_streams::{OpenWorker, ShardStreams};
 #[cfg(test)]

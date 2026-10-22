@@ -28,6 +28,8 @@ use quinn::{RecvStream, SendStream};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::debug;
 
+use crate::publish::Egress;
+
 use super::{
     Credentials, EventRouterCommand, Negotiated, listener_targets, spawn_conn_stats_logger,
     spawn_event_router_with_config,
@@ -236,6 +238,7 @@ impl NodeConnections {
             router,
             streams: AtomicUsize::new(0),
             publish_window: std::sync::OnceLock::new(),
+            egress: std::sync::OnceLock::new(),
         });
         let mut state = self.state.lock().expect("node state");
         if !state.listeners.contains(&target) {
@@ -317,6 +320,11 @@ impl StreamLease {
         ))
     }
 
+    /// The connection's egress task, started on first use.
+    pub(crate) fn egress(&self) -> &Arc<Egress> {
+        self.link.egress.get_or_init(Egress::spawn)
+    }
+
     /// The connection's position in the set, stable while it lives and below
     /// the ceiling. Used to label per-connection metrics.
     pub(crate) fn slot(&self) -> usize {
@@ -356,6 +364,8 @@ struct Link {
     /// shared by every publish stream on it, for a broker that counts the
     /// window per connection.
     publish_window: std::sync::OnceLock<Arc<Semaphore>>,
+    /// Writes every publish stream of the connection, so their frames share packets.
+    egress: std::sync::OnceLock<Arc<Egress>>,
 }
 
 impl Link {

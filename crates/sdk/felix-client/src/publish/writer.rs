@@ -3,7 +3,8 @@
 //! Quinn's `SendStream` is effectively single-writer: concurrent writes from
 //! several tasks serialize on a lock inside Quinn. So each publish stream has
 //! exactly one task writing to it, fed by a bounded queue, and pending acks
-//! are resolved by that same task.
+//! are resolved by that same task. The bytes themselves are written by the
+//! connection's egress task (`egress`), which sends every stream's burst together.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -16,10 +17,15 @@ use std::sync::atomic::Ordering;
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use felix_wire::{AckMode, FrameHeader, Message};
-use quinn::{RecvStream, SendStream};
+use quinn::RecvStream;
+#[cfg(test)]
+use quinn::SendStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use super::ack::read_ack;
+#[cfg(test)]
+use super::egress::Egress;
+use super::egress::EgressStream;
 use super::{AckOutcome, Acked};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -126,7 +132,7 @@ const BURST_BYTES: usize = 64 * 1024;
 const BURST_FRAMES: usize = 256;
 
 pub(crate) async fn run_publisher_writer_with_limit(
-    send: SendStream,
+    send: EgressStream,
     recv: RecvStream,
     rx: mpsc::Receiver<PublishRequest>,
     chunk_bytes: usize,
@@ -146,7 +152,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
 }
 
 pub(crate) async fn run_publisher_writer_counted(
-    mut send: SendStream,
+    send: EgressStream,
     recv: RecvStream,
     mut rx: mpsc::Receiver<PublishRequest>,
     _chunk_bytes: usize,
@@ -319,10 +325,7 @@ pub(crate) async fn run_publisher_writer_counted(
             if !staged.is_empty() {
                 #[cfg(feature = "telemetry")]
                 let write_start = crate::telemetry::t_now_if(std::mem::take(&mut sampled));
-                let write_result = send
-                    .write_all_chunks(&mut chunks)
-                    .await
-                    .context("write publish frames");
+                let write_result = send.write(&mut chunks).await;
                 #[cfg(feature = "telemetry")]
                 if let Some(start) = write_start {
                     let write_ns = start.elapsed().as_nanos() as u64;
@@ -665,7 +668,7 @@ pub(crate) async fn run_publisher_writer_counted(
     let (mut recv, _) = idle_recv.expect("recv half is idle");
     // Graceful shutdown: close our send side, then drain the peer's side to
     // EOF — the same close protocol `finish_publisher_stream` implements.
-    let finish_result = send.finish().map_err(anyhow::Error::from);
+    let finish_result = send.finish().await;
     let result = {
         let drain_result = async {
             let mut buf = [0u8; 8192];
@@ -698,7 +701,7 @@ pub(crate) async fn run_publisher_writer(
     _chunk_bytes: usize,
 ) -> Result<()> {
     run_publisher_writer_with_limit(
-        send,
+        Egress::spawn().attach(send),
         recv,
         rx,
         _chunk_bytes,
