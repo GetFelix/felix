@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792680660334,
+  "lastUpdate": 1792697269092,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32396,6 +32396,58 @@ window.BENCHMARK_DATA = {
             "range": "30515.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 828137.44\nmean: 817241.38\nstdev: 30515.92\ncv: 3.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63c964c885590b97e859efb04fa5b05c61518d4e",
+          "message": "perf(broker): admit one waiting publisher per freed ingress slot, not all of them (#1406) (#1414)\n\n* perf(broker): admit one waiting publisher per freed ingress slot, not all of them (#1406)\n\nA pop called Notify::notify_waiters on the partition, waking every\nsubmitter blocked on a full queue so each could re-lock the queue and\nrace for one slot. With pub_ingress_wait on and thousands of publishes in\nflight against a 256-job queue, nearly every pop paid that.\n\nBlocked jobs now park in the partition, under the same lock as the\nqueue. A pop hands each freed slot to the oldest parked job whose tenant\nthe fair queue admits, and wakes only that submitter. A cancelled\nsubmitter removes its own entry; close still wakes everyone.\n\n* perf(broker): per-tenant waiter queues for ingress admission, wake an executor per admitted job (#1406)\n\nParked publishers are kept per tenant with the tenant name shared, and\ntenants with waiters are ordered by their oldest job. A tenant the fair\nqueue refuses is skipped by name instead of by walking its jobs, and\nparking no longer allocates a name per job. Admitting N jobs from one\npop now notifies N executors instead of one.\n\n* Spec-Unaffected note for the ingress scheduler change (#1406)\n\nSpec-Unaffected: docs/formal/FelixShard.tla models the lease, generation fence and quorum mark a write is checked against (IngressRouter::dispatch_write) and says nothing about the publish scheduler queue; the change only decides which waiting submitter a freed queue slot admits and wakes, after the fence check and before the append, and never changes whether a write is fenced, ordered within a lane, or acknowledged.",
+          "timestamp": "2026-10-22T19:24:23Z",
+          "tree_id": "c3e010fa3916f00ba17f420c112bacb95384e388",
+          "url": "https://github.com/GetFelix/felix/commit/63c964c885590b97e859efb04fa5b05c61518d4e"
+        },
+        "date": 1792697268420,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 631051.84,
+            "range": "49447.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631051.84\nmean: 598907.35\nstdev: 49447.26\ncv: 8.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 631051.84,
+            "range": "49447.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631051.84\nmean: 598907.35\nstdev: 49447.26\ncv: 8.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160071.25,
+            "range": "2491.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160071.25\nmean: 160885.87\nstdev: 2491.91\ncv: 1.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1600712.5,
+            "range": "24919.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1600712.50\nmean: 1608858.65\nstdev: 24919.08\ncv: 1.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
