@@ -13,12 +13,8 @@ use tokio::sync::Semaphore;
 /// connection's ceiling, and the shared process-wide budget. All are released together when
 /// the job finishes (or is dropped before ever being enqueued).
 pub(crate) struct AdmissionPermit {
-    pub(super) _identity: tokio::sync::OwnedSemaphorePermit,
     pub(super) _conn: tokio::sync::OwnedSemaphorePermit,
     pub(super) _global: tokio::sync::OwnedSemaphorePermit,
-    /// Keeps the identity's entry alive while its bytes are in flight, so a
-    /// stream reopened under the same identity finds the same budget.
-    pub(super) _share: Arc<IdentityLimits>,
 }
 
 /// Bounds total bytes queued-or-processing across all publishes, independent of the
@@ -130,6 +126,7 @@ impl SubscriptionCap {
 pub(crate) struct IdentityLimits {
     subscriptions: AtomicUsize,
     max_subscriptions: usize,
+    #[allow(dead_code)] // diagnostic branch for #1406
     pub(crate) admission: PublishAdmission,
     /// The connection this is a share of, and the key it is filed under.
     /// `None` for a standalone share (tests, templates).
