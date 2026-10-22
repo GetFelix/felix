@@ -51,9 +51,12 @@ pub(crate) struct EgressStats {
     pub(crate) direct_writes: AtomicUsize,
     pub(crate) relayed_writes: AtomicUsize,
     pub(crate) flight_polls: AtomicUsize,
+    /// Set when the task has returned.
+    pub(crate) finished: std::sync::atomic::AtomicBool,
 }
 
-/// The handle to a connection's egress task. Dropping the last one ends it.
+/// The handle to a connection's egress task. The task ends once this and every
+/// stream attached to it are dropped.
 pub(crate) struct Egress {
     tx: mpsc::UnboundedSender<Job>,
     attached: AtomicUsize,
@@ -65,13 +68,19 @@ impl Egress {
     /// Start the egress task. Needs a running tokio runtime.
     pub(crate) fn spawn() -> Arc<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
+        #[cfg(test)]
+        let stats = Arc::<EgressStats>::default();
         let egress = Arc::new(Self {
             tx,
             attached: AtomicUsize::new(0),
             #[cfg(test)]
-            stats: Arc::default(),
+            stats: Arc::clone(&stats),
         });
-        tokio::spawn(run(rx, Arc::clone(&egress)));
+        tokio::spawn(run(
+            rx,
+            #[cfg(test)]
+            stats,
+        ));
         egress
     }
 
@@ -177,7 +186,9 @@ struct Flight {
     waker: Waker,
 }
 
-async fn run(mut rx: mpsc::UnboundedReceiver<Job>, egress: Arc<Egress>) {
+// The task holds no `Egress`: that owns the sender, and a task that kept it
+// would keep its own inbox open forever.
+async fn run(mut rx: mpsc::UnboundedReceiver<Job>, #[cfg(test)] stats: Arc<EgressStats>) {
     let shared = Arc::new(Shared {
         ready: Mutex::new(Vec::new()),
         parent: Mutex::new(None),
@@ -186,8 +197,6 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Job>, egress: Arc<Egress>) {
     let mut to_poll: Vec<u64> = Vec::new();
     let mut next_id = 0u64;
     let mut inbox_open = true;
-    #[cfg(not(test))]
-    let _ = &egress;
     poll_fn(|cx| {
         {
             let mut parent = shared.parent.lock().expect("parent");
@@ -232,7 +241,7 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Job>, egress: Arc<Egress>) {
                 continue;
             };
             #[cfg(test)]
-            egress.stats.flight_polls.fetch_add(1, Ordering::Relaxed);
+            stats.flight_polls.fetch_add(1, Ordering::Relaxed);
             let mut flight_cx = TaskContext::from_waker(&flight.waker);
             if let Poll::Ready((done, back)) = flight.write.as_mut().poll(&mut flight_cx) {
                 flights.remove(&id);
@@ -246,6 +255,8 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Job>, egress: Arc<Egress>) {
         }
     })
     .await;
+    #[cfg(test)]
+    stats.finished.store(true, Ordering::SeqCst);
 }
 
 /// Write the burst. A writer that is gone before the write lands (its task

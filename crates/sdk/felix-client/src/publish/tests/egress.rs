@@ -489,3 +489,32 @@ async fn a_finish_is_not_held_up_by_a_stalled_stream() -> Result<()> {
     stalled_writer.abort();
     Ok(())
 }
+
+/// The task ends with the connection's last handle, not at process exit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_egress_task_ends_when_its_last_handle_is_dropped() -> Result<()> {
+    let rig = rig(None, None).await?;
+    let egress = Egress::spawn();
+    let stats = Arc::clone(&egress.stats);
+    let (tx, writer) = open_writer(&rig, &egress).await?;
+    let (other, other_writer) = open_writer(&rig, &egress).await?;
+    for tx in [&tx, &other] {
+        let (request, response) = small_unacked();
+        tx.send(request).await.ok().context("queue")?;
+        settled(response).await?;
+    }
+    drop(egress);
+    // The writers' streams still hold it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!stats.finished.load(Ordering::SeqCst));
+    for (tx, writer) in [(tx, writer), (other, other_writer)] {
+        drop(tx);
+        let _ = writer.await?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !stats.finished.load(Ordering::SeqCst) {
+        anyhow::ensure!(Instant::now() < deadline, "the egress task never ended");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
+}
