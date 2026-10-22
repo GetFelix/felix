@@ -212,6 +212,8 @@ cmd_snapshot() {
         else if (n == "felix_storage_sync_batch_appends_count") sbc += v
         else if (n == "felix_storage_sync_failures_total") sf += v
         else if (n == "felix_broker_publish_quorum_failed_total") qf += v
+        else if (n == "felix_broker_ingress_dropped_total") idr += v
+        else if (n == "felix_broker_ingress_rejected_total") irj += v
         else if (n == "felix_publish_bytes_total") pb += v
         # A relayed publish is counted as forwarded on top of its outcome.
         else if (n == "felix_publish_requests_total") { if ($1 ~ /result="forwarded"/) fw += v; else pr += v }
@@ -220,6 +222,7 @@ cmd_snapshot() {
         printf "m.append_bytes=%.0f\nm.append_series_active=%d\nm.append_records=%.0f\n", ab, abn, ar
         printf "m.sync_total=%.0f\nm.sync_dur_sum=%.6f\nm.sync_dur_count=%.0f\n", st, sds, sdc
         printf "m.sync_batch_sum=%.0f\nm.sync_batch_count=%.0f\nm.sync_failures=%.0f\n", sbs, sbc, sf
+        printf "m.ingress_dropped=%.0f\nm.ingress_rejected=%.0f\n", idr, irj
         printf "m.quorum_failed=%.0f\nm.publish_bytes=%.0f\nm.publish_requests=%.0f\nm.forwarded=%.0f\n", qf, pb, pr, fw
       }'
   fi

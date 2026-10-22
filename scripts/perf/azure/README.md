@@ -230,6 +230,23 @@ the sweeps, in that priority order. The dry run trims the plan to fit
 `sessions/<name>-final-results/`. Brokers and clients run at product defaults
 apart from the overrides listed at the top of the script.
 
+**Exact conditions.** Every main-campaign Felix cell runs the durability
+profile, set explicitly on the broker: `FELIX_ACK_ON_COMMIT=1` (acked
+publishes are answered after the write, broker-wide, whatever the client
+offered) and `FELIX_PUB_INGRESS_WAIT=1` (fire-and-forget waits for ingress room
+instead of shedding). Also `FELIX_QUIC_LISTENERS=4` (the derived default on 8
+cores), `FELIX_DURABLE_FSYNC_MODE=on_commit` (`periodic` in the periodic latency
+cells), and from `lib.sh` `FELIX_STORAGE_IO_URING=1`, `FELIX_IO_RUNTIME_THREADS=0`,
+24 MiB UDP buffers and `FELIX_MTU_UPPER_BOUND=3872`. Differing from the product
+default: `ACK_ON_COMMIT`, `PUB_INGRESS_WAIT`, `STORAGE_IO_URING`. The client
+sets only the UDP buffers and the MTU bound. The `defaults-*` cells (stage
+`df`) run with ack-on-commit off, ingress wait unset and io_uring off. Each
+cell's `ack-proof.txt` records the broker process's applied
+`ACK_ON_COMMIT`/`INGRESS_WAIT`/`IO_URING`, the storage sync count during the
+cell and `felix_broker_ingress_dropped_total` (the shed count, which needs a
+telemetry build); the full environment is in the cell's `before.txt` and the
+system facts are in `final/config.txt` and `system/*.facts.txt`.
+
 ### What is committed, and what is not
 
 `sessions/<name>-results/` and `sessions/*-findings.md` **are tracked**. They

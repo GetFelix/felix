@@ -19,6 +19,9 @@
 #        --shards, built side by side as felix-loadgen.old) against the current
 #        one; not a gate. One profiled cell on the
 #        frame-pointer build.
+#   df   shipped defaults, 2 trials: ACK_ON_COMMIT off, PUB_INGRESS_WAIT unset, io_uring off.
+#        Durable 4 KiB b64 and 256 B b1 acked, one-in-flight durable 256 B, and mem 4 KiB
+#        b64 fire-and-forget under overload with the ingress shed count. Cells are defaults-*.
 #   m1   the headline cells to HEAD_TRIALS (3): mem 4 KiB b64 ff, mem 256 B b1
 #        acked, durable 4 KiB b64 acked.
 #   lat  one-in-flight pubsub latency (on_commit, periodic, in-memory; 256 B and
@@ -34,11 +37,12 @@
 #   sw   listener sweep (FELIX_QUIC_LISTENERS 1/2/4/8) and the receive-window
 #        check (default vs 32/64 MiB) on mem 4 KiB b64 fire-and-forget, 2 trials.
 #
-# Overrides (everything else is the product default):
+# Main-campaign overrides (the durability profile; everything else is the product default):
 #   broker  FELIX_QUIC_LISTENERS=4 (what an unset value derives on 8 cores),
 #           FELIX_DURABLE_FSYNC_MODE=on_commit (periodic for the periodic latency
-#           cells), and from lib.sh: FELIX_ACK_ON_COMMIT=1 (an acked durable
-#           publish means durable), FELIX_STORAGE_IO_URING=1,
+#           cells), FELIX_ACK_ON_COMMIT=1 and FELIX_PUB_INGRESS_WAIT=1 (the
+#           durability profile, set explicitly), and from lib.sh:
+#           FELIX_STORAGE_IO_URING=1,
 #           FELIX_IO_RUNTIME_THREADS=0, UDP buffers 24 MiB,
 #           FELIX_MTU_UPPER_BOUND=3872 (NIC MTU is 3900).
 #   client  UDP buffers 24 MiB and FELIX_MTU_UPPER_BOUND=3872. No connection
@@ -46,11 +50,14 @@
 #   sweeps  the listener arms set FELIX_QUIC_LISTENERS; 8 listeners also set
 #           FELIX_PUB_CONN_POOL=8 (one connection per port). The window arms set
 #           FELIX_BROKER_PUB_{CONN,STREAM}_RECV_WINDOW.
-#   Set CAMP_INGRESS_WAIT=1 to add FELIX_PUB_INGRESS_WAIT=1 to every broker.
+#   Differs from the product default: ACK_ON_COMMIT, PUB_INGRESS_WAIT, STORAGE_IO_URING.
+#   FELIX_ACK_ON_COMMIT is a broker-wide policy: every acked publish is answered after the
+#   write, whatever the client offered (the client's FEATURE_ACK_ON_COMMIT is the
+#   per-connection form of the same thing; the loadgen does not offer it).
 #
 # The plan is trimmed to fit MAX_HOURS (18), in this order: 64 KiB b1 cells,
 # plain-key b64, listeners 1 and 8, window 64 MiB and, if that is still over,
-# the 4-in-flight arm of the latency curve, then the second sweep trial. The level is chosen on the
+# the 4-in-flight arm of the latency curve, then the second sweep trial and the third one-in-flight latency trial. The level is chosen on the
 # full plan, saved in the results dir and reused on resume (TRIM=n overrides).
 set -uo pipefail
 
@@ -68,7 +75,7 @@ for a in "$@"; do
   case "${a}" in
     --dry-run) dry=1 ;;
     --trim=*) TRIM_ARG="${a#--trim=}" ;;
-    *) echo "usage: $0 [--dry-run] [--trim=0..6]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--dry-run] [--trim=0..7]" >&2; exit 2 ;;
   esac
 done
 
@@ -98,7 +105,6 @@ done
 : "${LAT_PAYLOADS:=256 4096}"
 : "${NATS_LAT_TRIALS:=2}"
 : "${FIO_MIN:=1100}"
-: "${CAMP_INGRESS_WAIT:=0}"
 # Wall-clock minutes per cell, in tenths (run-command overhead dominates).
 : "${MIN_ING_X10:=55}"
 : "${MIN_LAT_X10:=40}"
@@ -108,8 +114,14 @@ done
 : "${TRIM_FORCE:=}"
 : "${PRICE_PER_HOUR:=1.55}"
 
-BASE_B="FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=on_commit"
-[ "${CAMP_INGRESS_WAIT}" = 1 ] && BASE_B="${BASE_B} FELIX_PUB_INGRESS_WAIT=1"
+# The durability profile, set explicitly on the broker for every main-campaign cell:
+# durable acks follow the commit, and fire-and-forget waits for ingress room instead of shedding.
+DUR_PROFILE="FELIX_ACK_ON_COMMIT=1 FELIX_PUB_INGRESS_WAIT=1"
+BASE_B="FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=on_commit ${DUR_PROFILE}"
+# The shipped-defaults stage: ack-on-commit off, ingress wait unset, io_uring off. lib.sh writes all
+# three into overrides.env, so ACK_ON_COMMIT and IO_URING are set to 0 (the product default) and
+# INGRESS_WAIT is left out.
+DEFAULTS_B="FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=on_commit FELIX_ACK_ON_COMMIT=0 FELIX_STORAGE_IO_URING=0"
 CLIENT_B="FELIX_UDP_RECV_BUFFER=25165824 FELIX_UDP_SEND_BUFFER=25165824 FELIX_MTU_UPPER_BOUND=3872"
 OUT="${OUT:-${here}/sessions/${SESSION}-final-results}"
 
@@ -172,6 +184,13 @@ build_plan() {
     done
   done
   ing "s0-profile-mem-p4096-b64-ff-spread" s0b "${BUILD_SHA}-fp" "${BASE_B}" "" new mem 4096 64 ff spread
+  # df: shipped defaults (ack-on-commit off, ingress wait unset, io_uring off), 2 trials.
+  for t in $(seq 1 2); do
+    ing "defaults-dur-p4096-b64-ack-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new dur 4096 64 "${INFLIGHT}" spread
+    ing "defaults-dur-p256-b1-ack-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new dur 256 1 "${INFLIGHT}" spread
+    add "defaults-lat-dur-p256-t${t}" df lat "${BUILD_SHA}" "${DEFAULTS_B}" "" new perf-durable 256 1 ff none 1 0
+    ing "defaults-mem-p4096-b64-ff-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new mem 4096 64 ff spread
+  done
   # m1: headline cells to HEAD_TRIALS.
   for t in $(seq 1 "${HEAD_TRIALS}"); do
     for s in "mem 4096 64 ff spread" "mem 256 1 ack spread" "dur 4096 64 ack spread"; do
@@ -181,11 +200,12 @@ build_plan() {
   done
   # lat: one in flight, then the load curve.
   for t in $(seq 1 "${LAT_TRIALS}"); do
+    trim_has 7 && [ "${t}" -gt 2 ] && continue
     for pr in oncommit periodic inmem; do for p in 256 4096; do
       fs=on_commit; st=perf-durable
       [ "${pr}" = periodic ] && fs=periodic
       [ "${pr}" = inmem ] && { fs=periodic; st=perf; }
-      add "l1-${pr}-p${p}-t${t}" lat lat "${BUILD_SHA}" "FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=${fs}" "" new "${st}" "${p}" 1 ff none 1 0
+      add "l1-${pr}-p${p}-t${t}" lat lat "${BUILD_SHA}" "FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=${fs} ${DUR_PROFILE}" "" new "${st}" "${p}" 1 ff none 1 0
     done; done
   done
   for t in $(seq 1 "${CURVE_TRIALS}"); do
@@ -218,8 +238,7 @@ build_plan() {
     for n in ${order}; do
       trim_has 3 && { [ "${n}" = 1 ] || [ "${n}" = 8 ]; } && continue
       local cenv=""; [ "${n}" -gt 4 ] && cenv="FELIX_PUB_CONN_POOL=${n}"
-      benv="FELIX_QUIC_LISTENERS=${n} FELIX_DURABLE_FSYNC_MODE=on_commit"
-      [ "${CAMP_INGRESS_WAIT}" = 1 ] && benv="${benv} FELIX_PUB_INGRESS_WAIT=1"
+      benv="FELIX_QUIC_LISTENERS=${n} FELIX_DURABLE_FSYNC_MODE=on_commit ${DUR_PROFILE}"
       ing "sw-l${n}-mem-p4096-b64-ff-t${t}" sw "${BUILD_SHA}" "${benv}" "${cenv}" new mem 4096 64 ff spread "${n}"
     done
     order="default 32 64"; [ $((t % 2)) = 0 ] && order="64 32 default"
@@ -299,7 +318,7 @@ choose_trim() {
   local saved="${OUT}/final/trim" lvl
   if [ -n "${TRIM_ARG:-${TRIM_FORCE}}" ]; then TRIM="${TRIM_ARG:-${TRIM_FORCE}}"; build_plan; compute_rem; return; fi
   if [ -s "${saved}" ] && [ "${dry}" = 0 ]; then TRIM="$(cat "${saved}")"; build_plan; compute_rem; return; fi
-  for lvl in 0 1 2 3 4 5 6; do
+  for lvl in 0 1 2 3 4 5 6 7; do
     TRIM="${lvl}"; build_plan
     IGNORE_DONE=1 compute_rem
     [ "$(total_x10)" -le $((MAX_HOURS * 600)) ] && break
@@ -316,6 +335,7 @@ trim_text() {
     4) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB" ;;
     5) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight" ;;
     6) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight, second trial of the sweeps" ;;
+    7) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight, second trial of the sweeps, third one-in-flight latency trial" ;;
   esac
 }
 
@@ -347,7 +367,7 @@ if [ "${dry}" = 1 ]; then
   echo "  nats-lat: LAT_PAIRS='${LAT_PAIRS}' LAT_PAYLOADS='${LAT_PAYLOADS}' TRIALS=${NATS_LAT_TRIALS} (nats-latency.sh)"
   echo "  curve: in flight 64 reuses the matrix cells m-{mem,dur}-p{256,4096}-b1-ack-spread"
   echo
-  for s in s0 s0b m1 lat net m2 sw; do
+  for s in s0 s0b df m1 lat net m2 sw; do
     n=0; x=0
     for ((i = 0; i < M; i++)); do
       [ "${PSTEP[i]}" = "${s}" ] || continue
@@ -510,9 +530,19 @@ collect_facts() {
     echo "BUILD_SHA=${BUILD_SHA} P9_SHA=${P9_SHA} OLD_LOADGEN=${OLD_LOADGEN}"
     echo "trim=${TRIM} ($(trim_text "${TRIM}"))"
     echo "driver BASE_B=${BASE_B}"
+    echo "driver DEFAULTS_B=${DEFAULTS_B}"
     echo "driver CLIENT_B=${CLIENT_B}"
     echo "CELL_SECS=${CELL_SECS} PER=${PER} NGEN=${NGEN} KEYS=${KEYS} INFLIGHT=${INFLIGHT}"
     echo "lib.sh base_overrides:"; base_overrides | sed 's/^/  /'
+    echo "Exact conditions (main campaign, every Felix cell), against the product default:"
+    echo "  FELIX_ACK_ON_COMMIT=1          default off  (DIFFERS)"
+    echo "  FELIX_PUB_INGRESS_WAIT=1       default off  (DIFFERS)"
+    echo "  FELIX_STORAGE_IO_URING=1       default off  (DIFFERS, from lib.sh)"
+    echo "  FELIX_QUIC_LISTENERS=4         default derived: 4 on 8 cores"
+    echo "  FELIX_DURABLE_FSYNC_MODE       on_commit; periodic in the periodic latency cells"
+    echo "  FELIX_IO_RUNTIME_THREADS=0, FELIX_UDP_RECV/SEND_BUFFER=25165824, FELIX_MTU_UPPER_BOUND=3872 (harness)"
+    echo "  client: FELIX_UDP_RECV/SEND_BUFFER=25165824, FELIX_MTU_UPPER_BOUND=3872; no pool, ack-threshold or shard-stream override"
+    echo "defaults-* cells: ${DEFAULTS_B} (ACK_ON_COMMIT=0 and IO_URING=0 equal the product default; INGRESS_WAIT unset)"
     echo "sweep and NATS settings: STREAM_TUNE=${STREAM_TUNE} AB_PAIRS=${AB_PAIRS} AB_PAYLOADS=${AB_PAYLOADS} AB_TRIALS=${AB_TRIALS} LAT_PAIRS=${LAT_PAIRS} LAT_PAYLOADS=${LAT_PAYLOADS} NATS_LAT_TRIALS=${NATS_LAT_TRIALS}"
   } > "${OUT}/final/config.txt"
   az vm list -g "${GROUP}" -d --query "[].{name:name,size:hardwareProfile.vmSize,location:location,zones:zones,power:powerState,ip:privateIps}" -o table > "${OUT}/final/vm-sizes.txt" 2>&1 || true
@@ -563,14 +593,32 @@ cell_nums() {
   python3 -I "${here}/summarize.py" --cell "$1" 2>/dev/null \
     | sed -n 's/^steady append \([0-9.]*\) MB\/s, ingress \([0-9.]*\) MB\/s, drops \([0-9.]*\)\/s, cores \([0-9.]*\) .*/\1 \2 \3 \4/p'
 }
+# ack_proof <dir>: what the broker process ran with and what the commit path did during the cell.
+# FELIX_ACK_ON_COMMIT comes from /proc/<pid>/environ at the cell's start; syncs is the delta of
+# felix_storage_sync_total, so a durable cell with acks after commit shows flushes. It cannot show
+# that a given ack waited; the defaults-* cells' ack latency is the contrast.
+ack_proof() {
+  local dir="$1" b a env wait uring sb sa db da
+  b="${dir}/${BROKER_VM}.before.txt"; a="${dir}/${BROKER_VM}.after.txt"
+  env="$(sed -n 's/^env\.FELIX_ACK_ON_COMMIT=//p' "${b}" 2>/dev/null | tail -1)"
+  wait="$(sed -n 's/^env\.FELIX_PUB_INGRESS_WAIT=//p' "${b}" 2>/dev/null | tail -1)"
+  uring="$(sed -n 's/^env\.FELIX_STORAGE_IO_URING=//p' "${b}" 2>/dev/null | tail -1)"
+  sb="$(sed -n 's/^m\.sync_total=//p' "${b}" 2>/dev/null | tail -1)"; sa="$(sed -n 's/^m\.sync_total=//p' "${a}" 2>/dev/null | tail -1)"
+  db="$(sed -n 's/^m\.ingress_dropped=//p' "${b}" 2>/dev/null | tail -1)"; da="$(sed -n 's/^m\.ingress_dropped=//p' "${a}" 2>/dev/null | tail -1)"
+  local line="ack_on_commit=${env:-unset} ingress_wait=${wait:-unset} io_uring=${uring:-unset}"
+  [ -n "${sb}" ] && [ -n "${sa}" ] && line="${line} syncs=$((sa - sb))"
+  if [ -n "${db}" ] && [ -n "${da}" ]; then line="${line} ingress_shed=$((da - db)) (~$(( (da - db) / CELL_SECS ))/s)"; else line="${line} ingress_shed=n/a"; fi
+  echo "${line}" > "${dir}/ack-proof.txt"
+  echo "${line}"
+}
 headline() {
   local dir="$1" a i d c
   case "$(basename "${dir}")" in
-    l1-*|*lat-*) ackpcts "${dir}"; return ;;
+    l1-*|*lat-*) echo "$(ackpcts "${dir}"); $(ack_proof "${dir}")"; return ;;
   esac
   read -r a i d c <<<"$(cell_nums "${dir}")"
-  if [ -z "${a}" ]; then echo "no steady window; $(ackpcts "${dir}")"; return; fi
-  echo "append ${a} MB/s, ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}")"
+  if [ -z "${a}" ]; then echo "no steady window; $(ackpcts "${dir}"); $(ack_proof "${dir}")"; return; fi
+  echo "append ${a} MB/s, ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(ack_proof "${dir}")"
 }
 metric() {   # metric <cell> <mem|dur>: the number the gate compares
   local a i d c
@@ -727,7 +775,7 @@ run_block() {   # run_block <name> <rem-after-tenths>
       ensure_nats || rc=1
       if [ "${rc}" = 0 ]; then
         STEPS="cells" TRIALS="${NATS_LAT_TRIALS}" LAT_PAIRS="${LAT_PAIRS}" LAT_PAYLOADS="${LAT_PAYLOADS}" \
-          FELIX_LAT_REF="${BUILD_SHA}" FELIX_LAT_ENV="FELIX_QUIC_LISTENERS=4$([ "${CAMP_INGRESS_WAIT}" = 1 ] && echo ' FELIX_PUB_INGRESS_WAIT=1')" \
+          FELIX_LAT_REF="${BUILD_SHA}" FELIX_LAT_ENV="FELIX_QUIC_LISTENERS=4 ${DUR_PROFILE}" \
           FELIX_LAT_CLIENT_ENV="FELIX_MTU_UPPER_BOUND=3872" \
           "${here}/nats/nats-latency.sh" || rc=1
       fi ;;
